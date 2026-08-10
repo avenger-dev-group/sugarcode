@@ -9,6 +9,16 @@ import type {
 export const activeTurnOperationProgress = (
   turn: TurnViewModel | undefined,
 ): ActiveTurnOperationProgress | undefined => {
+  if (turn?.userInputRequest) {
+    return {
+      state: 'waitingForInput',
+      label: '等待你的回答',
+      detail:
+        turn.userInputRequest.questions.length > 1
+          ? `共 ${turn.userInputRequest.questions.length} 个问题`
+          : turn.userInputRequest.questions[0]?.header,
+    };
+  }
   const activities = turn?.activities ?? [];
   for (let index = activities.length - 1; index >= 0; index -= 1) {
     const entry = activities[index];

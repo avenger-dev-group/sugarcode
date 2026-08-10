@@ -5,6 +5,7 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
   CONVERSATION_THREAD_DELTA_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
@@ -37,6 +38,7 @@ type ConversationControllerBoundary = Readonly<{
   ) => () => void;
   startTurn: (input: unknown) => Promise<ConversationActionResult>;
   stopTurn: (threadId: unknown) => Promise<ConversationActionResult>;
+  respondToUserInput: (input: unknown) => Promise<ConversationActionResult>;
   searchThreads: (query: unknown) => Promise<ConversationActionResult>;
   selectThread: (threadId: unknown) => Promise<ConversationActionResult>;
   startNewThread: () => ConversationActionResult;
@@ -97,6 +99,16 @@ export const registerConversationIpc = (
     }
     return options.controller.stopTurn(threadId);
   });
+
+  ipcMain.handle(
+    CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
+    async (event, input: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Conversation user input came from an untrusted frame.');
+      }
+      return options.controller.respondToUserInput(input);
+    },
+  );
 
   ipcMain.handle(
     CONVERSATION_THREAD_SEARCH_CHANNEL,
@@ -162,6 +174,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_THREAD_PROJECTION_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_USER_INPUT_RESPONSE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SELECT_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_NEW_CHANNEL);

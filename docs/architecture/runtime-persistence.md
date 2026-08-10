@@ -37,6 +37,15 @@ stored by its stable Item identity. Commentary and the gate-approved final
 answer therefore survive duplicate delivery without content-level text
 deduplication.
 
+Structured user-input request and resolution events are stored as ordered,
+provider-neutral Turn Items for audit ordering, but an unanswered prompt is not
+recoverable execution state. The live promise and its answer capability remain
+process-local. If the worker exits while waiting, normal unfinished-Turn
+recovery marks that Turn interrupted and never recreates or auto-answers the
+prompt. A completed response is carried into the same live model loop as a
+normal tool result; only completed tool history is eligible for later portable
+model-history reconstruction.
+
 Desktop Thread projections and their monotonic live revisions are process-local
 delivery state, not a persistence format. SQLite continues to store the same
 provider-neutral Threads, Turns and ordered Items. A Renderer revision gap is

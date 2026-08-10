@@ -282,6 +282,55 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     model,
   });
   fixture.emit({
+    type: 'turn.userInputRequested',
+    requestId: started.requestId,
+    sequence: 4,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    inputRequestId: 'input-scope',
+    questions: [{
+      id: 'scope',
+      header: '实现范围',
+      question: '本次需要覆盖到哪一层？',
+      options: [
+        { label: '完整链路（推荐）', description: '包含 Agent、协议和界面。' },
+        { label: '仅界面', description: '只处理显示和交互。' },
+      ],
+    }],
+  });
+  assert.equal(
+    controller.getSnapshot().turns[0]?.userInputRequest?.id,
+    'input-scope',
+  );
+  assert.deepEqual(
+    await controller.respondToUserInput({
+      threadId: THREAD_ID,
+      turnId: started.turnId,
+      inputRequestId: 'input-scope',
+      answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+    }),
+    { accepted: true, reason: 'accepted' },
+  );
+  const inputResponse = fixture.sent.find(
+    (command) => command.type === 'turn.userInputResponse',
+  );
+  assert.equal(inputResponse?.type, 'turn.userInputResponse');
+  fixture.emit({
+    type: 'turn.userInputResolved',
+    requestId: 'request-answer',
+    sequence: 5,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    inputRequestId: 'input-scope',
+    answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+  });
+  assert.equal(
+    controller.getSnapshot().turns[0]?.userInputRequest,
+    undefined,
+  );
+  fixture.emit({
     type: 'turn.textDelta',
     requestId: started.requestId,
     sequence: 4,

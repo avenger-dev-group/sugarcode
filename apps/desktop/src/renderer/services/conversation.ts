@@ -7,6 +7,7 @@ import type {
   ConversationThreadDeltaListener,
   ConversationThreadProjectionListener,
   ConversationThreadProjectionSnapshot,
+  ConversationUserInputResponse,
 } from '@/shared/conversation';
 
 const desktopApi = (): Window['sugarcode'] => window.sugarcode;
@@ -44,6 +45,11 @@ export const sendConversationMessage = (
 export const stopConversationTurn =
   (threadId: string): Promise<ConversationActionResult> =>
     desktopApi().stopConversationTurn(threadId);
+
+export const respondToConversationUserInput = (
+  response: ConversationUserInputResponse,
+): Promise<ConversationActionResult> =>
+  desktopApi().respondToConversationUserInput(response);
 
 export const searchConversationThreads = (
   query: string,

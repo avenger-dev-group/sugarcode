@@ -42,6 +42,8 @@ import {
 } from './native.ts';
 import {
   isRuntimeContentPart,
+  MAX_RUNTIME_USER_INPUT_OPTIONS,
+  MAX_RUNTIME_USER_INPUT_QUESTIONS,
   RUNTIME_PROTOCOL_VERSION,
   type RuntimeAssetDescriptor,
   type RuntimeCommand,
@@ -54,6 +56,8 @@ import {
   type RuntimeThreadRecord,
   type RuntimeThreadSnapshot,
   type RuntimeUsage,
+  type RuntimeUserInputAnswer,
+  type RuntimeUserInputQuestion,
   type RuntimeWorkspaceDocument,
   type RuntimeWorkspaceEntry,
 } from './protocol.ts';
@@ -102,6 +106,40 @@ const INVALID_TOOL_ARGUMENTS_SCHEMA = {
   required: ['toolName', 'argumentsText'],
 } satisfies Schema;
 
+const REQUEST_USER_INPUT_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    questions: {
+      type: Type.ARRAY,
+      minItems: '1',
+      maxItems: String(MAX_RUNTIME_USER_INPUT_QUESTIONS),
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          header: { type: Type.STRING },
+          id: { type: Type.STRING },
+          question: { type: Type.STRING },
+          options: {
+            type: Type.ARRAY,
+            minItems: '2',
+            maxItems: String(MAX_RUNTIME_USER_INPUT_OPTIONS),
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                label: { type: Type.STRING },
+                description: { type: Type.STRING },
+              },
+              required: ['label', 'description'],
+            },
+          },
+        },
+        required: ['header', 'id', 'question', 'options'],
+      },
+    },
+  },
+  required: ['questions'],
+} satisfies Schema;
+
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
   createModel?: (provider: RuntimeProviderConfig) => BaseLlm;
@@ -118,6 +156,19 @@ type PendingApproval = Readonly<{
   recovered: boolean;
   publish: () => void;
   resolve: (decision: 'approved' | 'denied') => void;
+}>;
+
+type PendingUserInput = Readonly<{
+  requestId: string;
+  workspaceId: string;
+  threadId: string;
+  turnId: string;
+  questions: readonly RuntimeUserInputQuestion[];
+  resolve: (
+    result:
+      | Readonly<{ answers: readonly RuntimeUserInputAnswer[] }>
+      | Readonly<{ cancelled: true }>,
+  ) => void;
 }>;
 
 type RecoveredApprovalRecord = Readonly<{
@@ -209,6 +260,82 @@ type InvalidArgumentGuard = {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const boundedUserInputText = (
+  value: unknown,
+  maxBytes: number,
+  maxCharacters?: number,
+): string | undefined => {
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    Buffer.byteLength(value, 'utf8') > maxBytes ||
+    (maxCharacters !== undefined && Array.from(value).length > maxCharacters) ||
+    Array.from(value).some((character) => /\p{Cc}/u.test(character))
+  ) {
+    return undefined;
+  }
+  return value.trim();
+};
+
+const parseUserInputQuestions = (
+  input: unknown,
+): readonly RuntimeUserInputQuestion[] | undefined => {
+  if (!isRecord(input) || !Array.isArray(input.questions)) {
+    return undefined;
+  }
+  if (
+    input.questions.length < 1 ||
+    input.questions.length > MAX_RUNTIME_USER_INPUT_QUESTIONS
+  ) {
+    return undefined;
+  }
+  const questions: RuntimeUserInputQuestion[] = [];
+  for (const candidate of input.questions) {
+    if (!isRecord(candidate) || !Array.isArray(candidate.options)) {
+      return undefined;
+    }
+    const id = typeof candidate.id === 'string' &&
+      /^[a-z][a-z0-9_]{0,63}$/u.test(candidate.id)
+      ? candidate.id
+      : undefined;
+    const header = boundedUserInputText(candidate.header, 48, 12);
+    const question = boundedUserInputText(candidate.question, 512);
+    if (
+      !id ||
+      !header ||
+      !question ||
+      candidate.options.length < 2 ||
+      candidate.options.length > MAX_RUNTIME_USER_INPUT_OPTIONS
+    ) {
+      return undefined;
+    }
+    const options = candidate.options.map((option) => {
+      if (!isRecord(option)) {
+        return undefined;
+      }
+      const label = boundedUserInputText(option.label, 96);
+      const description = boundedUserInputText(option.description, 384);
+      return label && description ? { label, description } : undefined;
+    });
+    if (
+      options.some((option) => option === undefined) ||
+      new Set(options.map((option) => option?.label)).size !== options.length
+    ) {
+      return undefined;
+    }
+    questions.push({
+      id,
+      header,
+      question,
+      options: options as RuntimeUserInputQuestion['options'],
+    });
+  }
+  return new Set(questions.map((question) => question.id)).size ===
+    questions.length
+    ? questions
+    : undefined;
+};
 
 const isVisibleModelTextPart = (part: Part): boolean =>
   typeof part.text === 'string' &&
@@ -360,6 +487,7 @@ export class RuntimeHost {
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly pendingUserInputs = new Map<string, PendingUserInput>();
   private readonly approvalQueue: string[] = [];
   private activeApprovalId: string | null = null;
   private readonly activeOperations = new Map<string, Set<string>>();
@@ -461,8 +589,51 @@ export class RuntimeHost {
         this.activeTurns.get(command.turnId)?.abort();
         this.collaboration.cancelTurn(command.turnId);
         this.cancelTurnApprovals(command.turnId);
+        this.cancelTurnUserInputs(command.turnId);
         this.cancelTurnOperations(command.turnId);
         break;
+      case 'turn.userInputResponse': {
+        const pending = this.pendingUserInputs.get(command.inputRequestId);
+        const expectedQuestionIds = pending?.questions.map(
+          (question) => question.id,
+        );
+        const submittedAnswers = new Map(
+          command.answers.map((answer) => [answer.questionId, answer.answer]),
+        );
+        if (
+          !pending ||
+          pending.workspaceId !== command.workspaceId ||
+          pending.threadId !== command.threadId ||
+          pending.turnId !== command.turnId ||
+          expectedQuestionIds?.length !== command.answers.length ||
+          !expectedQuestionIds.every((id) => submittedAnswers.has(id))
+        ) {
+          this.emit({
+            type: 'runtime.log',
+            requestId: command.requestId,
+            level: 'warn',
+            message:
+              `User input ${command.inputRequestId} has no matching pending runtime tool.`,
+          });
+          break;
+        }
+        const answers = expectedQuestionIds.map((questionId) => ({
+          questionId,
+          answer: submittedAnswers.get(questionId) as string,
+        }));
+        this.pendingUserInputs.delete(command.inputRequestId);
+        this.emit({
+          type: 'turn.userInputResolved',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          inputRequestId: command.inputRequestId,
+          answers,
+        });
+        pending.resolve({ answers });
+        break;
+      }
       case 'terminal.create':
         this.requireReady(command.requestId);
         this.createTerminal(command);
@@ -1633,6 +1804,66 @@ export class RuntimeHost {
       },
     });
 
+  private requestUserInputTool = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+  ): FunctionTool<Schema> =>
+    new FunctionTool({
+      name: 'request_user_input',
+      description:
+        'Pause this Turn and ask the user 1 to 3 concise questions. Each question must provide 2 to 3 mutually exclusive choices. The interface also lets the user enter a custom answer, so do not add an Other option.',
+      parameters: REQUEST_USER_INPUT_SCHEMA,
+      execute: async (input) => {
+        const questions = parseUserInputQuestions(input);
+        if (!questions) {
+          return {
+            ok: false,
+            error: {
+              kind: 'invalidQuestions',
+              message:
+                'Provide 1 to 3 unique questions with a short header, snake_case id, prompt, and 2 to 3 labeled options.',
+            },
+          };
+        }
+        if (
+          [...this.pendingUserInputs.values()].some(
+            (pending) => pending.turnId === command.turnId,
+          )
+        ) {
+          return {
+            ok: false,
+            error: {
+              kind: 'userInputAlreadyPending',
+              message:
+                'This Turn already has a pending user-input request. Wait for its result before asking another question.',
+            },
+          };
+        }
+        const inputRequestId = randomUUID();
+        return await new Promise<
+          | Readonly<{ answers: readonly RuntimeUserInputAnswer[] }>
+          | Readonly<{ cancelled: true }>
+        >((resolve) => {
+          this.pendingUserInputs.set(inputRequestId, {
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            questions,
+            resolve,
+          });
+          this.emit({
+            type: 'turn.userInputRequested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            inputRequestId,
+            questions,
+          });
+        });
+      },
+    });
+
   private assertInvalidArgumentProgress = (
     guard: InvalidArgumentGuard,
   ): void => {
@@ -2033,6 +2264,7 @@ export class RuntimeHost {
         },
         tools: [
           this.invalidArgumentsTool(invalidArgumentGuard),
+          this.requestUserInputTool(command),
           ...(this.nativeRuntime
             ? [
               ...createWorkspaceTools(
@@ -2092,6 +2324,9 @@ export class RuntimeHost {
           ),
         completionGate: () =>
           !controller.signal.aborted &&
+          ![...this.pendingUserInputs.values()].some(
+            (pending) => pending.turnId === command.turnId,
+          ) &&
           ![...this.pendingApprovals.values()].some(
             (approval) => approval.turnId === command.turnId,
           ) &&
@@ -2118,6 +2353,7 @@ export class RuntimeHost {
       );
     } finally {
       this.collaboration.releaseTurn(command.turnId);
+      this.cancelTurnUserInputs(command.turnId);
       this.activeTurns.delete(command.turnId);
     }
   };
@@ -3283,6 +3519,16 @@ export class RuntimeHost {
     }
   };
 
+  private cancelTurnUserInputs = (turnId: string): void => {
+    for (const [inputRequestId, pending] of this.pendingUserInputs) {
+      if (pending.turnId !== turnId) {
+        continue;
+      }
+      this.pendingUserInputs.delete(inputRequestId);
+      pending.resolve({ cancelled: true });
+    }
+  };
+
   private cancelTurnOperations = (turnId: string): void => {
     const operations = this.activeOperations.get(turnId);
     if (!operations) {
@@ -3380,6 +3626,8 @@ export class RuntimeHost {
             ? normalized.task.taskId
             : 'approvalId' in normalized
               ? normalized.approvalId
+              : 'inputRequestId' in normalized
+                ? normalized.inputRequestId
               : String(normalized.sequence);
       withDurableStateWrite(() =>
         nativeRuntime.appendItem(

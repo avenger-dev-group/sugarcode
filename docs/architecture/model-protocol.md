@@ -96,6 +96,14 @@ ADK FunctionTools expose provider-neutral schemas. Arguments are validated
 before privileged execution. Read-only tools may run concurrently when their
 workspace authority allows it; writes, commands, Git mutations and MCP calls
 pass through persisted operations and approval where required.
+The primary Agent also receives the provider-neutral `request_user_input`
+FunctionTool. It accepts one through three uniquely identified questions with
+two or three mutually exclusive options each. Calling it suspends that tool
+result until Main receives a bounded answer for every question; the answers
+then return to the same ADK Turn as structured tool data. The Renderer supplies
+the free-form alternative, so model arguments must not invent an `Other`
+option. Child Agents do not receive this tool: they report missing decisions to
+their parent, keeping user interaction owned by the primary Turn.
 Google ADK `Schema` values are normalized recursively at the provider boundary
 before they are sent to OpenAI or Anthropic: Google enum-style type names become
 lowercase JSON Schema types, and string-encoded integer limits such as

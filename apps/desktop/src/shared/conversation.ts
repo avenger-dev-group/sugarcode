@@ -8,6 +8,8 @@ export const CONVERSATION_THREAD_DELTA_CHANNEL =
   'conversation-thread-projection:delta';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
+export const CONVERSATION_USER_INPUT_RESPONSE_CHANNEL =
+  'conversation:user-input-response';
 export const CONVERSATION_THREAD_SEARCH_CHANNEL = 'conversation-thread:search';
 export const CONVERSATION_THREAD_SELECT_CHANNEL = 'conversation-thread:select';
 export const CONVERSATION_THREAD_NEW_CHANNEL = 'conversation-thread:new';
@@ -20,6 +22,9 @@ export const MAX_THREAD_SEARCH_BYTES = 256;
 export const MAX_CONVERSATION_TITLE_BYTES = 256;
 export const MAX_FILE_CHANGE_DIFF_BYTES = 192 * 1024;
 export const MAX_FILE_CHANGE_DIFF_LINES = 5_000;
+export const MAX_USER_INPUT_QUESTIONS = 3;
+export const MAX_USER_INPUT_OPTIONS = 3;
+export const MAX_USER_INPUT_ANSWER_BYTES = 2 * 1024;
 
 export type ConversationPhase =
   'idle' | 'starting' | 'inProgress' | 'stopping' | 'ready' | 'unavailable';
@@ -491,6 +496,35 @@ export type ConversationModelSelection = Readonly<{
   }>;
 }>;
 
+export type ConversationUserInputOption = Readonly<{
+  label: string;
+  description: string;
+}>;
+
+export type ConversationUserInputQuestion = Readonly<{
+  id: string;
+  header: string;
+  question: string;
+  options: readonly ConversationUserInputOption[];
+}>;
+
+export type ConversationUserInputRequest = Readonly<{
+  id: string;
+  questions: readonly ConversationUserInputQuestion[];
+}>;
+
+export type ConversationUserInputAnswer = Readonly<{
+  questionId: string;
+  answer: string;
+}>;
+
+export type ConversationUserInputResponse = Readonly<{
+  threadId: string;
+  turnId: string;
+  inputRequestId: string;
+  answers: readonly ConversationUserInputAnswer[];
+}>;
+
 export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
@@ -504,6 +538,7 @@ export type ConversationTurn = Readonly<{
   fileChange?: ConversationFileChangeActivity;
   commandApproval?: ConversationCommandApprovalActivity;
   mcpActivities?: readonly ConversationMcpActivity[];
+  userInputRequest?: ConversationUserInputRequest;
   error?: ConversationTurnError;
   usage?: ConversationTokenUsage;
 }>;
@@ -638,6 +673,9 @@ export type ConversationApi = Readonly<{
     request: ConversationSendRequest,
   ) => Promise<ConversationActionResult>;
   stopConversationTurn: (threadId: string) => Promise<ConversationActionResult>;
+  respondToConversationUserInput: (
+    response: ConversationUserInputResponse,
+  ) => Promise<ConversationActionResult>;
   searchConversationThreads: (
     query: string,
   ) => Promise<ConversationActionResult>;
@@ -750,6 +788,59 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
+
+const hasBoundedText = (
+  value: unknown,
+  maxBytes: number,
+  allowEmpty = false,
+): value is string =>
+  typeof value === 'string' &&
+  (allowEmpty || value.trim().length > 0) &&
+  new TextEncoder().encode(value).byteLength <= maxBytes &&
+  !Array.from(value).some((character) => /\p{Cc}/u.test(character));
+
+const isUserInputQuestion = (
+  value: unknown,
+): value is ConversationUserInputQuestion =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['id', 'header', 'question', 'options'].includes(key),
+  ) &&
+  typeof value.id === 'string' &&
+  /^[a-z][a-z0-9_]{0,63}$/u.test(value.id) &&
+  hasBoundedText(value.header, 48) &&
+  Array.from(value.header as string).length <= 12 &&
+  hasBoundedText(value.question, 512) &&
+  Array.isArray(value.options) &&
+  value.options.length >= 2 &&
+  value.options.length <= MAX_USER_INPUT_OPTIONS &&
+  value.options.every(
+    (option) =>
+      isRecord(option) &&
+      Object.keys(option).every((key) =>
+        ['label', 'description'].includes(key),
+      ) &&
+      hasBoundedText(option.label, 96) &&
+      hasBoundedText(option.description, 384),
+  ) &&
+  new Set(
+    value.options.map((option) =>
+      isRecord(option) ? option.label : undefined,
+    ),
+  ).size === value.options.length;
+
+const isUserInputRequest = (
+  value: unknown,
+): value is ConversationUserInputRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) => ['id', 'questions'].includes(key)) &&
+  isId(value.id) &&
+  Array.isArray(value.questions) &&
+  value.questions.length >= 1 &&
+  value.questions.length <= MAX_USER_INPUT_QUESTIONS &&
+  value.questions.every(isUserInputQuestion) &&
+  new Set(value.questions.map((question) => question.id)).size ===
+    value.questions.length;
 
 export const isValidSha256 = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
@@ -1566,6 +1657,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
       (!Array.isArray(value.mcpActivities) ||
         value.mcpActivities.length > 4 ||
         !value.mcpActivities.every(isMcpActivity))) ||
+    (Object.hasOwn(value, 'userInputRequest') &&
+      !isUserInputRequest(value.userInputRequest)) ||
     (Object.hasOwn(value, 'usage') && !isTokenUsage(value.usage))
   ) {
     return false;
@@ -1574,7 +1667,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     value.status !== 'inProgress' &&
     (value.messages.some((message) => message.status !== 'completed') ||
-      (Array.isArray(pendingAgentOutputs) ? pendingAgentOutputs.length : 0) > 0)
+      (Array.isArray(pendingAgentOutputs) ? pendingAgentOutputs.length : 0) > 0 ||
+      Object.hasOwn(value, 'userInputRequest'))
   ) {
     return false;
   }
@@ -1923,6 +2017,32 @@ export const isConversationSendRequest = (
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
       /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+
+export const isConversationUserInputResponse = (
+  value: unknown,
+): value is ConversationUserInputResponse =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['threadId', 'turnId', 'inputRequestId', 'answers'].includes(key),
+  ) &&
+  isId(value.threadId) &&
+  isId(value.turnId) &&
+  isId(value.inputRequestId) &&
+  Array.isArray(value.answers) &&
+  value.answers.length >= 1 &&
+  value.answers.length <= MAX_USER_INPUT_QUESTIONS &&
+  value.answers.every(
+    (answer) =>
+      isRecord(answer) &&
+      Object.keys(answer).every((key) =>
+        ['questionId', 'answer'].includes(key),
+      ) &&
+      typeof answer.questionId === 'string' &&
+      /^[a-z][a-z0-9_]{0,63}$/u.test(answer.questionId) &&
+      hasBoundedText(answer.answer, MAX_USER_INPUT_ANSWER_BYTES),
+  ) &&
+  new Set(value.answers.map((answer) => answer.questionId)).size ===
+    value.answers.length;
 
 const isConversationAttachmentUpload = (
   value: unknown,

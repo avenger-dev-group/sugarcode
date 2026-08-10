@@ -270,6 +270,65 @@ class ToolLoopLlm extends BaseLlm {
   }
 }
 
+class UserInputLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const hasUserInputResult = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'request_user_input',
+      ),
+    );
+    if (!hasUserInputResult) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-user-input',
+              name: 'request_user_input',
+              args: {
+                questions: [{
+                  id: 'scope',
+                  header: '实现范围',
+                  question: '本次需要覆盖到哪一层？',
+                  options: [
+                    {
+                      label: '完整链路（推荐）',
+                      description: '包含 Agent、协议和界面。',
+                    },
+                    {
+                      label: '仅界面',
+                      description: '只处理显示和交互。',
+                    },
+                  ],
+                }],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: '已按完整链路继续。' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class RepeatingToolErrorLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -772,6 +831,78 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost pauses for structured user input and resumes the same Turn', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new UserInputLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.userInputRequested') {
+        host.handle({
+          type: 'turn.userInputResponse',
+          requestId: 'request-answer',
+          workspaceId: event.workspaceId,
+          threadId: event.threadId,
+          turnId: event.turnId,
+          inputRequestId: event.inputRequestId,
+          answers: [{
+            questionId: 'scope',
+            answer: '完整链路（推荐）',
+          }],
+        });
+      }
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-input',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-user-input-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-input',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-user-input-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '实现这个需求' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for Turn.')), 2_000),
+    ),
+  ]);
+
+  assert.ok(events.some((event) => event.type === 'turn.userInputRequested'));
+  assert.ok(events.some((event) => event.type === 'turn.userInputResolved'));
+  assert.equal(
+    JSON.stringify(model.requests[1]?.contents).includes('完整链路（推荐）'),
+    true,
+  );
+  assert.equal(
+    events.findLast((event) => event.type === 'turn.completed')?.status,
+    'completed',
+  );
 });
 
 test('RuntimeHost generates and conditionally persists an untitled Thread title', async () => {

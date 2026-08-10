@@ -5,6 +5,7 @@ import {
   isConversationThreadProjectionSnapshot,
   isConversationStateSnapshot,
   isConversationSendRequest,
+  isConversationUserInputResponse,
   isValidConversationTitle,
   isValidThreadSearchInput,
   type ConversationActionResult,
@@ -21,6 +22,7 @@ import {
   type ConversationThreadNavigatorSnapshot,
   type ConversationTurn,
   type ConversationTurnError,
+  type ConversationUserInputResponse,
   type ConversationWorkspacePatchFile,
 } from '../../shared/conversation.ts';
 import {
@@ -46,6 +48,14 @@ const accepted = (): ConversationActionResult => ({ accepted: true, reason: 'acc
 const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
 ): ConversationActionResult => ({ accepted: false, reason });
+
+const withoutUserInputRequest = (turn: ConversationTurn): ConversationTurn => {
+  const copy: {
+    -readonly [Key in keyof ConversationTurn]: ConversationTurn[Key];
+  } = { ...turn };
+  delete copy.userInputRequest;
+  return copy;
+};
 
 type TokenUsageSample = ConversationTokenUsage['lastRequest'];
 
@@ -702,6 +712,46 @@ export class RuntimeConversationController {
     return accepted();
   };
 
+  respondToUserInput = async (
+    input: unknown,
+  ): Promise<ConversationActionResult> => {
+    if (!isConversationUserInputResponse(input)) {
+      return rejected('invalidInput');
+    }
+    const activeTurn = this.activeTurnsByThread.get(input.threadId);
+    const turn = this.turnsByThread
+      .get(input.threadId)
+      ?.find((candidate) => candidate.id === input.turnId);
+    if (
+      !activeTurn ||
+      activeTurn.turnId !== input.turnId ||
+      turn?.userInputRequest?.id !== input.inputRequestId
+    ) {
+      return rejected('noActiveTurn');
+    }
+    const questionIds = turn.userInputRequest.questions.map(
+      (question) => question.id,
+    );
+    const answerIds = new Set(input.answers.map((answer) => answer.questionId));
+    if (
+      questionIds.length !== input.answers.length ||
+      !questionIds.every((id) => answerIds.has(id))
+    ) {
+      return rejected('invalidInput');
+    }
+    const response: ConversationUserInputResponse = input;
+    this.runtime.send({
+      type: 'turn.userInputResponse',
+      requestId: randomUUID(),
+      workspaceId: activeTurn.workspaceId,
+      threadId: response.threadId,
+      turnId: response.turnId,
+      inputRequestId: response.inputRequestId,
+      answers: response.answers,
+    });
+    return accepted();
+  };
+
   searchThreads = async (query: unknown): Promise<ConversationActionResult> => {
     if (!isValidThreadSearchInput(query)) {
       return rejected('invalidSearch');
@@ -1173,6 +1223,20 @@ export class RuntimeConversationController {
         turns[index] = { ...turn, activities };
         break;
       }
+      case 'turn.userInputRequested':
+        turns[index] = {
+          ...turn,
+          userInputRequest: {
+            id: event.inputRequestId,
+            questions: event.questions,
+          },
+        };
+        break;
+      case 'turn.userInputResolved':
+        if (turn.userInputRequest?.id === event.inputRequestId) {
+          turns[index] = withoutUserInputRequest(turn);
+        }
+        break;
       case 'turn.usage': {
         const previous = turn.usage;
         const turnTotal = addTokenUsage(previous?.turnTotal, event.usage);
@@ -1377,8 +1441,9 @@ export class RuntimeConversationController {
           }
           return activity;
         });
+        const completedTurn = withoutUserInputRequest(turn);
         turns[index] = {
-          ...turn,
+          ...completedTurn,
           status: event.status,
           messages,
           ...(activities ? { activities } : {}),

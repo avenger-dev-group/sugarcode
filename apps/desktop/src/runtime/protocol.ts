@@ -41,6 +41,27 @@ import {
 
 export const RUNTIME_PROTOCOL_VERSION = 2 as const;
 
+export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
+export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
+export const MAX_RUNTIME_USER_INPUT_ANSWER_BYTES = 2 * 1024;
+
+export type RuntimeUserInputOption = Readonly<{
+  label: string;
+  description: string;
+}>;
+
+export type RuntimeUserInputQuestion = Readonly<{
+  id: string;
+  header: string;
+  question: string;
+  options: readonly RuntimeUserInputOption[];
+}>;
+
+export type RuntimeUserInputAnswer = Readonly<{
+  questionId: string;
+  answer: string;
+}>;
+
 export type RuntimeProviderConfig = Readonly<{
   wireApi: ModelWireApi;
   model: string;
@@ -271,6 +292,15 @@ export type RuntimeCommand =
       workspaceId: string;
       threadId: string;
       turnId: string;
+    }>
+  | Readonly<{
+      type: 'turn.userInputResponse';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      inputRequestId: string;
+      answers: readonly RuntimeUserInputAnswer[];
     }>
   | Readonly<{
       type: 'terminal.create';
@@ -636,6 +666,24 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'turn.userInputRequested';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        inputRequestId: string;
+        questions: readonly RuntimeUserInputQuestion[];
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.userInputResolved';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        inputRequestId: string;
+        answers: readonly RuntimeUserInputAnswer[];
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'approval.requested';
         workspaceId: string;
         threadId: string;
@@ -867,6 +915,47 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const utf8ByteLength = (value: string): number =>
   new TextEncoder().encode(value).byteLength;
 
+const hasBoundedRuntimeText = (
+  value: unknown,
+  maxBytes: number,
+): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  utf8ByteLength(value) <= maxBytes &&
+  !Array.from(value).some((character) => /\p{Cc}/u.test(character));
+
+const isRuntimeUserInputQuestion = (
+  value: unknown,
+): value is RuntimeUserInputQuestion =>
+  isRecord(value) &&
+  typeof value.id === 'string' &&
+  /^[a-z][a-z0-9_]{0,63}$/u.test(value.id) &&
+  hasBoundedRuntimeText(value.header, 48) &&
+  Array.from(value.header as string).length <= 12 &&
+  hasBoundedRuntimeText(value.question, 512) &&
+  Array.isArray(value.options) &&
+  value.options.length >= 2 &&
+  value.options.length <= MAX_RUNTIME_USER_INPUT_OPTIONS &&
+  value.options.every(
+    (option) =>
+      isRecord(option) &&
+      hasBoundedRuntimeText(option.label, 96) &&
+      hasBoundedRuntimeText(option.description, 384),
+  ) &&
+  new Set(
+    value.options.map((option) =>
+      isRecord(option) ? option.label : undefined,
+    ),
+  ).size === value.options.length;
+
+const isRuntimeUserInputAnswer = (
+  value: unknown,
+): value is RuntimeUserInputAnswer =>
+  isRecord(value) &&
+  typeof value.questionId === 'string' &&
+  /^[a-z][a-z0-9_]{0,63}$/u.test(value.questionId) &&
+  hasBoundedRuntimeText(value.answer, MAX_RUNTIME_USER_INPUT_ANSWER_BYTES);
+
 const isSafeWorkspacePath = (
   value: unknown,
   allowRoot: boolean,
@@ -1035,6 +1124,20 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string' &&
         typeof value.turnId === 'string'
+      );
+    case 'turn.userInputResponse':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.turnId === 'string' &&
+        typeof value.inputRequestId === 'string' &&
+        value.inputRequestId.length > 0 &&
+        Array.isArray(value.answers) &&
+        value.answers.length >= 1 &&
+        value.answers.length <= MAX_RUNTIME_USER_INPUT_QUESTIONS &&
+        value.answers.every(isRuntimeUserInputAnswer) &&
+        new Set(value.answers.map((answer) => answer.questionId)).size ===
+          value.answers.length
       );
     case 'terminal.create':
     case 'terminal.resize':
@@ -1398,6 +1501,30 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.itemId === 'string' &&
         typeof value.callId === 'string' &&
         isRecord(value.result)
+      );
+    case 'turn.userInputRequested':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.inputRequestId === 'string' &&
+        value.inputRequestId.length > 0 &&
+        Array.isArray(value.questions) &&
+        value.questions.length >= 1 &&
+        value.questions.length <= MAX_RUNTIME_USER_INPUT_QUESTIONS &&
+        value.questions.every(isRuntimeUserInputQuestion) &&
+        new Set(value.questions.map((question) => question.id)).size ===
+          value.questions.length
+      );
+    case 'turn.userInputResolved':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.inputRequestId === 'string' &&
+        value.inputRequestId.length > 0 &&
+        Array.isArray(value.answers) &&
+        value.answers.length >= 1 &&
+        value.answers.length <= MAX_RUNTIME_USER_INPUT_QUESTIONS &&
+        value.answers.every(isRuntimeUserInputAnswer) &&
+        new Set(value.answers.map((answer) => answer.questionId)).size ===
+          value.answers.length
       );
     case 'approval.requested':
       return (

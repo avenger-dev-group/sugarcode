@@ -47,6 +47,7 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
+  CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
   CONVERSATION_THREAD_DELTA_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
@@ -61,6 +62,7 @@ import {
   type ConversationActionResult,
   type ConversationStateSnapshot,
   type ConversationThreadProjectionSnapshot,
+  type ConversationUserInputResponse,
 } from '@/shared/conversation';
 import {
   isMcpApprovalActionResult,
@@ -738,6 +740,18 @@ export const createDesktopApi = (
       }
       return result;
     },
+  respondToConversationUserInput: async (
+    response: ConversationUserInputResponse,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
+      response,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid user-input response result.');
+    }
+    return result;
+  },
   searchConversationThreads: async (
     query: string,
   ): Promise<ConversationActionResult> => {

@@ -11,6 +11,7 @@ import { useStore as useZustandStore } from 'zustand';
 
 import {
   deleteConversationThread,
+  respondToConversationUserInput,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
@@ -69,6 +70,7 @@ import type {
 } from '../agent/types';
 import { toFileChangeReviewViewModel } from '../workspace/use-store';
 import type { McpActivityState, McpActivityViewModel } from '../mcp/types';
+import type { UserInputAnswer } from '../user-input/types';
 import type {
   ActivityDisclosureStore,
   ThreadStore,
@@ -466,6 +468,25 @@ export const toThreadViewModel = (
       JSON.stringify(nextPendingAgentOutputs)
         ? previousTurn?.pendingAgentOutputs
         : nextPendingAgentOutputs;
+    const nextUserInputRequest = turn.userInputRequest
+      ? {
+          id: turn.userInputRequest.id,
+          questions: turn.userInputRequest.questions.map((question) => ({
+            id: question.id,
+            header: question.header,
+            question: question.question,
+            options: question.options.map((option) => ({
+              label: option.label,
+              description: option.description,
+            })),
+          })),
+        }
+      : undefined;
+    const userInputRequest =
+      JSON.stringify(previousTurn?.userInputRequest) ===
+      JSON.stringify(nextUserInputRequest)
+        ? previousTurn?.userInputRequest
+        : nextUserInputRequest;
     const nextWorkspaceRead = turn.workspaceRead
       ? (() => {
           const state = toWorkspaceReadPresentationState(
@@ -926,6 +947,7 @@ export const toThreadViewModel = (
       previousTurn.fileChange === fileChange &&
       previousTurn.commandApproval === commandApproval &&
       previousTurn.mcpActivities === mcpActivities &&
+      previousTurn.userInputRequest === userInputRequest &&
       previousTurn.terminalLabel === terminalLabel &&
       previousTurn.failure === failure &&
       previousTurn.isError === isError
@@ -948,6 +970,9 @@ export const toThreadViewModel = (
       ...(fileChange ? { fileChange } : {}),
       ...(commandApproval ? { commandApproval } : {}),
       ...(mcpActivities ? { mcpActivities } : {}),
+      ...(userInputRequest
+        ? { userInputRequest }
+        : {}),
       ...(terminalLabel ? { terminalLabel } : {}),
       ...(failure ? { failure } : {}),
       isError,
@@ -1441,6 +1466,32 @@ export const useStore = (): ThreadStore => {
     }
   };
 
+  const respondToUserInput = async (
+    turnId: string,
+    inputRequestId: string,
+    answers: readonly UserInputAnswer[],
+  ): Promise<boolean> => {
+    if (!snapshot.threadId) {
+      return false;
+    }
+    setActionError(null);
+    try {
+      const result = await respondToConversationUserInput({
+        threadId: snapshot.threadId,
+        turnId,
+        inputRequestId,
+        answers,
+      });
+      if (!result.accepted) {
+        setActionError('Agent 已不再等待这组回答，请检查当前任务状态。');
+      }
+      return result.accepted;
+    } catch {
+      setActionError('回答未能安全提交，请重试。');
+      return false;
+    }
+  };
+
   const selectThread = async (threadId: string): Promise<void> => {
     setActionError(null);
     beginConversationSelection(threadId);
@@ -1685,5 +1736,6 @@ export const useStore = (): ThreadStore => {
     confirmThreadRename,
     send,
     stop,
+    respondToUserInput,
   };
 };

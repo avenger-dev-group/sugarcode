@@ -28,6 +28,10 @@ import type { FileChangeReviewViewModel } from '../workspace/types';
 import type { McpActivityViewModel } from '../mcp/types';
 import type { OrchestrationActivityViewModel } from '../orchestration/types';
 import type { PanelResizeHandle } from '../foundation/types';
+import type {
+  UserInputAnswer,
+  UserInputRequestViewModel,
+} from '../user-input/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
@@ -81,6 +85,7 @@ export type ActiveTurnProgressViewModel = Readonly<{
   state:
     | 'thinking'
     | 'waitingForApproval'
+    | 'waitingForInput'
     | 'runningTool'
     | 'stopping'
     | 'uncertain';
@@ -89,7 +94,7 @@ export type ActiveTurnProgressViewModel = Readonly<{
 }>;
 
 export type ActiveTurnOperationProgress = Readonly<{
-  state: 'waitingForApproval' | 'runningTool';
+  state: 'waitingForApproval' | 'waitingForInput' | 'runningTool';
   label: string;
   detail?: string;
 }>;
@@ -177,6 +182,7 @@ export type TurnViewModel = Readonly<{
   fileChange?: FileChangeReviewViewModel;
   commandApproval?: CommandApprovalActivityViewModel;
   mcpActivities?: readonly McpActivityViewModel[];
+  userInputRequest?: UserInputRequestViewModel;
   terminalLabel?: string;
   failure?: TurnFailureViewModel;
   isError: boolean;
@@ -268,6 +274,11 @@ export type ThreadStore = Readonly<{
   confirmThreadRename: () => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
+  respondToUserInput: (
+    turnId: string,
+    inputRequestId: string,
+    answers: readonly UserInputAnswer[],
+  ) => Promise<boolean>;
 }>;
 
 export type ThreadWorkbenchViewProps = Readonly<{
@@ -289,6 +300,7 @@ export type TranscriptTurnProps = Readonly<{
   turnNumber: number;
   boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
+  onSubmitUserInput: ThreadStore['respondToUserInput'];
 }>;
 
 export type ActivityDisclosureStore = Readonly<{

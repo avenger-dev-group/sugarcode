@@ -30,7 +30,8 @@ provider-native messages never cross this boundary.
 - Renderer owns presentation state only.
 - Preload exposes fixed, validated provider-neutral operations.
 - Main owns trusted-sender checks, native pickers, workspace navigation,
-  approval presentation, terminal flow control and runtime supervision.
+  approval and user-input response routing, terminal flow control and runtime
+  supervision.
 - The worker owns ADK sessions, provider adapters, tool dispatch, MCP sessions
   and dynamic child-Agent scheduling. It also freezes the enabled Skills
   inventory at each primary or child Turn boundary.
@@ -158,14 +159,28 @@ ordinary prose, reasoning, language, or generic markup.
 
 The primary Turn progress surface derives its current stage from the latest
 verified live activity instead of treating every quiet interval as model work.
-It distinguishes workspace inspection, approval wait, privileged execution and
-MCP execution. A Turn with no active operation remains a calm `thinking` state;
+It distinguishes workspace inspection, approval wait, user-input wait,
+privileged execution and MCP execution. A Turn with no active operation remains
+a calm `thinking` state;
 normal provider latency never escalates into a synthetic warning, model-name
 diagnosis or elapsed-time counter. The live state uses a subtle motion-safe text
 shimmer, while the composer retains the immediate stop action. Active process
 activity starts expanded so public commentary and tool progress remain visible
 while the Agent works; completed activity collapses by default, while activity
 that requires approval or another user decision also auto-expands.
+
+A primary Agent can pause its current structured tool loop for user input.
+`turn.userInputRequested` projects a single transcript card that presents one
+question at a time, two or three radio choices, and a custom-answer input.
+Multiple questions advance with Back/Next controls and submit atomically only
+after every answer is non-empty. Main validates the active workspace, Thread,
+Turn, request identity and complete question set before sending
+`turn.userInputResponse`; `turn.userInputResolved` removes the card before the
+same Agent continues. This is a general Turn capability used for materially
+blocking choices, including planning, and is not a plan-mode-only UI path.
+While it is visible the progress label is `等待你的回答`, the normal Composer
+remains unavailable because the existing Turn is still active, and Stop safely
+cancels the pending tool result with the Turn.
 
 The same Turn Driver and completion gate run child Agents. A child without a
 non-empty final answer fails instead of receiving a fabricated completion

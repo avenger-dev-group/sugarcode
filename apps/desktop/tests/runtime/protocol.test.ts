@@ -32,6 +32,44 @@ test('private runtime validates bounded workspace path suggestions', () => {
   );
 });
 
+test('private runtime validates bounded user-input requests and answers', () => {
+  const coordinates = {
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+    inputRequestId: 'input-fixture',
+  };
+  const questions = [{
+    id: 'delivery_mode',
+    header: '实现方式',
+    question: '你希望采用哪种实现方式？',
+    options: [
+      { label: '完整实现（推荐）', description: '一次打通协议、运行时和界面。' },
+      { label: '仅做界面', description: '暂时只实现展示。' },
+    ],
+  }];
+  assert.equal(isRuntimeEvent({
+    type: 'turn.userInputRequested',
+    sequence: 1,
+    requestId: 'request-input',
+    ...coordinates,
+    questions,
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'turn.userInputResponse',
+    requestId: 'request-answer',
+    ...coordinates,
+    answers: [{ questionId: 'delivery_mode', answer: '完整实现（推荐）' }],
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'turn.userInputRequested',
+    sequence: 2,
+    requestId: 'request-invalid-input',
+    ...coordinates,
+    questions: [...questions, ...questions, ...questions, ...questions],
+  }), false);
+});
+
 test('private Thread protocol accepts bounded rename metadata', () => {
   assert.equal(
     isRuntimeCommand({

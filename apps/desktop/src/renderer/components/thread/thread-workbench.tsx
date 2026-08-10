@@ -46,6 +46,7 @@ import {
   OrchestrationActivity,
 } from '@/renderer/components/orchestration/orchestration-activity';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
+import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 
 import type {
   CompactToolActivity,
@@ -218,7 +219,9 @@ const TurnActivityTimeline = ({
       requiresAttention={requiresAttention}
       language={language}
       activeLabel={progress?.label}
-      animateActive={progress?.state !== 'uncertain'}
+      animateActive={
+        progress?.state !== 'uncertain' && progress?.state !== 'waitingForInput'
+      }
       durationLabel={durationLabel}
     >
       {activities.map((entry, index) => {
@@ -260,6 +263,7 @@ const TranscriptTurnView = ({
   turnNumber,
   boundary,
   progress,
+  onSubmitUserInput,
 }: TranscriptTurnProps) => (
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
@@ -311,6 +315,13 @@ const TranscriptTurnView = ({
           turnStatus={turn.status}
         />
       ) : null}
+      {turn.userInputRequest ? (
+        <UserInputSurface
+          turnId={turn.id}
+          request={turn.userInputRequest}
+          onSubmit={onSubmitUserInput}
+        />
+      ) : null}
       {turn.pendingAgentOutputs?.map((output) => (
         <AgentMessage key={output.id} message={output} />
       ))}
@@ -328,7 +339,8 @@ const TranscriptTurnView = ({
       ) : null}
       {turn.status === 'inProgress' &&
       !turn.pendingAgentOutputs?.length &&
-      !turn.activities?.length ? (
+      !turn.activities?.length &&
+      !turn.userInputRequest ? (
         <div
           className="flex items-start gap-2 text-sm font-normal text-process"
           role="status"
@@ -614,6 +626,7 @@ export const ThreadWorkbenchView = ({
                         ? store.activeTurnProgress
                         : undefined
                     }
+                    onSubmitUserInput={store.respondToUserInput}
                   />
                 ))}
               </div>

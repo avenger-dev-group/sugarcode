@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   isConversationStateSnapshot,
+  isConversationUserInputResponse,
   isValidConversationTitle,
 } from '../../src/shared/conversation.ts';
 
@@ -97,6 +98,50 @@ test('conversation snapshots accept an optimistic Turn while runtime startup is 
     }),
     true,
   );
+});
+
+test('conversation snapshots and responses preserve bounded user questions', () => {
+  const userInputRequest = {
+    id: 'input-fixture',
+    questions: [{
+      id: 'scope',
+      header: '实现范围',
+      question: '本次需要覆盖到哪一层？',
+      options: [
+        { label: '完整链路（推荐）', description: '包含 Agent、协议和界面。' },
+        { label: '仅界面', description: '只处理显示和交互。' },
+      ],
+    }],
+  };
+  assert.equal(isConversationStateSnapshot({
+    ...snapshot('completed'),
+    phase: 'inProgress',
+    threadId: THREAD_WEB,
+    activeTurnId: TURN_REVIEW,
+    turns: [{
+      id: TURN_REVIEW,
+      status: 'inProgress',
+      messages: [],
+      userInputRequest,
+    }],
+  }), true);
+  assert.equal(isConversationUserInputResponse({
+    threadId: THREAD_WEB,
+    turnId: TURN_REVIEW,
+    inputRequestId: userInputRequest.id,
+    answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+  }), true);
+  assert.equal(isConversationStateSnapshot({
+    ...snapshot('completed'),
+    phase: 'ready',
+    threadId: THREAD_WEB,
+    turns: [{
+      id: TURN_REVIEW,
+      status: 'completed',
+      messages: [],
+      userInputRequest,
+    }],
+  }), false);
 });
 
 test('conversation snapshots retain a classified interruption reason after runtime restart', () => {
