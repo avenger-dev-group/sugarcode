@@ -30,7 +30,7 @@ fn embedded_terminal_streams_output_and_exits() {
     let terminal = EmbeddedTerminal::spawn(&canonical_workspace, 80, 24).expect("spawn terminal");
     #[cfg(windows)]
     terminal
-        .input("echo SUGARCODE_EMBEDDED_PTY\r\nexit\r\n".to_owned())
+        .input("echo SUGARCODE_EMBEDDED_PTY\rexit\r".to_owned())
         .expect("terminal input");
     #[cfg(not(windows))]
     terminal
