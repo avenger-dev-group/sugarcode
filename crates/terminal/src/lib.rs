@@ -10,3 +10,7 @@ pub use embedded::TerminalError;
 #[cfg(test)]
 #[path = "tests/embedded.rs"]
 mod embedded_tests;
+
+#[cfg(all(test, windows))]
+#[path = "tests/containment.rs"]
+mod containment_tests;

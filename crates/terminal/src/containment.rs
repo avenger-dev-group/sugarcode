@@ -58,15 +58,16 @@ impl Drop for ProcessContainment {
 #[cfg(windows)]
 #[derive(Debug)]
 pub(crate) struct ProcessContainment {
-    _job: windows_sys::Win32::Foundation::HANDLE,
+    job: std::os::windows::io::OwnedHandle,
 }
 
 #[cfg(windows)]
 impl ProcessContainment {
     pub(crate) fn prepare() -> io::Result<Self> {
         use std::mem::{size_of, zeroed};
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
         use std::ptr;
-        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
         use windows_sys::Win32::System::JobObjects::{
             CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
@@ -77,12 +78,13 @@ impl ProcessContainment {
         if job.is_null() || job == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
 
         let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
         information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         let configured = unsafe {
             SetInformationJobObject(
-                job,
+                job.as_raw_handle().cast(),
                 JobObjectExtendedLimitInformation,
                 (&raw const information).cast(),
                 u32::try_from(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
@@ -90,26 +92,25 @@ impl ProcessContainment {
             )
         };
         if configured == 0 {
-            let error = io::Error::last_os_error();
-            unsafe {
-                CloseHandle(job);
-            }
-            return Err(error);
+            return Err(io::Error::last_os_error());
         }
 
         // Retain the only handle until terminal teardown. The spawned ConPTY shell
         // is assigned directly rather than assigning the already-running host,
         // which may itself belong to an Electron or CI runner Job.
-        Ok(Self { _job: job })
+        Ok(Self { job })
     }
 
     pub(crate) fn bind_process_handle(
         &mut self,
         process_handle: std::os::windows::io::RawHandle,
     ) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 
-        let assigned = unsafe { AssignProcessToJobObject(self._job, process_handle.cast()) };
+        let assigned = unsafe {
+            AssignProcessToJobObject(self.job.as_raw_handle().cast(), process_handle.cast())
+        };
         if assigned == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -129,10 +130,11 @@ impl ProcessContainment {
     }
 
     fn terminate_job(&self) {
+        use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::TerminateJobObject;
 
         unsafe {
-            TerminateJobObject(self._job, 1);
+            TerminateJobObject(self.job.as_raw_handle().cast(), 1);
         }
     }
 }
@@ -140,11 +142,6 @@ impl ProcessContainment {
 #[cfg(windows)]
 impl Drop for ProcessContainment {
     fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::CloseHandle;
-
         self.force_kill();
-        unsafe {
-            CloseHandle(self._job);
-        }
     }
 }
