@@ -41,6 +41,7 @@ import {
   SelectValue,
 } from '@/renderer/components/ui/select';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
 import {
   AgentTaskDock,
@@ -571,12 +572,17 @@ export const ThreadWorkbenchView = ({
               {conversationTitle}
             </p>
           ) : null}
+          <TerminalWorkbench
+            navigatorOffset={
+              navigatorOpen ? navigatorWidth + (navigatorResize ? 1 : 0) : 0
+            }
+          />
           {contextRail && onToggleContextRail ? (
             <Button
               type="button"
               size="icon-sm"
               variant="ghost"
-              className="window-no-drag ml-auto hidden text-tertiary min-[1100px]:inline-flex"
+              className="window-no-drag ml-1 hidden text-tertiary min-[1100px]:inline-flex"
               onClick={onToggleContextRail}
               aria-controls="workspace-tools"
               aria-expanded={contextRailOpen}

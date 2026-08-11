@@ -2,13 +2,15 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {
-  AlertTriangle,
   CirclePause,
+  LoaderCircle,
+  Plus,
   Square,
   SquareTerminal,
   X,
 } from 'lucide-react';
 import {
+  type CSSProperties,
   useCallback,
   useEffect,
   useRef,
@@ -17,11 +19,17 @@ import {
 import { Button } from '@/renderer/components/ui/button';
 import type { TerminalOutputChunk } from '@/shared/terminal';
 
+import {
+  shouldAutoStartTerminal,
+  terminalStatusLabel,
+} from './presentation';
+import type { TerminalWorkbenchProps } from './types';
 import { useStore } from './use-store';
 
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
 const INPUT_CHUNK_BYTES = 16_384;
+const TERMINAL_SHORTCUT = 'Ctrl/⌘+Shift+`';
 
 const readTheme = (): Readonly<{
   background: string;
@@ -62,13 +70,17 @@ const splitBoundedInput = (data: string): string[] => {
   return chunks;
 };
 
-export const TerminalWorkbench = () => {
+export const TerminalWorkbench = ({
+  navigatorOffset,
+}: TerminalWorkbenchProps) => {
   const store = useStore();
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
-  const renderedThroughRef = useRef(0);
-  const inputQueueRef = useRef(Promise.resolve());
+  const renderedThroughRef = useRef<number>(0);
+  const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const openRef = useRef<boolean>(store.open);
+  const autoStartGenerationRef = useRef<number | null>(null);
   const state = store.state;
   const active = state.status !== 'closed';
   const live =
@@ -76,6 +88,7 @@ export const TerminalWorkbench = () => {
     state.status === 'running' ||
     state.status === 'paused';
   const workspaceReady = store.workspace.status === 'ready';
+  openRef.current = store.open;
 
   const enqueueInput = useCallback(
     (data: string): void => {
@@ -106,7 +119,7 @@ export const TerminalWorkbench = () => {
       fontFamily:
         'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
-      lineHeight: 1.18,
+      lineHeight: 1.22,
       scrollback: 5_000,
       smoothScrollDuration: reducedMotion ? 0 : 80,
       theme: readTheme(),
@@ -141,7 +154,7 @@ export const TerminalWorkbench = () => {
       return true;
     });
     const resizeObserver = new ResizeObserver(() => {
-      if (store.open && host.clientWidth > 0 && host.clientHeight > 0) {
+      if (openRef.current && host.clientWidth > 0 && host.clientHeight > 0) {
         fit.fit();
       }
     });
@@ -215,55 +228,93 @@ export const TerminalWorkbench = () => {
     terminalRef.current?.reset();
   }, [state.status === 'closed' ? undefined : state.sessionId]);
 
-  const openTerminal = (): void => {
-    store.setOpen(true);
-  };
-
-  const create = async (): Promise<void> => {
+  const create = useCallback(async (): Promise<void> => {
     const terminal = terminalRef.current;
     const columns = terminal?.cols ?? DEFAULT_COLUMNS;
     const rows = terminal?.rows ?? DEFAULT_ROWS;
     await store.create(columns, rows);
     terminal?.focus();
-  };
+  }, [store.create]);
 
-  const label = live ? 'Terminal active' : 'Terminal';
+  useEffect(() => {
+    if (!store.open) {
+      autoStartGenerationRef.current = null;
+      return undefined;
+    }
+    if (
+      !shouldAutoStartTerminal({
+        attemptedGeneration: autoStartGenerationRef.current,
+        busy: store.busy,
+        open: store.open,
+        status: state.status,
+        workspaceGeneration: store.workspace.generation,
+        workspaceReady,
+      })
+    ) {
+      return undefined;
+    }
+    autoStartGenerationRef.current = store.workspace.generation;
+    const frame = requestAnimationFrame(() => {
+      fitRef.current?.fit();
+      void create();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    create,
+    state.status,
+    store.busy,
+    store.open,
+    store.workspace.generation,
+    workspaceReady,
+  ]);
+
   const statusLabel =
-    state.status === 'paused'
-      ? 'Input paused'
-      : state.status === 'running'
-        ? 'Interactive'
-        : state.status === 'starting'
-          ? 'Starting'
-          : state.status === 'exited'
-            ? `Exited ${state.exitCode}`
-            : state.status === 'failed'
-              ? 'Failed'
-              : 'Closed';
+    store.busy && state.status === 'closed'
+      ? '正在确认'
+      : terminalStatusLabel(state);
+  const statusTone =
+    state.status === 'running'
+      ? 'text-success'
+      : state.status === 'paused'
+        ? 'text-warning'
+        : state.status === 'failed'
+          ? 'text-destructive'
+          : state.status === 'starting' || store.busy
+            ? 'text-process'
+            : 'text-tertiary';
+  const panelStyle = {
+    '--terminal-panel-left': `${navigatorOffset}px`,
+  } as CSSProperties & Readonly<Record<'--terminal-panel-left', string>>;
 
   return (
     <>
       <Button
         type="button"
-        variant="outline"
-        className="min-w-0 max-w-36"
-        onClick={openTerminal}
+        size="icon-sm"
+        variant="ghost"
+        className={`window-no-drag relative ml-auto text-tertiary ${
+          store.open ? 'bg-surface text-foreground' : ''
+        }`}
+        onClick={() => store.setOpen(!store.open)}
+        aria-controls="local-terminal-workbench"
         aria-haspopup="dialog"
         aria-expanded={store.open}
-        title={`${label} (Ctrl/⌘+Shift+\`)`}
+        aria-label={store.open ? '收起终端' : '打开终端'}
+        title={`${store.open ? '收起终端' : '打开终端'} (${TERMINAL_SHORTCUT})`}
       >
         <SquareTerminal aria-hidden="true" />
-        <span className="truncate">{label}</span>
         {live ? (
           <span
-            className="size-1.5 shrink-0 rounded-full bg-primary"
+            className="absolute right-1 top-1 size-1.5 rounded-full bg-success ring-2 ring-background"
             aria-hidden="true"
           />
         ) : null}
       </Button>
 
       <section
-        className={`fixed inset-x-0 bottom-0 z-30 flex h-[min(48vh,34rem)] min-h-64 flex-col border-t bg-background shadow-[0_-20px_60px_var(--shadow-soft)] transition-transform duration-150 motion-reduce:transition-none ${
+        id="local-terminal-workbench"
+        style={panelStyle}
+        className={`fixed right-0 bottom-0 left-0 z-30 flex h-[min(46vh,32rem)] min-h-64 flex-col overflow-hidden border-t bg-background shadow-[0_-20px_60px_var(--shadow-soft)] transition-[transform,left] duration-200 ease-out md:left-[var(--terminal-panel-left)] motion-reduce:transition-none ${
           store.open
             ? 'translate-y-0'
             : 'pointer-events-none translate-y-full'
@@ -272,52 +323,73 @@ export const TerminalWorkbench = () => {
         aria-modal="false"
         aria-label="Local terminal workbench"
         aria-hidden={!store.open}
+        inert={store.open ? undefined : true}
       >
-        <header className="flex min-w-0 items-center gap-3 border-b px-4 py-2.5">
-          <span className="inline-flex items-center gap-2 font-mono text-[10px] uppercase tracking-[0.16em] text-tertiary">
-            <AlertTriangle className="size-3.5 text-destructive" aria-hidden="true" />
-            Real local shell
+        <header className="flex h-11 min-w-0 shrink-0 items-center gap-2 border-b px-3">
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-surface text-secondary">
+            <SquareTerminal className="size-3.5" aria-hidden="true" />
           </span>
-          <span className="h-4 w-px bg-border" aria-hidden="true" />
-          <span className="min-w-0 truncate text-xs text-secondary">
-            {active ? state.workspaceName : 'No session'}
-            {active && state.shell ? ` · ${state.shell}` : ''}
-          </span>
-          <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded border px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-secondary">
+          <span className="shrink-0 text-sm font-medium">终端</span>
+          {active ? (
+            <span
+              className="min-w-0 truncate text-xs text-tertiary"
+              title={`${state.workspaceName}${state.shell ? ` · ${state.shell}` : ''}`}
+            >
+              {state.workspaceName}
+              {state.shell ? ` · ${state.shell}` : ''}
+            </span>
+          ) : null}
+          <span
+            className={`ml-auto inline-flex shrink-0 items-center gap-1.5 px-1.5 text-xs ${statusTone}`}
+          >
             {state.status === 'paused' ? (
               <CirclePause className="size-3" aria-hidden="true" />
-            ) : null}
+            ) : state.status === 'starting' || store.busy ? (
+              <LoaderCircle
+                className="size-3 animate-spin motion-reduce:animate-none"
+                aria-hidden="true"
+              />
+            ) : (
+              <span
+                className="size-1.5 rounded-full bg-current"
+                aria-hidden="true"
+              />
+            )}
             {statusLabel}
           </span>
           {live ? (
             <Button
               type="button"
-              size="sm"
+              size="icon-sm"
               variant="ghost"
+              className="text-tertiary hover:text-destructive"
               disabled={store.busy}
               onClick={() => void store.terminate()}
+              aria-label="停止终端"
+              title="停止终端"
             >
               <Square aria-hidden="true" />
-              Stop
             </Button>
           ) : active ? (
             <Button
               type="button"
-              size="sm"
-              variant="outline"
+              size="icon-sm"
+              variant="ghost"
               disabled={!workspaceReady || store.busy}
               onClick={() => void create()}
+              aria-label="新建终端"
+              title="新建终端"
             >
-              <SquareTerminal aria-hidden="true" />
-              New shell
+              <Plus aria-hidden="true" />
             </Button>
           ) : null}
           <Button
             type="button"
-            size="icon"
+            size="icon-sm"
             variant="ghost"
             onClick={() => store.setOpen(false)}
-            aria-label="Close terminal workbench"
+            aria-label="收起终端"
+            title="收起终端"
           >
             <X aria-hidden="true" />
           </Button>
@@ -326,52 +398,61 @@ export const TerminalWorkbench = () => {
         <div className="relative min-h-0 flex-1 bg-background">
           <div
             ref={hostRef}
-            className="absolute inset-0 px-3 py-2"
+            className="absolute inset-0 px-4 py-3"
             aria-label="Interactive terminal"
           />
           {!active ? (
-            <div className="absolute inset-0 z-10 grid place-items-center bg-background/95 px-6">
-              <div className="max-w-lg border-l-2 border-destructive pl-4">
-                <p className="text-sm font-medium">
-                  This opens your account&apos;s real default shell.
+            <div className="absolute inset-0 z-10 grid place-items-center bg-background px-6 text-center">
+              <div className="max-w-sm">
+                <span className="mx-auto grid size-10 place-items-center rounded-xl border bg-surface text-tertiary">
+                  {store.busy ? (
+                    <LoaderCircle
+                      className="size-4 animate-spin motion-reduce:animate-none"
+                      aria-hidden="true"
+                    />
+                  ) : (
+                    <SquareTerminal className="size-4" aria-hidden="true" />
+                  )}
+                </span>
+                <p className="mt-3 text-sm font-medium">
+                  {!workspaceReady
+                    ? '打开工作区后可使用终端'
+                    : store.busy
+                      ? '正在启动终端…'
+                      : '终端尚未启动'}
                 </p>
-                <p className="mt-1.5 text-xs leading-5 text-secondary">
-                  It is not the Agent sandbox. Commands can read and write
-                  accessible files, use the network, and run arbitrary local
-                  programs. Desktop Main will ask for native confirmation.
-                </p>
-                <Button
-                  type="button"
-                  className="mt-4"
-                  disabled={!workspaceReady || store.busy}
-                  onClick={() => void create()}
-                >
-                  <SquareTerminal aria-hidden="true" />
-                  Open real shell
-                </Button>
-                {!workspaceReady ? (
-                  <p className="mt-2 text-xs text-tertiary">
-                    Choose and finish opening a workspace first.
-                  </p>
+                {workspaceReady && !store.busy ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="mt-4"
+                    onClick={() => void create()}
+                  >
+                    <SquareTerminal aria-hidden="true" />
+                    启动终端
+                  </Button>
                 ) : null}
               </div>
             </div>
           ) : null}
           {state.status === 'paused' ? (
             <div className="pointer-events-none absolute inset-x-0 top-0 z-10 border-b bg-background/95 px-4 py-2 text-xs text-secondary">
-              Terminal input is paused by Desktop Main while an approval or
-              bounded queue is active.
+              Desktop Main 正在处理确认或等待队列，终端输入已暂停。
             </div>
           ) : null}
         </div>
 
-        <footer className="flex min-h-8 items-center border-t px-4 font-mono text-[9px] uppercase tracking-[0.12em] text-tertiary">
-          Ctrl/⌘+Shift+` toggles · Ctrl+C signals unless text is selected ·
-          Ctrl+Shift+C/V copies and pastes
+        <footer className="flex min-h-8 shrink-0 items-center gap-3 overflow-hidden border-t px-4 font-mono text-[10px] text-tertiary">
+          <span className="shrink-0">{TERMINAL_SHORTCUT} 显示/隐藏</span>
+          <span className="hidden shrink-0 lg:inline">Ctrl+C 发送信号</span>
+          <span className="hidden shrink-0 xl:inline">
+            Ctrl+Shift+C/V 复制/粘贴
+          </span>
           {store.error ? (
             <span
-              className="ml-auto normal-case tracking-normal text-destructive"
+              className="ml-auto min-w-0 truncate font-sans text-xs text-destructive"
               role="alert"
+              title={store.error}
             >
               {store.error}
             </span>

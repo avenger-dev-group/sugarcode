@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { BrowserWindow, Dialog } from 'electron';
-
 import { TerminalController } from '../../../src/main/terminal/controller.ts';
 import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
 import type {
@@ -35,11 +33,7 @@ class FixtureRuntime {
 test('terminal controller preserves the renderer contract over the v3 runtime', async () => {
   const runtime = new FixtureRuntime();
   const controller = new TerminalController({
-    dialog: {
-      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
-    } as Pick<Dialog, 'showMessageBox'>,
     runtime: runtime as unknown as RuntimeSupervisor,
-    getMainWindow: () => ({ isDestroyed: () => false }) as BrowserWindow,
     getWorkspace: () => ({
       generation: 7,
       workspaceId: 'workspace-runtime',
@@ -186,11 +180,7 @@ test('terminal controller preserves the renderer contract over the v3 runtime', 
 test('terminal controller surfaces utility-process loss as the existing failure state', async () => {
   const runtime = new FixtureRuntime();
   const controller = new TerminalController({
-    dialog: {
-      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
-    } as Pick<Dialog, 'showMessageBox'>,
     runtime: runtime as unknown as RuntimeSupervisor,
-    getMainWindow: () => ({ isDestroyed: () => false }) as BrowserWindow,
     getWorkspace: () => ({
       generation: 2,
       workspaceId: 'workspace-runtime',
@@ -223,29 +213,27 @@ test('terminal controller surfaces utility-process loss as the existing failure 
   controller.shutdown();
 });
 
-test('terminal controller rejects a launch when the foreground Workspace changes during confirmation', async () => {
+test('terminal controller rejects a launch when the foreground Workspace identity changes during validation', async () => {
   const runtime = new FixtureRuntime();
-  let workspace = {
-    generation: 4,
-    workspaceId: 'workspace-a',
-    path: '/fixture/a',
-    name: 'a',
-  };
+  let workspaceReadCount = 0;
   const controller = new TerminalController({
-    dialog: {
-      showMessageBox: async () => {
-        workspace = {
-          generation: 4,
-          workspaceId: 'workspace-b',
-          path: '/fixture/b',
-          name: 'b',
-        };
-        return { response: 0, checkboxChecked: false };
-      },
-    } as Pick<Dialog, 'showMessageBox'>,
     runtime: runtime as unknown as RuntimeSupervisor,
-    getMainWindow: () => ({ isDestroyed: () => false }) as BrowserWindow,
-    getWorkspace: () => workspace,
+    getWorkspace: () => {
+      workspaceReadCount += 1;
+      return workspaceReadCount === 1
+        ? {
+            generation: 4,
+            workspaceId: 'workspace-a',
+            path: '/fixture/a',
+            name: 'a',
+          }
+        : {
+            generation: 4,
+            workspaceId: 'workspace-b',
+            path: '/fixture/b',
+            name: 'b',
+          };
+    },
     isApprovalPending: () => false,
     createSessionId: () => SESSION_ID,
   });

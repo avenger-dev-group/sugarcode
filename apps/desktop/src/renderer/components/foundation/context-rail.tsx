@@ -14,7 +14,6 @@ import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { SkillDocument } from '@/renderer/components/skills/skill-document';
 import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
-import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
 import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
 import { FileDiffWorkbench } from '@/renderer/components/workspace/review/file-diff-workbench';
 import { WorkspaceDocument } from '@/renderer/components/workspace/review/workspace-document';
@@ -169,9 +168,6 @@ export const ContextRail = () => {
               </RailAction>
               <RailAction label="Local preview">
                 <PreviewWorkbench />
-              </RailAction>
-              <RailAction label="Local terminal">
-                <TerminalWorkbench />
               </RailAction>
             </div>
           </section>

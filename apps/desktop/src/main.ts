@@ -239,9 +239,7 @@ const startApplication = async (): Promise<void> => {
   });
   await workspaceController.restore();
   terminalController = new TerminalController({
-    dialog,
     runtime: runtimeSupervisor,
-    getMainWindow: () => mainWindow,
     getWorkspace: workspaceController.getLaunchContext,
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||

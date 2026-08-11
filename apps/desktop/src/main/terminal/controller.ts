@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type { Dialog } from 'electron';
 
 import type { WorkspaceLaunchContext } from '@/main/workspace/controller';
 import type { RuntimeSupervisor } from '@/main/runtime/supervisor';
@@ -26,13 +25,10 @@ const OUTPUT_HARD_LIMIT_BYTES = 1_024 * 1_024;
 const INPUT_QUEUE_MAX_BYTES = 256 * 1_024;
 const GRACEFUL_CLOSE_TIMEOUT_MS = 2_750;
 
-type DialogBoundary = Pick<Dialog, 'showMessageBox'>;
 type Listener = (signal: TerminalStateSignal) => void;
 
 type TerminalControllerOptions = Readonly<{
-  dialog: DialogBoundary;
   runtime: RuntimeSupervisor;
-  getMainWindow: () => Electron.BrowserWindow | null;
   getWorkspace: () => WorkspaceLaunchContext | null;
   isApprovalPending: () => boolean;
   createSessionId?: () => string;
@@ -123,26 +119,8 @@ export class TerminalController {
     if (this.options.isApprovalPending() || this.shuttingDown) {
       return actionResult('busy');
     }
-    const mainWindow = this.options.getMainWindow();
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      return actionResult('unavailable');
-    }
     this.operationActive = true;
     try {
-      const confirmation = await this.options.dialog.showMessageBox(mainWindow, {
-        type: 'warning',
-        buttons: ['Open real shell', 'Cancel'],
-        defaultId: 1,
-        cancelId: 1,
-        noLink: true,
-        title: 'Open a real local shell?',
-        message: `Open an interactive shell in ${workspace.name}?`,
-        detail:
-          'This is a real shell running under your user account. It can read and write any files your account can access, use the network, and run arbitrary local programs. SugarCode does not sandbox or approve terminal commands.',
-      });
-      if (confirmation.response !== 0) {
-        return actionResult('cancelled');
-      }
       const confirmed = this.options.getWorkspace();
       if (
         !confirmed ||

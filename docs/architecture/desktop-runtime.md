@@ -53,7 +53,7 @@ their original `workspaceId` and capability root. Foreground workspace switch
 operations are serialized, while background Turns do not hold that switch
 lease. Foreground terminal launches
 capture `workspaceId`, canonical path and UI generation as one Main-owned
-snapshot and reject confirmation if that identity changed. A Git transaction
+snapshot and reject dispatch if that identity changed. A Git transaction
 likewise freezes its starting `workspaceId`, so a later foreground switch
 cannot redirect its follow-up status or reconciliation request.
 On a cold start with no selected workspace, the empty Composer remains writable.
@@ -386,6 +386,14 @@ content. On a fresh installation the navigator starts open and the context rail
 starts closed; later launches restore the user's saved open/close choices.
 Direct panel resizing disables those transitions so pointer movement remains
 exact.
+The local-terminal action lives in the conversation header immediately before
+the context-rail toggle. Opening it keeps the left navigator visible and limits
+the bottom workbench to the remaining conversation and context width. A ready
+Workspace automatically requests one shell start when the panel opens, and one
+for a new foreground Workspace generation if the panel remains open, without a
+Renderer or native confirmation step. Main still revalidates the frozen
+Workspace identity immediately before dispatch, and the terminal controller
+retains its single-session, approval-pause and bounded-flow safeguards.
 The composer identifies a project destination with a compact folder control
 above the prompt. Selecting that control reopens the folder picker. Before the
 first Turn creates a durable Thread, the control reveals a remove action on
