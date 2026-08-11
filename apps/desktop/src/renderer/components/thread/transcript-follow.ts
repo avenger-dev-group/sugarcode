@@ -33,3 +33,38 @@ export const shouldFollowTranscriptAfterScroll = ({
   }
   return wasFollowing;
 };
+
+export const shouldResetTranscriptFollow = ({
+  previousThreadId,
+  threadId,
+  previousPendingThreadId,
+  pendingThreadId,
+  userMessageAdded,
+}: Readonly<{
+  previousThreadId: string | null;
+  threadId: string | null;
+  previousPendingThreadId: string | null;
+  pendingThreadId: string | null;
+  userMessageAdded: boolean;
+}>): boolean =>
+  previousThreadId !== threadId ||
+  userMessageAdded ||
+  (previousPendingThreadId !== null &&
+    pendingThreadId === null &&
+    threadId === previousPendingThreadId);
+
+export const shouldHoldTranscriptPlaceholder = ({
+  deferredThreadId,
+  pendingThreadId,
+  previousPendingThreadId,
+  threadId,
+}: Readonly<{
+  deferredThreadId: string | null;
+  pendingThreadId: string | null;
+  previousPendingThreadId: string | null;
+  threadId: string | null;
+}>): boolean =>
+  pendingThreadId === null &&
+  previousPendingThreadId !== null &&
+  threadId === previousPendingThreadId &&
+  deferredThreadId !== threadId;

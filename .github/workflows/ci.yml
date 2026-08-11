@@ -68,39 +68,14 @@ jobs:
       - name: Test bounded local workspace Skills boundary
         run: cargo test -p sugarcode-tools --test workspace_skills --locked -- --nocapture
 
-      - name: Test bounded local MCP stdio and loopback HTTP boundary
-        run: |
-          cargo test -p sugarcode-mcp --test stdio_discovery --locked -- --nocapture
-          cargo test -p sugarcode-mcp --test stdio_tool_call --locked -- --nocapture
-          cargo test -p sugarcode-mcp --test streamable_http --locked -- --nocapture
-          cargo test -p sugarcode-core runtime::tests::mcp_tools --locked -- --nocapture
-          cargo test -p sugarcode-state --test rollout-repository mcp --locked -- --nocapture
-          cargo test -p sugarcode-cli --test mcp_stdio_discovery --locked -- --nocapture
-
       - name: Test active workspace scope boundary
         run: cargo test -p sugarcode-tools --test workspace_scope --locked -- --nocapture
 
-      - name: Test shared in-process agent surface runtime
-        run: cargo test -p sugarcode-agent-runtime --locked -- --nocapture
-
-      - name: Test durable headless exec surface
-        run: cargo test -p sugarcode-cli --test exec --locked -- --nocapture
-
-      - name: Test interactive terminal UI and PTY restoration
-        run: |
-          cargo test -p sugarcode-tui --locked -- --nocapture
-          cargo test -p sugarcode-cli --test tui --locked -- --nocapture
-
-      - name: Test user-confirmed Desktop terminal bridge
-        run: |
-          cargo test -p sugarcode-terminal --locked -- --nocapture
-          cargo test -p sugarcode-cli --test terminal_bridge --locked -- --ignored --nocapture
+      - name: Test user-confirmed Desktop PTY boundary
+        run: cargo test -p sugarcode-terminal --locked -- --nocapture
 
       - name: Test Rust workspace
         run: cargo test --workspace --locked
 
-      - name: Build development CLI
-        run: pnpm build:cli:dev
-
-      - name: Package Desktop and smoke bundled CLI
+      - name: Package Desktop runtime
         run: pnpm desktop:package

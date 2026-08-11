@@ -9,17 +9,32 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { AgentTaskViewModel } from './types';
+import type {
+  AgentTaskViewModel,
+  ContextRailResource,
+} from './types';
 
-type ContextRailTab = 'workspace' | 'agent';
+type ContextRailTab = 'workspace' | 'resource' | 'agent';
 
 type OrchestrationStore = Readonly<{
   activeTab: ContextRailTab;
+  selectedResource: ContextRailResource | null;
   selectedTask: AgentTaskViewModel | null;
+  taskDockOpen: boolean;
   closeAgentTab: () => void;
+  closeResourceTab: () => void;
+  openDiff: (
+    path: string,
+    changes: readonly import('../workspace/types').FileChangeReviewFile[],
+  ) => void;
+  openFile: (path: string) => void;
+  openSkill: (
+    skill: Extract<ContextRailResource, { kind: 'skill' }>,
+  ) => void;
   selectTask: (task: AgentTaskViewModel) => void;
   refreshTask: (task: AgentTaskViewModel) => void;
   setActiveTab: (tab: ContextRailTab) => void;
+  setTaskDockOpen: (open: boolean) => void;
 }>;
 
 const OrchestrationContext = createContext<OrchestrationStore | null>(null);
@@ -36,10 +51,14 @@ export const OrchestrationStoreProvider = ({
   const [activeTab, setActiveTab] = useState<ContextRailTab>('workspace');
   const [selectedTask, setSelectedTask] =
     useState<AgentTaskViewModel | null>(null);
+  const [selectedResource, setSelectedResource] =
+    useState<ContextRailResource | null>(null);
+  const [taskDockOpen, setTaskDockOpen] = useState(false);
 
   const selectTask = useCallback(
     (task: AgentTaskViewModel) => {
       setSelectedTask(task);
+      setTaskDockOpen(false);
       setActiveTab('agent');
       onRequestOpen();
     },
@@ -48,11 +67,48 @@ export const OrchestrationStoreProvider = ({
 
   const closeAgentTab = useCallback(() => {
     setSelectedTask(null);
-    setActiveTab('workspace');
-  }, []);
+    setActiveTab(selectedResource ? 'resource' : 'workspace');
+  }, [selectedResource]);
+
+  const closeResourceTab = useCallback(() => {
+    setSelectedResource(null);
+    setActiveTab(selectedTask ? 'agent' : 'workspace');
+  }, [selectedTask]);
+
+  const openFile = useCallback(
+    (path: string) => {
+      setSelectedResource({ kind: 'file', path });
+      setActiveTab('resource');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
+
+  const openDiff = useCallback(
+    (
+      path: string,
+      changes: readonly import('../workspace/types').FileChangeReviewFile[],
+    ) => {
+      setSelectedResource({ kind: 'diff', path, changes });
+      setActiveTab('resource');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
+
+  const openSkill = useCallback(
+    (skill: Extract<ContextRailResource, { kind: 'skill' }>) => {
+      setSelectedResource(skill);
+      setActiveTab('resource');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
 
   useEffect(() => {
     setSelectedTask(null);
+    setSelectedResource(null);
+    setTaskDockOpen(false);
     setActiveTab('workspace');
   }, [scopeKey]);
 
@@ -66,12 +122,31 @@ export const OrchestrationStoreProvider = ({
     () => ({
       activeTab,
       closeAgentTab,
+      closeResourceTab,
+      openDiff,
+      openFile,
+      openSkill,
+      selectedResource,
       selectedTask,
       selectTask,
       refreshTask,
       setActiveTab,
+      setTaskDockOpen,
+      taskDockOpen,
     }),
-    [activeTab, closeAgentTab, refreshTask, selectTask, selectedTask],
+    [
+      activeTab,
+      closeAgentTab,
+      closeResourceTab,
+      openDiff,
+      openFile,
+      openSkill,
+      refreshTask,
+      selectTask,
+      selectedResource,
+      selectedTask,
+      taskDockOpen,
+    ],
   );
 
   return createElement(

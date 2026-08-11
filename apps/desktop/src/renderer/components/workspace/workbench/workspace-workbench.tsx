@@ -2,12 +2,17 @@ import { FolderOpen, RefreshCw } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
 
-import { FileInspector } from './file-inspector';
 import { FileTree } from './file-tree';
 import { useStore } from './use-store';
 
-export const WorkspaceWorkbench = () => {
-  const store = useStore();
+export const WorkspaceWorkbench = ({
+  activePath,
+  onOpenFile,
+}: Readonly<{
+  activePath?: string;
+  onOpenFile?: (path: string) => void;
+}>) => {
+  const store = useStore(onOpenFile, activePath);
   const label =
     store.state.status === 'ready'
       ? store.state.name ?? 'Workspace'
@@ -77,22 +82,17 @@ export const WorkspaceWorkbench = () => {
             {store.state.status === 'selecting' ? '正在打开…' : '选择文件夹'}
           </Button>
         </div>
-      ) : store.document ? (
-        <div className="grid min-h-0 flex-1 grid-rows-[minmax(11rem,42%)_minmax(0,1fr)]">
-          <section
-            className="min-h-0 overflow-auto border-b px-1.5 py-2"
-            aria-label="Workspace file tree"
-          >
-            <FileTree store={store} />
-          </section>
-          <FileInspector document={store.document} />
-        </div>
       ) : (
         <section
           className="min-h-0 flex-1 overflow-auto px-1.5 py-2"
           aria-label="Workspace file tree"
         >
           <FileTree store={store} />
+          {store.error ? (
+            <p className="mx-2 mt-2 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs leading-5 text-destructive" role="alert">
+              {store.error}
+            </p>
+          ) : null}
         </section>
       )}
     </section>

@@ -1,6 +1,6 @@
 import type { ConversationTurnError } from '@/shared/conversation';
 
-import type { TurnFailureViewModel } from './types';
+import type { ProcessLanguage, TurnFailureViewModel } from './types';
 
 const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   authentication: 'Model authentication failed',
@@ -16,13 +16,26 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   filtered: 'The model response was filtered',
   unsupportedOutput: 'The model returned unsupported output',
   unsupportedToolArguments:
-    'The model repeatedly returned invalid tool arguments',
+    'The model repeated the same failing tool call',
   providerRequestTooLarge: 'The provider rejected the request transport size',
   providerResponseTooLarge:
     'The provider returned an abnormally large internal response',
   outputTooLarge: 'The visible model or tool output exceeded the local limit',
   stateUnavailable: 'SugarCode could not save this Turn safely',
 };
+
+const LOCALIZED_TOOL_FAILURE = {
+  en: {
+    summary: 'The model repeated the same failing tool call',
+    guidance:
+      'SugarCode stopped the repeated failure before another attempt. Retry after reviewing the tool format, or choose a model with stronger structured-tool compatibility.',
+  },
+  zh: {
+    summary: '模型重复提交了相同的失败工具调用',
+    guidance:
+      'SugarCode 已在再次尝试前停止重复失败。请检查工具格式后重试，或选择结构化工具兼容性更好的模型。',
+  },
+} as const;
 
 const PROTOCOL_SUMMARIES: Record<
   NonNullable<ConversationTurnError['protocol']>['code'],
@@ -55,20 +68,25 @@ export const toTurnFailureViewModel = (
     | 'openaiResponses'
     | 'openaiChatCompletions'
     | 'anthropicMessages',
+  language: ProcessLanguage = 'en',
 ): TurnFailureViewModel => ({
   kind: error.kind,
   summary: error.protocol
     ? PROTOCOL_SUMMARIES[error.protocol.code]
-    : FAILURE_SUMMARIES[error.kind],
+    : error.kind === 'unsupportedToolArguments'
+      ? LOCALIZED_TOOL_FAILURE[language].summary
+      : FAILURE_SUMMARIES[error.kind],
   guidance:
     error.protocol
       ? protocolGuidance(error.protocol)
       : error.kind === 'stateUnavailable'
       ? 'Restart SugarCode before continuing. Your earlier saved messages are unchanged.'
+      : error.kind === 'unsupportedToolArguments'
+        ? LOCALIZED_TOOL_FAILURE[language].guidance
       : error.kind === 'outputTooLarge'
         ? 'Reduce the visible output or tool result size before trying again.'
         : error.kind === 'contextWindowExceeded'
-          ? 'The provider rejected the complete conversation history because it exceeds that model’s context window. SugarCode did not truncate or compact it.'
+          ? 'The provider rejected the complete conversation history because it exceeds that model’s context window. SugarCode did not truncate or compact it; choose a model with a larger context window.'
           : error.kind === 'providerRequestTooLarge'
             ? 'Reduce large visible inputs or choose a provider endpoint with a larger request-body limit.'
           : error.kind === 'providerResponseTooLarge'

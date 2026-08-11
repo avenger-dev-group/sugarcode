@@ -10,8 +10,8 @@ import {
 } from 'lucide-react';
 
 import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
-import { McpSessionPanel } from '@/renderer/components/mcp/session-panel';
 import { ModelConfigSettingsPanel } from '@/renderer/components/model-config/model-config-workbench';
+import { SkillsSettingsPanel } from '@/renderer/components/skills/skills-settings-panel';
 import { Button } from '@/renderer/components/ui/button';
 import {
   Dialog,
@@ -29,14 +29,22 @@ import type {
 import { useStore } from './use-store';
 
 const SETTINGS_SECTIONS: readonly Readonly<{
-  id: SettingsSection;
+  id: SettingsSection | 'mcp';
   label: string;
   icon: typeof Monitor;
+  disabled?: boolean;
+  notice?: string;
 }>[] = [
   { id: 'general', label: 'General', icon: Monitor },
   { id: 'model', label: 'Model', icon: Cpu },
   { id: 'skills', label: 'Skills', icon: Sparkles },
-  { id: 'mcp', label: 'MCP', icon: PlugZap },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    icon: PlugZap,
+    disabled: true,
+    notice: '即将推出',
+  },
 ];
 
 const SettingsPageHeader = ({
@@ -122,51 +130,9 @@ const GeneralSettings = ({
   </>
 );
 
-const SkillsSettings = () => (
-  <>
-    <SettingsPageHeader
-      icon={Sparkles}
-      title="Skills"
-      description="Workspace Skills customize a Turn without changing SugarCode's authority or safety boundaries."
-    />
-    <div className="px-6 py-6">
-      <div className="rounded-xl border bg-surface p-5">
-        <div className="flex items-start gap-3">
-          <span className="rounded-lg border bg-background p-2 text-secondary">
-            <Sparkles className="size-4" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <h3 className="text-sm font-medium">
-              Discovered from the active workspace
-            </h3>
-            <p className="mt-1.5 text-sm font-normal leading-[22px] text-secondary">
-              SugarCode loads bounded Skill definitions from the workspace when
-              the local Agent starts. Mention a Skill by name in your request
-              to select it for that Turn.
-            </p>
-          </div>
-        </div>
-        <div className="mt-4 rounded-lg border bg-background px-3 py-2.5">
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-            Workspace location
-          </p>
-          <p className="mt-1 break-all font-mono text-xs text-secondary">
-            .agents/skills/&lt;name&gt;/SKILL.md
-          </p>
-        </div>
-      </div>
-      <p className="mt-4 text-xs leading-5 text-tertiary">
-        Skill inventory is read-only in Desktop. Add or edit Skill files in the
-        workspace, then restart the local Agent to refresh discovery.
-      </p>
-    </div>
-  </>
-);
-
 export const SettingsDialog = ({
   isDark,
   themeLabel,
-  turnBusy,
   toggleTheme,
 }: SettingsDialogProps) => {
   const store = useStore();
@@ -214,28 +180,48 @@ export const SettingsDialog = ({
             <div className="grid grid-cols-4 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const Icon = section.icon;
-                const current = store.section === section.id;
+                const current =
+                  section.id !== 'mcp' && store.section === section.id;
                 return (
                   <button
                     key={section.id}
                     type="button"
+                    disabled={section.disabled}
                     aria-current={current ? 'page' : undefined}
-                    onClick={() => store.setSection(section.id)}
+                    onClick={() => {
+                      if (section.id !== 'mcp') {
+                        store.setSection(section.id);
+                      }
+                    }}
                     className={`flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:justify-start sm:gap-2.5 sm:px-3 sm:text-left ${
-                      current
+                      section.disabled
+                        ? 'cursor-not-allowed border-transparent text-tertiary'
+                        : current
                         ? 'border-border bg-background text-foreground shadow-sm'
                         : 'border-transparent text-secondary hover:bg-surface-hover hover:text-foreground'
                     }`}
                   >
                     <Icon className="size-4 text-tertiary" aria-hidden="true" />
-                    {section.label}
+                    <span className="min-w-0 leading-5">
+                      <span className="block">{section.label}</span>
+                      {section.notice ? (
+                        <span className="block text-[10px] leading-3 font-medium text-warning">
+                          {section.notice}
+                        </span>
+                      ) : null}
+                    </span>
                   </button>
                 );
               })}
             </div>
           </nav>
 
-          <section className="min-h-0 overflow-y-auto" aria-live="polite">
+          <section
+            className={`relative min-h-0 ${
+              store.section === 'skills' ? 'overflow-hidden' : 'overflow-y-auto'
+            }`}
+            aria-live="polite"
+          >
             {store.section === 'general' ? (
               <GeneralSettings
                 isDark={isDark}
@@ -246,18 +232,8 @@ export const SettingsDialog = ({
             {store.section === 'model' ? (
               <ModelConfigSettingsPanel active={store.open} />
             ) : null}
-            {store.section === 'skills' ? <SkillsSettings /> : null}
-            {store.section === 'mcp' ? (
-              <>
-                <SettingsPageHeader
-                  icon={PlugZap}
-                  title="MCP"
-                  description="Choose the bounded local servers available to this process and manage the saved registry."
-                />
-                <div className="px-3 pb-5">
-                  <McpSessionPanel turnBusy={turnBusy} embedded />
-                </div>
-              </>
+            {store.section === 'skills' ? (
+              <SkillsSettingsPanel active={store.open} />
             ) : null}
           </section>
         </div>

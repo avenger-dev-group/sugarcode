@@ -1,3 +1,17 @@
 packages:
-  - "apps/*"
-  - "packages/*"
+  - apps/*
+  - packages/*
+
+overrides:
+  '@hono/node-server@<2.0.10': 2.0.10
+  '@opentelemetry/core@<2.8.0': 2.8.0
+  '@tootallnate/once@<2.0.1': 2.0.1
+  adm-zip@<0.6.0: 0.6.0
+  brace-expansion@<1.1.18: 1.1.18
+  brace-expansion@>=4.0.0 <5.0.9: 5.0.9
+  fast-uri@>=3.0.0 <3.1.5: 3.1.5
+  hono@<4.12.34: 4.12.34
+  ip-address@<=10.3.0: 10.3.1
+  js-yaml@>=4.0.0 <4.3.1: 4.3.1
+  tar@<7.5.22: 7.5.22
+  uuid@<11.1.1: 11.1.1

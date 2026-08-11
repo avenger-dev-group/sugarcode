@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { copyCodeToClipboard } from '../../../src/renderer/components/agent/code-block/clipboard.ts';
-import { highlightCode } from '../../../src/renderer/components/agent/code-block/syntax-highlighter.ts';
+import { highlightCode } from '../../../src/renderer/utils/syntax-highlighter.ts';
 
 test('highlights supported fenced-code aliases and escapes source HTML', () => {
   const highlighted = highlightCode(
@@ -36,7 +36,7 @@ test('highlights PHP, Go, Java, C#, C, and C++ fences', () => {
 
 test('falls back to plain rendering for unknown languages', () => {
   assert.equal(highlightCode('plain text', 'not-a-language'), null);
-  assert.equal(highlightCode('x'.repeat(100_001), 'typescript'), null);
+  assert.equal(highlightCode('x'.repeat(256 * 1024 + 1), 'typescript'), null);
 });
 
 test('copies the exact code text through the provided clipboard boundary', async () => {

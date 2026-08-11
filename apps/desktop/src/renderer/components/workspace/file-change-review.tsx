@@ -1,6 +1,5 @@
 import {
   Check,
-  ChevronDown,
   ChevronRight,
   CircleHelp,
   FileDiff,
@@ -9,14 +8,13 @@ import {
   X,
 } from 'lucide-react';
 
+import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 import { Button } from '@/renderer/components/ui/button';
 
 import type {
   FileChangeReviewPresentationState,
   FileChangeReviewProps,
-  UnifiedDiffLine,
 } from './types';
-import { useStore } from './use-store';
 
 const STATE_COPY: Record<
   FileChangeReviewPresentationState,
@@ -100,126 +98,13 @@ const StateIcon = ({
   }
 };
 
-const lineClass = (line: UnifiedDiffLine): string => {
-  switch (line.kind) {
-    case 'addition':
-      return 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300';
-    case 'deletion':
-      return 'bg-destructive/10 text-destructive';
-    case 'context':
-      return 'text-secondary';
-  }
-};
-
-const SingleDiffPanel = ({
-  compact,
-  change,
-}: Readonly<{
-  compact: boolean;
-  change: NonNullable<FileChangeReviewProps['review']['change']>;
-}>) => {
-  return (
-    <div
-      id={`file-change-${change.id}`}
-      className={
-        compact
-          ? 'mt-2 max-w-full min-w-0 overflow-hidden rounded-lg border bg-background/50'
-          : 'max-w-full min-w-0 overflow-hidden border-t'
-      }
-    >
-      <div
-        className="max-h-96 max-w-full min-w-0 overflow-auto font-mono text-xs font-normal leading-5"
-        tabIndex={0}
-        role="region"
-        aria-label={`Unified diff for ${change.path}`}
-      >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-surface px-3 py-1.5">
-          <code className="break-all text-[11px] text-secondary">{change.path}</code>
-          <span className="ml-3 shrink-0 text-[10px] uppercase tracking-[0.12em] text-tertiary">
-            {change.kind}
-          </span>
-        </div>
-        {change.hunks.map((hunk) => (
-          <div key={hunk.header}>
-            <div className="sticky top-0 border-y bg-background px-3 py-1 text-[10px] text-tertiary">
-              {hunk.header}
-            </div>
-            {hunk.lines.map((line, index) => (
-              <div
-                key={`${hunk.header}:${index}`}
-                className={`grid min-w-max grid-cols-[3rem_3rem_1fr] ${lineClass(
-                  line,
-                )}`}
-              >
-                <span className="select-none border-r px-2 text-right text-tertiary">
-                  {line.oldLine ?? ''}
-                </span>
-                <span className="select-none border-r px-2 text-right text-tertiary">
-                  {line.newLine ?? ''}
-                </span>
-                <code className="whitespace-pre px-3">
-                  {line.kind === 'addition'
-                    ? '+'
-                    : line.kind === 'deletion'
-                      ? '-'
-                      : ' '}
-                  {line.text}
-                </code>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-      <dl className="grid gap-x-4 gap-y-2 border-t px-3.5 py-3 font-mono text-[10px] text-tertiary sm:grid-cols-2">
-        <div className="min-w-0">
-          <dt className="uppercase tracking-[0.12em]">Before</dt>
-          <dd className="mt-0.5 break-all">
-            {change.beforeBytes.toLocaleString('en-US')} bytes ·{' '}
-            {change.beforeSha256}
-          </dd>
-        </div>
-        <div className="min-w-0">
-          <dt className="uppercase tracking-[0.12em]">After</dt>
-          <dd className="mt-0.5 break-all">
-            {change.afterBytes.toLocaleString('en-US')} bytes ·{' '}
-            {change.afterSha256}
-          </dd>
-        </div>
-        <div>
-          <dt className="uppercase tracking-[0.12em]">Newlines</dt>
-          <dd className="mt-0.5">
-            {change.newlineStyle === 'lf' ? 'LF' : 'CRLF'} ·{' '}
-            {change.finalNewline ? 'final newline' : 'no final newline'}
-          </dd>
-        </div>
-      </dl>
-    </div>
-  );
-};
-
-const DiffPanel = ({
-  compact,
-  review,
-}: Readonly<{
-  compact: boolean;
-  review: FileChangeReviewProps['review'];
-}>) => {
-  const files = review.files ?? (review.change ? [review.change] : []);
-  return files.length > 0 ? (
-    <div className="space-y-2">
-      {files.map((change) => (
-        <SingleDiffPanel key={change.id} compact={compact} change={change} />
-      ))}
-    </div>
-  ) : null;
-};
-
 export const FileChangeReview = ({
   review,
   variant = 'card',
+  language = 'en',
 }: FileChangeReviewProps) => {
   const compact = variant === 'compact';
-  const store = useStore(review.id, !compact);
+  const { openDiff, openFile } = useOrchestrationStore();
   const copy = STATE_COPY[review.state];
   const detail =
     review.state === 'failed' && review.errorKind
@@ -231,8 +116,17 @@ export const FileChangeReview = ({
   const deletions = files.reduce((total, file) => total + file.deletions, 0);
 
   if (compact) {
-    const action =
-      review.state === 'applied'
+    const action = language === 'zh'
+      ? review.state === 'applied'
+        ? '已编辑'
+        : review.state === 'failed'
+          ? '编辑失败'
+          : review.state === 'preparing'
+            ? '正在准备'
+            : review.state === 'interrupted'
+              ? '编辑已停止'
+              : '正在编辑'
+      : review.state === 'applied'
         ? 'Edited'
         : review.state === 'failed'
           ? 'Failed to edit'
@@ -249,7 +143,11 @@ export const FileChangeReview = ({
             ? 'alert'
             : 'status'
         }
-        aria-label={`${copy.label}: ${review.path}`}
+        aria-label={
+          language === 'zh'
+            ? `${action}：${review.path}`
+            : `${copy.label}: ${review.path}`
+        }
         data-state={review.state}
       >
         <div className="flex min-w-0 items-start gap-2.5">
@@ -264,12 +162,24 @@ export const FileChangeReview = ({
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm leading-5">
               <span className={stateColor(review.state)}>{action}</span>
               <code className="min-w-0 break-all font-mono text-[12px] text-secondary underline decoration-border underline-offset-2">
-                {review.path}
+                <button
+                  type="button"
+                  className="break-all text-left hover:text-primary focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => {
+                    if (files.length > 0) {
+                      openDiff(review.path, files);
+                    } else {
+                      openFile(review.path);
+                    }
+                  }}
+                >
+                  {review.path}
+                </button>
               </code>
               {change ? (
                 <>
                   <span className="ml-auto font-mono text-[10px] text-tertiary">
-                    <span className="text-emerald-700 dark:text-emerald-300">
+                    <span className="text-success">
                       +{additions}
                     </span>{' '}
                     <span className="text-destructive">
@@ -280,16 +190,10 @@ export const FileChangeReview = ({
                     type="button"
                     size="xs"
                     variant="ghost"
-                    aria-expanded={store.expanded}
-                    aria-controls={`file-change-${change.id}`}
-                    onClick={store.toggleExpanded}
+                    onClick={() => openDiff(review.path, files)}
                   >
-                    {store.expanded ? (
-                      <ChevronDown aria-hidden="true" />
-                    ) : (
-                      <ChevronRight aria-hidden="true" />
-                    )}
-                    {store.expanded ? 'Hide diff' : 'Review diff'}
+                    <ChevronRight aria-hidden="true" />
+                    {language === 'zh' ? '查看差异' : 'Review diff'}
                   </Button>
                 </>
               ) : null}
@@ -301,11 +205,6 @@ export const FileChangeReview = ({
             ) : null}
           </div>
         </div>
-        {change && store.expanded ? (
-          <div className="pl-6">
-            <DiffPanel compact review={review} />
-          </div>
-        ) : null}
       </section>
     );
   }
@@ -353,19 +252,13 @@ export const FileChangeReview = ({
                 type="button"
                 size="sm"
                 variant="outline"
-                aria-expanded={store.expanded}
-                aria-controls={`file-change-${change.id}`}
-                onClick={store.toggleExpanded}
+                onClick={() => openDiff(review.path, files)}
               >
-                {store.expanded ? (
-                  <ChevronDown aria-hidden="true" />
-                ) : (
-                  <ChevronRight aria-hidden="true" />
-                )}
-                {store.expanded ? 'Hide diff' : 'Review diff'}
+                <ChevronRight aria-hidden="true" />
+                Review diff
               </Button>
               <span className="font-mono text-[10px] text-tertiary">
-                <span className="text-emerald-700 dark:text-emerald-300">
+                <span className="text-success">
                   +{additions}
                 </span>{' '}
                 <span className="text-destructive">−{deletions}</span>
@@ -375,9 +268,6 @@ export const FileChangeReview = ({
         </div>
       </div>
 
-      {change && store.expanded ? (
-        <DiffPanel compact={false} review={review} />
-      ) : null}
     </section>
   );
 };

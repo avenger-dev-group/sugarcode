@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { isConversationStateSnapshot } from '../../src/shared/conversation.ts';
+import {
+  isConversationStateSnapshot,
+  isConversationUserInputResponse,
+  isValidConversationTitle,
+} from '../../src/shared/conversation.ts';
 
 const THREAD_WEB = '00000000-0001-7000-8000-000000000001';
 const THREAD_ADMIN = '00000000-0001-7000-8000-000000000002';
@@ -40,35 +44,121 @@ test('conversation snapshots reject non-terminal unread states', () => {
   assert.equal(isConversationStateSnapshot(snapshot('inProgress')), false);
 });
 
-test('reload-required navigation accepts unique UUIDv7 Thread IDs', () => {
+test('conversation snapshots accept only rename and delete Thread mutations', () => {
   assert.equal(
     isConversationStateSnapshot({
       ...snapshot('completed'),
       navigator: {
         ...snapshot('completed').navigator,
-        reloadRequiredThreadIds: [THREAD_WEB, THREAD_ADMIN],
+        pendingMutation: { kind: 'delete', threadId: THREAD_WEB },
       },
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      navigator: {
+        ...snapshot('completed').navigator,
+        pendingMutation: { kind: 'archive', threadId: THREAD_WEB },
+      },
+    }),
+    false,
+  );
+});
+
+test('conversation titles are non-empty, control-free, and byte bounded', () => {
+  assert.equal(isValidConversationTitle('修复会话标题'), true);
+  assert.equal(isValidConversationTitle('   '), false);
+  assert.equal(isValidConversationTitle('修复\n标题'), false);
+  assert.equal(isValidConversationTitle('改'.repeat(86)), false);
+});
+
+test('conversation snapshots accept an optimistic Turn while runtime startup is pending', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'starting',
+      threadId: THREAD_WEB,
+      activeTurnId: TURN_REVIEW,
+      turns: [
+        {
+          id: TURN_REVIEW,
+          status: 'inProgress',
+          messages: [
+            {
+              id: `${TURN_REVIEW}:user`,
+              role: 'user',
+              text: 'Review the startup lifecycle',
+              status: 'inProgress',
+            },
+          ],
+        },
+      ],
     }),
     true,
   );
 });
 
-test('reload-required navigation rejects duplicate or invalid Thread IDs', () => {
-  for (const reloadRequiredThreadIds of [
-    [THREAD_WEB, THREAD_WEB],
-    ['thread-web'],
-  ]) {
-    assert.equal(
-      isConversationStateSnapshot({
-        ...snapshot('completed'),
-        navigator: {
-          ...snapshot('completed').navigator,
-          reloadRequiredThreadIds,
-        },
-      }),
-      false,
-    );
-  }
+test('conversation snapshots and responses preserve bounded user questions', () => {
+  const userInputRequest = {
+    id: 'input-fixture',
+    questions: [{
+      id: 'scope',
+      header: '实现范围',
+      question: '本次需要覆盖到哪一层？',
+      options: [
+        { label: '完整链路（推荐）', description: '包含 Agent、协议和界面。' },
+        { label: '仅界面', description: '只处理显示和交互。' },
+      ],
+    }],
+  };
+  assert.equal(isConversationStateSnapshot({
+    ...snapshot('completed'),
+    phase: 'inProgress',
+    threadId: THREAD_WEB,
+    activeTurnId: TURN_REVIEW,
+    turns: [{
+      id: TURN_REVIEW,
+      status: 'inProgress',
+      messages: [],
+      userInputRequest,
+    }],
+  }), true);
+  assert.equal(isConversationUserInputResponse({
+    threadId: THREAD_WEB,
+    turnId: TURN_REVIEW,
+    inputRequestId: userInputRequest.id,
+    answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+  }), true);
+  assert.equal(isConversationStateSnapshot({
+    ...snapshot('completed'),
+    phase: 'ready',
+    threadId: THREAD_WEB,
+    turns: [{
+      id: TURN_REVIEW,
+      status: 'completed',
+      messages: [],
+      userInputRequest,
+    }],
+  }), false);
+});
+
+test('conversation snapshots retain a classified interruption reason after runtime restart', () => {
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('interrupted'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [{
+        id: TURN_REVIEW,
+        status: 'interrupted',
+        messages: [],
+        error: { kind: 'incomplete', retryable: true },
+      }],
+    }),
+    true,
+  );
 });
 
 test('advanced search truncation may occur before the match limit', () => {
@@ -163,6 +253,55 @@ test('conversation snapshots accept a completed Full Access shell result without
       phase: 'ready',
       threadId: THREAD_WEB,
       turns: [fullAccessCommandTurn('completed', 'completed')],
+    }),
+    true,
+  );
+});
+
+test('conversation snapshots preserve a successful workspace patch result', () => {
+  const turn = fullAccessCommandTurn('completed', 'completed');
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [
+        {
+          ...turn,
+          commandApproval: {
+            ...turn.commandApproval,
+            command: 'workspace_apply_patch (324 bytes)',
+            executionResult: {
+              ...turn.commandApproval.executionResult,
+              outcome: {
+                type: 'workspacePatch',
+                filesChanged: 2,
+                files: [
+                  {
+                    path: 'src/a.ts',
+                    kind: 'update',
+                    beforeSha256: 'a'.repeat(64),
+                    afterSha256: 'b'.repeat(64),
+                    beforeBytes: 4,
+                    afterBytes: 4,
+                    diff: '--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n',
+                    newlineStyle: 'lf',
+                    finalNewline: true,
+                  },
+                  {
+                    path: 'src/b.ts',
+                    kind: 'create',
+                    beforeSha256: 'c'.repeat(64),
+                    afterSha256: 'd'.repeat(64),
+                    beforeBytes: 0,
+                    afterBytes: 2,
+                  },
+                ],
+              },
+            },
+          },
+        },
+      ],
     }),
     true,
   );

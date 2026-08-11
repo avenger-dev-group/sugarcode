@@ -11,11 +11,11 @@ export const resolveConversationTitle = (
   thread: ThreadViewModel,
   navigator: ThreadNavigatorViewModel,
   workspace: WorkspaceStateSnapshot,
-): string => {
+): string | null => {
   const displayedThreadId =
     navigator.pendingThreadId ?? thread.threadIdentity;
   if (!displayedThreadId) {
-    return NEW_CONVERSATION_TITLE;
+    return null;
   }
 
   const projectTitle = workspace.projects

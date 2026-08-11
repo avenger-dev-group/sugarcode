@@ -64,7 +64,7 @@ export const ConnectionStatusView = ({
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium">{connection.label}</p>
           <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
-            CLI / JSONL
+            TS / NATIVE
           </span>
         </div>
         <p className="mt-1 text-sm font-normal leading-normal text-secondary">
@@ -78,45 +78,4 @@ export const ConnectionStatusView = ({
 export const ConnectionStatus = () => {
   const { connection } = useStore();
   return <ConnectionStatusView connection={connection} />;
-};
-
-export const ConnectionStatusBarView = ({
-  connection,
-}: ConnectionStatusViewProps) => {
-  const dotClassName =
-    connection.tone === 'danger'
-      ? 'bg-destructive'
-      : connection.status === 'connecting'
-        ? 'animate-pulse bg-primary'
-        : connection.status === 'ready'
-          ? 'bg-primary'
-          : 'bg-tertiary';
-
-  return (
-    <footer
-      className="flex h-7 shrink-0 items-center gap-2 border-t bg-surface/45 px-3 text-xs text-secondary"
-      role={connection.status === 'failed' ? 'alert' : 'status'}
-      aria-live="polite"
-      aria-label={`Local runtime: ${connection.label}`}
-    >
-      <span
-        className={`size-1.5 shrink-0 rounded-full ${dotClassName}`}
-        aria-hidden="true"
-      />
-      <span className="font-medium text-foreground">
-        {connection.label}
-      </span>
-      <span className="hidden truncate text-tertiary sm:inline">
-        {connection.detail}
-      </span>
-      <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.12em] text-tertiary">
-        CLI / JSONL
-      </span>
-    </footer>
-  );
-};
-
-export const ConnectionStatusBar = () => {
-  const { connection } = useStore();
-  return <ConnectionStatusBarView connection={connection} />;
 };

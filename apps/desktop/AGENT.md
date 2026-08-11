@@ -61,7 +61,7 @@ src/renderer/
 |---|---|---|---|
 | 主文字 / 主题色 | `#1A1C1F` | `#FFFFFF` | `text-primary` / `text-foreground` |
 | 次级文字 | `primary` 70% | `primary` 70% | `text-secondary` |
-| 对话过程、弱化正文 | `primary` 60% | `primary` 60% | `text-process` |
+| 工具过程、弱化状态 | `primary` 60% | `primary` 60% | `text-process` |
 | 辅助文字 | `primary` 50% | `primary` 50% | `text-tertiary` / `text-muted-foreground` |
 | 导航项目 / 普通任务 | `primary` 85% | `primary` 85% | `text-navigation` |
 | 导航分组标题 | `primary` 35% | `primary` 50% | `text-navigation-heading` |
@@ -74,9 +74,12 @@ src/renderer/
 - 说明文字、分组标题、非当前导航项使用次级文字。
 - Codex 风格的左侧任务导航使用专用语义色：分组标题使用
   `text-navigation-heading`；项目名和普通任务使用 `text-navigation` 与
-  `400` 字重，当前任务使用主文字、`500` 字重并以 `bg-surface` 标示；
-  整个区域使用 `bg-navigation-background`。
-- Agent 思考过程、任务过程、弱化正文使用过程文字。
+  `400` 字重，当前任务使用 `text-link`、`500` 字重并以 `bg-link/10`
+  标示；整个区域使用 `bg-navigation-background`。
+- Agent 的公开思考过程、推理摘要、流式正文和最终正文从首次渲染起均使用
+  主文字和完整不透明度；不得因尚未完成而先使用过程文字或透明度淡入，
+  完成后再切换为主文字。
+- 工具调用、命令状态、加载指示和弱化状态可以使用过程文字。
 - 时间、数量、路径、占位符、图标和低优先级元数据使用辅助文字。
 - 所有百分比语义变量必须通过相对 `rgb()` 从当前 `--primary` 动态计算，
   不得固定复制某个主题的 RGB 通道。
@@ -84,6 +87,7 @@ src/renderer/
 - `--primary` 是主文字和主题前景色的唯一源值；`--foreground` 只是兼容现有组件的别名，必须引用 `--primary`，不得另建 `--text-primary`。
 - 状态色仅用于成功、警告、错误和正在执行等明确状态。
 - 成功状态统一使用 `--success` / `text-success` / `bg-success`，不得在组件中硬编码绿色。
+- 警告和“即将推出”等提醒状态统一使用 `--warning` / `text-warning` / `bg-warning`，不得在组件中硬编码黄色。
 - 禁用态可以在正确语义色的基础上使用组件级 `disabled:opacity-*`。语法高亮、终端、遮罩和状态色可按各自功能使用专用颜色。
 
 对应 CSS token：
@@ -98,6 +102,7 @@ src/renderer/
 --navigation-background
 --background
 --success
+--warning
 --user-message
 --user-message-foreground
 ```
@@ -110,6 +115,8 @@ src/renderer/
 
 - 对话正文不显示内部 Item ID、Turn ID 或正常完成标签。
 - Agent 正文不显示头像和名称。
+- 过程折叠只包含公开 commentary 和工具活动；已接受的最终总结必须作为
+  折叠区域外的正文显示，不得因只读探查确认文件不存在而降级进过程折叠。
 - 已完成 Turn 的过程折叠标题显示从规范 UUIDv7 生命周期 ID 推导的总耗时；
   该历史耗时不得依赖 Renderer 停留时间，切换会话后必须保持稳定。
 - 中断、停止、失败和状态不确定等需要用户理解或处理的状态必须继续显示。
@@ -145,10 +152,11 @@ src/renderer/
 - 浅色和深色下是否分别保持 `#1A1C1F` / 白色的正确层级？
 - 正文是否为 `14px / 1.5 / 500`？
 - 左侧任务导航的分组标题是否使用辅助文字，项目与任务是否使用主文字，
-  当前任务是否通过 `500` 字重和 `bg-surface` 区分，区域背景是否使用
-  `bg-navigation-background`？
+  当前任务是否通过 `text-link`、`500` 字重和 `bg-link/10` 区分，区域背景
+  是否使用 `bg-navigation-background`？
 - 说明文字是否使用次级色，元数据和占位符是否使用辅助色？
-- Agent 过程内容是否使用过程色？
+- Agent 的所有公开模型文字是否从首次渲染起使用主文字，且只有工具调用、
+  命令状态和加载指示等非正文内容使用过程色？
 - Markdown 粗体和代码是否符合各自字重、字号规范？
 - 是否覆盖 Loading、Empty、Error、Disabled 和取消状态？
 - 是否可使用键盘完成操作，并具有清晰的 focus-visible 状态和正确的可访问名称？

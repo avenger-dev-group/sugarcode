@@ -49,11 +49,15 @@ const AgentMessageView = ({
       ) : null}
       {message.state === 'completed' ||
       (message.state === 'streaming' && message.text.length > 0) ? (
-        <AgentMarkdown source={message.text} isStreaming={isStreaming} />
+        <AgentMarkdown
+          source={message.text}
+          isStreaming={isStreaming}
+          verifiedFilePaths={message.verifiedFilePaths}
+        />
       ) : (
-        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-process">
+        <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-foreground">
           {message.text || (
-            <span className="text-process">Thinking through the turn…</span>
+            <span>Thinking through the turn…</span>
           )}
         </p>
       )}

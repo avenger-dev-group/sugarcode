@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { toThreadNavigationStatus } from '../../../src/renderer/components/thread/navigation-status.ts';
+import {
+  isThreadDeleteDisabled,
+  resolveDisplayedThreadId,
+  toThreadNavigationStatus,
+} from '../../../src/renderer/components/thread/navigation-status.ts';
 
 const status = (
   overrides: Partial<Parameters<typeof toThreadNavigationStatus>[0]> = {},
@@ -36,17 +40,58 @@ test('opening takes precedence over a projected running state', () => {
   assert.equal(status({ pending: true, running: true }), 'opening');
 });
 
-test('reload-required follows approval and opening but precedes running and unread', () => {
+test('pending selection is displayed before its workspace becomes active', () => {
   assert.equal(
-    status({ reloadRequired: true, running: true, terminalStatus: 'failed' }),
-    'reloadRequired',
+    resolveDisplayedThreadId({
+      active: false,
+      pendingThreadId: 'thread-b',
+      selectedThreadId: 'thread-a',
+      threadIds: ['thread-b'],
+    }),
+    'thread-b',
   );
   assert.equal(
-    status({ pending: true, reloadRequired: true, running: true }),
-    'opening',
+    resolveDisplayedThreadId({
+      active: false,
+      pendingThreadId: 'thread-b',
+      selectedThreadId: 'thread-a',
+      threadIds: ['thread-a'],
+    }),
+    null,
+  );
+});
+
+test('saved Thread deletion is blocked only by a real conflicting operation', () => {
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: false,
+      lifecycleMutationPending: false,
+      running: false,
+    }),
+    false,
   );
   assert.equal(
-    status({ approvalRequired: true, pending: true, reloadRequired: true }),
-    'approvalRequired',
+    isThreadDeleteDisabled({
+      workspaceBusy: true,
+      lifecycleMutationPending: false,
+      running: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: false,
+      lifecycleMutationPending: true,
+      running: false,
+    }),
+    true,
+  );
+  assert.equal(
+    isThreadDeleteDisabled({
+      workspaceBusy: false,
+      lifecycleMutationPending: false,
+      running: true,
+    }),
+    true,
   );
 });

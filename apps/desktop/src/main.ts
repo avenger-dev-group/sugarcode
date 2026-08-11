@@ -1,33 +1,45 @@
 import { app, BrowserWindow, dialog } from 'electron';
 import started from 'electron-squirrel-startup';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { registerCommandApprovalIpc } from '@/main/app-server/command-approval/ipc';
-import { registerConnectionIpc } from '@/main/app-server/connection/ipc';
-import { ConnectionSupervisor } from '@/main/app-server/connection/supervisor';
-import { registerConversationIpc } from '@/main/app-server/conversation/ipc';
-import { GitController } from '@/main/app-server/git/controller';
-import { registerGitIpc } from '@/main/app-server/git/ipc';
-import { registerMcpIpc } from '@/main/app-server/mcp/ipc';
-import { McpConfigController } from '@/main/app-server/mcp/config-controller';
-import { ModelConfigController } from '@/main/app-server/model-config/controller';
-import { registerModelConfigIpc } from '@/main/app-server/model-config/ipc';
-import { ThreadRegistry } from '@/main/app-server/thread-registry';
-import { WorkspaceController } from '@/main/app-server/workspace/controller';
-import { registerWorkspaceIpc } from '@/main/app-server/workspace/ipc';
+import { registerCommandApprovalIpc } from '@/main/ipc/command-approval';
+import { registerConnectionIpc } from '@/main/ipc/connection';
+import { registerConversationIpc } from '@/main/ipc/conversation';
+import { registerGitIpc } from '@/main/ipc/git';
+import { registerMcpIpc } from '@/main/ipc/mcp';
+import { registerModelConfigIpc } from '@/main/ipc/model-config';
+import { registerSkillsIpc } from '@/main/ipc/skills';
+import { registerWorkspaceIpc } from '@/main/ipc/workspace';
+import { GitController } from '@/main/git/controller';
+import { McpSessionController } from '@/main/mcp/session-controller';
+import { ThreadRegistry } from '@/main/navigation/thread-registry';
+import { WorkspaceController } from '@/main/workspace/controller';
 import { PreviewController } from '@/main/preview/controller';
 import { registerPreviewIpc } from '@/main/preview/ipc';
 import { TerminalController } from '@/main/terminal/controller';
 import { registerTerminalIpc } from '@/main/terminal/ipc';
+import { RuntimeSupervisor } from '@/main/runtime/supervisor';
+import { RuntimeModelConfigController } from '@/main/runtime/model-config-controller';
+import { RuntimeConversationController } from '@/main/runtime/conversation-controller';
+import { RuntimeConnectionController } from '@/main/runtime/connection-controller';
+import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
+import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
+import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
+import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
+import { RuntimeSkillsController } from '@/main/runtime/skills-controller';
+import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 
 let mainWindow: BrowserWindow | null = null;
-let supervisor: ConnectionSupervisor | null = null;
+let isQuitting = false;
+let runtimeConnectionController: RuntimeConnectionController | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
+let disposeSkillsIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
@@ -35,6 +47,13 @@ let disposePreviewIpc: (() => void) | null = null;
 let disposePreviewApprovalSubscriptions: (() => void) | null = null;
 let terminalController: TerminalController | null = null;
 let disposeTerminalIpc: (() => void) | null = null;
+let runtimeSupervisor: RuntimeSupervisor | null = null;
+let runtimeConversationController: RuntimeConversationController | null = null;
+let runtimeApprovalController: RuntimeApprovalController | null = null;
+let runtimeGitAdapter: RuntimeGitAdapter | null = null;
+let runtimeMcpSessionController: McpSessionController | null = null;
+let runtimeMcpApprovalController: RuntimeMcpApprovalController | null = null;
+let disposeRuntimeEvents: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -60,6 +79,7 @@ const isAllowedRendererUrl = (url: string): boolean => {
 
 const createWindow = (): void => {
   const window = new BrowserWindow({
+    show: false,
     width: 1280,
     height: 800,
     minWidth: 360,
@@ -84,6 +104,11 @@ const createWindow = (): void => {
   });
   mainWindow = window;
 
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) {
+      window.show();
+    }
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedRendererUrl(url)) {
@@ -94,19 +119,26 @@ const createWindow = (): void => {
     'did-start-navigation',
     (_event, _url, _isInPlace, isMainFrame) => {
       if (isMainFrame) {
-        supervisor?.approvalSurfacesUnavailable();
+        runtimeApprovalController?.surfaceUnavailable();
         previewController?.shutdown();
         terminalController?.rendererUnavailable();
       }
     },
   );
   window.webContents.on('render-process-gone', () => {
-    supervisor?.approvalSurfacesUnavailable();
+    runtimeApprovalController?.surfaceUnavailable();
+    runtimeMcpApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
   });
+  window.on('close', (event) => {
+    if (process.platform === 'darwin' && !isQuitting) {
+      event.preventDefault();
+      window.hide();
+    }
+  });
   window.once('closed', () => {
-    supervisor?.approvalSurfacesUnavailable();
+    runtimeApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
     if (mainWindow === window) {
@@ -124,17 +156,91 @@ const createWindow = (): void => {
 
 const startApplication = async (): Promise<void> => {
   await app.whenReady();
+  runtimeSupervisor = new RuntimeSupervisor({
+    runtimePath: path.join(__dirname, 'runtime.mjs'),
+    dataDirectory: path.join(app.getPath('home'), '.sugarcode', 'v3'),
+    nativeModulePath: app.isPackaged
+      ? path.join(process.resourcesPath, 'sugarcode-desktop-native.node')
+      : path.join(app.getAppPath(), 'native', 'sugarcode-desktop-native.node'),
+  });
+  disposeRuntimeEvents = runtimeSupervisor.subscribe((event) => {
+    if (event.type === 'runtime.log') {
+      const log = event.level === 'debug' ? console.debug : console[event.level];
+      log(`[runtime] ${event.message}`);
+    } else if (event.type === 'runtime.ready') {
+      console.info(`[runtime] protocol ${event.protocolVersion} ready`);
+    }
+  });
+  runtimeSupervisor.start();
+  runtimeConnectionController = new RuntimeConnectionController(
+    runtimeSupervisor,
+  );
+  runtimeConversationController = new RuntimeConversationController(
+    runtimeSupervisor,
+  );
+  runtimeApprovalController = new RuntimeApprovalController(runtimeSupervisor);
+  runtimeMcpApprovalController = new RuntimeMcpApprovalController(
+    runtimeSupervisor,
+    (workspaceId, threadId) =>
+      runtimeApprovalController?.isAutoApproved(workspaceId, threadId) === true,
+  );
+  runtimeMcpSessionController = new McpSessionController({
+    getRestartBlock: () => {
+      const phase = runtimeConversationController?.getSnapshot().phase;
+      if (phase === 'starting' || phase === 'inProgress' || phase === 'stopping') {
+        return 'turnActive';
+      }
+      if (
+        runtimeApprovalController?.getSnapshot().status === 'pending' ||
+        runtimeMcpApprovalController?.getSnapshot().status === 'pending'
+      ) {
+        return 'approvalPending';
+      }
+      return null;
+    },
+    restart: async (serverIds) => {
+      try {
+        const event = await runtimeSupervisor?.request(
+          { type: 'mcp.sessionSet', requestId: randomUUID(), serverIds },
+          'mcp.sessionAction',
+          45_000,
+        );
+        return event?.action.accepted === true;
+      } catch {
+        return false;
+      }
+    },
+  });
+  const runtimeMcpConfigController = new RuntimeMcpConfigController(
+    runtimeSupervisor,
+    (inspection) => {
+      runtimeMcpSessionController?.initialize(
+        inspection.servers.map(({ id, transport }) => ({ id, transport })),
+      );
+    },
+  );
+  void runtimeMcpConfigController.inspect().catch(() => {
+    runtimeMcpSessionController?.unavailable(
+      'MCP configuration could not be loaded from local storage.',
+    );
+  });
+  runtimeGitAdapter = new RuntimeGitAdapter(runtimeSupervisor);
   const threadRegistry = new ThreadRegistry();
-  supervisor = new ConnectionSupervisor({
+  const workspaceRuntime = new RuntimeWorkspaceAdapter({
+    runtime: runtimeSupervisor,
+    connection: runtimeConnectionController,
+    conversation: runtimeConversationController,
     threadRegistry,
-    desktopAppPath: app.getAppPath(),
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    clientVersion: app.getVersion(),
+    getWorkspaceSwitchBlock: () => null,
+    onWorkspaceOpened: (workspaceId, canonicalRoot) => {
+      runtimeApprovalController?.openWorkspace(workspaceId, canonicalRoot);
+      runtimeMcpApprovalController?.openWorkspace(workspaceId, canonicalRoot);
+      runtimeGitAdapter?.openWorkspace(workspaceId);
+    },
   });
   const workspaceController = new WorkspaceController({
     threadRegistry,
-    supervisor,
+    supervisor: workspaceRuntime,
     dialog,
     getMainWindow: () => mainWindow,
     sessionPath: path.join(app.getPath('userData'), 'workspace-session-v1.json'),
@@ -146,47 +252,55 @@ const startApplication = async (): Promise<void> => {
   });
   await workspaceController.restore();
   terminalController = new TerminalController({
-    dialog,
-    getMainWindow: () => mainWindow,
+    runtime: runtimeSupervisor,
     getWorkspace: workspaceController.getLaunchContext,
-    getResolvedCli: supervisor.getResolvedCli,
-    getCliEnvironment: () => ({ ...process.env }),
     isApprovalPending: () =>
-      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
-      supervisor?.mcpApprovals.getSnapshot().status === 'pending',
+      runtimeApprovalController?.getSnapshot().status === 'pending' ||
+      runtimeMcpApprovalController?.getSnapshot().status === 'pending',
   });
   previewController = new PreviewController({
     dialog,
     getMainWindow: () => mainWindow,
     getWorkspaceState: workspaceController.getSnapshot,
     isApprovalPending: () =>
-      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
-      supervisor?.mcpApprovals.getSnapshot().status === 'pending',
+      runtimeApprovalController?.getSnapshot().status === 'pending' ||
+      runtimeMcpApprovalController?.getSnapshot().status === 'pending',
   });
   disposeConnectionIpc = registerConnectionIpc({
-    supervisor,
+    supervisor: runtimeConnectionController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeCommandApprovalIpc = registerCommandApprovalIpc({
-    controller: supervisor.commandApprovals,
+    controller: runtimeApprovalController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeConversationIpc = registerConversationIpc({
-    controller: supervisor.conversation,
+    controller: runtimeConversationController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeMcpIpc = registerMcpIpc({
-    session: supervisor.mcpSession,
-    approvals: supervisor.mcpApprovals,
-    config: new McpConfigController({ supervisor }),
+    session: runtimeMcpSessionController,
+    approvals: runtimeMcpApprovalController,
+    config: runtimeMcpConfigController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
   disposeModelConfigIpc = registerModelConfigIpc({
-    controller: new ModelConfigController({ supervisor }),
+    controller: new RuntimeModelConfigController(runtimeSupervisor),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  disposeSkillsIpc = registerSkillsIpc({
+    controller: new RuntimeSkillsController({
+      runtime: runtimeSupervisor,
+      dialog,
+      getMainWindow: () => mainWindow,
+      getWorkspace: workspaceController.getLaunchContext,
+      getWorkspaceState: workspaceController.getSnapshot,
+    }),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -197,7 +311,7 @@ const startApplication = async (): Promise<void> => {
   });
   disposeGitIpc = registerGitIpc({
     controller: new GitController({
-      supervisor,
+      supervisor: runtimeGitAdapter,
       workspace: workspaceController,
     }),
     getMainWindow: () => mainWindow,
@@ -215,8 +329,8 @@ const startApplication = async (): Promise<void> => {
   });
   const hidePreviewForApproval = (): void => {
     const approvalPending =
-      supervisor?.commandApprovals.getSnapshot().status === 'pending' ||
-      supervisor?.mcpApprovals.getSnapshot().status === 'pending';
+      runtimeApprovalController?.getSnapshot().status === 'pending' ||
+      runtimeMcpApprovalController?.getSnapshot().status === 'pending';
     if (!approvalPending) {
       terminalController?.resumeAfterApproval();
       return;
@@ -232,15 +346,14 @@ const startApplication = async (): Promise<void> => {
     }
   };
   const unsubscribeCommandApproval =
-    supervisor.commandApprovals.subscribe(hidePreviewForApproval);
+    runtimeApprovalController.subscribe(hidePreviewForApproval);
   const unsubscribeMcpApproval =
-    supervisor.mcpApprovals.subscribe(hidePreviewForApproval);
+    runtimeMcpApprovalController.subscribe(hidePreviewForApproval);
   disposePreviewApprovalSubscriptions = () => {
     unsubscribeCommandApproval();
     unsubscribeMcpApproval();
   };
   createWindow();
-  void supervisor.start();
 };
 
 if (started) {
@@ -255,19 +368,33 @@ if (started) {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow();
+      return;
     }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
   });
 
   app.on('before-quit', () => {
+    isQuitting = true;
+    runtimeSupervisor?.shutdown();
     terminalController?.shutdown();
     previewController?.shutdown();
-    supervisor?.shutdown();
   });
 
   app.on('will-quit', () => {
-    supervisor?.shutdown();
+    runtimeSupervisor?.shutdown();
+    runtimeSupervisor = null;
+    runtimeConversationController = null;
+    runtimeConnectionController = null;
+    runtimeApprovalController = null;
+    runtimeGitAdapter = null;
+    disposeRuntimeEvents?.();
+    disposeRuntimeEvents = null;
     disposeConnectionIpc?.();
     disposeConnectionIpc = null;
     disposeCommandApprovalIpc?.();
@@ -278,6 +405,8 @@ if (started) {
     disposeMcpIpc = null;
     disposeModelConfigIpc?.();
     disposeModelConfigIpc = null;
+    disposeSkillsIpc?.();
+    disposeSkillsIpc = null;
     disposeWorkspaceIpc?.();
     disposeWorkspaceIpc = null;
     disposeGitIpc?.();

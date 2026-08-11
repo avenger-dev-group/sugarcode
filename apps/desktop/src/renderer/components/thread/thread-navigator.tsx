@@ -1,29 +1,26 @@
 import {
-  Archive,
   CircleAlert,
   CircleCheck,
   CircleStop,
   Folder,
   FolderOpen,
-  FolderPlus,
-  GitFork,
   LoaderCircle,
   PanelLeftClose,
   Plus,
-  RotateCcw,
   ShieldQuestion,
   Trash2,
 } from 'lucide-react';
 import {
   type KeyboardEvent,
   type ReactNode,
+  useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
 
 import {
   AlertDialog,
-  AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
@@ -32,12 +29,34 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/renderer/components/ui/collapsible';
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/renderer/components/ui/context-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@/renderer/components/ui/dialog';
+import { Input } from '@/renderer/components/ui/input';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 
 import appIcon from '../../../../assets/icon.png';
 
-import { toThreadNavigationStatus } from './navigation-status';
+import {
+  isThreadDeleteDisabled,
+  resolveDisplayedThreadId,
+  toThreadNavigationStatus,
+} from './navigation-status';
 import type { ThreadNavigationStatus, ThreadStore } from './types';
 
 type ThreadNavigatorProps = Readonly<{
@@ -47,12 +66,51 @@ type ThreadNavigatorProps = Readonly<{
   approvalThreadIds?: readonly string[];
 }>;
 
-type ThreadLabelKind = 'project' | 'chat';
+type DeleteRequest =
+  | Readonly<{
+      kind: 'project';
+      projectId: string;
+      name: string;
+    }>
+  | Readonly<{
+      kind: 'thread';
+      threadId: string;
+      title: string;
+    }>;
 
-type DeleteRequest = Readonly<{
-  threadId: string;
-  source: 'conversation' | 'failedChat';
+const EAGER_PROJECT_THREAD_COUNT = 8;
+const DEFERRED_PROJECT_THREAD_DELAY_MS = 180;
+
+type DeferredThreadListProps = Readonly<{
+  open: boolean;
+  threadCount: number;
+  render: (renderedThreadCount: number) => ReactNode;
 }>;
+
+const DeferredThreadList = ({
+  open,
+  threadCount,
+  render,
+}: DeferredThreadListProps): ReactNode => {
+  const [fullyRendered, setFullyRendered] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!open || threadCount <= EAGER_PROJECT_THREAD_COUNT) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setFullyRendered(true),
+      DEFERRED_PROJECT_THREAD_DELAY_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [open, threadCount]);
+
+  return render(
+    fullyRendered
+      ? threadCount
+      : Math.min(threadCount, EAGER_PROJECT_THREAD_COUNT),
+  );
+};
 
 const focusThreadAt = (
   container: HTMLElement,
@@ -64,18 +122,6 @@ const focusThreadAt = (
   items.at(index)?.focus();
 };
 
-const activateNavigationItem = (
-  event: KeyboardEvent<HTMLElement>,
-  disabled: boolean,
-  activate: () => void,
-): void => {
-  if (disabled || (event.key !== 'Enter' && event.key !== ' ')) {
-    return;
-  }
-  event.preventDefault();
-  activate();
-};
-
 export const ThreadNavigator = ({
   store,
   footer,
@@ -85,17 +131,18 @@ export const ThreadNavigator = ({
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(
     null,
   );
+  const [deletePending, setDeletePending] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const projectLayoutRef = useRef<ReadonlyMap<string, number> | null>(
+    null,
+  );
   const cancelDeleteRef = useRef<HTMLButtonElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
   const navigationDisabled =
     store.navigator.status === 'unavailable' ||
     store.navigator.status === 'loading' ||
     Boolean(store.navigator.pendingMutation);
-  const selectedTurnActive =
-    store.thread.phase === 'starting' ||
-    store.thread.phase === 'inProgress' ||
-    store.thread.phase === 'stopping';
   const projectActive =
     workspace.state.status === 'ready' &&
     workspace.state.kind === 'project';
@@ -104,7 +151,9 @@ export const ThreadNavigator = ({
     workspace.state.kind === 'chat';
   const projectName =
     workspace.state.projectName ??
-    (projectActive ? workspace.state.name : undefined);
+    (workspace.state.projects === undefined && projectActive
+      ? workspace.state.name
+      : undefined);
   const projectThreadIds =
     workspace.state.projectThreadIds ??
     (projectActive ? store.navigator.threadIds : []);
@@ -112,7 +161,7 @@ export const ThreadNavigator = ({
     workspace.state.chatThreadIds ??
     (chatActive ? store.navigator.threadIds : []);
   const projects =
-    workspace.state.projects && workspace.state.projects.length > 0
+    workspace.state.projects !== undefined
       ? workspace.state.projects
       : projectName
         ? [
@@ -158,6 +207,65 @@ export const ThreadNavigator = ({
     }
   };
 
+  const captureProjectLayout = (): void => {
+    const list = listRef.current;
+    if (!list) {
+      return;
+    }
+    const positions = new Map<string, number>();
+    list
+      .querySelectorAll<HTMLElement>('[data-project-layout-item]')
+      .forEach((item) => {
+        const key = item.dataset.projectLayoutItem;
+        if (!key) {
+          return;
+        }
+        positions.set(key, item.getBoundingClientRect().top);
+        item.getAnimations().forEach((animation) => animation.cancel());
+      });
+    projectLayoutRef.current = positions;
+  };
+
+  useLayoutEffect(() => {
+    const previousPositions = projectLayoutRef.current;
+    const list = listRef.current;
+    projectLayoutRef.current = null;
+    if (
+      !previousPositions ||
+      !list ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return;
+    }
+    list
+      .querySelectorAll<HTMLElement>('[data-project-layout-item]')
+      .forEach((item) => {
+        const key = item.dataset.projectLayoutItem;
+        const previousTop = key ? previousPositions.get(key) : undefined;
+        if (previousTop === undefined) {
+          return;
+        }
+        const deltaY = previousTop - item.getBoundingClientRect().top;
+        if (Math.abs(deltaY) < 0.5) {
+          return;
+        }
+        const animation = item.animate(
+          [
+            { transform: `translate3d(0, ${deltaY}px, 0)` },
+            { transform: 'translate3d(0, 0, 0)' },
+          ],
+          {
+            duration: 160,
+            easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+            fill: 'both',
+          },
+        );
+        animation.addEventListener('finish', () => animation.cancel(), {
+          once: true,
+        });
+      });
+  }, [store.expandedProjectIds]);
+
   const startProjectTask = async (projectId?: string): Promise<void> => {
     const activated =
       projectActive &&
@@ -191,39 +299,67 @@ export const ThreadNavigator = ({
     }
   };
 
-  const selectProjectThread = async (
-    projectId: string,
-    threadId: string,
-  ): Promise<void> => {
-    if (
-      !projectActive ||
-      workspace.state.activeProjectId !== projectId
-    ) {
-      await workspace.focusTask(threadId);
+  const confirmDelete = async (): Promise<void> => {
+    const request = deleteRequest;
+    if (!request || deletePending) {
       return;
     }
-    await store.selectThread(threadId);
+    setDeletePending(true);
+    setDeleteError(null);
+    const deleted =
+      request.kind === 'project'
+        ? await workspace.removeProject(request.projectId)
+        : await workspace.deleteTask(request.threadId);
+    if (deleted) {
+      setDeleteRequest(null);
+    } else {
+      setDeleteError(
+        request.kind === 'project'
+          ? '无法从列表移除这个项目，请稍后重试。'
+          : '无法删除这个对话，请确认任务已经停止后重试。',
+      );
+    }
+    setDeletePending(false);
+  };
+
+  const selectProjectThread = async (
+    _projectId: string,
+    threadId: string,
+  ): Promise<void> => {
+    await workspace.focusTask(threadId);
   };
 
   const selectChatThread = async (threadId: string): Promise<void> => {
-    await activateChat(threadId);
+    await workspace.focusTask(threadId);
   };
 
   const renderThreadList = (
     threadIds: readonly string[],
     threadTitles: Readonly<Record<string, string>>,
-    kind: ThreadLabelKind,
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
+    nested = false,
+    renderedThreadCount = threadIds.length,
   ): ReactNode => {
-    const displayedThreadId = active
-      ? store.navigator.pendingThreadId ??
-        store.navigator.selectedThreadId
-      : null;
+    const visibleThreadIds = threadIds.slice(0, renderedThreadCount);
+    const deferredThreadCount = threadIds.length - visibleThreadIds.length;
+    const displayedThreadId = resolveDisplayedThreadId({
+      active,
+      pendingThreadId: store.navigator.pendingThreadId,
+      selectedThreadId: store.navigator.selectedThreadId,
+      threadIds,
+    });
     const itemDisabled = workspace.busy || (active && navigationDisabled);
     return (
-      <div className="space-y-0.5 pb-1 pl-6 pt-1">
-        {threadIds.map((threadId) => (
+      <div
+        aria-busy={deferredThreadCount > 0}
+        className={`space-y-0.5 py-1 ${
+          nested
+            ? 'ml-3 border-l border-border-subtle pl-2'
+            : ''
+        }`}
+      >
+        {visibleThreadIds.map((threadId) => (
           <ThreadButton
             key={threadId}
             threadId={threadId}
@@ -235,52 +371,61 @@ export const ThreadNavigator = ({
             current={threadId === displayedThreadId}
             status={toThreadNavigationStatus({
               approvalRequired: approvalThreadIds.includes(threadId),
-              pending:
-                active && threadId === store.navigator.pendingThreadId,
-              reloadRequired:
-                store.navigator.reloadRequiredThreadIds.includes(threadId),
+              pending: threadId === store.navigator.pendingThreadId,
               running: store.navigator.runningThreadIds.includes(threadId),
               terminalStatus:
                 store.navigator.unreadThreadStatuses[threadId],
             })}
             disabled={itemDisabled}
-            mutationDisabled={
-              navigationDisabled ||
-              workspace.busy ||
-              (threadId === displayedThreadId && selectedTurnActive)
-            }
-            actionsEnabled={active}
-            failedDeleteEnabled={
-              kind === 'chat' &&
-              workspace.failedChatThreadId === threadId
-            }
-            failedDeleteDisabled={workspace.busy}
-            onSelect={onSelect}
-            onFork={store.forkThread}
-            onArchive={store.archiveThread}
-            onRequestDelete={(requestedThreadId) =>
-              setDeleteRequest({
-                threadId: requestedThreadId,
-                source:
-                  kind === 'chat' &&
-                  workspace.failedChatThreadId === requestedThreadId
-                    ? 'failedChat'
-                    : 'conversation',
+            renameDisabled={workspace.busy}
+            deleteDisabled={
+              isThreadDeleteDisabled({
+                workspaceBusy: workspace.busy,
+                lifecycleMutationPending: Boolean(
+                  store.navigator.pendingMutation,
+                ),
+                running:
+                  store.navigator.runningThreadIds.includes(threadId),
               })
             }
+            onSelect={onSelect}
+            onRequestRename={(requestedThreadId) => {
+              const currentTitle =
+                (active
+                  ? store.navigator.threadTitles[requestedThreadId]
+                  : undefined) ??
+                threadTitles[requestedThreadId] ??
+                workspace.state.chatTitles?.[requestedThreadId] ??
+                '新对话';
+              store.requestThreadRename(requestedThreadId, currentTitle);
+            }}
+            onRequestDelete={(requestedThreadId) => {
+              setDeleteError(null);
+              setDeleteRequest({
+                kind: 'thread',
+                threadId: requestedThreadId,
+                title:
+                  threadTitles[requestedThreadId] ??
+                  workspace.state.chatTitles?.[requestedThreadId] ??
+                  '新对话',
+              });
+            }}
             pendingMutation={store.navigator.pendingMutation}
           />
         ))}
+        {deferredThreadCount > 0 ? (
+          <div
+            className="pointer-events-none"
+            style={{
+              height: `calc(${deferredThreadCount} * 2.375rem - 0.125rem)`,
+            }}
+            aria-hidden="true"
+          />
+        ) : null}
         {threadIds.length === 0 ? (
-          kind === 'project' ? (
-            <p className="px-2 py-1.5 text-sm font-normal leading-normal text-tertiary">
-              没有会话
-            </p>
-          ) : (
-            <p className="px-2 py-2 text-xs leading-5 text-secondary">
-              点击栏目右侧的 + 新建聊天。
-            </p>
-          )
+          <p className="px-2 py-1 text-sm font-normal leading-normal text-tertiary">
+            {nested ? '还没有任务' : '还没有聊天'}
+          </p>
         ) : null}
       </div>
     );
@@ -292,7 +437,7 @@ export const ThreadNavigator = ({
         aria-label="Threads"
         className="flex h-full min-h-0 w-full flex-col bg-navigation-background"
       >
-        <div className="window-drag-region relative shrink-0 px-3 pb-2 pt-10">
+        <div className="window-drag-region relative shrink-0 px-3 pb-3 pt-10">
           {onToggleNavigator ? (
             <Button
               type="button"
@@ -308,11 +453,11 @@ export const ThreadNavigator = ({
               <PanelLeftClose aria-hidden="true" />
             </Button>
           ) : null}
-          <div className="flex h-8 items-center gap-2 px-1">
+          <div className="flex h-10 items-center gap-2.5 px-1">
             <img
               src={appIcon}
               alt=""
-              className="size-6 shrink-0"
+              className="size-9 shrink-0 rounded-xl shadow-sm"
               aria-hidden="true"
             />
             <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
@@ -328,8 +473,7 @@ export const ThreadNavigator = ({
         >
           {store.navigator.statusLabel}
           {store.navigator.truncated ? ' · First 50 shown' : ''}
-          {!store.navigator.archivedUndoThreadId &&
-          store.navigator.mutationNotice
+          {store.navigator.mutationNotice
             ? ` · ${store.navigator.mutationNotice}`
             : ''}
         </p>
@@ -337,23 +481,20 @@ export const ThreadNavigator = ({
         <ScrollArea className="min-h-0 flex-1">
           <div
             ref={listRef}
-            className="space-y-3 p-2"
+            className="space-y-5 p-2"
             onKeyDown={handleListKeyDown}
           >
             <section aria-labelledby="project-section-title">
               <SectionHeading
                 id="project-section-title"
                 label="项目"
-                count={projects.length}
-                actionLabel="打开项目"
+                actionLabel="选择项目文件夹"
                 disabled={workspace.busy}
                 onAction={() => void workspace.chooseProject()}
-              >
-                <FolderPlus aria-hidden="true" />
-              </SectionHeading>
+              />
 
               {projects.length > 0 ? (
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   {projects.map((project) => {
                     const active =
                       projectActive &&
@@ -362,109 +503,140 @@ export const ThreadNavigator = ({
                       project.id,
                     );
                     return (
-                      <div key={project.id}>
+                      <Collapsible
+                        key={project.id}
+                        data-project-layout-item={project.id}
+                        className="relative"
+                        open={expanded}
+                        onOpenChange={(open) => {
+                          if (open !== expanded) {
+                            captureProjectLayout();
+                            store.toggleProjectExpanded(project.id);
+                          }
+                        }}
+                      >
                         <div
                           data-project-row
                           className="group flex items-center rounded-lg"
                         >
-                          <span
-                            role="button"
-                            tabIndex={workspace.busy ? -1 : 0}
-                            data-thread-item
-                            aria-expanded={expanded}
-                            aria-disabled={workspace.busy}
-                            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
-                            onClick={() => {
-                              if (!workspace.busy) {
-                                store.toggleProjectExpanded(project.id);
+                          <CollapsibleTrigger asChild>
+                            <button
+                              type="button"
+                              data-thread-item
+                              className="flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2 text-left text-navigation transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            >
+                              <span
+                                className="relative size-4 shrink-0"
+                                aria-hidden="true"
+                              >
+                                <FolderOpen
+                                  className={`absolute inset-0 size-4 text-navigation transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                    expanded
+                                      ? 'scale-100 opacity-100'
+                                      : 'scale-75 opacity-0'
+                                  }`}
+                                />
+                                <Folder
+                                  className={`absolute inset-0 size-4 text-navigation transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+                                    expanded
+                                      ? 'scale-75 opacity-0'
+                                      : 'scale-100 opacity-100'
+                                  }`}
+                                />
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-sm font-normal">
+                                {project.name}
+                              </span>
+                            </button>
+                          </CollapsibleTrigger>
+                          <div className="mr-1 flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                            <Button
+                              type="button"
+                              size="icon-xs"
+                              variant="ghost"
+                              disabled={
+                                workspace.busy || (active && navigationDisabled)
                               }
-                            }}
-                            onKeyDown={(event) =>
-                              activateNavigationItem(
-                                event,
-                                workspace.busy,
-                                () => {
-                                  store.toggleProjectExpanded(project.id);
-                                },
+                              onClick={() => void startProjectTask(project.id)}
+                              aria-label={`在 ${project.name} 中新建任务`}
+                              title={`在 ${project.name} 中新建任务`}
+                            >
+                              <Plus aria-hidden="true" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon-xs"
+                              variant="ghost"
+                              className="text-tertiary hover:text-destructive"
+                              disabled={
+                                workspace.busy ||
+                                project.threadIds.some((threadId) =>
+                                  store.navigator.runningThreadIds.includes(
+                                    threadId,
+                                  ),
+                                )
+                              }
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setDeleteError(null);
+                                setDeleteRequest({
+                                  kind: 'project',
+                                  projectId: project.id,
+                                  name: project.name,
+                                });
+                              }}
+                              aria-label={`从列表移除项目：${project.name}`}
+                              title={`从列表移除项目：${project.name}`}
+                            >
+                              <Trash2 aria-hidden="true" />
+                            </Button>
+                          </div>
+                        </div>
+                        <CollapsibleContent className="project-disclosure-content">
+                          <DeferredThreadList
+                            open={expanded}
+                            threadCount={project.threadIds.length}
+                            render={(renderedThreadCount) =>
+                              renderThreadList(
+                                project.threadIds,
+                                project.threadTitles,
+                                active,
+                                (threadId) =>
+                                  selectProjectThread(project.id, threadId),
+                                true,
+                                renderedThreadCount,
                               )
                             }
-                          >
-                            {expanded ? (
-                              <FolderOpen
-                                className="size-4 shrink-0 text-navigation"
-                                aria-hidden="true"
-                              />
-                            ) : (
-                              <Folder
-                                className="size-4 shrink-0 text-navigation"
-                                aria-hidden="true"
-                              />
-                            )}
-                            <span className="min-w-0 flex-1 truncate text-sm font-normal">
-                              {project.name}
-                            </span>
-                          </span>
-                          <Button
-                            type="button"
-                            size="icon-xs"
-                            variant="ghost"
-                            className="mr-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 disabled:opacity-0 group-hover:disabled:opacity-100 group-focus-within:disabled:opacity-100"
-                            disabled={
-                              workspace.busy || (active && navigationDisabled)
-                            }
-                            onClick={() => void startProjectTask(project.id)}
-                            aria-label={`在 ${project.name} 中新建任务`}
-                            title={`在 ${project.name} 中新建任务`}
-                          >
-                            <Plus aria-hidden="true" />
-                          </Button>
-                        </div>
-                        {expanded
-                          ? renderThreadList(
-                              project.threadIds,
-                              project.threadTitles,
-                              'project',
-                              active,
-                              (threadId) =>
-                                selectProjectThread(project.id, threadId),
-                            )
-                          : null}
-                      </div>
+                          />
+                        </CollapsibleContent>
+                      </Collapsible>
                     );
                   })}
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-secondary transition-colors hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  disabled={workspace.busy}
-                  onClick={() => void workspace.chooseProject()}
-                >
-                  <span className="w-3.5 shrink-0" aria-hidden="true" />
-                  <FolderOpen
-                    className="size-4 shrink-0"
-                    aria-hidden="true"
-                  />
-                  <span className="text-sm">打开项目</span>
-                </button>
+                <p className="px-2 py-1 text-sm font-normal leading-normal text-tertiary">
+                  还没有项目
+                </p>
               )}
             </section>
 
-            <section aria-labelledby="chat-section-title">
+            <section
+              data-project-layout-item="chat-section"
+              aria-labelledby="chat-section-title"
+            >
               <SectionHeading
                 id="chat-section-title"
                 label="聊天"
-                count={chatThreadIds.length}
                 actionLabel="新建聊天"
-                disabled={workspace.busy || (chatActive && navigationDisabled)}
+                disabled={
+                  workspace.busy || (chatActive && navigationDisabled)
+                }
                 onAction={() => void startChat()}
-              >
-                <Plus aria-hidden="true" />
-              </SectionHeading>
+              />
               {renderThreadList(
                 chatThreadIds,
                 workspace.state.chatTitles ?? {},
-                'chat',
                 chatActive,
                 selectChatThread,
               )}
@@ -489,41 +661,83 @@ export const ThreadNavigator = ({
             {store.navigator.selectionNotice}
           </p>
         ) : null}
-        {store.navigator.archivedUndoThreadId ? (
-          <div
-            className="flex items-center gap-2 border-t px-4 py-3"
-            role="status"
-            aria-live="polite"
-          >
-            <p className="min-w-0 flex-1 text-xs leading-5 text-secondary">
-              对话已归档，可在下一次生命周期操作或重连前撤销。
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={Boolean(store.navigator.pendingMutation)}
-              onClick={() =>
-                void store.unarchiveThread(
-                  store.navigator.archivedUndoThreadId as string,
-                )
-              }
-            >
-              <RotateCcw aria-hidden="true" />
-              撤销
-            </Button>
-          </div>
-        ) : null}
         {footer ? (
           <div className="shrink-0 border-t p-2">{footer}</div>
         ) : null}
       </nav>
 
+      <Dialog
+        open={store.rename.request !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            store.cancelThreadRename();
+          }
+        }}
+      >
+        <DialogContent className="max-w-md p-5">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void store.confirmThreadRename();
+            }}
+          >
+            <DialogTitle className="text-sm font-medium">
+              重命名对话
+            </DialogTitle>
+            <DialogDescription className="mt-1 text-sm text-secondary">
+              使用一个简短、可识别的名称，方便稍后找回这个对话。
+            </DialogDescription>
+            <Input
+              className="mt-4"
+              value={store.rename.draft}
+              maxLength={80}
+              disabled={store.rename.pending}
+              autoFocus
+              aria-label="对话名称"
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => {
+                store.setRenameDraft(event.currentTarget.value);
+              }}
+            />
+            {store.rename.error ? (
+              <p className="mt-2 text-sm text-destructive" role="alert">
+                {store.rename.error}
+              </p>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={store.rename.pending}
+                onClick={store.cancelThreadRename}
+              >
+                取消
+              </Button>
+              <Button
+                type="submit"
+                disabled={
+                  store.rename.pending || !store.rename.canSave
+                }
+              >
+                {store.rename.pending ? (
+                  <LoaderCircle
+                    className="animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                ) : null}
+                {store.rename.pending ? '正在保存…' : '保存'}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog
         open={deleteRequest !== null}
         onOpenChange={(open) => {
-          if (!open) {
+          if (!open && !deletePending) {
             setDeleteRequest(null);
+            setDeleteError(null);
           }
         }}
       >
@@ -535,36 +749,53 @@ export const ThreadNavigator = ({
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>删除这个对话？</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteRequest?.kind === 'project'
+                ? '从列表移除这个项目？'
+                : '删除这个对话？'}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              删除后无法恢复，确定要继续吗？
+              {deleteRequest?.kind === 'project'
+                ? `只会从项目列表移除“${deleteRequest.name}”，不会删除本地文件或历史会话。重新打开该文件夹即可恢复。`
+                : `删除“${deleteRequest?.title ?? '新对话'}”后无法恢复，确定要继续吗？`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteError ? (
+            <p className="mt-3 text-sm text-destructive" role="alert">
+              {deleteError}
+            </p>
+          ) : null}
           <AlertDialogFooter className="mt-5">
             <AlertDialogCancel asChild>
               <Button
                 ref={cancelDeleteRef}
                 type="button"
                 variant="outline"
+                disabled={deletePending}
               >
                 取消
               </Button>
             </AlertDialogCancel>
-            <AlertDialogAction asChild>
-              <Button
-                type="button"
-                variant="destructive"
-                onClick={() => {
-                  if (deleteRequest?.source === 'failedChat') {
-                    void workspace.deleteFailedChat(deleteRequest.threadId);
-                  } else if (deleteRequest) {
-                    void store.deleteThread(deleteRequest.threadId);
-                  }
-                }}
-              >
-                删除
-              </Button>
-            </AlertDialogAction>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletePending}
+              onClick={() => void confirmDelete()}
+            >
+              {deletePending ? (
+                <LoaderCircle
+                  className="animate-spin motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {deletePending
+                ? deleteRequest?.kind === 'project'
+                  ? '正在移除…'
+                  : '正在删除…'
+                : deleteRequest?.kind === 'project'
+                  ? '移除'
+                  : '删除'}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -575,40 +806,33 @@ export const ThreadNavigator = ({
 type SectionHeadingProps = Readonly<{
   id: string;
   label: string;
-  count: number;
   actionLabel: string;
   disabled: boolean;
   onAction: () => void;
-  children: ReactNode;
 }>;
 
 const SectionHeading = ({
   id,
   label,
-  count,
   actionLabel,
   disabled,
   onAction,
-  children,
 }: SectionHeadingProps) => (
   <div className="mb-1 flex h-7 items-center px-2 text-sm font-normal">
-    <span id={id} className="text-navigation-heading">
+    <span id={id} className="min-w-0 flex-1 text-navigation-heading">
       {label}
-    </span>
-    <span className="ml-auto text-xs tabular-nums text-tertiary">
-      {count}
     </span>
     <Button
       type="button"
       size="icon-xs"
       variant="ghost"
-      className="ml-1 disabled:opacity-100"
+      className="text-tertiary hover:text-foreground"
       disabled={disabled}
       onClick={onAction}
       aria-label={actionLabel}
       title={actionLabel}
     >
-      {children}
+      <Plus aria-hidden="true" />
     </Button>
   </div>
 );
@@ -619,14 +843,11 @@ type ThreadButtonProps = Readonly<{
   current: boolean;
   status: ThreadNavigationStatus;
   disabled: boolean;
-  mutationDisabled: boolean;
-  actionsEnabled: boolean;
-  failedDeleteEnabled: boolean;
-  failedDeleteDisabled: boolean;
+  renameDisabled: boolean;
+  deleteDisabled: boolean;
   pendingMutation: ThreadStore['navigator']['pendingMutation'];
   onSelect: (threadId: string) => Promise<void>;
-  onFork: (threadId: string) => Promise<void>;
-  onArchive: (threadId: string) => Promise<void>;
+  onRequestRename: (threadId: string) => void;
   onRequestDelete: (threadId: string) => void;
 }>;
 
@@ -636,108 +857,77 @@ const ThreadButton = ({
   current,
   status,
   disabled,
-  mutationDisabled,
-  actionsEnabled,
-  failedDeleteEnabled,
-  failedDeleteDisabled,
+  renameDisabled,
+  deleteDisabled,
   pendingMutation,
   onSelect,
-  onFork,
-  onArchive,
+  onRequestRename,
   onRequestDelete,
-}: ThreadButtonProps) => (
-  <div
-    data-thread-row
-    className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
-      current
-        ? 'bg-surface text-foreground'
-        : 'text-navigation hover:bg-surface hover:text-foreground'
-    }`}
-  >
-    <span
-      role="link"
-      tabIndex={disabled ? -1 : 0}
-      data-thread-item
-      aria-current={current ? 'page' : undefined}
-      aria-busy={status === 'opening' || status === 'running'}
-      aria-label={`${current ? 'Current ' : ''}${title ?? 'Untitled conversation'}`}
-      aria-disabled={disabled}
-      onClick={() => {
-        if (!disabled) {
-          void onSelect(threadId);
-        }
-      }}
-      onKeyDown={(event) =>
-        activateNavigationItem(event, disabled, () => {
-          void onSelect(threadId);
-        })
-      }
-      className={`flex h-9 min-w-0 flex-1 cursor-pointer items-center px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default ${
-        actionsEnabled || failedDeleteEnabled ? 'rounded-l-lg' : 'rounded-lg'
-      }`}
-    >
-      <span
-        className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
-      >
-        {title ?? (status === 'running' ? '新会话' : '未命名会话')}
-      </span>
-    </span>
-    {actionsEnabled || failedDeleteEnabled ? (
-      <div
-        data-thread-actions
-        className={`flex min-w-fit shrink-0 items-center pr-1 transition-opacity ${
-          failedDeleteEnabled
-            ? 'opacity-100'
-            : 'opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100'
-        }`}
-      >
-        {actionsEnabled ? (
-          <>
-            <ThreadActionButton
-              label={`创建会话分支：${title ?? '未命名会话'}`}
-              active={
-                pendingMutation?.kind === 'fork' &&
-                pendingMutation.threadId === threadId
-              }
-              disabled={mutationDisabled}
-              onClick={() => void onFork(threadId)}
-            >
-              <GitFork aria-hidden="true" />
-            </ThreadActionButton>
-            <ThreadActionButton
-              label={`归档会话：${title ?? '未命名会话'}`}
-              active={
-                pendingMutation?.kind === 'archive' &&
-                pendingMutation.threadId === threadId
-              }
-              disabled={mutationDisabled}
-              onClick={() => void onArchive(threadId)}
-            >
-              <Archive aria-hidden="true" />
-            </ThreadActionButton>
-          </>
-        ) : null}
-        <ThreadActionButton
-          label={`删除会话：${title ?? '未命名会话'}`}
-          active={
-            pendingMutation?.kind === 'delete' &&
-            pendingMutation.threadId === threadId
-          }
-          disabled={
-            failedDeleteEnabled ? failedDeleteDisabled : mutationDisabled
-          }
-          destructive
-          onClick={() => onRequestDelete(threadId)}
+}: ThreadButtonProps) => {
+  const label = title ?? '新对话';
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          data-thread-row
+          className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
+            current
+              ? 'bg-link/10 text-link'
+              : 'text-navigation hover:bg-surface hover:text-foreground'
+          }`}
         >
-          <Trash2 aria-hidden="true" />
-        </ThreadActionButton>
-      </div>
-    ) : (
-      <span />
-    )}
-    <ThreadStatusIndicator status={status} />
-  </div>
-);
+          <button
+            type="button"
+            tabIndex={disabled ? -1 : 0}
+            data-thread-item
+            aria-current={current ? 'page' : undefined}
+            aria-busy={status === 'opening' || status === 'running'}
+            aria-label={`${current ? 'Current ' : ''}${label}`}
+            aria-disabled={disabled}
+            onClick={() => {
+              if (!disabled) {
+                void onSelect(threadId);
+              }
+            }}
+            className="flex h-9 min-w-0 flex-1 cursor-pointer items-center rounded-l-lg px-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:cursor-default"
+          >
+            <span
+              className={`min-w-0 flex-1 truncate text-sm ${current ? 'font-medium' : 'font-normal'}`}
+            >
+              {label}
+            </span>
+          </button>
+          <div
+            data-thread-actions
+            className="flex min-w-fit shrink-0 items-center pr-1 opacity-0 transition-opacity group-hover/session:opacity-100 group-focus-within/session:opacity-100"
+          >
+            <ThreadActionButton
+              label={`删除会话：${label}`}
+              active={
+                pendingMutation?.kind === 'delete' &&
+                pendingMutation.threadId === threadId
+              }
+              disabled={deleteDisabled}
+              destructive
+              onClick={() => onRequestDelete(threadId)}
+            >
+              <Trash2 aria-hidden="true" />
+            </ThreadActionButton>
+          </div>
+          <ThreadStatusIndicator status={status} />
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-44">
+        <ContextMenuItem
+          disabled={renameDisabled}
+          onSelect={() => onRequestRename(threadId)}
+        >
+          重命名聊天
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
+};
 
 const ThreadStatusIndicator = ({
   status,
@@ -793,17 +983,6 @@ const ThreadStatusIndicator = ({
           <CircleAlert className="size-4" aria-hidden="true" />
         </span>
       );
-    case 'reloadRequired':
-      return (
-        <span
-          className="mr-2 inline-flex size-5 shrink-0 self-center items-center justify-center text-destructive"
-          role="status"
-          aria-label="会话需要重新加载"
-          title="会话需要重新加载"
-        >
-          <CircleAlert className="size-4" aria-hidden="true" />
-        </span>
-      );
     case 'interrupted':
       return (
         <span
@@ -842,7 +1021,11 @@ const ThreadActionButton = ({
     aria-label={label}
     title={label}
     disabled={disabled}
-    onClick={onClick}
+    onPointerDown={(event) => event.stopPropagation()}
+    onClick={(event) => {
+      event.stopPropagation();
+      onClick();
+    }}
     className={`rounded p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 ${
       destructive
         ? 'text-tertiary hover:bg-destructive/10 hover:text-destructive'

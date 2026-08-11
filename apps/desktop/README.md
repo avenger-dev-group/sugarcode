@@ -1,8 +1,8 @@
 # SugarCode Desktop
 
-Electron Forge application for SugarCode.
+Electron Forge application for SugarCode 3.0.
 
-Run commands from the repository root:
+Run from the repository root:
 
 ```bash
 pnpm dev
@@ -10,16 +10,23 @@ pnpm check
 pnpm desktop:package
 ```
 
-This package will communicate with the bundled Rust `sugarcode app-server`
-process through JSONL over stdio. It must not import or embed the Agent Runtime.
+Electron Main starts `runtime.mjs` with `utilityProcess`. Main and the worker
+exchange private provider-neutral `RuntimeCommand` and `RuntimeEvent` values;
+there is no port, JSONL server or CLI child process. Renderer and preload keep
+the existing provider-neutral API and never receive SDK types, native handles,
+credentials or absolute workspace paths.
 
-Electron Main owns the sidecar, native file picker, attachment import,
-workspace authority and validated conversation projection. Preload exposes only
-fixed typed actions. Renderer supports text, file selection, drag-and-drop and
-image paste; attachments are imported through app-server `asset/import` before
-`turn/start` references them.
+The worker uses ADK for the primary and child Agent loops. OpenAI and Anthropic
+calls go through their official TypeScript SDKs, while `@google/genai` supplies
+the ADK content and schema types only. Gemini, Vertex and ADK Live are not
+enabled.
 
-The public contract is generated from Rust in
-`crates/app-server-protocol`. Desktop validates every incoming v1 message at
-the Main boundary. A protocol mismatch is a connection diagnostic; it is not a
-durable Turn storage failure.
+The platform `sugarcode-desktop-native.node` module owns SQLite, attachment
+storage, capability-scoped workspace files, patches, Git, command containment
+and PTY/ConPTY. Privileged tool and MCP calls are proposed in SQLite before the
+existing approval UI is notified. A claimed side effect is never replayed after
+a crash.
+
+The app bundle includes `runtime.mjs` and the native module as an extra
+resource. It does not include a `sugarcode` executable, app-server, TUI or
+PTY sidecar process.

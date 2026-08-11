@@ -179,3 +179,66 @@ fn startup_probe_fails_closed_when_the_supervisor_cannot_spawn() {
         sugarcode_sandbox::SandboxErrorKind::Unavailable
     );
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn embedded_executor_uses_the_capability_root_without_a_cli_supervisor() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let workspace = WorkspaceTool::open(directory.path()).expect("open workspace");
+    let executor = EmbeddedShellCommandExecutor::new(
+        workspace
+            .command_workspace_root()
+            .expect("bind command workspace root"),
+    )
+    .expect("embedded executor");
+    let execution = executor
+        .execute(
+            ShellCommandArguments {
+                command: "/bin/pwd".to_owned(),
+                arguments: Vec::new(),
+            },
+            CancellationToken::new(),
+        )
+        .await;
+    let ShellCommandExecution::Completed(output) = execution else {
+        panic!("embedded command failed: {execution:?}");
+    };
+    assert_eq!(
+        std::fs::canonicalize(output.stdout.trim()).expect("command cwd"),
+        std::fs::canonicalize(directory.path()).expect("workspace cwd"),
+    );
+    assert!(matches!(
+        output.outcome,
+        ShellCommandOutcome::ExitCode { code: 0 }
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn embedded_executor_keeps_the_read_only_filesystem_policy() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let workspace = WorkspaceTool::open(directory.path()).expect("open workspace");
+    let executor = EmbeddedShellCommandExecutor::new(
+        workspace
+            .command_workspace_root()
+            .expect("bind command workspace root"),
+    )
+    .expect("embedded executor");
+    let execution = executor
+        .execute(
+            ShellCommandArguments {
+                command: "/usr/bin/touch".to_owned(),
+                arguments: vec!["blocked.txt".to_owned()],
+            },
+            CancellationToken::new(),
+        )
+        .await;
+    let ShellCommandExecution::Completed(output) = execution else {
+        panic!("embedded command failed: {execution:?}");
+    };
+    assert!(!matches!(
+        output.outcome,
+        ShellCommandOutcome::ExitCode { code: 0 }
+    ));
+    assert!(!directory.path().join("blocked.txt").exists());
+}

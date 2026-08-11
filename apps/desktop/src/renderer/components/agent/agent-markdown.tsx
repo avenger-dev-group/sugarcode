@@ -7,15 +7,25 @@ import {
   useMemo,
   useRef,
 } from 'react';
+import { useStore as useZustandStore } from 'zustand';
+
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 
 import { AgentCodeBlock } from './code-block/code-block';
+import { FileReferenceLink } from './file-reference-link';
+import { useOrchestrationStore } from '../orchestration/use-store';
+import { createVerifiedWorkspaceFileReferenceResolver } from '../workspace/file-reference';
+import {
+  createAgentMarkdownFileDisplayLabels,
+  toAgentMarkdownFileLink,
+  toAgentMarkdownLinkLabel,
+} from './agent-markdown-link';
 import {
   projectAgentMarkdownTokens,
   type AgentMarkdownTokenCache,
 } from './agent-markdown-parser';
 import type { AgentMarkdownProps } from './types';
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
 const FENCED_CODE_PATTERN = /^ {0,3}(?:`{3,}|~{3,})/u;
 
 const tableAlignmentClass = (
@@ -31,40 +41,29 @@ const tableAlignmentClass = (
   }
 };
 
-const renderText = (
-  text: string,
-  keyPrefix: string,
-  isStreaming: boolean,
-): ReactNode => {
-  if (!isStreaming) {
-    return text;
-  }
-  let offset = 0;
-  return Array.from(segmenter.segment(text), (segment) => {
-    const key = `${keyPrefix}:${offset}`;
-    offset += segment.segment.length;
-    return (
-      <span
-        key={key}
-        className={isStreaming ? 'agent-markdown-segment' : undefined}
-      >
-        {segment.segment}
-      </span>
-    );
-  });
-};
-
 const renderTokens = (
   tokens: readonly Token[],
   keyPrefix: string,
-  isStreaming: boolean,
+  openFile: (path: string) => void,
+  workspaceGeneration: number,
+  workspaceReady: boolean,
+  resolveVerifiedFileReference: (value: string) => string | null,
+  fileDisplayLabels: ReadonlyMap<string, string>,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
     const key = `${keyPrefix}:${offset}:${token.type}:${index}`;
     offset += token.raw.length;
     const children = (nested: readonly Token[]): ReactNode[] =>
-      renderTokens(nested, key, isStreaming);
+      renderTokens(
+        nested,
+        key,
+        openFile,
+        workspaceGeneration,
+        workspaceReady,
+        resolveVerifiedFileReference,
+        fileDisplayLabels,
+      );
 
     switch (token.type) {
       case 'space':
@@ -252,6 +251,24 @@ const renderTokens = (
       case 'em':
         return [<em key={key}>{children(token.tokens)}</em>];
       case 'codespan':
+        {
+          const path = resolveVerifiedFileReference(token.text);
+          if (path) {
+            return [
+              <FileReferenceLink
+                exactPath
+                key={key}
+                openFile={openFile}
+                path={path}
+                variant="code"
+                workspaceGeneration={workspaceGeneration}
+                workspaceReady={workspaceReady}
+              >
+                {fileDisplayLabels.get(path) ?? token.text}
+              </FileReferenceLink>,
+            ];
+          }
+        }
         return [
           <code
             key={key}
@@ -263,6 +280,28 @@ const renderTokens = (
       case 'br':
         return [<br key={key} />];
       case 'link':
+        {
+          const fileLink = toAgentMarkdownFileLink(
+            token.href,
+            token.tokens,
+            token.text,
+            fileDisplayLabels,
+          );
+          if (fileLink) {
+            return [
+              <FileReferenceLink
+                key={key}
+                openFile={openFile}
+                path={fileLink.path}
+                variant="link"
+                workspaceGeneration={workspaceGeneration}
+                workspaceReady={workspaceReady}
+              >
+                {fileLink.label}
+              </FileReferenceLink>,
+            ];
+          }
+        }
         return [
           <span
             key={key}
@@ -275,7 +314,7 @@ const renderTokens = (
                 : 'Link unavailable'
             }
           >
-            {children(token.tokens)}
+            {toAgentMarkdownLinkLabel(token.tokens, token.text)}
           </span>,
         ];
       case 'image':
@@ -294,17 +333,11 @@ const renderTokens = (
       case 'text':
         return [
           <Fragment key={key}>
-            {token.tokens
-              ? children(token.tokens)
-              : renderText(token.text, key, isStreaming)}
+            {token.tokens ? children(token.tokens) : token.text}
           </Fragment>,
         ];
       case 'escape':
-        return [
-          <Fragment key={key}>
-            {renderText(token.text, key, isStreaming)}
-          </Fragment>,
-        ];
+        return [<Fragment key={key}>{token.text}</Fragment>];
       case 'del':
         return [
           <del key={key} className="decoration-secondary">
@@ -316,9 +349,7 @@ const renderTokens = (
         return [];
       default:
         return [
-          <Fragment key={key}>
-            {renderText(token.raw, key, isStreaming)}
-          </Fragment>,
+          <Fragment key={key}>{token.raw}</Fragment>,
         ];
     }
   });
@@ -327,8 +358,22 @@ const renderTokens = (
 const AgentMarkdownView = ({
   source,
   isStreaming,
+  verifiedFilePaths = [],
 }: AgentMarkdownProps): ReactElement => {
+  const { openFile } = useOrchestrationStore();
+  const workspaceGeneration = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot.generation,
+  );
+  const workspaceReady = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot.status === 'ready',
+  );
   const cache = useRef<AgentMarkdownTokenCache | undefined>(undefined);
+  const resolveVerifiedFileReference = useMemo(
+    () => createVerifiedWorkspaceFileReferenceResolver(verifiedFilePaths),
+    [verifiedFilePaths],
+  );
   const projection = useMemo(() => {
     const next = projectAgentMarkdownTokens(
       source,
@@ -338,10 +383,26 @@ const AgentMarkdownView = ({
     cache.current = next.cache;
     return next;
   }, [isStreaming, source]);
+  const fileDisplayLabels = useMemo(
+    () =>
+      createAgentMarkdownFileDisplayLabels(
+        projection.tokens,
+        resolveVerifiedFileReference,
+      ),
+    [projection.tokens, resolveVerifiedFileReference],
+  );
 
   return (
     <div className="min-w-0 max-w-full font-normal text-foreground">
-      {renderTokens(projection.tokens, 'root', isStreaming)}
+      {renderTokens(
+        projection.tokens,
+        'root',
+        openFile,
+        workspaceGeneration,
+        workspaceReady,
+        resolveVerifiedFileReference,
+        fileDisplayLabels,
+      )}
     </div>
   );
 };

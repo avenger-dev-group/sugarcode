@@ -17,7 +17,7 @@ import {
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
-} from '../app-server/ipc/trusted-sender';
+} from '../ipc/trusted-sender';
 import type { TerminalController } from './controller';
 
 type TerminalIpcOptions = Readonly<{

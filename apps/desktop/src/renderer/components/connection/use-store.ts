@@ -26,7 +26,7 @@ const VIEW_MODEL_BY_STATUS: Record<
   },
   ready: {
     label: 'Ready',
-    detail: 'Desktop and CLI completed the protocol handshake.',
+    detail: 'Desktop and the local runtime completed the protocol handshake.',
     tone: 'success',
     isBusy: false,
   },

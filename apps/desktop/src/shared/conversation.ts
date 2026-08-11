@@ -1,23 +1,30 @@
 export const CONVERSATION_STATE_GET_CHANNEL = 'conversation-state:get';
 export const CONVERSATION_STATE_CHANGED_CHANNEL = 'conversation-state:changed';
+export const CONVERSATION_THREAD_PROJECTION_GET_CHANNEL =
+  'conversation-thread-projection:get';
+export const CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL =
+  'conversation-thread-projection:changed';
+export const CONVERSATION_THREAD_DELTA_CHANNEL =
+  'conversation-thread-projection:delta';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
+export const CONVERSATION_USER_INPUT_RESPONSE_CHANNEL =
+  'conversation:user-input-response';
 export const CONVERSATION_THREAD_SEARCH_CHANNEL = 'conversation-thread:search';
 export const CONVERSATION_THREAD_SELECT_CHANNEL = 'conversation-thread:select';
 export const CONVERSATION_THREAD_NEW_CHANNEL = 'conversation-thread:new';
-export const CONVERSATION_THREAD_FORK_CHANNEL = 'conversation-thread:fork';
-export const CONVERSATION_THREAD_ARCHIVE_CHANNEL =
-  'conversation-thread:archive';
-export const CONVERSATION_THREAD_UNARCHIVE_CHANNEL =
-  'conversation-thread:unarchive';
 export const CONVERSATION_THREAD_DELETE_CHANNEL = 'conversation-thread:delete';
 
 export const MAX_CONVERSATION_INPUT_BYTES = 64 * 1024;
 export const MAX_CONVERSATION_ATTACHMENTS = 10;
 export const MAX_CONVERSATION_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_THREAD_SEARCH_BYTES = 256;
+export const MAX_CONVERSATION_TITLE_BYTES = 256;
 export const MAX_FILE_CHANGE_DIFF_BYTES = 192 * 1024;
 export const MAX_FILE_CHANGE_DIFF_LINES = 5_000;
+export const MAX_USER_INPUT_QUESTIONS = 3;
+export const MAX_USER_INPUT_OPTIONS = 3;
+export const MAX_USER_INPUT_ANSWER_BYTES = 2 * 1024;
 
 export type ConversationPhase =
   'idle' | 'starting' | 'inProgress' | 'stopping' | 'ready' | 'unavailable';
@@ -66,26 +73,6 @@ export type ConversationAgentOutput = Readonly<{
   responseOrdinal: number;
   outputIndex: number;
   text: string;
-}>;
-
-export type ConversationContextCompactionActivity = Readonly<{
-  id: string;
-  strategy: 'modelGeneratedActiveTurnV1';
-  ordinal: number;
-  preContextBytes: number;
-  sourceMessages: number;
-  sourceBytes: number;
-  sourceSha256: string;
-  status: ConversationMessageStatus;
-  outcome?:
-    | Readonly<{
-        type: 'completed';
-        postContextBytes: number;
-        summaryBytes: number;
-        summarySha256: string;
-      }>
-    | Readonly<{ type: 'failed'; kind: string }>
-    | Readonly<{ type: 'interrupted' }>;
 }>;
 
 export type ConversationWorkspaceReadOutcome =
@@ -156,6 +143,29 @@ export type ConversationWorkspaceSearchActivity = Readonly<{
   }>;
 }>;
 
+export type ConversationSkillOutcome =
+  | Readonly<{
+      type: 'success';
+      purpose?: string;
+      description?: string;
+      content?: string;
+      sha256?: string;
+    }>
+  | Readonly<{ type: 'error'; kind: string }>;
+
+export type ConversationSkillActivity = Readonly<{
+  id: string;
+  callId: string;
+  name: string;
+  purpose?: string;
+  callStatus: ConversationMessageStatus;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome: ConversationSkillOutcome;
+  }>;
+}>;
+
 export type ConversationFileChangeProposal = Readonly<{
   id: string;
   status: ConversationMessageStatus;
@@ -215,8 +225,30 @@ export type ConversationCommandApprovalDecision =
   | 'cancelled'
   | 'clientDisconnected';
 
+export type ConversationWorkspacePatchFile = Readonly<{
+  path: string;
+  kind: 'create' | 'update' | 'delete';
+  beforeSha256: string;
+  afterSha256: string;
+  beforeBytes: number;
+  afterBytes: number;
+  diff?: string;
+  newlineStyle?: 'lf' | 'crLf';
+  finalNewline?: boolean;
+}>;
+
 export type ConversationCommandExecutionResultOutcome =
-  | Readonly<{ type: 'error'; kind: string }>
+  | Readonly<{
+      type: 'error';
+      kind: string;
+      message?: string;
+      failedPath?: string;
+    }>
+  | Readonly<{
+      type: 'workspacePatch';
+      filesChanged: number;
+      files?: readonly ConversationWorkspacePatchFile[];
+    }>
   | Readonly<{
       type: 'process';
       stdoutBytes: number;
@@ -238,6 +270,7 @@ export type ConversationCommandApprovalActivity = Readonly<{
   id: string;
   callId: string;
   approvalId: string;
+  operationKind?: 'workspacePatch' | 'shell';
   command: string;
   argumentCount: number;
   fullAccess?: boolean;
@@ -247,6 +280,7 @@ export type ConversationCommandApprovalActivity = Readonly<{
     id: string;
     status: ConversationMessageStatus;
     value: ConversationCommandApprovalDecision;
+    source?: 'user' | 'policy' | 'system';
   }>;
   executionAttempt?: Readonly<{
     id: string;
@@ -329,6 +363,11 @@ export type ConversationAgentTask = Readonly<{
     id: string;
     markdown: string;
   }>[];
+  progress?: Readonly<{
+    stage: 'waitingForModel' | 'streaming' | 'runningTool';
+    summaryMarkdown: string;
+    updatedAt: number;
+  }>;
   result?: Readonly<{
     id: string;
     summaryMarkdown: string;
@@ -347,10 +386,6 @@ export type ConversationActivity =
       activity: ConversationCommentaryActivity;
     }>
   | Readonly<{
-      type: 'contextCompaction';
-      activity: ConversationContextCompactionActivity;
-    }>
-  | Readonly<{
       type: 'workspaceRead';
       activity: ConversationWorkspaceReadActivity;
     }>
@@ -361,6 +396,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'workspaceSearch';
       activity: ConversationWorkspaceSearchActivity;
+    }>
+  | Readonly<{
+      type: 'skill';
+      activity: ConversationSkillActivity;
     }>
   | Readonly<{
       type: 'fileChange';
@@ -457,6 +496,35 @@ export type ConversationModelSelection = Readonly<{
   }>;
 }>;
 
+export type ConversationUserInputOption = Readonly<{
+  label: string;
+  description: string;
+}>;
+
+export type ConversationUserInputQuestion = Readonly<{
+  id: string;
+  header: string;
+  question: string;
+  options: readonly ConversationUserInputOption[];
+}>;
+
+export type ConversationUserInputRequest = Readonly<{
+  id: string;
+  questions: readonly ConversationUserInputQuestion[];
+}>;
+
+export type ConversationUserInputAnswer = Readonly<{
+  questionId: string;
+  answer: string;
+}>;
+
+export type ConversationUserInputResponse = Readonly<{
+  threadId: string;
+  turnId: string;
+  inputRequestId: string;
+  answers: readonly ConversationUserInputAnswer[];
+}>;
+
 export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
@@ -464,13 +532,13 @@ export type ConversationTurn = Readonly<{
   messages: readonly ConversationMessage[];
   pendingAgentOutputs?: readonly ConversationAgentOutput[];
   activities?: readonly ConversationActivity[];
-  contextCompactions?: readonly ConversationContextCompactionActivity[];
   workspaceRead?: ConversationWorkspaceReadActivity;
   workspaceList?: ConversationWorkspaceListActivity;
   workspaceSearch?: ConversationWorkspaceSearchActivity;
   fileChange?: ConversationFileChangeActivity;
   commandApproval?: ConversationCommandApprovalActivity;
   mcpActivities?: readonly ConversationMcpActivity[];
+  userInputRequest?: ConversationUserInputRequest;
   error?: ConversationTurnError;
   usage?: ConversationTokenUsage;
 }>;
@@ -508,7 +576,6 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   unreadThreadStatuses?: Readonly<
     Record<string, ConversationTerminalTurnStatus>
   >;
-  reloadRequiredThreadIds?: readonly string[];
   search: Readonly<{
     query: string;
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
@@ -519,22 +586,40 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   }>;
   pendingThreadId?: string;
   pendingMutation?: Readonly<{
-    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    kind: 'rename' | 'delete';
     threadId: string;
   }>;
-  archivedUndoThreadId?: string;
   selectionNotice?: string;
   mutationNotice?: string;
 }>;
 
 export type ConversationStateSnapshot = Readonly<{
   revision: number;
+  workspaceId?: string;
   phase: ConversationPhase;
   threadId?: string;
   activeTurnId?: string;
   turns: readonly ConversationTurn[];
   navigator: ConversationThreadNavigatorSnapshot;
   notice?: ConversationNotice;
+}>;
+
+export type ConversationThreadProjectionSnapshot = Readonly<{
+  revision: number;
+  workspaceId: string;
+  threadId: string;
+  phase: Exclude<ConversationPhase, 'idle' | 'unavailable'>;
+  activeTurnId?: string;
+  turns: readonly ConversationTurn[];
+}>;
+
+export type ConversationThreadProjectionDelta = Readonly<{
+  revision: number;
+  workspaceId: string;
+  threadId: string;
+  phase: Exclude<ConversationPhase, 'idle' | 'unavailable'>;
+  activeTurnId?: string;
+  turn: ConversationTurn;
 }>;
 
 export type ConversationActionResult = Readonly<{
@@ -553,15 +638,44 @@ export type ConversationStateListener = (
   snapshot: ConversationStateSnapshot,
 ) => void;
 
+export type ConversationThreadProjectionListener = (
+  snapshot: ConversationThreadProjectionSnapshot,
+) => void;
+
+export type ConversationThreadDeltaListener = (
+  delta: ConversationThreadProjectionDelta,
+) => void;
+
+export type ConversationProjectionDiagnostic = Readonly<{
+  kind: 'shapeInvalid';
+  projection: 'snapshot' | 'delta';
+  threadId?: string;
+  revision?: number;
+}>;
+
 export type ConversationApi = Readonly<{
   getConversationState: () => Promise<ConversationStateSnapshot>;
   onConversationStateChanged: (
     listener: ConversationStateListener,
   ) => () => void;
+  getConversationThreadProjection: (
+    threadId: string,
+  ) => Promise<ConversationThreadProjectionSnapshot>;
+  onConversationThreadProjectionChanged: (
+    listener: ConversationThreadProjectionListener,
+    onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+  ) => () => void;
+  onConversationThreadDelta: (
+    listener: ConversationThreadDeltaListener,
+    onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+  ) => () => void;
   sendConversationMessage: (
     request: ConversationSendRequest,
   ) => Promise<ConversationActionResult>;
   stopConversationTurn: (threadId: string) => Promise<ConversationActionResult>;
+  respondToConversationUserInput: (
+    response: ConversationUserInputResponse,
+  ) => Promise<ConversationActionResult>;
   searchConversationThreads: (
     query: string,
   ) => Promise<ConversationActionResult>;
@@ -569,15 +683,6 @@ export type ConversationApi = Readonly<{
     threadId: string,
   ) => Promise<ConversationActionResult>;
   startNewConversationThread: () => Promise<ConversationActionResult>;
-  forkConversationThread: (
-    threadId: string,
-  ) => Promise<ConversationActionResult>;
-  archiveConversationThread: (
-    threadId: string,
-  ) => Promise<ConversationActionResult>;
-  unarchiveConversationThread: (
-    threadId: string,
-  ) => Promise<ConversationActionResult>;
   deleteConversationThread: (
     threadId: string,
   ) => Promise<ConversationActionResult>;
@@ -618,6 +723,7 @@ const MESSAGE_STATUSES = new Set<ConversationMessageStatus>([
 
 const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'authentication',
+  'contextWindowExceeded',
   'invalidRequest',
   'rateLimited',
   'timeout',
@@ -629,6 +735,8 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'filtered',
   'unsupportedOutput',
   'unsupportedToolArguments',
+  'providerRequestTooLarge',
+  'providerResponseTooLarge',
   'outputTooLarge',
   'stateUnavailable',
 ]);
@@ -681,11 +789,58 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isId = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
 
-const isThreadId = (value: unknown): value is string =>
+const hasBoundedText = (
+  value: unknown,
+  maxBytes: number,
+  allowEmpty = false,
+): value is string =>
   typeof value === 'string' &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
-    value,
-  );
+  (allowEmpty || value.trim().length > 0) &&
+  new TextEncoder().encode(value).byteLength <= maxBytes &&
+  !Array.from(value).some((character) => /\p{Cc}/u.test(character));
+
+const isUserInputQuestion = (
+  value: unknown,
+): value is ConversationUserInputQuestion =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['id', 'header', 'question', 'options'].includes(key),
+  ) &&
+  typeof value.id === 'string' &&
+  /^[a-z][a-z0-9_]{0,63}$/u.test(value.id) &&
+  hasBoundedText(value.header, 48) &&
+  Array.from(value.header as string).length <= 12 &&
+  hasBoundedText(value.question, 512) &&
+  Array.isArray(value.options) &&
+  value.options.length >= 2 &&
+  value.options.length <= MAX_USER_INPUT_OPTIONS &&
+  value.options.every(
+    (option) =>
+      isRecord(option) &&
+      Object.keys(option).every((key) =>
+        ['label', 'description'].includes(key),
+      ) &&
+      hasBoundedText(option.label, 96) &&
+      hasBoundedText(option.description, 384),
+  ) &&
+  new Set(
+    value.options.map((option) =>
+      isRecord(option) ? option.label : undefined,
+    ),
+  ).size === value.options.length;
+
+const isUserInputRequest = (
+  value: unknown,
+): value is ConversationUserInputRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) => ['id', 'questions'].includes(key)) &&
+  isId(value.id) &&
+  Array.isArray(value.questions) &&
+  value.questions.length >= 1 &&
+  value.questions.length <= MAX_USER_INPUT_QUESTIONS &&
+  value.questions.every(isUserInputQuestion) &&
+  new Set(value.questions.map((question) => question.id)).size ===
+    value.questions.length;
 
 export const isValidSha256 = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{64}$/u.test(value);
@@ -1147,9 +1302,53 @@ const isCommandExecutionResultOutcome = (
   }
   if (value.type === 'error') {
     return (
-      Object.keys(value).length === 2 &&
+      Object.keys(value).length >= 2 &&
+      Object.keys(value).length <= 4 &&
       typeof value.kind === 'string' &&
-      value.kind.length > 0
+      value.kind.length > 0 &&
+      (!Object.hasOwn(value, 'message') ||
+        (typeof value.message === 'string' && value.message.length > 0)) &&
+      (!Object.hasOwn(value, 'failedPath') ||
+        (typeof value.failedPath === 'string' && value.failedPath.length > 0))
+    );
+  }
+  if (value.type === 'workspacePatch') {
+    const files = value.files;
+    return (
+      [2, 3].includes(Object.keys(value).length) &&
+      typeof value.filesChanged === 'number' &&
+      Number.isSafeInteger(value.filesChanged) &&
+      value.filesChanged >= 1 &&
+      (!Object.hasOwn(value, 'files') ||
+        (Array.isArray(files) &&
+          files.length === value.filesChanged &&
+          files.every((file) => {
+            if (
+              !isRecord(file) ||
+              ![6, 9].includes(Object.keys(file).length) ||
+              typeof file.path !== 'string' ||
+              file.path.length === 0 ||
+              !['create', 'update', 'delete'].includes(String(file.kind)) ||
+              typeof file.beforeSha256 !== 'string' ||
+              typeof file.afterSha256 !== 'string' ||
+              !Number.isSafeInteger(file.beforeBytes) ||
+              (file.beforeBytes as number) < 0 ||
+              !Number.isSafeInteger(file.afterBytes) ||
+              (file.afterBytes as number) < 0
+            ) {
+              return false;
+            }
+            const hasReview = Object.hasOwn(file, 'diff');
+            return (
+              hasReview === Object.hasOwn(file, 'newlineStyle') &&
+              hasReview === Object.hasOwn(file, 'finalNewline') &&
+              (!hasReview ||
+                (typeof file.diff === 'string' &&
+                  (file.newlineStyle === 'lf' ||
+                    file.newlineStyle === 'crLf') &&
+                  typeof file.finalNewline === 'boolean'))
+            );
+          })))
     );
   }
   if (
@@ -1215,6 +1414,9 @@ const isCommandApprovalActivity = (
     value.callItemId === value.id ||
     !isId(value.callId) ||
     !isId(value.approvalId) ||
+    (Object.hasOwn(value, 'operationKind') &&
+      value.operationKind !== 'workspacePatch' &&
+      value.operationKind !== 'shell') ||
     typeof value.command !== 'string' ||
     value.command.length === 0 ||
     new TextEncoder().encode(value.command).byteLength >
@@ -1250,7 +1452,9 @@ const isCommandApprovalActivity = (
     typeof value.decision.value === 'string' &&
     COMMAND_APPROVAL_DECISIONS.has(
       value.decision.value as ConversationCommandApprovalDecision,
-    )
+    ) &&
+    (value.decision.source === undefined ||
+      ['user', 'policy', 'system'].includes(String(value.decision.source)))
   )) {
     return false;
   }
@@ -1453,6 +1657,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
       (!Array.isArray(value.mcpActivities) ||
         value.mcpActivities.length > 4 ||
         !value.mcpActivities.every(isMcpActivity))) ||
+    (Object.hasOwn(value, 'userInputRequest') &&
+      !isUserInputRequest(value.userInputRequest)) ||
     (Object.hasOwn(value, 'usage') && !isTokenUsage(value.usage))
   ) {
     return false;
@@ -1461,7 +1667,8 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   if (
     value.status !== 'inProgress' &&
     (value.messages.some((message) => message.status !== 'completed') ||
-      (Array.isArray(pendingAgentOutputs) ? pendingAgentOutputs.length : 0) > 0)
+      (Array.isArray(pendingAgentOutputs) ? pendingAgentOutputs.length : 0) > 0 ||
+      Object.hasOwn(value, 'userInputRequest'))
   ) {
     return false;
   }
@@ -1560,9 +1767,13 @@ const isTurn = (value: unknown): value is ConversationTurn => {
   }
 
   const hasError = Object.hasOwn(value, 'error');
-  return value.status === 'failed'
-    ? hasError && isTurnError(value.error)
-    : !hasError;
+  if (value.status === 'failed') {
+    return hasError && isTurnError(value.error);
+  }
+  if (value.status === 'interrupted') {
+    return !hasError || isTurnError(value.error);
+  }
+  return !hasError;
 };
 
 const isNotice = (value: unknown): value is ConversationNotice =>
@@ -1602,11 +1813,6 @@ const isThreadNavigator = (
               status as ConversationTerminalTurnStatus,
             ),
         ))) ||
-    (Object.hasOwn(value, 'reloadRequiredThreadIds') &&
-      (!Array.isArray(value.reloadRequiredThreadIds) ||
-        !value.reloadRequiredThreadIds.every(isThreadId) ||
-        new Set(value.reloadRequiredThreadIds).size !==
-          value.reloadRequiredThreadIds.length)) ||
     !isRecord(value.search) ||
     typeof value.search.query !== 'string' ||
     new TextEncoder().encode(value.search.query).byteLength >
@@ -1625,14 +1831,12 @@ const isThreadNavigator = (
     (Object.hasOwn(value, 'pendingThreadId') && !isId(value.pendingThreadId)) ||
     (Object.hasOwn(value, 'pendingMutation') &&
       (!isRecord(pendingMutation) ||
-        !['fork', 'archive', 'unarchive', 'delete'].includes(
+        !['rename', 'delete'].includes(
           pendingMutation.kind as string,
         ) ||
         !isId(pendingMutation.threadId))) ||
     (Object.hasOwn(value, 'pendingThreadId') &&
       Object.hasOwn(value, 'pendingMutation')) ||
-    (Object.hasOwn(value, 'archivedUndoThreadId') &&
-      !isId(value.archivedUndoThreadId)) ||
     (Object.hasOwn(value, 'selectionNotice') &&
       (typeof value.selectionNotice !== 'string' ||
         value.selectionNotice.length === 0)) ||
@@ -1671,6 +1875,85 @@ const isThreadTitleMap = (
   );
 };
 
+const hasValidActiveTurn = (
+  phase: ConversationPhase,
+  activeTurnId: unknown,
+  turns: readonly ConversationTurn[],
+  threadSelected: boolean,
+): boolean => {
+  const activeTurns = turns.filter((turn) => turn.status === 'inProgress');
+  const phaseHasActiveTurn = phase === 'inProgress' || phase === 'stopping';
+  if (phase === 'starting') {
+    return activeTurns.length === 0
+      ? activeTurnId === undefined
+      : activeTurns.length === 1 &&
+          activeTurnId === activeTurns[0]?.id &&
+          threadSelected;
+  }
+  if (phaseHasActiveTurn) {
+    return (
+      activeTurns.length === 1 &&
+      activeTurnId === activeTurns[0]?.id &&
+      threadSelected
+    );
+  }
+  if (phase === 'unavailable' && activeTurns.length === 1) {
+    return activeTurnId === activeTurns[0]?.id && threadSelected;
+  }
+  return activeTurns.length === 0 && activeTurnId === undefined;
+};
+
+export const isConversationThreadProjectionSnapshot = (
+  value: unknown,
+): value is ConversationThreadProjectionSnapshot =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turns'].includes(
+      key,
+    ),
+  ) &&
+  Number.isSafeInteger(value.revision) &&
+  Number(value.revision) >= 0 &&
+  isId(value.workspaceId) &&
+  isId(value.threadId) &&
+  ['starting', 'inProgress', 'stopping', 'ready'].includes(
+    String(value.phase),
+  ) &&
+  (!Object.hasOwn(value, 'activeTurnId') || isId(value.activeTurnId)) &&
+  Array.isArray(value.turns) &&
+  value.turns.every(isTurn) &&
+  hasValidActiveTurn(
+    value.phase as ConversationPhase,
+    value.activeTurnId,
+    value.turns,
+    true,
+  );
+
+export const isConversationThreadProjectionDelta = (
+  value: unknown,
+): value is ConversationThreadProjectionDelta =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turn'].includes(
+      key,
+    ),
+  ) &&
+  Number.isSafeInteger(value.revision) &&
+  Number(value.revision) >= 1 &&
+  isId(value.workspaceId) &&
+  isId(value.threadId) &&
+  ['starting', 'inProgress', 'stopping', 'ready'].includes(
+    String(value.phase),
+  ) &&
+  (!Object.hasOwn(value, 'activeTurnId') || isId(value.activeTurnId)) &&
+  isTurn(value.turn) &&
+  ((value.phase === 'inProgress' || value.phase === 'stopping')
+    ? value.activeTurnId === value.turn.id && value.turn.status === 'inProgress'
+    : value.phase === 'starting'
+      ? value.activeTurnId === undefined ||
+        (value.activeTurnId === value.turn.id && value.turn.status === 'inProgress')
+      : value.activeTurnId === undefined || value.activeTurnId !== value.turn.id);
+
 export const isConversationStateSnapshot = (
   value: unknown,
 ): value is ConversationStateSnapshot => {
@@ -1679,6 +1962,7 @@ export const isConversationStateSnapshot = (
     typeof value.revision !== 'number' ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0 ||
+    (Object.hasOwn(value, 'workspaceId') && !isId(value.workspaceId)) ||
     typeof value.phase !== 'string' ||
     !PHASES.has(value.phase as ConversationPhase) ||
     !Array.isArray(value.turns) ||
@@ -1691,23 +1975,13 @@ export const isConversationStateSnapshot = (
     return false;
   }
 
-  const activeTurns = value.turns.filter(
-    (turn) => turn.status === 'inProgress',
-  );
   const activeTurnId = value.activeTurnId as string | undefined;
-  const phaseHasActiveTurn =
-    value.phase === 'inProgress' || value.phase === 'stopping';
-  if (phaseHasActiveTurn) {
-    return (
-      activeTurns.length === 1 &&
-      activeTurnId === activeTurns[0]?.id &&
-      isId(value.threadId)
-    );
-  }
-  if (value.phase === 'unavailable' && activeTurns.length === 1) {
-    return activeTurnId === activeTurns[0]?.id && isId(value.threadId);
-  }
-  return activeTurns.length === 0 && activeTurnId === undefined;
+  return hasValidActiveTurn(
+    value.phase as ConversationPhase,
+    activeTurnId,
+    value.turns,
+    isId(value.threadId),
+  );
 };
 
 export const isConversationActionResult = (
@@ -1744,6 +2018,32 @@ export const isConversationSendRequest = (
     (typeof value.modelProfileId === 'string' &&
       /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
 
+export const isConversationUserInputResponse = (
+  value: unknown,
+): value is ConversationUserInputResponse =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['threadId', 'turnId', 'inputRequestId', 'answers'].includes(key),
+  ) &&
+  isId(value.threadId) &&
+  isId(value.turnId) &&
+  isId(value.inputRequestId) &&
+  Array.isArray(value.answers) &&
+  value.answers.length >= 1 &&
+  value.answers.length <= MAX_USER_INPUT_QUESTIONS &&
+  value.answers.every(
+    (answer) =>
+      isRecord(answer) &&
+      Object.keys(answer).every((key) =>
+        ['questionId', 'answer'].includes(key),
+      ) &&
+      typeof answer.questionId === 'string' &&
+      /^[a-z][a-z0-9_]{0,63}$/u.test(answer.questionId) &&
+      hasBoundedText(answer.answer, MAX_USER_INPUT_ANSWER_BYTES),
+  ) &&
+  new Set(value.answers.map((answer) => answer.questionId)).size ===
+    value.answers.length;
+
 const isConversationAttachmentUpload = (
   value: unknown,
 ): value is ConversationAttachmentUpload =>
@@ -1772,3 +2072,9 @@ export const isValidThreadSearchInput = (value: unknown): value is string => {
   const query = value.trim();
   return query.length === 0 || query.split(/\s+/u).length <= 16;
 };
+
+export const isValidConversationTitle = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  new TextEncoder().encode(value).byteLength <= MAX_CONVERSATION_TITLE_BYTES &&
+  !Array.from(value).some((character) => /\p{Cc}/u.test(character));

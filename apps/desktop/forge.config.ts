@@ -2,39 +2,131 @@ import type { ForgeConfig } from '@electron-forge/shared-types';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
-
-import { createPackagedSidecarHooks } from './forge/packaged-sidecar';
 
 const appIconBasePath = path.join(__dirname, 'assets', 'icon');
 const appIconPngPath = `${appIconBasePath}.png`;
+const workspaceRoot = path.resolve(__dirname, '..', '..');
 
-const sidecarHooks = createPackagedSidecarHooks({
-  desktopRoot: __dirname,
-  workspaceRoot: path.resolve(__dirname, '..', '..'),
-});
+const buildReleaseNative = async (
+  platform: string,
+  arch: string,
+): Promise<void> => {
+  if (platform !== process.platform || arch !== process.arch) {
+    throw new Error(
+      `Native Desktop packaging must run on its target host; requested ${platform}/${arch}, current host is ${process.platform}/${process.arch}.`,
+    );
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [path.join(workspaceRoot, 'scripts', 'build-desktop-native.mjs'), '--release'],
+      { cwd: workspaceRoot, stdio: 'inherit' },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          signal
+            ? `Release native build terminated by ${signal}.`
+            : `Release native build exited with code ${code ?? 'unknown'}.`,
+        ),
+      );
+    });
+  });
+};
+
+const prepareWindowsMaker = async (): Promise<void> => {
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  const installerDirectory = path.join(
+    workspaceRoot,
+    'node_modules',
+    'electron-winstaller',
+  );
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [path.join(installerDirectory, 'script', 'select-7z-arch.js')],
+      { cwd: installerDirectory, stdio: 'inherit' },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          signal
+            ? `Windows maker preparation terminated by ${signal}.`
+            : `Windows maker preparation exited with code ${code ?? 'unknown'}.`,
+        ),
+      );
+    });
+  });
+};
 
 const config: ForgeConfig = {
   packagerConfig: {
+    appBundleId: 'com.simonf.sugarcode',
     asar: true,
-    extraResource: appIconPngPath,
+    extraResource: [
+      appIconPngPath,
+      path.join(__dirname, 'native', 'sugarcode-desktop-native.node'),
+      path.resolve(__dirname, '..', '..', 'THIRD_PARTY_NOTICES.txt'),
+    ],
     icon: appIconBasePath,
+    osxSign:
+      process.platform === 'darwin'
+        ? {
+            identity: '-',
+            identityValidation: false,
+            optionsForFile: () => ({
+              hardenedRuntime: false,
+              timestamp: 'none',
+            }),
+            preAutoEntitlements: false,
+            preEmbedProvisioningProfile: false,
+          }
+        : undefined,
   },
   rebuildConfig: {},
   hooks: {
-    prePackage: sidecarHooks.prePackage,
-    postPackage: sidecarHooks.postPackage,
+    prePackage: async (_forgeConfig, platform, arch) => {
+      await buildReleaseNative(platform, arch);
+    },
+    preMake: async () => {
+      await prepareWindowsMaker();
+    },
   },
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
       config: {
+        name: 'SugarCode',
         setupIcon: `${appIconBasePath}.ico`,
       },
     },
     {
       name: '@electron-forge/maker-zip',
       config: {},
+      platforms: ['darwin'],
+    },
+    {
+      name: '@electron-forge/maker-dmg',
+      config: {
+        format: 'ULFO',
+        icon: `${appIconBasePath}.icns`,
+      },
       platforms: ['darwin'],
     },
     {
@@ -65,6 +157,11 @@ const config: ForgeConfig = {
           entry: 'src/preload.ts',
           config: 'vite.preload.config.ts',
           target: 'preload',
+        },
+        {
+          entry: 'src/runtime/entry.ts',
+          config: 'vite.runtime.config.ts',
+          target: 'main',
         },
       ],
       renderer: [

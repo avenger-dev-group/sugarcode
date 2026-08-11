@@ -47,17 +47,22 @@ import {
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
-  CONVERSATION_THREAD_ARCHIVE_CHANNEL,
+  CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
+  CONVERSATION_THREAD_DELTA_CHANNEL,
   CONVERSATION_THREAD_DELETE_CHANNEL,
-  CONVERSATION_THREAD_FORK_CHANNEL,
   CONVERSATION_THREAD_NEW_CHANNEL,
+  CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+  CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
-  CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
   isConversationActionResult,
   isConversationStateSnapshot,
+  isConversationThreadProjectionDelta,
+  isConversationThreadProjectionSnapshot,
   type ConversationActionResult,
   type ConversationStateSnapshot,
+  type ConversationThreadProjectionSnapshot,
+  type ConversationUserInputResponse,
 } from '@/shared/conversation';
 import {
   isMcpApprovalActionResult,
@@ -99,28 +104,53 @@ import {
   type ModelConfigSaveRequest,
 } from '@/shared/model-config';
 import {
+  isSkillContent,
+  isSkillsActionResult,
+  isSkillsInspection,
+  SKILLS_CONTENT_CHANNEL,
+  SKILLS_EXPORT_CHANNEL,
+  SKILLS_GET_CHANNEL,
+  SKILLS_IMPORT_CHANNEL,
+  SKILLS_SET_ENABLED_CHANNEL,
+  type SkillContent,
+  type SkillScope,
+  type SkillsActionResult,
+  type SkillsInspection,
+} from '@/shared/skills';
+import {
   isWorkspaceInspectResult,
   isWorkspaceListResult,
+  isWorkspacePathSearchResult,
+  isWorkspaceResolveResult,
   isWorkspaceSelectResult,
   isWorkspaceStateSnapshot,
   WORKSPACE_CHAT_ACTIVATE_CHANNEL,
   WORKSPACE_INSPECT_CHANNEL,
   WORKSPACE_CLEAR_CHANNEL,
   WORKSPACE_LIST_CHANNEL,
+  WORKSPACE_PATH_SEARCH_CHANNEL,
+  WORKSPACE_RESOLVE_CHANNEL,
   WORKSPACE_PROJECT_RESUME_CHANNEL,
   WORKSPACE_PROJECT_ACTIVATE_CHANNEL,
+  WORKSPACE_PROJECT_REMOVE_CHANNEL,
   WORKSPACE_SELECT_CHANNEL,
   WORKSPACE_STATE_CHANGED_CHANNEL,
   WORKSPACE_STATE_GET_CHANNEL,
   WORKSPACE_TASK_FOCUS_CHANNEL,
   WORKSPACE_TASK_DELETE_CHANNEL,
+  WORKSPACE_TASK_RENAME_CHANNEL,
   type WorkspaceChatRequest,
   type WorkspaceInspectRequest,
   type WorkspaceInspectResult,
   type WorkspaceListRequest,
   type WorkspaceListResult,
+  type WorkspacePathSearchRequest,
+  type WorkspacePathSearchResult,
+  type WorkspaceResolveRequest,
+  type WorkspaceResolveResult,
   type WorkspaceSelectResult,
   type WorkspaceStateSnapshot,
+  type WorkspaceTaskRenameRequest,
 } from '@/shared/workspace';
 import {
   isPreviewActionResult,
@@ -186,6 +216,55 @@ const invokeConversationThreadAction = async (
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getSkills: async (): Promise<SkillsInspection> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_GET_CHANNEL);
+    if (!isSkillsInspection(result)) {
+      throw new Error('Main returned an invalid Skills inventory.');
+    }
+    return result;
+  },
+  getSkillContent: async (
+    id: string,
+    expectedSha256: string,
+  ): Promise<SkillContent> => {
+    const result: unknown = await ipcRenderer.invoke(
+      SKILLS_CONTENT_CHANNEL,
+      id,
+      expectedSha256,
+    );
+    if (!isSkillContent(result)) {
+      throw new Error('Main returned invalid Skill content.');
+    }
+    return result;
+  },
+  setSkillEnabled: async (
+    id: string,
+    enabled: boolean,
+  ): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      SKILLS_SET_ENABLED_CHANNEL,
+      id,
+      enabled,
+    );
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill state action.');
+    }
+    return result;
+  },
+  importSkill: async (scope: SkillScope): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_CHANNEL, scope);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill import action.');
+    }
+    return result;
+  },
+  exportSkill: async (id: string): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_CHANNEL, id);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill export action.');
+    }
+    return result;
+  },
   getTerminalSnapshot: async (
     request: TerminalSnapshotRequest,
   ): Promise<TerminalStateSnapshot> => {
@@ -511,11 +590,13 @@ export const createDesktopApi = (
   setCommandApprovalMode: async (
     mode: CommandApprovalMode,
     threadId?: string,
+    workspaceId?: string,
   ): Promise<CommandApprovalActionResult> => {
     const result: unknown = await ipcRenderer.invoke(
       COMMAND_APPROVAL_MODE_SET_CHANNEL,
       mode,
       threadId,
+      workspaceId,
     );
     if (!isCommandApprovalActionResult(result)) {
       throw new Error('Main returned an invalid command approval mode result.');
@@ -551,6 +632,91 @@ export const createDesktopApi = (
       );
     };
   },
+  getConversationThreadProjection: async (
+    threadId: string,
+  ): Promise<ConversationThreadProjectionSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      CONVERSATION_THREAD_PROJECTION_GET_CHANNEL,
+      threadId,
+    );
+    if (!isConversationThreadProjectionSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid Thread projection.');
+    }
+    return snapshot;
+  },
+  onConversationThreadProjectionChanged: (listener, onDiagnostic) => {
+    const handleProjectionChanged = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isConversationThreadProjectionSnapshot(snapshot)) {
+        listener(snapshot);
+      } else {
+        const candidate =
+          typeof snapshot === 'object' && snapshot !== null
+            ? (snapshot as Record<string, unknown>)
+            : null;
+        onDiagnostic?.({
+          kind: 'shapeInvalid',
+          projection: 'snapshot',
+          ...(typeof candidate?.threadId === 'string' &&
+          candidate.threadId.length > 0 &&
+          candidate.threadId.length <= 128
+            ? { threadId: candidate.threadId }
+            : {}),
+          ...(Number.isSafeInteger(candidate?.revision) &&
+          Number(candidate?.revision) >= 0
+            ? { revision: Number(candidate?.revision) }
+            : {}),
+        });
+      }
+    };
+    ipcRenderer.on(
+      CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+      handleProjectionChanged,
+    );
+    return () => {
+      ipcRenderer.removeListener(
+        CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
+        handleProjectionChanged,
+      );
+    };
+  },
+  onConversationThreadDelta: (listener, onDiagnostic) => {
+    const handleDelta = (
+      _event: IpcRendererEvent,
+      delta: unknown,
+    ): void => {
+      if (isConversationThreadProjectionDelta(delta)) {
+        listener(delta);
+      } else {
+        const candidate =
+          typeof delta === 'object' && delta !== null
+            ? (delta as Record<string, unknown>)
+            : null;
+        onDiagnostic?.({
+          kind: 'shapeInvalid',
+          projection: 'delta',
+          ...(typeof candidate?.threadId === 'string' &&
+          candidate.threadId.length > 0 &&
+          candidate.threadId.length <= 128
+            ? { threadId: candidate.threadId }
+            : {}),
+          ...(Number.isSafeInteger(candidate?.revision) &&
+          Number(candidate?.revision) >= 0
+            ? { revision: Number(candidate?.revision) }
+            : {}),
+        });
+      }
+    };
+    ipcRenderer.on(CONVERSATION_THREAD_DELTA_CHANNEL, handleDelta);
+    return () => {
+      ipcRenderer.removeListener(
+        CONVERSATION_THREAD_DELTA_CHANNEL,
+        handleDelta,
+      );
+    };
+  },
   sendConversationMessage: async (
     request,
   ): Promise<ConversationActionResult> => {
@@ -574,6 +740,18 @@ export const createDesktopApi = (
       }
       return result;
     },
+  respondToConversationUserInput: async (
+    response: ConversationUserInputResponse,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
+      response,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid user-input response result.');
+    }
+    return result;
+  },
   searchConversationThreads: async (
     query: string,
   ): Promise<ConversationActionResult> => {
@@ -608,33 +786,6 @@ export const createDesktopApi = (
       }
       return result;
     },
-  forkConversationThread: async (
-    threadId: string,
-  ): Promise<ConversationActionResult> =>
-    invokeConversationThreadAction(
-      ipcRenderer,
-      CONVERSATION_THREAD_FORK_CHANNEL,
-      threadId,
-      'fork',
-    ),
-  archiveConversationThread: async (
-    threadId: string,
-  ): Promise<ConversationActionResult> =>
-    invokeConversationThreadAction(
-      ipcRenderer,
-      CONVERSATION_THREAD_ARCHIVE_CHANNEL,
-      threadId,
-      'archive',
-    ),
-  unarchiveConversationThread: async (
-    threadId: string,
-  ): Promise<ConversationActionResult> =>
-    invokeConversationThreadAction(
-      ipcRenderer,
-      CONVERSATION_THREAD_UNARCHIVE_CHANNEL,
-      threadId,
-      'unarchive',
-    ),
   deleteConversationThread: async (
     threadId: string,
   ): Promise<ConversationActionResult> =>
@@ -852,6 +1003,18 @@ export const createDesktopApi = (
     }
     return result;
   },
+  removeWorkspaceProject: async (
+    projectId: string,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_PROJECT_REMOVE_CHANNEL,
+      projectId,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid project removal result.');
+    }
+    return result;
+  },
   focusWorkspaceTask: async (
     threadId: string,
   ): Promise<WorkspaceSelectResult> => {
@@ -873,6 +1036,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid task deletion result.');
+    }
+    return result;
+  },
+  renameWorkspaceTask: async (
+    request: WorkspaceTaskRenameRequest,
+  ): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_TASK_RENAME_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid task rename result.');
     }
     return result;
   },
@@ -909,6 +1084,18 @@ export const createDesktopApi = (
     }
     return result;
   },
+  searchWorkspacePaths: async (
+    request: WorkspacePathSearchRequest,
+  ): Promise<WorkspacePathSearchResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_PATH_SEARCH_CHANNEL,
+      request,
+    );
+    if (!isWorkspacePathSearchResult(result)) {
+      throw new Error('Main returned an invalid workspace path search result.');
+    }
+    return result;
+  },
   inspectWorkspace: async (
     request: WorkspaceInspectRequest,
   ): Promise<WorkspaceInspectResult> => {
@@ -918,6 +1105,18 @@ export const createDesktopApi = (
     );
     if (!isWorkspaceInspectResult(result)) {
       throw new Error('Main returned an invalid workspace inspect result.');
+    }
+    return result;
+  },
+  resolveWorkspaceFile: async (
+    request: WorkspaceResolveRequest,
+  ): Promise<WorkspaceResolveResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_RESOLVE_CHANNEL,
+      request,
+    );
+    if (!isWorkspaceResolveResult(result)) {
+      throw new Error('Main returned an invalid workspace resolve result.');
     }
     return result;
   },

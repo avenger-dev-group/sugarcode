@@ -97,8 +97,8 @@ impl ProcessContainment {
             return Err(error);
         }
 
-        // Retain the only handle until bridge teardown. The spawned ConPTY shell
-        // is assigned directly rather than assigning the already-running bridge,
+        // Retain the only handle until terminal teardown. The spawned ConPTY shell
+        // is assigned directly rather than assigning the already-running host,
         // which may itself belong to an Electron or CI runner Job.
         Ok(Self { _job: job })
     }

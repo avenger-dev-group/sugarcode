@@ -1,3 +1,6 @@
+import type { ConversationCommandExecutionResultOutcome } from '@/shared/conversation';
+import type { ReactNode } from 'react';
+
 export type AgentMessagePresentationState =
   'streaming' | 'stopping' | 'uncertain' | 'completed';
 
@@ -5,6 +8,7 @@ export type AgentMessageViewModel = Readonly<{
   id: string;
   text: string;
   state: AgentMessagePresentationState;
+  verifiedFilePaths: readonly string[];
 }>;
 
 export type AgentMessageProps = Readonly<{
@@ -89,30 +93,16 @@ export type CommandExecutionResultPresentationState =
 export type CommandExecutionResultViewModel = Readonly<{
   id: string;
   state: CommandExecutionResultPresentationState;
-  outcome:
-    | Readonly<{ type: 'error'; kind: string }>
-    | Readonly<{
-        type: 'process';
-        stdoutBytes: number;
-        stderrBytes: number;
-        stdoutTruncated: boolean;
-        stderrTruncated: boolean;
-        encoding: 'utf8Lossy';
-        durationMs: number;
-        outcome:
-          | Readonly<{ type: 'exitCode'; code: number }>
-          | Readonly<{ type: 'signal'; signal: number }>
-          | Readonly<{ type: 'timedOut' }>;
-        sandboxPolicy?: 'filesystemReadOnlyV1';
-        networkPolicy?: 'networkDeniedV1';
-      }>;
+  outcome: ConversationCommandExecutionResultOutcome;
 }>;
 
 export type CommandApprovalActivityViewModel = Readonly<{
   id: string;
+  operationKind: 'workspacePatch' | 'shell';
   command: string;
   argumentCount: number;
   fullAccess?: boolean;
+  approvalSource?: 'user' | 'policy' | 'system';
   liveOutput?: Readonly<{ stdout: string; stderr: string }>;
   state: CommandApprovalPresentationState;
   executionAttempt?: Readonly<{
@@ -129,4 +119,33 @@ export type CommandApprovalActivityProps = Readonly<{
 export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;
+  verifiedFilePaths?: readonly string[];
+}>;
+
+export type FileReferenceResolution =
+  | Readonly<{
+      status:
+        | 'idle'
+        | 'loading'
+        | 'notFound'
+        | 'ambiguous'
+        | 'outsideWorkspace'
+        | 'unavailable';
+    }>
+  | Readonly<{ status: 'resolved'; path: string }>;
+
+export type FileReferenceLinkStore = Readonly<{
+  locationLabel: string;
+  open: () => Promise<void>;
+  prepare: () => void;
+}>;
+
+export type FileReferenceLinkProps = Readonly<{
+  children: ReactNode;
+  exactPath?: boolean;
+  openFile: (path: string) => void;
+  path: string;
+  variant: 'code' | 'link';
+  workspaceGeneration: number;
+  workspaceReady: boolean;
 }>;

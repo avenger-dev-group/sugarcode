@@ -17,7 +17,7 @@ import type { PreviewController } from './controller';
 import {
   getTrustedMainWindow,
   isTrustedIpcSender,
-} from '../app-server/ipc/trusted-sender';
+} from '../ipc/trusted-sender';
 
 type PreviewIpcOptions = Readonly<{
   controller: PreviewController;

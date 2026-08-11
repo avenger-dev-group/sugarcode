@@ -1,6 +1,10 @@
 import type { TerminalStateSnapshot } from '@/shared/terminal';
 import type { WorkspaceStateSnapshot } from '@/shared/workspace';
 
+export type TerminalWorkbenchProps = Readonly<{
+  navigatorOffset: number;
+}>;
+
 export type TerminalWorkbenchStore = Readonly<{
   open: boolean;
   state: TerminalStateSnapshot;

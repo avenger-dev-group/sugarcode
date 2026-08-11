@@ -14,6 +14,7 @@ import type {
   ConversationTurnError,
   ConversationTurnStatus,
 } from '@/shared/conversation';
+import type { ComposerReference } from '@/shared/composer';
 
 import type {
   AgentMessageViewModel,
@@ -23,15 +24,19 @@ import type {
   WorkspaceReadActivityViewModel,
   WorkspaceSearchActivityViewModel,
 } from '../agent/types';
-import type { ContextCompactionActivityViewModel } from '../agent/context-compaction-activity';
 import type { FileChangeReviewViewModel } from '../workspace/types';
 import type { McpActivityViewModel } from '../mcp/types';
 import type { OrchestrationActivityViewModel } from '../orchestration/types';
 import type { PanelResizeHandle } from '../foundation/types';
+import type {
+  UserInputAnswer,
+  UserInputRequestViewModel,
+} from '../user-input/types';
 
 export type UserMessageViewModel = Readonly<{
   id: string;
   text: string;
+  references: readonly ComposerReference[];
   attachments: readonly ConversationAttachment[];
 }>;
 
@@ -77,20 +82,50 @@ export type TurnModelViewModel = Readonly<{
 
 export type ActiveTurnProgressViewModel = Readonly<{
   turnId: string;
-  state: 'working' | 'waitingForModel' | 'stopping' | 'uncertain';
+  state:
+    | 'thinking'
+    | 'waitingForApproval'
+    | 'waitingForInput'
+    | 'runningTool'
+    | 'stopping'
+    | 'uncertain';
   label: string;
-  elapsedLabel?: string;
   detail?: string;
+}>;
+
+export type ActiveTurnOperationProgress = Readonly<{
+  state: 'waitingForApproval' | 'waitingForInput' | 'runningTool';
+  label: string;
+  detail?: string;
+}>;
+
+export type SkillActivityPresentationState =
+  | 'running'
+  | 'stopping'
+  | 'uncertain'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted';
+
+export type SkillActivityViewModel = Readonly<{
+  id: string;
+  name: string;
+  state: SkillActivityPresentationState;
+  purpose?: string;
+  description?: string;
+  content?: string;
+  errorKind?: string;
+}>;
+
+export type SkillActivityProps = Readonly<{
+  activity: SkillActivityViewModel;
+  language: ProcessLanguage;
 }>;
 
 export type TurnActivityViewModel =
   | Readonly<{
       type: 'commentary';
       activity: AgentCommentaryViewModel;
-    }>
-  | Readonly<{
-      type: 'contextCompaction';
-      activity: ContextCompactionActivityViewModel;
     }>
   | Readonly<{
       type: 'workspaceRead';
@@ -104,6 +139,7 @@ export type TurnActivityViewModel =
       type: 'workspaceSearch';
       activity: WorkspaceSearchActivityViewModel;
     }>
+  | Readonly<{ type: 'skill'; activity: SkillActivityViewModel }>
   | Readonly<{ type: 'fileChange'; activity: FileChangeReviewViewModel }>
   | Readonly<{
       type: 'commandApproval';
@@ -128,21 +164,25 @@ export type CompactToolActivity = Extract<
   }
 >;
 
+export type ProcessLanguage = 'en' | 'zh';
+
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  verifiedFilePaths: readonly string[];
+  processLanguage: ProcessLanguage;
   durationLabel?: string;
   model?: TurnModelViewModel;
   messages: readonly TranscriptMessageViewModel[];
   pendingAgentOutputs?: readonly AgentMessageViewModel[];
   activities?: readonly TurnActivityViewModel[];
-  contextCompactions?: readonly ContextCompactionActivityViewModel[];
   workspaceRead?: WorkspaceReadActivityViewModel;
   workspaceList?: WorkspaceListActivityViewModel;
   workspaceSearch?: WorkspaceSearchActivityViewModel;
   fileChange?: FileChangeReviewViewModel;
   commandApproval?: CommandApprovalActivityViewModel;
   mcpActivities?: readonly McpActivityViewModel[];
+  userInputRequest?: UserInputRequestViewModel;
   terminalLabel?: string;
   failure?: TurnFailureViewModel;
   isError: boolean;
@@ -150,10 +190,10 @@ export type TurnViewModel = Readonly<{
 
 export type ThreadViewModel = Readonly<{
   phase: ConversationPhase;
+  workspaceIdentity: string | null;
   threadIdentity: string | null;
   turns: readonly TurnViewModel[];
   isEmpty: boolean;
-  statusLabel: string;
   notice?: string;
 }>;
 
@@ -165,14 +205,12 @@ export type ThreadNavigatorViewModel = Readonly<{
   unreadThreadStatuses: Readonly<
     Record<string, ConversationTerminalTurnStatus>
   >;
-  reloadRequiredThreadIds: readonly string[];
   selectedThreadId: string | null;
   pendingThreadId: string | null;
   pendingMutation: Readonly<{
-    kind: 'fork' | 'archive' | 'unarchive' | 'delete';
+    kind: 'rename' | 'delete';
     threadId: string;
   }> | null;
-  archivedUndoThreadId: string | null;
   truncated: boolean;
   statusLabel: string;
   selectionNotice?: string;
@@ -183,7 +221,6 @@ export type ThreadNavigationStatus =
   | 'idle'
   | 'opening'
   | 'running'
-  | 'reloadRequired'
   | 'completed'
   | 'failed'
   | 'interrupted'
@@ -193,17 +230,23 @@ export type ThreadStore = Readonly<{
   thread: ThreadViewModel;
   navigator: ThreadNavigatorViewModel;
   expandedProjectIds: readonly string[];
+  workspaceGeneration: number;
+  workspaceReady: boolean;
   draft: string;
   attachments: readonly DraftAttachmentViewModel[];
-  inputBytes: number;
-  inputLimitBytes: number;
-  inputHint: string;
-  contextBudgetHint: string | null;
   canSend: boolean;
   canStop: boolean;
+  startsChatOnSend: boolean;
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
+  rename: Readonly<{
+    request: Readonly<{ threadId: string; title: string }> | null;
+    draft: string;
+    pending: boolean;
+    error: string | null;
+    canSave: boolean;
+  }>;
   modelOptions: readonly Readonly<{
     profileId: string;
     label: string;
@@ -213,10 +256,7 @@ export type ThreadStore = Readonly<{
   modelSelectionDisabled: boolean;
   modelSwitchConfirmation: Readonly<{
     sourceName: string;
-    sourceWireApi: string;
     targetName: string;
-    targetWireApi: string;
-    protocolChanges: boolean;
   }> | null;
   setDraft: (value: string) => void;
   addAttachments: (files: readonly File[]) => Promise<void>;
@@ -227,12 +267,18 @@ export type ThreadStore = Readonly<{
   cancelModelSwitch: () => void;
   startNewThread: () => Promise<void>;
   selectThread: (threadId: string) => Promise<void>;
-  forkThread: (threadId: string) => Promise<void>;
-  archiveThread: (threadId: string) => Promise<void>;
-  unarchiveThread: (threadId: string) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
+  requestThreadRename: (threadId: string, title: string) => void;
+  setRenameDraft: (title: string) => void;
+  cancelThreadRename: () => void;
+  confirmThreadRename: () => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
+  respondToUserInput: (
+    turnId: string,
+    inputRequestId: string,
+    answers: readonly UserInputAnswer[],
+  ) => Promise<boolean>;
 }>;
 
 export type ThreadWorkbenchViewProps = Readonly<{
@@ -254,7 +300,7 @@ export type TranscriptTurnProps = Readonly<{
   turnNumber: number;
   boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
-  onStop: () => void;
+  onSubmitUserInput: ThreadStore['respondToUserInput'];
 }>;
 
 export type ActivityDisclosureStore = Readonly<{
@@ -266,11 +312,21 @@ export type ProcessActivityGroupProps = Readonly<{
   groupId: string;
   status: ConversationTurnStatus;
   requiresAttention: boolean;
+  language: ProcessLanguage;
+  activeLabel?: string;
+  animateActive?: boolean;
   durationLabel?: string;
   children: ReactNode;
 }>;
 
+export type TurnChangeSummaryProps = Readonly<{
+  turnId: string;
+  activities: readonly TurnActivityViewModel[];
+  language: ProcessLanguage;
+}>;
+
 export type TranscriptFollow = Readonly<{
+  settlingThreadSelection: boolean;
   transcriptContent: RefObject<HTMLDivElement | null>;
   transcriptEnd: RefObject<HTMLDivElement | null>;
   transcriptViewport: RefObject<HTMLDivElement | null>;

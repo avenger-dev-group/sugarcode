@@ -1,4 +1,4 @@
-export type SettingsSection = 'general' | 'model' | 'skills' | 'mcp';
+export type SettingsSection = 'general' | 'model' | 'skills';
 
 export type SettingsStore = Readonly<{
   open: boolean;
@@ -10,6 +10,5 @@ export type SettingsStore = Readonly<{
 export type SettingsDialogProps = Readonly<{
   isDark: boolean;
   themeLabel: string;
-  turnBusy: boolean;
   toggleTheme: () => void;
 }>;

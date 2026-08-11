@@ -47,6 +47,7 @@ export type FileChangeReviewViewModel = Readonly<{
 export type FileChangeReviewProps = Readonly<{
   review: FileChangeReviewViewModel;
   variant?: 'card' | 'compact';
+  language?: 'en' | 'zh';
 }>;
 
 export type FileChangeReviewStore = Readonly<{

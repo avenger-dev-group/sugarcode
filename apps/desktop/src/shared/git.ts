@@ -1,9 +1,85 @@
-import type {
-  WorkspaceGitCommitResponse,
-  WorkspaceGitDiffResponse,
-  WorkspaceGitMutationResponse,
-  WorkspaceGitStatusResponse,
-} from '@sugarcode/app-server-protocol';
+export type WorkspaceGitChangeKind =
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'typeChanged'
+  | 'conflicted'
+  | 'untracked';
+
+export type WorkspaceGitRepositoryState =
+  | 'clean'
+  | 'merge'
+  | 'revert'
+  | 'revertSequence'
+  | 'cherryPick'
+  | 'cherryPickSequence'
+  | 'bisect'
+  | 'rebase'
+  | 'rebaseInteractive'
+  | 'rebaseMerge'
+  | 'applyMailbox'
+  | 'applyMailboxOrRebase';
+
+export type WorkspaceGitErrorKind =
+  | 'notRepository'
+  | 'unsupportedRepository'
+  | 'invalidPath'
+  | 'stale'
+  | 'nothingToCommit'
+  | 'tooLarge'
+  | 'unsupportedPath'
+  | 'unborn'
+  | 'detached'
+  | 'repositoryState'
+  | 'indexLocked'
+  | 'changed'
+  | 'unavailable';
+
+export type WorkspaceGitStatusResponse =
+  | Readonly<{
+      status: 'ready';
+      revision: string;
+      branch?: string;
+      head?: string;
+      repositoryState: WorkspaceGitRepositoryState;
+      mutationAllowed: boolean;
+      entries: readonly Readonly<{
+        path: string;
+        index?: WorkspaceGitChangeKind;
+        worktree?: WorkspaceGitChangeKind;
+        stageable: boolean;
+      }>[];
+      stagedCount: number;
+      unstagedCount: number;
+      unsupportedPaths: number;
+    }>
+  | Readonly<{ status: 'error'; kind: WorkspaceGitErrorKind }>;
+
+export type WorkspaceGitDiffResponse =
+  | Readonly<{
+      status: 'ready';
+      revision: string;
+      path: string;
+      source: 'worktree' | 'index';
+      content: string;
+      additions: number;
+      deletions: number;
+    }>
+  | Readonly<{ status: 'error'; kind: WorkspaceGitErrorKind }>;
+
+export type WorkspaceGitMutationResponse =
+  | Readonly<{ status: 'applied'; revision: string; paths: readonly string[] }>
+  | Readonly<{ status: 'error'; kind: WorkspaceGitErrorKind }>;
+
+export type WorkspaceGitCommitResponse =
+  | Readonly<{
+      status: 'committed';
+      revision: string;
+      oldHead: string;
+      newHead: string;
+    }>
+  | Readonly<{ status: 'error'; kind: WorkspaceGitErrorKind }>;
 
 export const GIT_STATE_GET_CHANNEL = 'git-state:get';
 export const GIT_STATE_CHANGED_CHANNEL = 'git-state:changed';

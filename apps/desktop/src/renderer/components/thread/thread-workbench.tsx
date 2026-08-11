@@ -2,6 +2,7 @@ import {
   ArrowUp,
   CircleAlert,
   FileText,
+  Folder,
   Image as ImageIcon,
   LoaderCircle,
   Paperclip,
@@ -16,7 +17,7 @@ import { memo, useRef } from 'react';
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
-import { ContextCompactionActivity } from '@/renderer/components/agent/context-compaction-activity';
+import { ComposerInput } from '@/renderer/components/composer/composer-input';
 import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-read-activity';
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
@@ -39,11 +40,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/renderer/components/ui/select';
-import { Textarea } from '@/renderer/components/ui/textarea';
 import { FileChangeReview } from '@/renderer/components/workspace/file-change-review';
+import { TerminalWorkbench } from '@/renderer/components/workspace/terminal/terminal-workbench';
 import { McpActivityTimeline } from '@/renderer/components/mcp/activity-timeline';
-import { OrchestrationActivity } from '@/renderer/components/orchestration/orchestration-activity';
+import {
+  AgentTaskDock,
+  OrchestrationActivity,
+} from '@/renderer/components/orchestration/orchestration-activity';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
+import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 
 import type {
   CompactToolActivity,
@@ -52,13 +57,34 @@ import type {
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
+import { canRemoveDraftProject } from './composer-state';
 import { resolveConversationTitle } from './conversation-title';
+import { EmptyThreadState } from './empty-thread-state';
 import { ProcessActivityGroup } from './process-activity-group';
+import { SkillActivity } from './skill-activity';
 import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
 import { ToolActivityGroup } from './tool-activity-group';
+import { TurnChangeSummary } from './turn-change-summary';
 import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
+
+const currentOrchestrationActivity = (
+  store: ThreadWorkbenchViewProps['store'],
+) => {
+  const activeTurnId = store.activeTurnProgress?.turnId;
+  const activeTurn = store.thread.turns.find(
+    (turn) => turn.id === activeTurnId,
+  );
+  const activities = activeTurn?.activities ?? [];
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const entry = activities[index];
+    if (entry?.type === 'orchestration') {
+      return entry.activity;
+    }
+  }
+  return null;
+};
 
 const TranscriptMessage = ({
   entry,
@@ -67,62 +93,89 @@ const TranscriptMessage = ({
     <AgentMessage message={entry.message} />
   ) : (
     <div className="ml-auto w-fit max-w-[82%]">
-      <article
-        className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
-        aria-label="Your message"
-      >
-        {entry.message.attachments.length > 0 ? (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {entry.message.attachments.map((attachment) => (
-              <div
-                key={attachment.assetId}
-                className="flex max-w-56 items-center gap-2 rounded-xl bg-background/70 px-2.5 py-2"
-              >
-                {attachment.kind === 'image' && attachment.previewUrl ? (
-                  <img
-                    src={attachment.previewUrl}
-                    alt=""
-                    className="size-8 shrink-0 rounded-md object-cover"
-                  />
-                ) : attachment.kind === 'image' ? (
-                  <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
-                ) : (
-                  <FileText className="size-4 shrink-0" aria-hidden="true" />
-                )}
-                <span className="truncate text-xs font-medium">
-                  {attachment.originalName}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
-        {entry.message.text ? (
-          <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-            {entry.message.text}
-          </p>
-        ) : null}
-      </article>
+      {entry.message.text || entry.message.attachments.length > 0 ? (
+        <article
+          className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
+          aria-label="Your message"
+        >
+          {entry.message.attachments.length > 0 ? (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {entry.message.attachments.map((attachment) => (
+                <div
+                  key={attachment.assetId}
+                  className="flex max-w-56 items-center gap-2 rounded-xl bg-background/70 px-2.5 py-2"
+                >
+                  {attachment.kind === 'image' && attachment.previewUrl ? (
+                    <img
+                      src={attachment.previewUrl}
+                      alt=""
+                      className="size-8 shrink-0 rounded-md object-cover"
+                    />
+                  ) : attachment.kind === 'image' ? (
+                    <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
+                  ) : (
+                    <FileText className="size-4 shrink-0" aria-hidden="true" />
+                  )}
+                  <span className="truncate text-xs font-medium">
+                    {attachment.originalName}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {entry.message.text ? (
+            <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+              {entry.message.text}
+            </p>
+          ) : null}
+        </article>
+      ) : null}
+      {entry.message.references.length > 0 ? (
+        <div
+          className="mt-2 flex flex-wrap justify-end gap-1.5 px-1"
+          aria-label="已选择的能力和引用"
+        >
+          {entry.message.references.map((reference) => (
+            <span
+              key={`${reference.kind}:${reference.target}`}
+              className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border bg-background px-2.5 py-1 text-xs text-link shadow-sm"
+              title={reference.target}
+            >
+              <span className="text-tertiary">
+                {reference.kind === 'command'
+                  ? '命令'
+                  : reference.kind === 'skill'
+                    ? 'Skill'
+                    : '文件'}
+              </span>
+              <span className="truncate font-medium">{reference.value}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 
 const TurnActivity = ({
   entry,
+  language,
   turnStatus,
 }: Readonly<{
   entry: TurnActivityViewModel;
+  language: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['processLanguage'];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
 }>) => {
   switch (entry.type) {
     case 'commentary':
       return <AgentCommentary commentary={entry.activity} />;
-    case 'contextCompaction':
-      return <ContextCompactionActivity activity={entry.activity} />;
     case 'workspaceRead':
       return <WorkspaceReadActivity activity={entry.activity} />;
     case 'workspaceList':
       return <WorkspaceListActivity activity={entry.activity} />;
     case 'workspaceSearch':
       return <WorkspaceSearchActivity activity={entry.activity} />;
+    case 'skill':
+      return <SkillActivity activity={entry.activity} language={language} />;
     case 'fileChange':
       return <FileChangeReview review={entry.activity} />;
     case 'commandApproval':
@@ -135,17 +188,23 @@ const TurnActivity = ({
         />
       );
     case 'orchestration':
-      return <OrchestrationActivity activity={entry.activity} />;
+      return turnStatus === 'inProgress' ? null : (
+        <OrchestrationActivity activity={entry.activity} />
+      );
   }
 };
 
 const TurnActivityTimeline = ({
   activities,
   turnStatus,
+  language,
+  progress,
   durationLabel,
 }: Readonly<{
   activities: readonly TurnActivityViewModel[];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
+  language: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['processLanguage'];
+  progress?: TranscriptTurnProps['progress'];
   durationLabel?: string;
 }>) => {
   const requiresAttention = activities.some(
@@ -161,6 +220,11 @@ const TurnActivityTimeline = ({
       groupId={activities[0]?.activity.id ?? 'empty-process'}
       status={turnStatus}
       requiresAttention={requiresAttention}
+      language={language}
+      activeLabel={progress?.label}
+      animateActive={
+        progress?.state !== 'uncertain' && progress?.state !== 'waitingForInput'
+      }
       durationLabel={durationLabel}
     >
       {activities.map((entry, index) => {
@@ -169,6 +233,7 @@ const TurnActivityTimeline = ({
             <TurnActivity
               key={`${entry.type}:${entry.activity.id}`}
               entry={entry}
+              language={language}
               turnStatus={turnStatus}
             />
           );
@@ -188,6 +253,7 @@ const TurnActivityTimeline = ({
           <ToolActivityGroup
             key={`toolActivities:${group[0].activity.id}`}
             activities={group}
+            language={language}
           />
         );
       })}
@@ -200,7 +266,7 @@ const TranscriptTurnView = ({
   turnNumber,
   boundary,
   progress,
-  onStop,
+  onSubmitUserInput,
 }: TranscriptTurnProps) => (
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
@@ -222,17 +288,15 @@ const TranscriptTurnView = ({
         .map((entry) => (
           <TranscriptMessage key={entry.message.id} entry={entry} />
         ))}
-      {turn.activities ? (
+      {turn.activities?.length ? (
         <TurnActivityTimeline
           activities={turn.activities}
           turnStatus={turn.status}
+          language={turn.processLanguage}
+          progress={progress}
           durationLabel={turn.durationLabel}
         />
       ) : null}
-      {!turn.activities &&
-        turn.contextCompactions?.map((activity) => (
-          <ContextCompactionActivity key={activity.id} activity={activity} />
-        ))}
       {!turn.activities && turn.workspaceRead ? (
         <WorkspaceReadActivity activity={turn.workspaceRead} />
       ) : null}
@@ -254,6 +318,13 @@ const TranscriptTurnView = ({
           turnStatus={turn.status}
         />
       ) : null}
+      {turn.userInputRequest ? (
+        <UserInputSurface
+          turnId={turn.id}
+          request={turn.userInputRequest}
+          onSubmit={onSubmitUserInput}
+        />
+      ) : null}
       {turn.pendingAgentOutputs?.map((output) => (
         <AgentMessage key={output.id} message={output} />
       ))}
@@ -262,8 +333,17 @@ const TranscriptTurnView = ({
         .map((entry) => (
           <TranscriptMessage key={entry.message.id} entry={entry} />
         ))}
+      {turn.activities && turn.status !== 'inProgress' ? (
+        <TurnChangeSummary
+          turnId={turn.id}
+          activities={turn.activities}
+          language={turn.processLanguage}
+        />
+      ) : null}
       {turn.status === 'inProgress' &&
-      !turn.pendingAgentOutputs?.length ? (
+      !turn.pendingAgentOutputs?.length &&
+      !turn.activities?.length &&
+      !turn.userInputRequest ? (
         <div
           className="flex items-start gap-2 text-sm font-normal text-process"
           role="status"
@@ -271,36 +351,21 @@ const TranscriptTurnView = ({
         >
           {progress?.state === 'uncertain' ? (
             <CircleAlert className="mt-0.5 size-3.5" aria-hidden="true" />
-          ) : (
-            <LoaderCircle
-              className="mt-0.5 size-3.5 animate-spin"
-              aria-hidden="true"
-            />
-          )}
+          ) : null}
           <div className="min-w-0">
-            <p>
-              {progress?.label ?? 'Agent 正在处理…'}
-              {progress?.elapsedLabel ? (
-                <span aria-hidden="true"> · {progress.elapsedLabel}</span>
-              ) : null}
+            <p
+              className={
+                progress?.state === 'uncertain'
+                  ? undefined
+                  : 'agent-status-shimmer'
+              }
+            >
+              {progress?.label ?? '思考中'}
             </p>
             {progress?.detail ? (
               <p className="mt-1 max-w-xl text-xs leading-normal text-secondary">
                 {progress.detail}
               </p>
-            ) : null}
-            {progress?.state === 'waitingForModel' ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={onStop}
-                aria-label="停止当前任务"
-              >
-                <Square className="size-3 fill-current" aria-hidden="true" />
-                停止任务
-              </Button>
             ) : null}
           </div>
         </div>
@@ -329,11 +394,59 @@ const TranscriptTurnView = ({
 
 const TranscriptTurn = memo(TranscriptTurnView);
 
+const ThreadSelectionSkeleton = () => (
+  <div
+    className="space-y-8 py-3"
+    role="status"
+    aria-label="正在加载目标会话"
+  >
+    <div className="ml-auto w-2/3 space-y-2 rounded-2xl rounded-br-md bg-surface p-4">
+      <div className="h-3 w-11/12 animate-pulse rounded-full bg-border" />
+      <div className="h-3 w-7/12 animate-pulse rounded-full bg-border" />
+    </div>
+    <div className="w-4/5 space-y-3">
+      <div className="h-3 w-2/5 animate-pulse rounded-full bg-surface" />
+      <div className="h-3 w-full animate-pulse rounded-full bg-surface" />
+      <div className="h-3 w-10/12 animate-pulse rounded-full bg-surface" />
+      <div className="h-3 w-7/12 animate-pulse rounded-full bg-surface" />
+    </div>
+    <span className="sr-only">正在读取会话内容</span>
+  </div>
+);
+
+const ThreadSelectionError = ({
+  summary,
+  onRetry,
+}: Readonly<{ summary: string; onRetry: () => void }>) => (
+  <div
+    className="my-auto rounded-2xl border bg-surface p-6 text-center"
+    role="alert"
+  >
+    <CircleAlert
+      className="mx-auto size-5 text-destructive"
+      aria-hidden="true"
+    />
+    <p className="mt-3 text-sm font-medium">无法加载此会话</p>
+    <p className="mx-auto mt-1 max-w-md text-sm font-normal leading-normal text-secondary">
+      {summary}
+    </p>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="mt-4"
+      onClick={onRetry}
+    >
+      重试
+    </Button>
+  </div>
+);
+
 export const ThreadWorkbenchView = ({
   store,
   navigatorOpen = true,
   navigatorResize,
-  contextRailOpen = true,
+  contextRailOpen = false,
   contextRailResize,
   onToggleNavigator,
   onToggleContextRail,
@@ -342,7 +455,9 @@ export const ThreadWorkbenchView = ({
   permissionControl,
   approvalThreadIds = [],
 }: ThreadWorkbenchViewProps) => {
+  const agentTaskActivity = currentOrchestrationActivity(store);
   const {
+    settlingThreadSelection,
     transcriptContent,
     transcriptEnd,
     transcriptViewport,
@@ -351,40 +466,66 @@ export const ThreadWorkbenchView = ({
     recordKeyScrollIntent,
     beginPointerScroll,
     endPointerScroll,
-  } = useTranscriptFollow(store.thread);
+  } = useTranscriptFollow(store.thread, store.navigator.pendingThreadId);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
+  const composerProjectName =
+    workspace.state.status === 'ready' &&
+    workspace.state.kind === 'project'
+      ? workspace.state.projectName ?? workspace.state.name
+      : undefined;
+  const draftProjectRemovable = canRemoveDraftProject(
+    workspace.state,
+    store.thread.threadIdentity,
+  );
   const conversationTitle = resolveConversationTitle(
     store.thread,
     store.navigator,
     workspace.state,
   );
-  const conversationSubtitle =
-    workspace.state.kind === 'chat'
-      ? '独立 Chat'
-      : workspace.state.name ?? workspace.state.projectName ?? '项目对话';
+  const pendingThreadId = store.navigator.pendingThreadId;
+  const selectionError = pendingThreadId
+    ? store.navigator.selectionNotice
+    : undefined;
+  const navigatorWidth = navigatorResize?.width ?? 286;
+  const contextRailWidth = contextRailResize?.width ?? 760;
+  const contextRailTargetWidth = `min(${contextRailWidth}px, 60vw, calc(100vw - 720px))`;
+  const navigatorTransition = navigatorResize?.dragging
+    ? 'transition-none'
+    : 'transition-[width,opacity] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none';
+  const contextRailTransition = contextRailResize?.dragging
+    ? 'transition-none'
+    : 'transition-[width,opacity] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none';
 
   return (
     <>
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-      {navigatorOpen ? (
         <aside
           id="task-navigator"
-          className="hidden min-h-0 shrink-0 md:block"
-          style={{ width: navigatorResize?.width ?? 286 }}
+          className={`hidden min-h-0 shrink-0 overflow-hidden md:block ${navigatorTransition} ${
+            navigatorOpen
+              ? 'opacity-100'
+              : 'pointer-events-none opacity-0'
+          }`}
+          style={{ width: navigatorOpen ? navigatorWidth : 0 }}
+          aria-hidden={!navigatorOpen}
+          inert={navigatorOpen ? undefined : true}
         >
-          <ThreadNavigator
-            store={store}
-            footer={navigationFooter}
-            onToggleNavigator={onToggleNavigator}
-            approvalThreadIds={approvalThreadIds}
-          />
+          <div className="h-full" style={{ width: navigatorWidth }}>
+            <ThreadNavigator
+              store={store}
+              footer={navigationFooter}
+              onToggleNavigator={onToggleNavigator}
+              approvalThreadIds={approvalThreadIds}
+            />
+          </div>
         </aside>
-      ) : null}
-      {navigatorOpen && navigatorResize ? (
+      {navigatorResize ? (
         <div
           className={`panel-resizer hidden md:block ${
             navigatorResize.dragging ? 'panel-resizer--active' : ''
+          } ${
+            navigatorOpen ? '' : 'panel-resizer--collapsed'
           }`}
           role="separator"
           aria-label="调整任务导航宽度"
@@ -399,42 +540,49 @@ export const ThreadWorkbenchView = ({
       ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <header
-          className={`window-drag-region relative flex h-[52px] shrink-0 items-center pr-5 ${
+          className={`window-drag-region relative flex h-[52px] shrink-0 items-center pr-5 transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
             navigatorOpen ? 'pl-5' : 'pl-32'
           }`}
         >
-          {!navigatorOpen && onToggleNavigator ? (
+          {onToggleNavigator ? (
             <Button
               type="button"
               size="icon-sm"
               variant="ghost"
-              className="window-no-drag absolute left-[84px] top-1.5 hidden text-tertiary md:inline-flex"
+              className={`window-no-drag absolute left-[84px] top-1.5 hidden text-tertiary transition-opacity duration-150 md:inline-flex motion-reduce:transition-none ${
+                navigatorOpen
+                  ? 'pointer-events-none opacity-0'
+                  : 'opacity-100'
+              }`}
               onClick={onToggleNavigator}
               aria-controls="task-navigator"
-              aria-expanded="false"
+              aria-expanded={navigatorOpen}
               aria-label="展开左侧任务栏"
               title="展开左侧任务栏"
+              tabIndex={navigatorOpen ? -1 : 0}
             >
               <PanelLeftOpen aria-hidden="true" />
             </Button>
           ) : null}
-          <div className="window-no-drag min-w-0 select-text">
+          {conversationTitle ? (
             <p
-              className="truncate text-sm font-normal tracking-[-0.015em]"
+              className="window-no-drag min-w-0 truncate text-sm font-normal tracking-[-0.015em]"
               title={conversationTitle}
             >
               {conversationTitle}
             </p>
-            <p className="truncate text-xs font-normal text-tertiary">
-              {conversationSubtitle}
-            </p>
-          </div>
+          ) : null}
+          <TerminalWorkbench
+            navigatorOffset={
+              navigatorOpen ? navigatorWidth + (navigatorResize ? 1 : 0) : 0
+            }
+          />
           {contextRail && onToggleContextRail ? (
             <Button
               type="button"
               size="icon-sm"
               variant="ghost"
-              className="window-no-drag ml-auto hidden text-tertiary min-[1100px]:inline-flex"
+              className="window-no-drag ml-1 hidden text-tertiary min-[1100px]:inline-flex"
               onClick={onToggleContextRail}
               aria-controls="workspace-tools"
               aria-expanded={contextRailOpen}
@@ -468,23 +616,15 @@ export const ThreadWorkbenchView = ({
             ref={transcriptContent}
             className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-8 sm:px-10"
           >
-            {store.thread.isEmpty ? (
-              <div className="my-auto py-16 text-center">
-                <div className="mx-auto grid size-11 place-items-center rounded-2xl border bg-surface shadow-sm">
-                  <span className="text-lg text-secondary" aria-hidden="true">
-                    S
-                  </span>
-                </div>
-                <p className="mt-5 text-sm text-secondary">
-                  SugarCode · 本地 Agent
-                </p>
-                <h1 className="mt-3 text-[1.75rem] font-medium leading-[1.2] tracking-[-0.035em]">
-                  想让 SugarCode 做什么？
-                </h1>
-                <p className="mx-auto mt-3 max-w-md text-sm font-normal leading-[22px] text-secondary">
-                  描述目标、问题或想完成的改动。项目任务使用项目工作区；聊天不绑定项目，并把需要生成的文件隔离到专属聊天目录。
-                </p>
-              </div>
+            {pendingThreadId && selectionError ? (
+              <ThreadSelectionError
+                summary={selectionError}
+                onRetry={() => void store.selectThread(pendingThreadId)}
+              />
+            ) : pendingThreadId || settlingThreadSelection ? (
+              <ThreadSelectionSkeleton />
+            ) : store.thread.isEmpty ? (
+              <EmptyThreadState />
             ) : (
               <div>
                 {store.thread.turns.map((turn, index) => (
@@ -504,7 +644,7 @@ export const ThreadWorkbenchView = ({
                         ? store.activeTurnProgress
                         : undefined
                     }
-                    onStop={() => void store.stop()}
+                    onSubmitUserInput={store.respondToUserInput}
                   />
                 ))}
               </div>
@@ -531,13 +671,16 @@ export const ThreadWorkbenchView = ({
           className="relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8"
         >
           <div className="mx-auto max-w-3xl">
-            {(store.actionError || store.thread.notice) && (
+            {agentTaskActivity ? (
+              <AgentTaskDock activity={agentTaskActivity} />
+            ) : null}
+            {(store.actionError || store.thread.notice || workspace.error) && (
               <p className="mb-2 px-1 text-xs text-destructive" role="alert">
-                {store.actionError ?? store.thread.notice}
+                {store.actionError ?? store.thread.notice ?? workspace.error}
               </p>
             )}
             <div
-              className="overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)]"
+              className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
               onDragOver={(event) => {
                 if (event.dataTransfer.types.includes('Files')) {
                   event.preventDefault();
@@ -564,6 +707,37 @@ export const ThreadWorkbenchView = ({
                   event.target.value = '';
                 }}
               />
+              {composerProjectName ? (
+                <div className="group/project mx-3 mt-3 flex h-8 w-fit max-w-[calc(100%_-_1.5rem)] items-center rounded-lg bg-surface">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="flex h-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm font-normal text-navigation transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={workspace.busy}
+                    onClick={() => void workspace.chooseProject()}
+                    aria-label={`重新选择项目文件夹，当前为 ${composerProjectName}`}
+                    title="重新选择项目文件夹"
+                  >
+                    <Folder className="size-4 shrink-0 text-tertiary" aria-hidden="true" />
+                    <span className="truncate">{composerProjectName}</span>
+                  </Button>
+                  {draftProjectRemovable ? (
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      className="mr-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={workspace.busy}
+                      onClick={() => void workspace.activateChat()}
+                      aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
+                      title="移除项目并切换到聊天模式"
+                    >
+                      <X className="size-3.5" aria-hidden="true" />
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               {store.attachments.length > 0 ? (
                 <div className="flex gap-2 overflow-x-auto px-3 pt-3">
                   {store.attachments.map((attachment) => (
@@ -604,9 +778,11 @@ export const ThreadWorkbenchView = ({
                   ))}
                 </div>
               ) : null}
-              <Textarea
+              <ComposerInput
                 value={store.draft}
-                onChange={(event) => store.setDraft(event.target.value)}
+                onValueChange={store.setDraft}
+                workspaceGeneration={store.workspaceGeneration}
+                workspaceReady={store.workspaceReady}
                 onPaste={(event) => {
                   const files = Array.from(event.clipboardData.files).filter(
                     (file) => file.type.startsWith('image/'),
@@ -616,36 +792,25 @@ export const ThreadWorkbenchView = ({
                     void store.addAttachments(files);
                   }
                 }}
-                onKeyDown={(event) => {
-                  if (
-                    event.key === 'Enter' &&
-                    !event.shiftKey &&
-                    !event.nativeEvent.isComposing
-                  ) {
-                    event.preventDefault();
-                    void store.send();
-                  }
-                }}
+                onSubmit={() => void store.send()}
                 disabled={
                   store.thread.phase === 'inProgress' ||
                   store.thread.phase === 'stopping' ||
                   store.thread.phase === 'starting' ||
-                  store.thread.phase === 'unavailable' ||
+                  (store.thread.phase === 'unavailable' &&
+                    !store.startsChatOnSend) ||
+                  store.isSending ||
                   store.navigator.pendingThreadId !== null
                 }
-                aria-label="Message SugarCode"
-                aria-describedby="conversation-input-hint"
-                placeholder="描述你想完成的任务…"
-                className="min-h-24 max-h-52 px-4 pt-3.5"
               />
-              <div className="flex items-center justify-between gap-3 border-t px-3 py-2">
+              <div className="flex items-end justify-between gap-3 px-3 pt-1 pb-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 flex-wrap items-center gap-2">
                     <Button
                       type="button"
                       size="icon"
                       variant="ghost"
-                      className="size-7"
+                      className="size-8"
                       aria-label="Attach files"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={store.modelSelectionDisabled}
@@ -661,7 +826,7 @@ export const ThreadWorkbenchView = ({
                       }
                     >
                       <SelectTrigger
-                        className="h-7 w-auto max-w-64 border-0 bg-transparent px-1.5 text-xs shadow-none"
+                        className="h-8 w-auto max-w-56 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
                         aria-label="Model for next turn"
                       >
                         <SelectValue placeholder="No model configured" />
@@ -679,37 +844,6 @@ export const ThreadWorkbenchView = ({
                       </SelectContent>
                     </Select>
                     {permissionControl}
-                    <p className="min-w-0 truncate text-xs text-secondary">
-                      {store.activeTurnProgress
-                        ? `${store.activeTurnProgress.label}${
-                            store.activeTurnProgress.elapsedLabel
-                              ? ` · ${store.activeTurnProgress.elapsedLabel}`
-                              : ''
-                          }`
-                        : store.thread.statusLabel}
-                    </p>
-                  </div>
-                  <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-1.5 text-[11px]">
-                    <span
-                      id="conversation-input-hint"
-                      className={
-                        store.inputBytes > store.inputLimitBytes
-                          ? 'text-destructive'
-                          : 'text-tertiary'
-                      }
-                    >
-                      {store.inputHint}
-                    </span>
-                    {store.contextBudgetHint ? (
-                      <>
-                        <span className="text-tertiary" aria-hidden="true">
-                          ·
-                        </span>
-                        <span className="text-tertiary">
-                          {store.contextBudgetHint}
-                        </span>
-                      </>
-                    ) : null}
                   </div>
                 </div>
                 {store.canStop ? (
@@ -730,6 +864,7 @@ export const ThreadWorkbenchView = ({
                   <Button
                     type="button"
                     size="icon"
+                    className="size-9 rounded-xl"
                     onClick={() => void store.send()}
                     disabled={!store.canSend}
                     aria-label="Send message"
@@ -742,12 +877,14 @@ export const ThreadWorkbenchView = ({
           </div>
         </div>
       </section>
-      {contextRail && contextRailOpen ? (
+      {contextRail ? (
         <>
           {contextRailResize ? (
             <div
               className={`panel-resizer hidden min-[1100px]:block ${
                 contextRailResize.dragging ? 'panel-resizer--active' : ''
+              } ${
+                contextRailOpen ? '' : 'panel-resizer--collapsed'
               }`}
               role="separator"
               aria-label="调整上下文栏宽度"
@@ -762,13 +899,19 @@ export const ThreadWorkbenchView = ({
           ) : null}
           <aside
             id="workspace-tools"
-            className="hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block min-[1100px]:[max-width:min(60vw,calc(100vw_-_720px))]"
+            className={`hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block ${contextRailTransition} ${
+              contextRailOpen
+                ? 'opacity-100'
+                : 'pointer-events-none opacity-0'
+            }`}
             style={{
-              width: contextRailResize?.width ?? 760,
+              width: contextRailOpen ? contextRailTargetWidth : 0,
             }}
             aria-label="Workspace tools"
+            aria-hidden={!contextRailOpen}
+            inert={contextRailOpen ? undefined : true}
           >
-            {contextRail}
+            <div className="h-full w-full">{contextRail}</div>
           </aside>
         </>
       ) : null}
@@ -779,46 +922,49 @@ export const ThreadWorkbenchView = ({
           if (!open) store.cancelModelSwitch();
         }}
       >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>切换下一轮使用的模型？</AlertDialogTitle>
-            <AlertDialogDescription>
-              此对话已有持久化 Turn。切换只影响下一轮，不会改写已经完成或正在运行的内容。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {store.modelSwitchConfirmation ? (
-            <div className="grid gap-2 rounded-xl border bg-surface/50 p-3 text-sm">
-              <div className="grid grid-cols-[4rem_1fr] gap-2">
-                <span className="text-tertiary">来源</span>
-                <span className="min-w-0 break-words">
-                  {store.modelSwitchConfirmation.sourceName} ·{' '}
-                  <span className="font-mono text-xs text-secondary">
-                    {store.modelSwitchConfirmation.sourceWireApi}
-                  </span>
-                </span>
+        <AlertDialogContent className="max-w-xl grid-rows-[auto_minmax(0,1fr)_auto]">
+          <div className="border-b px-5 py-4 sm:px-6">
+            <AlertDialogHeader>
+              <AlertDialogTitle>切换模型？</AlertDialogTitle>
+              <AlertDialogDescription>
+                新模型将从下一条消息开始使用，已有对话内容不会改变。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+          </div>
+          <div className="min-h-0 overflow-y-auto px-5 py-5 sm:px-6">
+            {store.modelSwitchConfirmation ? (
+              <div className="rounded-lg border bg-surface p-4">
+                <dl className="grid gap-4 text-sm">
+                  <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
+                    <dt className="text-secondary">当前</dt>
+                    <dd className="min-w-0">
+                      <p className="break-words font-medium text-foreground">
+                        {store.modelSwitchConfirmation.sourceName}
+                      </p>
+                    </dd>
+                  </div>
+                  <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-3">
+                    <dt className="text-secondary">切换为</dt>
+                    <dd className="min-w-0">
+                      <p className="break-words font-medium text-foreground">
+                        {store.modelSwitchConfirmation.targetName}
+                      </p>
+                    </dd>
+                  </div>
+                </dl>
               </div>
-              <div className="grid grid-cols-[4rem_1fr] gap-2">
-                <span className="text-tertiary">目标</span>
-                <span className="min-w-0 break-words">
-                  {store.modelSwitchConfirmation.targetName} ·{' '}
-                  <span className="font-mono text-xs text-secondary">
-                    {store.modelSwitchConfirmation.targetWireApi}
-                  </span>
-                </span>
-              </div>
-              {store.modelSwitchConfirmation.protocolChanges ? (
-                <p className="mt-1 text-xs leading-5 text-secondary">
-                  Wire API 将发生变化；SugarCode 会把可移植历史转换到目标协议。
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={store.cancelModelSwitch}>
-              取消
+            ) : null}
+          </div>
+          <AlertDialogFooter className="border-t bg-surface px-5 py-4 sm:items-center sm:px-6">
+            <AlertDialogCancel asChild>
+              <Button type="button" variant="outline">
+                取消
+              </Button>
             </AlertDialogCancel>
-            <AlertDialogAction onClick={store.confirmModelSwitch}>
-              确认切换
+            <AlertDialogAction asChild>
+              <Button type="button" onClick={store.confirmModelSwitch}>
+                确认切换
+              </Button>
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

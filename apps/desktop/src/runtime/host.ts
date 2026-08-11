@@ -1,0 +1,3650 @@
+import {
+  createEvent,
+  FunctionTool,
+  InMemorySessionService,
+  LlmAgent,
+  Runner,
+  type BaseLlm,
+  type Event,
+} from '@google/adk';
+import { Type, type Content, type Part, type Schema } from '@google/genai';
+import { createHash, randomUUID } from 'node:crypto';
+
+import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
+import {
+  composerIntentInstruction,
+  composerModelText,
+} from './composer-intent.ts';
+import {
+  COLLABORATION_AGENT_INSTRUCTION,
+  CollaborationCoordinator,
+  type AgentTaskExecutionContext,
+} from './collaboration.ts';
+import {
+  ProviderAdapterError,
+  ProviderErrorCapturePlugin,
+} from './models/errors.ts';
+import { AnthropicLlm } from './models/anthropic-llm.ts';
+import { discoverModels } from './models/discovery.ts';
+import { OpenAiLlm } from './models/openai-llm.ts';
+import {
+  readModelItemMetadata,
+  readModelStepOutcome,
+} from './models/step-outcome.ts';
+import type {
+  ModelStepOutcome,
+  ModelTextPhase,
+} from './models/types.ts';
+import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './models/types.ts';
+import {
+  loadNativeRuntime,
+  type NativeRuntimeBinding,
+} from './native.ts';
+import {
+  isRuntimeContentPart,
+  MAX_RUNTIME_USER_INPUT_OPTIONS,
+  MAX_RUNTIME_USER_INPUT_QUESTIONS,
+  RUNTIME_PROTOCOL_VERSION,
+  type RuntimeAssetDescriptor,
+  type RuntimeCommand,
+  type RuntimeContentPart,
+  type RuntimeEvent,
+  type RuntimeEventInput,
+  type RuntimeModelSelection,
+  type RuntimeProviderConfig,
+  type RuntimeProviderError,
+  type RuntimeThreadRecord,
+  type RuntimeThreadSnapshot,
+  type RuntimeUsage,
+  type RuntimeUserInputAnswer,
+  type RuntimeUserInputQuestion,
+  type RuntimeWorkspaceDocument,
+  type RuntimeWorkspaceEntry,
+} from './protocol.ts';
+import {
+  createWorkspaceTools,
+  executePrivilegedWorkspaceTool,
+  workspacePatchApprovalSummary,
+} from './tools/workspace.ts';
+import { createTurnSkills } from './skills.ts';
+import {
+  toolResultFailed,
+  toolResultRequiresFinalRecovery,
+} from './tool-result.ts';
+import { toolProgressSummary } from './tool-progress-summary.ts';
+import {
+  generateThreadTitle,
+  titleSourceFromContent,
+} from './thread-title.ts';
+import {
+  RuntimeMcpManager,
+  type McpToolApproval,
+} from './mcp.ts';
+import type {
+  McpConfigActionResult,
+  McpConfigInspection,
+} from '../shared/mcp.ts';
+import type {
+  SkillContent,
+  SkillsActionResult,
+  SkillsInspection,
+} from '../shared/skills.ts';
+
+const APPLICATION_NAME = 'sugarcode-desktop-v3';
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
+const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
+
+const INVALID_TOOL_ARGUMENTS_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    toolName: { type: Type.STRING },
+    argumentsText: { type: Type.STRING },
+  },
+  required: ['toolName', 'argumentsText'],
+} satisfies Schema;
+
+const REQUEST_USER_INPUT_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    questions: {
+      type: Type.ARRAY,
+      minItems: '1',
+      maxItems: String(MAX_RUNTIME_USER_INPUT_QUESTIONS),
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          header: { type: Type.STRING },
+          id: { type: Type.STRING },
+          question: { type: Type.STRING },
+          options: {
+            type: Type.ARRAY,
+            minItems: '2',
+            maxItems: String(MAX_RUNTIME_USER_INPUT_OPTIONS),
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                label: { type: Type.STRING },
+                description: { type: Type.STRING },
+              },
+              required: ['label', 'description'],
+            },
+          },
+        },
+        required: ['header', 'id', 'question', 'options'],
+      },
+    },
+  },
+  required: ['questions'],
+} satisfies Schema;
+
+type RuntimeHostOptions = Readonly<{
+  postEvent: (event: RuntimeEvent) => void;
+  createModel?: (provider: RuntimeProviderConfig) => BaseLlm;
+  loadNative?: typeof loadNativeRuntime;
+}>;
+
+type PendingApproval = Readonly<{
+  requestId: string;
+  workspaceId: string;
+  threadId: string;
+  turnId: string;
+  operationId: string;
+  kind: 'command' | 'mcp';
+  recovered: boolean;
+  publish: () => void;
+  resolve: (decision: 'approved' | 'denied') => void;
+}>;
+
+type PendingUserInput = Readonly<{
+  requestId: string;
+  workspaceId: string;
+  threadId: string;
+  turnId: string;
+  questions: readonly RuntimeUserInputQuestion[];
+  resolve: (
+    result:
+      | Readonly<{ answers: readonly RuntimeUserInputAnswer[] }>
+      | Readonly<{ cancelled: true }>,
+  ) => void;
+}>;
+
+type RecoveredApprovalRecord = Readonly<{
+  approvalId: string;
+  operationId: string;
+  turnId: string;
+  requestId: string;
+  threadId: string;
+  workspaceId: string;
+  toolName: string;
+  requestHash: string;
+  argumentsJson: string;
+  approval: unknown;
+}>;
+
+type RecoveredApprovalPresentation =
+  | Readonly<{
+      kind: 'command';
+      argumentsSummary: string;
+      fullAccess: boolean;
+    }>
+  | Readonly<{
+      kind: 'mcp';
+      serverId: string;
+      name: string;
+      argumentsBytes: number;
+      argumentsSha256: string;
+      inventorySha256: string;
+    }>;
+
+const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
+  const common = {
+    model: provider.model,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    headers: provider.headers,
+    timeoutMs: provider.timeoutMs,
+    parallelTools: provider.parallelTools,
+  };
+  return provider.wireApi === 'anthropicMessages'
+    ? new AnthropicLlm(common)
+    : new OpenAiLlm({ ...common, wireApi: provider.wireApi });
+};
+
+type ResolvedProfile = Readonly<{
+  provider: RuntimeProviderConfig;
+  selection: RuntimeModelSelection;
+}>;
+
+type TextItemState = {
+  phase: ModelTextPhase;
+  text: string;
+  started: boolean;
+  completed: boolean;
+  pendingFinal: boolean;
+};
+
+type TurnDriverOptions = Readonly<{
+  runner: Runner;
+  userId: string;
+  sessionId: string;
+  initialMessage: Content;
+  signal: AbortSignal;
+  onEvent: (event: Event, textItems: Map<string, TextItemState>) => void;
+  onCompletedEvent?: (event: Event) => void;
+  consumePendingResults?: () => Promise<string | null>;
+  completionGate?: () => boolean;
+  retryFinalAfterToolFailure?: () => boolean;
+  settleFinalCandidate?: (
+    accepted: boolean,
+    textItems: Map<string, TextItemState>,
+  ) => void;
+  takeProviderError?: () => RuntimeProviderError | undefined;
+  validateInvocation?: () => void;
+}>;
+
+type InvalidArgumentGuard = {
+  repeats: Map<string, number>;
+  calls: Map<string, string>;
+  repeatedToolFailure?: Readonly<{
+    key: string;
+    count: number;
+    recoveryMarkdown: string;
+    recoveryDelivered: boolean;
+  }>;
+  lastToolResponseRequiresRecovery: boolean;
+  finalRecoveryUsed: boolean;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const boundedUserInputText = (
+  value: unknown,
+  maxBytes: number,
+  maxCharacters?: number,
+): string | undefined => {
+  if (
+    typeof value !== 'string' ||
+    value.trim().length === 0 ||
+    Buffer.byteLength(value, 'utf8') > maxBytes ||
+    (maxCharacters !== undefined && Array.from(value).length > maxCharacters) ||
+    Array.from(value).some((character) => /\p{Cc}/u.test(character))
+  ) {
+    return undefined;
+  }
+  return value.trim();
+};
+
+const parseUserInputQuestions = (
+  input: unknown,
+): readonly RuntimeUserInputQuestion[] | undefined => {
+  if (!isRecord(input) || !Array.isArray(input.questions)) {
+    return undefined;
+  }
+  if (
+    input.questions.length < 1 ||
+    input.questions.length > MAX_RUNTIME_USER_INPUT_QUESTIONS
+  ) {
+    return undefined;
+  }
+  const questions: RuntimeUserInputQuestion[] = [];
+  for (const candidate of input.questions) {
+    if (!isRecord(candidate) || !Array.isArray(candidate.options)) {
+      return undefined;
+    }
+    const id = typeof candidate.id === 'string' &&
+      /^[a-z][a-z0-9_]{0,63}$/u.test(candidate.id)
+      ? candidate.id
+      : undefined;
+    const header = boundedUserInputText(candidate.header, 48, 12);
+    const question = boundedUserInputText(candidate.question, 512);
+    if (
+      !id ||
+      !header ||
+      !question ||
+      candidate.options.length < 2 ||
+      candidate.options.length > MAX_RUNTIME_USER_INPUT_OPTIONS
+    ) {
+      return undefined;
+    }
+    const options = candidate.options.map((option) => {
+      if (!isRecord(option)) {
+        return undefined;
+      }
+      const label = boundedUserInputText(option.label, 96);
+      const description = boundedUserInputText(option.description, 384);
+      return label && description ? { label, description } : undefined;
+    });
+    if (
+      options.some((option) => option === undefined) ||
+      new Set(options.map((option) => option?.label)).size !== options.length
+    ) {
+      return undefined;
+    }
+    questions.push({
+      id,
+      header,
+      question,
+      options: options as RuntimeUserInputQuestion['options'],
+    });
+  }
+  return new Set(questions.map((question) => question.id)).size ===
+    questions.length
+    ? questions
+    : undefined;
+};
+
+const isVisibleModelTextPart = (part: Part): boolean =>
+  typeof part.text === 'string' &&
+  part.text.trim().length > 0 &&
+  (!part.thought ||
+    readModelItemMetadata(part)?.reasoningVisibility === 'summary');
+
+const stableJsonValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(stableJsonValue);
+  }
+  if (!isRecord(value)) {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, item]) => [key, stableJsonValue(item)]),
+  );
+};
+
+const capabilityEnabled = (value: unknown): boolean => value !== 'disabled';
+
+class RuntimeStateUnavailableError extends Error {
+  constructor(error: unknown) {
+    super(
+      error instanceof Error
+        ? error.message
+        : 'SugarCode could not persist local Turn state.',
+      { cause: error },
+    );
+    this.name = 'RuntimeStateUnavailableError';
+  }
+}
+
+const withDurableStateWrite = <Value>(write: () => Value): Value => {
+  try {
+    return write();
+  } catch (error) {
+    throw new RuntimeStateUnavailableError(error);
+  }
+};
+
+const providerError = (error: unknown): RuntimeProviderError => {
+  if (error instanceof RuntimeStateUnavailableError) {
+    return {
+      kind: 'stateUnavailable',
+      retryable: true,
+      message: error.message,
+    };
+  }
+  if (error instanceof ProviderAdapterError) {
+    return error.details;
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return {
+      kind: 'cancelled',
+      retryable: false,
+      message: 'The Turn was cancelled.',
+    };
+  }
+  return {
+    kind: 'unknown',
+    retryable: false,
+    message: error instanceof Error ? error.message : 'The Turn failed.',
+  };
+};
+
+const usageFromEvent = (event: Event): RuntimeUsage | undefined => {
+  const usage = event.usageMetadata;
+  if (!usage) {
+    return undefined;
+  }
+  const inputTokens = usage.promptTokenCount ?? 0;
+  const outputTokens = usage.candidatesTokenCount ?? 0;
+  return {
+    inputTokens,
+    outputTokens,
+    ...(usage.thoughtsTokenCount === undefined
+      ? {}
+      : { reasoningTokens: usage.thoughtsTokenCount }),
+    ...(usage.cachedContentTokenCount === undefined
+      ? {}
+      : { cachedInputTokens: usage.cachedContentTokenCount }),
+    totalTokens: usage.totalTokenCount ?? inputTokens + outputTokens,
+  };
+};
+
+type StoredAssetContent = Readonly<{
+  asset: RuntimeAssetDescriptor;
+  data: string;
+}>;
+
+type StoredHistoryPart =
+  | Readonly<{
+      type: 'text';
+      text: string;
+      reasoning: boolean;
+      metadata?: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      type: 'media';
+      mediaType: string;
+      data: string;
+      name?: string;
+    }>
+  | Readonly<{
+      type: 'toolCall';
+      id: string;
+      name: string;
+      arguments: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      type: 'toolResult';
+      id: string;
+      name: string;
+      result: Readonly<Record<string, unknown>>;
+    }>;
+
+type StoredModelHistory = Readonly<{
+  role: 'assistant' | 'user';
+  parts: readonly StoredHistoryPart[];
+}>;
+
+type ActiveTerminal = {
+  requestId: string;
+  workspaceId: string;
+  generation: number;
+  sessionId: string;
+  nextOutputSequence: number;
+  paused: boolean;
+  timer?: NodeJS.Timeout;
+};
+
+type TerminalExitReason = Extract<
+  RuntimeEvent,
+  { type: 'terminal.exited' }
+>['reason'];
+
+const isTerminalExitReason = (value: unknown): value is TerminalExitReason =>
+  ['natural', 'requested', 'ownerLost', 'protocolError', 'ioError'].includes(
+    String(value),
+  );
+
+export class RuntimeHost {
+  private readonly postEvent: RuntimeHostOptions['postEvent'];
+  private readonly createModel: NonNullable<RuntimeHostOptions['createModel']>;
+  private readonly loadNative: NonNullable<RuntimeHostOptions['loadNative']>;
+  private readonly sessions = new InMemorySessionService();
+  private readonly activeTurns = new Map<string, AbortController>();
+  private readonly pendingApprovals = new Map<string, PendingApproval>();
+  private readonly pendingUserInputs = new Map<string, PendingUserInput>();
+  private readonly approvalQueue: string[] = [];
+  private activeApprovalId: string | null = null;
+  private readonly activeOperations = new Map<string, Set<string>>();
+  private readonly terminals = new Map<string, ActiveTerminal>();
+  private readonly mcp = new RuntimeMcpManager();
+  private readonly collaboration = new CollaborationCoordinator();
+  private sequence = 0;
+  private initialized = false;
+  private shuttingDown = false;
+  private nativeRuntime: NativeRuntimeBinding | null = null;
+
+  constructor(options: RuntimeHostOptions) {
+    this.postEvent = options.postEvent;
+    this.createModel = options.createModel ?? defaultCreateModel;
+    this.loadNative = options.loadNative ?? loadNativeRuntime;
+  }
+
+  handle = (command: RuntimeCommand): void => {
+    switch (command.type) {
+      case 'initialize':
+        if (command.nativeModulePath) {
+          this.nativeRuntime = this.loadNative(
+            command.nativeModulePath,
+            command.dataDirectory,
+          );
+          this.mcp.configure(
+            this.parseNativeJson<McpConfigInspection>(
+              this.nativeRuntime.inspectMcpConfigJson(),
+            ),
+          );
+          this.restorePendingApprovals();
+        }
+        this.initialized = true;
+        this.emit({
+          type: 'runtime.ready',
+          requestId: command.requestId,
+          protocolVersion: RUNTIME_PROTOCOL_VERSION,
+        });
+        this.publishNextApproval();
+        break;
+      case 'workspace.open':
+        this.requireReady(command.requestId);
+        this.requireNative().ensureWorkspace(
+          command.workspaceId,
+          command.canonicalRoot,
+        );
+        this.emit({
+          type: 'workspace.opened',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          canonicalRoot: command.canonicalRoot,
+        });
+        break;
+      case 'workspace.list':
+        this.requireReady(command.requestId);
+        void this.listWorkspace(command);
+        break;
+      case 'workspace.pathSearch':
+        this.requireReady(command.requestId);
+        void this.searchWorkspacePaths(command);
+        break;
+      case 'workspace.inspect':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'workspace.inspected',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          document: this.parseNativeJson<RuntimeWorkspaceDocument>(
+            this.requireNative().workspaceInspectJson(
+              command.workspaceId,
+              command.path,
+            ),
+          ),
+        });
+        break;
+      case 'workspace.resolve':
+        this.requireReady(command.requestId);
+        void this.resolveWorkspace(command);
+        break;
+      case 'asset.import':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'asset.imported',
+          requestId: command.requestId,
+          asset: this.parseNativeJson<RuntimeAssetDescriptor>(
+            this.requireNative().importAssetJson(
+              command.fileName,
+              command.mediaType,
+              command.data,
+            ),
+          ),
+        });
+        break;
+      case 'turn.start':
+        this.requireReady(command.requestId);
+        void this.startTurn(command);
+        break;
+      case 'turn.cancel':
+        this.activeTurns.get(command.turnId)?.abort();
+        this.collaboration.cancelTurn(command.turnId);
+        this.cancelTurnApprovals(command.turnId);
+        this.cancelTurnUserInputs(command.turnId);
+        this.cancelTurnOperations(command.turnId);
+        break;
+      case 'turn.userInputResponse': {
+        const pending = this.pendingUserInputs.get(command.inputRequestId);
+        const expectedQuestionIds = pending?.questions.map(
+          (question) => question.id,
+        );
+        const submittedAnswers = new Map(
+          command.answers.map((answer) => [answer.questionId, answer.answer]),
+        );
+        if (
+          !pending ||
+          pending.workspaceId !== command.workspaceId ||
+          pending.threadId !== command.threadId ||
+          pending.turnId !== command.turnId ||
+          expectedQuestionIds?.length !== command.answers.length ||
+          !expectedQuestionIds.every((id) => submittedAnswers.has(id))
+        ) {
+          this.emit({
+            type: 'runtime.log',
+            requestId: command.requestId,
+            level: 'warn',
+            message:
+              `User input ${command.inputRequestId} has no matching pending runtime tool.`,
+          });
+          break;
+        }
+        const answers = expectedQuestionIds.map((questionId) => ({
+          questionId,
+          answer: submittedAnswers.get(questionId) as string,
+        }));
+        this.pendingUserInputs.delete(command.inputRequestId);
+        this.emit({
+          type: 'turn.userInputResolved',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          inputRequestId: command.inputRequestId,
+          answers,
+        });
+        pending.resolve({ answers });
+        break;
+      }
+      case 'terminal.create':
+        this.requireReady(command.requestId);
+        this.createTerminal(command);
+        break;
+      case 'terminal.input':
+        this.requireReady(command.requestId);
+        if (
+          this.handleTerminalAction(command, () =>
+            this.requireNative().terminalInput(command.sessionId, command.data))
+        ) {
+          this.emit({
+            type: 'terminal.inputAccepted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            generation: command.generation,
+            sessionId: command.sessionId,
+            inputBytes: Buffer.byteLength(command.data, 'utf8'),
+          });
+        }
+        break;
+      case 'terminal.resize':
+        this.requireReady(command.requestId);
+        this.handleTerminalAction(command, () =>
+          this.requireNative().terminalResize(
+            command.sessionId,
+            command.columns,
+            command.rows,
+          ));
+        break;
+      case 'terminal.flow': {
+        this.requireReady(command.requestId);
+        const terminal = this.terminals.get(command.sessionId);
+        if (terminal && this.matchesTerminal(terminal, command)) {
+          terminal.paused = command.paused;
+          if (!command.paused) {
+            this.scheduleTerminalPoll(terminal);
+          }
+        }
+        break;
+      }
+      case 'terminal.terminate':
+        this.requireReady(command.requestId);
+        this.handleTerminalAction(command, () =>
+          this.requireNative().terminalTerminate(command.sessionId));
+        break;
+      case 'terminal.close':
+        this.closeTerminal(command.sessionId);
+        break;
+      case 'approval.resolve': {
+        const pending = this.pendingApprovals.get(command.approvalId);
+        if (
+          !pending ||
+          pending.workspaceId !== command.workspaceId ||
+          pending.threadId !== command.threadId ||
+          pending.turnId !== command.turnId ||
+          this.activeApprovalId !== command.approvalId
+        ) {
+          this.emit({
+            type: 'runtime.log',
+            requestId: command.requestId,
+            level: 'warn',
+            message: `Approval ${command.approvalId} has no matching pending runtime tool.`,
+          });
+          break;
+        }
+        this.finishApproval(
+          command.approvalId,
+          pending,
+          command.decision,
+          command.requestId,
+          command.source,
+        );
+        break;
+      }
+      case 'mcp.configInspect': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<McpConfigInspection>(
+          this.requireNative().inspectMcpConfigJson(),
+        );
+        this.mcp.configure(inspection);
+        this.emit({
+          type: 'mcp.configInspection',
+          requestId: command.requestId,
+          inspection,
+        });
+        break;
+      }
+      case 'mcp.configSave': {
+        this.requireReady(command.requestId);
+        if (
+          this.activeTurns.size > 0 ||
+          this.pendingApprovals.size > 0 ||
+          this.mcp.getActiveServerIds().length > 0
+        ) {
+          const reason = this.activeTurns.size > 0
+            ? 'turnActive'
+            : this.pendingApprovals.size > 0
+              ? 'approvalPending'
+              : 'sessionActive';
+          this.emit({
+            type: 'mcp.configAction',
+            requestId: command.requestId,
+            action: { accepted: false, reason },
+          });
+          break;
+        }
+        try {
+          const action = this.parseNativeJson<McpConfigActionResult>(
+            this.requireNative().saveMcpConfigJson(
+              command.request.expectedRevision,
+              JSON.stringify(command.request.servers),
+            ),
+          );
+          if (action.inspection) {
+            this.mcp.configure(action.inspection);
+          }
+          this.emit({
+            type: 'mcp.configAction',
+            requestId: command.requestId,
+            action,
+          });
+        } catch {
+          this.emit({
+            type: 'mcp.configAction',
+            requestId: command.requestId,
+            action: { accepted: false, reason: 'unavailable' },
+          });
+        }
+        break;
+      }
+      case 'mcp.sessionSet':
+        this.requireReady(command.requestId);
+        void this.setMcpSession(command);
+        break;
+      case 'skills.inspect': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          this.requireNative().inspectSkillsJson(command.workspaceId),
+        );
+        this.emit({
+          type: 'skills.inspection',
+          requestId: command.requestId,
+          inspection,
+        });
+        break;
+      }
+      case 'skills.content': {
+        this.requireReady(command.requestId);
+        const content = this.parseNativeJson<SkillContent>(
+          this.requireNative().readSkillContentJson(
+            command.workspaceId,
+            command.skillId,
+            command.expectedSha256,
+          ),
+        );
+        this.emit({ type: 'skills.content', requestId: command.requestId, content });
+        break;
+      }
+      case 'skills.setEnabled': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          this.requireNative().setSkillEnabledJson(
+            command.workspaceId,
+            command.skillId,
+            command.enabled,
+          ),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
+      case 'skills.import': {
+        this.requireReady(command.requestId);
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          this.requireNative().importSkillJson(
+            command.workspaceId,
+            command.sourcePath,
+            command.scope,
+          ),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
+      case 'skills.export': {
+        this.requireReady(command.requestId);
+        const result = this.parseNativeJson<{ path: string }>(
+          this.requireNative().exportSkillJson(
+            command.workspaceId,
+            command.skillId,
+            command.destinationPath,
+          ),
+        );
+        const action: SkillsActionResult = { accepted: true, path: result.path };
+        this.emit({ type: 'skills.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'thread.list':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'thread.listResult',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          query: command.query ?? '',
+          threads: this.parseNativeJson<RuntimeThreadRecord[]>(
+            this.requireNative().listThreadsJson(
+              command.workspaceId,
+              command.query,
+            ),
+          ),
+        });
+        break;
+      case 'thread.load':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'thread.loaded',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          snapshot: this.parseNativeJson<RuntimeThreadSnapshot>(
+            this.requireNative().loadThreadJson(command.threadId),
+          ),
+        });
+        break;
+      case 'thread.create': {
+        this.requireReady(command.requestId);
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().createThreadJson(
+            command.workspaceId,
+            command.title,
+          ),
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'create',
+          threadId: snapshot.thread.id,
+          snapshot,
+        });
+        break;
+      }
+      case 'thread.rename': {
+        this.requireReady(command.requestId);
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().updateThreadTitleJson(
+            command.threadId,
+            command.workspaceId,
+            command.title.trim(),
+            false,
+          ),
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'rename',
+          threadId: command.threadId,
+          snapshot,
+        });
+        break;
+      }
+      case 'thread.delete': {
+        this.requireReady(command.requestId);
+        const deleted = this.requireNative().deleteThread(
+          command.threadId,
+          command.workspaceId,
+        );
+        this.emit({
+          type: 'thread.mutated',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'delete',
+          threadId: command.threadId,
+          deleted,
+        });
+        break;
+      }
+      case 'git.status':
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'status',
+          result: this.parseNativeJson(
+            this.requireNative().gitStatusJson(command.workspaceId),
+          ),
+        });
+        break;
+      case 'git.diff':
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'diff',
+          result: this.parseNativeJson(
+            this.requireNative().gitDiffJson(
+              command.workspaceId,
+              command.expectedRevision,
+              command.path,
+              command.source,
+            ),
+          ),
+        });
+        break;
+      case 'git.stage':
+      case 'git.unstage': {
+        const operation = command.type === 'git.stage' ? 'stage' : 'unstage';
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation,
+          result: this.parseNativeJson(
+            this.requireNative().gitMutateJson(
+              command.workspaceId,
+              command.expectedRevision,
+              command.paths,
+              operation === 'stage',
+            ),
+          ),
+        });
+        break;
+      }
+      case 'git.commit':
+        this.emit({
+          type: 'git.result',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          operation: 'commit',
+          result: this.parseNativeJson(
+            this.requireNative().gitCommitJson(
+              command.workspaceId,
+              command.expectedRevision,
+              command.message,
+              command.authorName,
+              command.authorEmail,
+            ),
+          ),
+        });
+        break;
+      case 'model.inspect':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'model.configInspection',
+          requestId: command.requestId,
+          inspection: this.parseNativeJson(
+            this.requireNative().inspectModelConfigJson(),
+          ),
+        });
+        break;
+      case 'model.save':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'model.configAction',
+          requestId: command.requestId,
+          action: this.parseNativeJson(
+            this.requireNative().saveModelConfigJson(
+              command.request.expectedRevision,
+              JSON.stringify(command.request.config),
+              JSON.stringify(command.request.credentialUpdates),
+            ),
+          ),
+        });
+        break;
+      case 'model.deleteApiKey':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'model.configAction',
+          requestId: command.requestId,
+          action: this.parseNativeJson(
+            this.requireNative().deleteModelApiKeyJson(
+              command.connectionId,
+              command.expectedRevision,
+            ),
+          ),
+        });
+        break;
+      case 'model.discover':
+        this.requireReady(command.requestId);
+        void this.discover(command.requestId, command.connectionId);
+        break;
+      case 'shutdown':
+        this.shuttingDown = true;
+        for (const controller of this.activeTurns.values()) {
+          controller.abort();
+        }
+        for (const turnId of this.activeTurns.keys()) {
+          this.collaboration.cancelTurn(turnId);
+          this.cancelTurnApprovals(turnId);
+          this.cancelTurnOperations(turnId);
+        }
+        this.activeTurns.clear();
+        for (const sessionId of [...this.terminals.keys()]) {
+          this.closeTerminal(sessionId);
+        }
+        void this.mcp.close();
+        break;
+    }
+  };
+
+  private listWorkspace = async (
+    command: Extract<RuntimeCommand, { type: 'workspace.list' }>,
+  ): Promise<void> => {
+    try {
+      const nativePath = command.path || '.';
+      const result = this.parseNativeJson<{
+        ok: boolean;
+        entries?: readonly Readonly<{
+          name: string;
+          kind: RuntimeWorkspaceEntry['kind'];
+        }>[];
+      }>(
+        await this.requireNative().workspaceList(
+          command.workspaceId,
+          nativePath,
+        ),
+      );
+      if (!result.ok || !result.entries) {
+        throw new Error('The workspace directory could not be listed.');
+      }
+      const prefix = command.path.length > 0 ? `${command.path}/` : '';
+      this.emit({
+        type: 'workspace.listResult',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        path: command.path,
+        entries: result.entries.map((entry) => ({
+          name: entry.name,
+          path: `${prefix}${entry.name}`,
+          kind: entry.kind,
+        })),
+      });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message: error instanceof Error
+          ? error.message
+          : 'The workspace directory could not be listed.',
+      });
+    }
+  };
+
+  private searchWorkspacePaths = async (
+    command: Extract<RuntimeCommand, { type: 'workspace.pathSearch' }>,
+  ): Promise<void> => {
+    try {
+      const result = this.parseNativeJson<{
+        ok: boolean;
+        paths?: readonly string[];
+        truncated?: boolean;
+      }>(
+        await this.requireNative().workspacePathSearchJson(
+          command.workspaceId,
+          command.query,
+        ),
+      );
+      if (!result.ok || !result.paths) {
+        throw new Error('Workspace files could not be searched.');
+      }
+      this.emit({
+        type: 'workspace.pathSearchResult',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        query: command.query,
+        paths: result.paths,
+        truncated: result.truncated === true,
+      });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message: error instanceof Error
+          ? error.message
+          : 'Workspace files could not be searched.',
+      });
+    }
+  };
+
+  private resolveWorkspace = async (
+    command: Extract<RuntimeCommand, { type: 'workspace.resolve' }>,
+  ): Promise<void> => {
+    try {
+      const result = this.parseNativeJson<{
+        status: 'resolved' | 'notFound' | 'ambiguous' | 'unavailable';
+        path?: string;
+      }>(
+        await this.requireNative().workspaceResolveJson(
+          command.workspaceId,
+          command.name,
+        ),
+      );
+      this.emit({
+        type: 'workspace.resolved',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        name: command.name,
+        status: result.status,
+        ...(result.status === 'resolved' && result.path
+          ? { path: result.path }
+          : {}),
+      });
+    } catch {
+      this.emit({
+        type: 'workspace.resolved',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        name: command.name,
+        status: 'unavailable',
+      });
+    }
+  };
+
+  private requireReady = (requestId: string): void => {
+    if (!this.initialized || this.shuttingDown) {
+      throw new Error(`Runtime is not ready for request ${requestId}.`);
+    }
+  };
+
+  private requireNative = (): NativeRuntimeBinding => {
+    if (!this.nativeRuntime) {
+      throw new Error('The SugarCode native runtime is unavailable.');
+    }
+    return this.nativeRuntime;
+  };
+
+  private parseNativeJson = <T>(value: string): T => JSON.parse(value) as T;
+
+  private createTerminal = (
+    command: Extract<RuntimeCommand, { type: 'terminal.create' }>,
+  ): void => {
+    if (this.terminals.has(command.sessionId)) {
+      this.emitTerminalError(command, 'protocolInvalid', true);
+      return;
+    }
+    try {
+      const info = this.parseNativeJson<unknown>(
+        this.requireNative().createTerminalJson(
+          command.sessionId,
+          command.workspaceId,
+          command.columns,
+          command.rows,
+        ),
+      );
+      if (!isRecord(info) || typeof info.shell !== 'string') {
+        throw new Error('Native terminal metadata was invalid.');
+      }
+      const terminal: ActiveTerminal = {
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        generation: command.generation,
+        sessionId: command.sessionId,
+        nextOutputSequence: 1,
+        paused: false,
+      };
+      this.terminals.set(command.sessionId, terminal);
+      this.emit({
+        type: 'terminal.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        generation: command.generation,
+        sessionId: command.sessionId,
+        shell: info.shell,
+      });
+      this.scheduleTerminalPoll(terminal);
+    } catch {
+      this.emitTerminalError(command, 'spawnFailed', true);
+    }
+  };
+
+  private handleTerminalAction = (
+    command: Extract<RuntimeCommand, {
+      type: 'terminal.input' | 'terminal.resize';
+    }> | Extract<RuntimeCommand, {
+      type: 'terminal.terminate' | 'terminal.close';
+    }>,
+    action: () => void,
+  ): boolean => {
+    const terminal = this.terminals.get(command.sessionId);
+    if (!terminal || !this.matchesTerminal(terminal, command)) {
+      this.emitTerminalError(command, 'protocolInvalid', true);
+      return false;
+    }
+    try {
+      action();
+      return true;
+    } catch {
+      this.emitTerminalError(command, 'terminalCrashed', true);
+      this.closeTerminal(command.sessionId);
+      return false;
+    }
+  };
+
+  private matchesTerminal = (
+    terminal: ActiveTerminal,
+    command: { workspaceId: string; generation: number; sessionId: string },
+  ): boolean =>
+    terminal.workspaceId === command.workspaceId &&
+    terminal.generation === command.generation &&
+    terminal.sessionId === command.sessionId;
+
+  private scheduleTerminalPoll = (terminal: ActiveTerminal): void => {
+    if (terminal.paused || terminal.timer || !this.terminals.has(terminal.sessionId)) {
+      return;
+    }
+    terminal.timer = setTimeout(() => {
+      terminal.timer = undefined;
+      this.pollTerminal(terminal);
+    }, 16);
+  };
+
+  private pollTerminal = (terminal: ActiveTerminal): void => {
+    if (terminal.paused || this.terminals.get(terminal.sessionId) !== terminal) {
+      return;
+    }
+    try {
+      const events = this.parseNativeJson<unknown>(
+        this.requireNative().drainTerminalEventsJson(terminal.sessionId),
+      );
+      if (!Array.isArray(events)) {
+        throw new Error('Native terminal events were invalid.');
+      }
+      for (const event of events) {
+        if (!isRecord(event) || typeof event.type !== 'string') {
+          throw new Error('Native terminal event was invalid.');
+        }
+        if (
+          event.type === 'output' &&
+          Number.isSafeInteger(event.sequence) &&
+          event.sequence === terminal.nextOutputSequence &&
+          typeof event.data === 'string' &&
+          Buffer.byteLength(event.data, 'utf8') <= 32_768
+        ) {
+          terminal.nextOutputSequence += 1;
+          this.emit({
+            type: 'terminal.output',
+            requestId: terminal.requestId,
+            workspaceId: terminal.workspaceId,
+            generation: terminal.generation,
+            sessionId: terminal.sessionId,
+            outputSequence: event.sequence,
+            data: event.data,
+          });
+        } else if (
+          event.type === 'error' &&
+          typeof event.fatal === 'boolean'
+        ) {
+          this.emitTerminalError(
+            terminal,
+            event.code === 'outputOverload' ? 'outputOverload' : 'terminalCrashed',
+            event.fatal,
+          );
+          if (event.fatal) {
+            this.closeTerminal(terminal.sessionId);
+            return;
+          }
+        } else if (
+          event.type === 'exit' &&
+          typeof event.exitCode === 'number' &&
+          Number.isSafeInteger(event.exitCode) &&
+          isTerminalExitReason(event.reason) &&
+          (event.signal === undefined || typeof event.signal === 'string')
+        ) {
+          this.emit({
+            type: 'terminal.exited',
+            requestId: terminal.requestId,
+            workspaceId: terminal.workspaceId,
+            generation: terminal.generation,
+            sessionId: terminal.sessionId,
+            exitCode: event.exitCode,
+            ...(typeof event.signal === 'string' ? { signal: event.signal } : {}),
+            reason: event.reason,
+          });
+          this.closeTerminal(terminal.sessionId);
+          return;
+        } else {
+          throw new Error('Native terminal event was invalid.');
+        }
+      }
+      this.scheduleTerminalPoll(terminal);
+    } catch {
+      this.emitTerminalError(terminal, 'protocolInvalid', true);
+      this.closeTerminal(terminal.sessionId);
+    }
+  };
+
+  private emitTerminalError = (
+    terminal: { requestId: string; workspaceId: string; generation: number; sessionId: string },
+    error: 'spawnFailed' | 'protocolInvalid' | 'terminalCrashed' | 'outputOverload',
+    fatal: boolean,
+  ): void => {
+    this.emit({
+      type: 'terminal.error',
+      requestId: terminal.requestId,
+      workspaceId: terminal.workspaceId,
+      generation: terminal.generation,
+      sessionId: terminal.sessionId,
+      error,
+      fatal,
+    });
+  };
+
+  private closeTerminal = (sessionId: string): void => {
+    const terminal = this.terminals.get(sessionId);
+    if (terminal?.timer) {
+      clearTimeout(terminal.timer);
+    }
+    this.terminals.delete(sessionId);
+    try {
+      this.nativeRuntime?.closeTerminal(sessionId);
+    } catch {
+      // Native terminal containment terminates the process tree on drop.
+    }
+  };
+
+  private ensureSession = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    selection: RuntimeModelSelection,
+  ): Promise<void> => {
+    const key = {
+      appName: APPLICATION_NAME,
+      userId: command.workspaceId,
+      sessionId: command.threadId,
+    };
+    if (await this.sessions.getSession(key)) {
+      return;
+    }
+    const session = await this.sessions.createSession(key);
+    try {
+      if (!this.nativeRuntime) {
+        return;
+      }
+      const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+        this.nativeRuntime.loadThreadJson(command.threadId),
+      );
+      for (const turn of snapshot.turns) {
+        if (turn.status !== 'completed') {
+          continue;
+        }
+        const items = snapshot.items
+          .filter((item) => item.turnId === turn.id)
+          .sort((left, right) => left.sequence - right.sequence);
+        const user = items.find((item) => item.kind === 'turn.userMessage');
+        const content = user?.payload.content;
+        if (Array.isArray(content)) {
+          if (!content.every(isRuntimeContentPart)) {
+            throw new Error('Stored user content is invalid.');
+          }
+          await this.sessions.appendEvent({
+            session,
+            event: createEvent({
+              id: `${turn.id}:restored-user`,
+              invocationId: `restore:${turn.id}`,
+              author: 'user',
+              content: this.contentFromParts(content, selection),
+            }),
+          });
+        }
+        for (const item of items.filter(
+          (candidate) => candidate.kind === 'turn.modelHistory',
+        )) {
+          const restored = this.parseStoredModelHistory(item.payload.history);
+          await this.sessions.appendEvent({
+            session,
+            event: createEvent({
+              id: item.id,
+              invocationId: `restore:${turn.id}`,
+              author: 'sugarcode_agent',
+              content: this.contentFromHistory(restored),
+            }),
+          });
+        }
+      }
+    } catch (error) {
+      await this.sessions.deleteSession(key);
+      throw error;
+    }
+  };
+
+  private contentFromParts = (
+    content: readonly RuntimeContentPart[],
+    selection: RuntimeModelSelection,
+  ): Content => {
+    const attachmentBytes = content.reduce(
+      (total, part) => total + (part.type === 'asset' ? part.asset.sizeBytes : 0),
+      0,
+    );
+    if (attachmentBytes > MAX_TURN_ATTACHMENT_BYTES) {
+      throw new Error('Turn attachments exceed the 20 MiB limit.');
+    }
+    const parts: Part[] = content.flatMap((part): readonly Part[] => {
+      if (part.type === 'text') {
+        return [{ text: composerModelText(part.text) }];
+      }
+      const stored = this.parseNativeJson<StoredAssetContent>(
+        this.requireNative().readAssetJson(part.asset.assetId),
+      );
+      if (!this.sameAsset(stored.asset, part.asset)) {
+        throw new Error('Stored content asset metadata does not match the Turn.');
+      }
+      if (
+        (part.asset.kind === 'image' &&
+          !selection.effectiveCapabilities.imageInput) ||
+        (part.asset.kind === 'pdf' &&
+          !selection.effectiveCapabilities.pdfInput)
+      ) {
+        throw new Error(`The selected model does not accept ${part.asset.kind} input.`);
+      }
+      if (part.asset.kind === 'text') {
+        return [{
+          text: `Attachment ${part.asset.originalName}:\n${Buffer.from(stored.data, 'base64').toString('utf8')}`,
+        }];
+      }
+      return [{
+        inlineData: {
+          mimeType: part.asset.mediaType,
+          data: stored.data,
+          displayName: part.asset.originalName,
+        },
+      }];
+    });
+    return { role: 'user', parts };
+  };
+
+  private sameAsset = (
+    left: RuntimeAssetDescriptor,
+    right: RuntimeAssetDescriptor,
+  ): boolean =>
+    left.assetId === right.assetId &&
+    left.sha256 === right.sha256 &&
+    left.mediaType === right.mediaType &&
+    left.originalName === right.originalName &&
+    left.sizeBytes === right.sizeBytes &&
+    left.kind === right.kind &&
+    left.pdfPages === right.pdfPages;
+
+  private persistModelHistory = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    event: Event,
+  ): void => {
+    if (!this.nativeRuntime || !event.content) {
+      return;
+    }
+    const history = this.storedModelHistory(event.content);
+    if (history.parts.length === 0) {
+      return;
+    }
+    this.sequence += 1;
+    withDurableStateWrite(() =>
+      this.nativeRuntime?.appendItem(
+        `history:${command.turnId}:${event.id}`,
+        command.turnId,
+        this.sequence,
+        'turn.modelHistory',
+        JSON.stringify({ history }),
+      ));
+  };
+
+  private storedModelHistory = (content: Content): StoredModelHistory => ({
+    role: content.role === 'model' ? 'assistant' : 'user',
+    parts: (content.parts ?? []).map((part): StoredHistoryPart => {
+      if (typeof part.text === 'string') {
+        return {
+          type: 'text',
+          text: part.text,
+          reasoning: part.thought === true,
+          ...(isRecord(part.partMetadata)
+            ? { metadata: part.partMetadata }
+            : {}),
+        };
+      }
+      if (part.inlineData?.mimeType && part.inlineData.data) {
+        return {
+          type: 'media',
+          mediaType: part.inlineData.mimeType,
+          data: part.inlineData.data,
+          ...(part.inlineData.displayName
+            ? { name: part.inlineData.displayName }
+            : {}),
+        };
+      }
+      if (part.functionCall?.id && part.functionCall.name) {
+        return {
+          type: 'toolCall',
+          id: part.functionCall.id,
+          name: part.functionCall.name,
+          arguments: part.functionCall.args ?? {},
+        };
+      }
+      if (part.functionResponse?.id && part.functionResponse.name) {
+        return {
+          type: 'toolResult',
+          id: part.functionResponse.id,
+          name: part.functionResponse.name,
+          result: part.functionResponse.response ?? {},
+        };
+      }
+      throw new Error('Model history contains an unsupported content part.');
+    }),
+  });
+
+  private parseStoredModelHistory = (value: unknown): StoredModelHistory => {
+    if (
+      !isRecord(value) ||
+      (value.role !== 'assistant' && value.role !== 'user') ||
+      !Array.isArray(value.parts)
+    ) {
+      throw new Error('Stored model history is invalid.');
+    }
+    const parts = value.parts.map((part): StoredHistoryPart => {
+      if (!isRecord(part) || typeof part.type !== 'string') {
+        throw new Error('Stored model history is invalid.');
+      }
+      if (
+        part.type === 'text' &&
+        typeof part.text === 'string' &&
+        typeof part.reasoning === 'boolean'
+      ) {
+        const metadata = part.metadata;
+        if (metadata === undefined) {
+          return {
+            type: 'text',
+            text: part.text,
+            reasoning: part.reasoning,
+          };
+        }
+        if (!isRecord(metadata)) {
+          throw new Error('Stored model history is invalid.');
+        }
+        return {
+          type: 'text',
+          text: part.text,
+          reasoning: part.reasoning,
+          metadata,
+        };
+      }
+      if (
+        part.type === 'media' &&
+        typeof part.mediaType === 'string' &&
+        typeof part.data === 'string'
+      ) {
+        const name = part.name;
+        if (name === undefined) {
+          return {
+            type: 'media',
+            mediaType: part.mediaType,
+            data: part.data,
+          };
+        }
+        if (typeof name !== 'string') {
+          throw new Error('Stored model history is invalid.');
+        }
+        return {
+          type: 'media',
+          mediaType: part.mediaType,
+          data: part.data,
+          name,
+        };
+      }
+      if (
+        part.type === 'toolCall' &&
+        typeof part.id === 'string' &&
+        typeof part.name === 'string' &&
+        isRecord(part.arguments)
+      ) {
+        return {
+          type: 'toolCall',
+          id: part.id,
+          name: part.name,
+          arguments: part.arguments,
+        };
+      }
+      if (
+        part.type === 'toolResult' &&
+        typeof part.id === 'string' &&
+        typeof part.name === 'string' &&
+        isRecord(part.result)
+      ) {
+        return {
+          type: 'toolResult',
+          id: part.id,
+          name: part.name,
+          result: part.result,
+        };
+      }
+      throw new Error('Stored model history is invalid.');
+    });
+    return { role: value.role, parts };
+  };
+
+  private contentFromHistory = (history: StoredModelHistory): Content => ({
+    role: history.role === 'assistant' ? 'model' : 'user',
+    parts: history.parts.map((part): Part => {
+      switch (part.type) {
+        case 'text':
+          return {
+            text: part.text,
+            thought: part.reasoning,
+            ...(part.metadata ? { partMetadata: part.metadata } : {}),
+          };
+        case 'media':
+          return {
+            inlineData: {
+              mimeType: part.mediaType,
+              data: part.data,
+              ...(part.name ? { displayName: part.name } : {}),
+            },
+          };
+        case 'toolCall':
+          return {
+            functionCall: {
+              id: part.id,
+              name: part.name,
+              args: part.arguments,
+            },
+          };
+        case 'toolResult':
+          return {
+            functionResponse: {
+              id: part.id,
+              name: part.name,
+              response: part.result,
+            },
+          };
+      }
+    }),
+  });
+
+  private resolveProfile = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+  ): ResolvedProfile => {
+    if (command.provider) {
+      const providerFamily = command.provider.wireApi === 'anthropicMessages'
+        ? 'anthropic'
+        : 'openai';
+      return {
+        provider: command.provider,
+        selection: {
+          profileId: 'runtime-direct',
+          providerFamily,
+          wireApi: command.provider.wireApi,
+          modelId: command.provider.model,
+          displayName: command.provider.model,
+          contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+          effectiveCapabilities: {
+            toolCalls: true,
+            strictTools: false,
+            parallelTools: command.provider.parallelTools,
+            imageInput: true,
+            pdfInput: providerFamily === 'anthropic',
+          },
+        },
+      };
+    }
+    const resolved = this.parseNativeJson<unknown>(
+      this.requireNative().modelProfileJson(command.modelProfileId),
+    );
+    if (
+      !isRecord(resolved) ||
+      !isRecord(resolved.profile) ||
+      !isRecord(resolved.connection)
+    ) {
+      throw new Error('The selected model profile is invalid.');
+    }
+    const profile = resolved.profile;
+    const connection = resolved.connection;
+    const wireApi = connection.wireApi;
+    const providerFamily = connection.providerFamily;
+    if (
+      typeof profile.id !== 'string' ||
+      typeof profile.modelId !== 'string' ||
+      typeof profile.displayName !== 'string' ||
+      !['openai', 'anthropic'].includes(String(providerFamily)) ||
+      !['openaiResponses', 'openaiChatCompletions', 'anthropicMessages'].includes(
+        String(wireApi),
+      ) ||
+      typeof connection.baseUrl !== 'string'
+    ) {
+      throw new Error('The selected model profile is incomplete.');
+    }
+    const selection: RuntimeModelSelection = {
+      profileId: profile.id,
+      providerFamily: providerFamily as RuntimeModelSelection['providerFamily'],
+      wireApi: wireApi as RuntimeModelSelection['wireApi'],
+      modelId: profile.modelId,
+      displayName: profile.displayName,
+      contextWindowTokens:
+        typeof profile.contextWindowTokens === 'number'
+          ? profile.contextWindowTokens
+          : DEFAULT_CONTEXT_WINDOW_TOKENS,
+      effectiveCapabilities: {
+        toolCalls: capabilityEnabled(profile.toolCalls),
+        strictTools: profile.strictTools === 'enabled',
+        parallelTools: capabilityEnabled(profile.parallelTools),
+        imageInput: capabilityEnabled(profile.imageInput),
+        pdfInput: capabilityEnabled(profile.pdfInput),
+      },
+    };
+    return {
+      provider: {
+        wireApi: selection.wireApi,
+        model: selection.modelId,
+        baseUrl: connection.baseUrl,
+        ...(typeof resolved.apiKey === 'string'
+          ? { apiKey: resolved.apiKey }
+          : {}),
+        timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
+        parallelTools: selection.effectiveCapabilities.parallelTools,
+      },
+      selection,
+    };
+  };
+
+  private discover = async (
+    requestId: string,
+    connectionId: string,
+  ): Promise<void> => {
+    try {
+      const discovery = await discoverModels(
+        this.requireNative().modelConnectionJson(connectionId),
+      );
+      this.emit({ type: 'model.discovery', requestId, discovery });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId,
+        level: 'error',
+        message: error instanceof Error ? error.message : 'Model discovery failed.',
+      });
+    }
+  };
+
+  private invalidArgumentsTool = (
+    guard: InvalidArgumentGuard,
+  ): FunctionTool<Schema> =>
+    new FunctionTool({
+      name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
+      description:
+        'Internal bounded error tool used only when a provider returns malformed JSON tool arguments.',
+      parameters: INVALID_TOOL_ARGUMENTS_SCHEMA,
+      execute: async (input) => {
+        const argumentsValue = isRecord(input) ? input : {};
+        const toolName = typeof argumentsValue.toolName === 'string'
+          ? argumentsValue.toolName
+          : 'unknown';
+        const argumentsText = typeof argumentsValue.argumentsText === 'string'
+          ? argumentsValue.argumentsText.slice(0, 4_096)
+          : '';
+        const key = JSON.stringify({ toolName, argumentsText });
+        guard.repeats.set(key, (guard.repeats.get(key) ?? 0) + 1);
+        return {
+          ok: false,
+          error: {
+            kind: 'unsupportedToolArguments',
+            message:
+              `Tool ${toolName} arguments must be a JSON object. ` +
+              'Repair the arguments and issue a new structured tool call.',
+          },
+        };
+      },
+    });
+
+  private requestUserInputTool = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+  ): FunctionTool<Schema> =>
+    new FunctionTool({
+      name: 'request_user_input',
+      description:
+        'Pause this Turn and ask the user 1 to 3 concise questions. Each question must provide 2 to 3 mutually exclusive choices. The interface also lets the user enter a custom answer, so do not add an Other option.',
+      parameters: REQUEST_USER_INPUT_SCHEMA,
+      execute: async (input) => {
+        const questions = parseUserInputQuestions(input);
+        if (!questions) {
+          return {
+            ok: false,
+            error: {
+              kind: 'invalidQuestions',
+              message:
+                'Provide 1 to 3 unique questions with a short header, snake_case id, prompt, and 2 to 3 labeled options.',
+            },
+          };
+        }
+        if (
+          [...this.pendingUserInputs.values()].some(
+            (pending) => pending.turnId === command.turnId,
+          )
+        ) {
+          return {
+            ok: false,
+            error: {
+              kind: 'userInputAlreadyPending',
+              message:
+                'This Turn already has a pending user-input request. Wait for its result before asking another question.',
+            },
+          };
+        }
+        const inputRequestId = randomUUID();
+        return await new Promise<
+          | Readonly<{ answers: readonly RuntimeUserInputAnswer[] }>
+          | Readonly<{ cancelled: true }>
+        >((resolve) => {
+          this.pendingUserInputs.set(inputRequestId, {
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            questions,
+            resolve,
+          });
+          this.emit({
+            type: 'turn.userInputRequested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            inputRequestId,
+            questions,
+          });
+        });
+      },
+    });
+
+  private assertInvalidArgumentProgress = (
+    guard: InvalidArgumentGuard,
+  ): void => {
+    if ([...guard.repeats.values()].some((count) => count >= 2)) {
+      throw new ProviderAdapterError({
+        kind: 'unsupportedToolArguments',
+        retryable: false,
+        message: 'The model repeated the same malformed tool arguments twice.',
+      });
+    }
+    if ((guard.repeatedToolFailure?.count ?? 0) >= 3) {
+      throw new ProviderAdapterError({
+        kind: 'protocol',
+        retryable: false,
+        message:
+          'The model repeated the same failed tool call three times without making recovery progress.',
+      });
+    }
+  };
+
+  private takeRepeatedToolFailureRecovery = (
+    guard: InvalidArgumentGuard,
+  ): string | undefined => {
+    const repeated = guard.repeatedToolFailure;
+    if (
+      !repeated ||
+      repeated.count < 2 ||
+      repeated.recoveryDelivered
+    ) {
+      return undefined;
+    }
+    guard.repeatedToolFailure = {
+      ...repeated,
+      recoveryDelivered: true,
+    };
+    return repeated.recoveryMarkdown;
+  };
+
+  private observeToolProgress = (
+    guard: InvalidArgumentGuard,
+    event: Event,
+  ): void => {
+    for (const part of event.content?.parts ?? []) {
+      if (part.functionCall?.name) {
+        const callId = part.functionCall.id ?? part.functionCall.name;
+        guard.calls.set(
+          callId,
+          JSON.stringify({
+            name: part.functionCall.name,
+            arguments: stableJsonValue(part.functionCall.args ?? {}),
+          }),
+        );
+      }
+      if (!part.functionResponse?.name) {
+        continue;
+      }
+      const result = part.functionResponse.response ?? {};
+      const failed = toolResultFailed(result);
+      guard.lastToolResponseRequiresRecovery =
+        toolResultRequiresFinalRecovery(part.functionResponse.name, result);
+      if (!failed) {
+        guard.repeatedToolFailure = undefined;
+        guard.finalRecoveryUsed = false;
+        continue;
+      }
+      const callId = part.functionResponse.id ?? part.functionResponse.name;
+      const call = guard.calls.get(callId) ?? part.functionResponse.name;
+      const key = JSON.stringify({ call, error: stableJsonValue(result) });
+      const previous = guard.repeatedToolFailure;
+      const count = previous?.key === key ? previous.count + 1 : 1;
+      const resultRecord = isRecord(result) ? result : {};
+      const failedPath = typeof resultRecord.failedPath === 'string'
+        ? resultRecord.failedPath
+        : undefined;
+      const errorKind = typeof resultRecord.error === 'string'
+        ? resultRecord.error
+        : 'toolFailure';
+      guard.repeatedToolFailure = {
+        key,
+        count,
+        recoveryDelivered:
+          previous?.key === key ? previous.recoveryDelivered : false,
+        recoveryMarkdown:
+          '# Internal recovery after repeated tool failure\n\n' +
+          `The same ${part.functionResponse.name} call failed twice with ${errorKind}. ` +
+          'Do not submit it unchanged again. Choose a different concrete recovery step. ' +
+          (errorKind === 'ExpectedMismatch'
+            ? `Re-read ${failedPath ? `\`${failedPath}\`` : 'the reported file'} and build a new small patch from the current content.`
+            : 'Inspect the returned error, change the arguments or approach, and then retry.'),
+      };
+    }
+  };
+
+  private consumeToolFailureFinalRecovery = (
+    guard: InvalidArgumentGuard,
+  ): boolean => {
+    if (!guard.lastToolResponseRequiresRecovery || guard.finalRecoveryUsed) {
+      return false;
+    }
+    guard.finalRecoveryUsed = true;
+    return true;
+  };
+
+  private fallbackOutcome = (event: Event): ModelStepOutcome | undefined => {
+    if (event.partial !== false) {
+      return undefined;
+    }
+    const parts = event.content?.parts ?? [];
+    if (parts.some((part) => part.functionCall)) {
+      return { kind: 'toolCalls' };
+    }
+    if (
+      parts.some(
+        (part) =>
+          !part.thought &&
+          typeof part.text === 'string' &&
+          part.text.trim().length > 0,
+      )
+    ) {
+      return { kind: 'final' };
+    }
+    if (
+      parts.some(
+        (part) =>
+          part.thought &&
+          typeof part.text === 'string' &&
+          part.text.trim().length > 0,
+      )
+    ) {
+      return { kind: 'continue', reason: 'commentaryOnly' };
+    }
+    return undefined;
+  };
+
+  private runTurnDriver = async (
+    options: TurnDriverOptions,
+  ): Promise<void> => {
+    let message = options.initialMessage;
+    let invocation = 0;
+    let commentaryOnlyCount = 0;
+    let truncationCount = 0;
+    const textItems = new Map<string, TextItemState>();
+    while (!options.signal.aborted) {
+      invocation += 1;
+      let outcome: ModelStepOutcome | undefined;
+      for await (const event of options.runner.runAsync({
+        userId: options.userId,
+        sessionId: options.sessionId,
+        newMessage: message,
+        abortSignal: options.signal,
+      })) {
+        options.onEvent(event, textItems);
+        if (event.partial === false) {
+          const nextOutcome = readModelStepOutcome(event.content?.parts ?? []) ??
+            this.fallbackOutcome(event);
+          if (nextOutcome) {
+            outcome = nextOutcome;
+          }
+          options.onCompletedEvent?.(event);
+        }
+      }
+      if (options.signal.aborted) {
+        return;
+      }
+      options.validateInvocation?.();
+      const providerFailure = options.takeProviderError?.();
+      if (providerFailure) {
+        throw new ProviderAdapterError(providerFailure);
+      }
+      if (!outcome) {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: false,
+          message: 'The model invocation ended without a structured outcome.',
+        });
+      }
+      if (outcome.kind === 'failed') {
+        throw new ProviderAdapterError({
+          kind: outcome.errorKind,
+          retryable: false,
+          message: outcome.message,
+        });
+      }
+      if (outcome.kind === 'final') {
+        const pendingResults = await options.consumePendingResults?.() ?? null;
+        if (pendingResults) {
+          options.settleFinalCandidate?.(false, textItems);
+          message = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal continuation\n\n' +
+                'Child Agent results completed after your candidate answer. ' +
+                'Consume these results and generate the single final answer. ' +
+                'Keep all visible text in the language of the original user request.\n\n' +
+                pendingResults,
+            }],
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
+        if (options.retryFinalAfterToolFailure?.()) {
+          options.settleFinalCandidate?.(false, textItems);
+          message = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal continuation after tool failure\n\n' +
+                'The most recent tool result failed, so the candidate answer was not accepted as completion. ' +
+                'Continue with a corrected tool call or another concrete approach. If recovery is genuinely impossible, ' +
+                'submit a final answer that names the specific blocker and the work that remains incomplete. ' +
+                'Keep all visible text in the language of the original user request.',
+            }],
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
+        if (options.completionGate && !options.completionGate()) {
+          throw new ProviderAdapterError({
+            kind: 'protocol',
+            retryable: false,
+            message: 'The model submitted a final answer while Turn work remained pending.',
+          });
+        }
+        options.settleFinalCandidate?.(true, textItems);
+        return;
+      }
+      if (outcome.kind === 'toolCalls') {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: false,
+          message: 'ADK ended an invocation with unprocessed tool calls.',
+        });
+      }
+      if (outcome.reason === 'commentaryOnly') {
+        commentaryOnlyCount += 1;
+        if (commentaryOnlyCount >= 3) {
+          throw new ProviderAdapterError({
+            kind: 'protocol',
+            retryable: false,
+            message: 'The model produced commentary without progress three times.',
+          });
+        }
+      } else {
+        commentaryOnlyCount = 0;
+      }
+      if (outcome.reason === 'maxOutputTokens') {
+        truncationCount += 1;
+        if (truncationCount >= 2) {
+          throw new ProviderAdapterError({
+            kind: 'outputTooLarge',
+            retryable: false,
+            message: 'The model output was truncated twice without a final answer.',
+          });
+        }
+      }
+      message = {
+        role: 'user',
+        parts: [{
+          text:
+            `# Internal continuation ${invocation}\n\n` +
+            'Keep all visible text in the language of the original user request. ' +
+            (outcome.reason === 'maxOutputTokens'
+              ? 'Continue after the output truncation and submit a concise final answer when complete.'
+              : outcome.reason === 'pauseTurn'
+                ? 'Resume the paused Turn. Continue tool work or submit the final answer.'
+                : 'Continue the same Turn. Perform the next concrete action or submit the final answer.'),
+        }],
+      };
+    }
+  };
+
+  private startTurn = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+  ): Promise<void> => {
+    if (this.activeTurns.has(command.turnId)) {
+      this.emitCompleted(command, 'failed', {
+        kind: 'invalidRequest',
+        retryable: false,
+        message: 'The Turn is already active.',
+      });
+      return;
+    }
+    const controller = new AbortController();
+    this.activeTurns.set(command.turnId, controller);
+    try {
+      const resolved = this.resolveProfile(command);
+      withDurableStateWrite(() =>
+        this.nativeRuntime?.ensureThread(
+          command.threadId,
+          command.workspaceId,
+        ));
+      await this.ensureSession(command, resolved.selection);
+      withDurableStateWrite(() =>
+        this.nativeRuntime?.startTurn(
+          command.turnId,
+          command.threadId,
+          command.requestId,
+          resolved.provider.wireApi,
+          resolved.provider.model,
+        ));
+      this.emit({
+        type: 'turn.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        model: resolved.selection,
+      });
+      this.emit({
+        type: 'turn.userMessage',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        itemId: `${command.turnId}:user`,
+        content: command.content,
+      });
+      if (command.generateTitle) {
+        void this.generateTitle(command, resolved, controller.signal);
+      }
+      const collaborationTools = this.nativeRuntime
+        ? this.collaboration.toolsForTurn(
+            command,
+            {
+              createTasks: (tasks) => {
+                this.requireNative().createAgentTasksJson(
+                  command.turnId,
+                  JSON.stringify(
+                    tasks.map((task) => ({
+                      id: task.taskId,
+                      parentTaskId: null as string | null,
+                      title: task.title,
+                      status: task.status,
+                      payload: task,
+                    })),
+                  ),
+                );
+              },
+              updateTask: (task) => {
+                this.requireNative().updateAgentTask(
+                  task.taskId,
+                  task.status,
+                  JSON.stringify(task),
+                );
+              },
+              publishTask: (task) => {
+                this.emit({
+                  type: 'agent.task',
+                  requestId: command.requestId,
+                  workspaceId: command.workspaceId,
+                  threadId: command.threadId,
+                  turnId: command.turnId,
+                  task,
+                });
+              },
+              executeTask: (context) =>
+                this.executeAgentTask(command, resolved, context),
+            },
+            controller.signal,
+          )
+        : [];
+      const invalidArgumentGuard: InvalidArgumentGuard = {
+        repeats: new Map<string, number>(),
+        calls: new Map<string, string>(),
+        lastToolResponseRequiresRecovery: false,
+        finalRecoveryUsed: false,
+      };
+      const turnSkills = this.nativeRuntime
+        ? createTurnSkills(
+            this.nativeRuntime,
+            command.workspaceId,
+            command.content,
+          )
+        : { instruction: '', tools: [] };
+      const composerInstruction = composerIntentInstruction(command.content);
+      const agent = new LlmAgent({
+        name: 'sugarcode_agent',
+        description: 'SugarCode local coding agent',
+        instruction:
+          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
+          (composerInstruction ? `\n\n${composerInstruction}` : '') +
+          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
+        model: this.createModel(resolved.provider),
+        beforeModelCallback: ({ request }) => {
+          this.assertInvalidArgumentProgress(invalidArgumentGuard);
+          const repeatedFailureRecovery =
+            this.takeRepeatedToolFailureRecovery(invalidArgumentGuard);
+          if (repeatedFailureRecovery) {
+            request.contents.push({
+              role: 'user',
+              parts: [{ text: repeatedFailureRecovery }],
+            });
+          }
+          return undefined;
+        },
+        tools: [
+          this.invalidArgumentsTool(invalidArgumentGuard),
+          this.requestUserInputTool(command),
+          ...(this.nativeRuntime
+            ? [
+              ...createWorkspaceTools(
+                this.nativeRuntime,
+                command.workspaceId,
+                (toolName, argumentsValue, execute) =>
+                  this.runPrivilegedTool(
+                    command,
+                    toolName,
+                    argumentsValue,
+                    execute,
+                  ),
+                (operationId, stream, delta) => {
+                  this.emit({
+                    type: 'operation.output',
+                    requestId: command.requestId,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    turnId: command.turnId,
+                    operationId,
+                    stream,
+                    delta,
+                  });
+                },
+              ),
+              ...this.mcp.toolsForTurn((request) =>
+                this.runMcpTool(command, request),
+              ),
+              ...turnSkills.tools,
+              ...collaborationTools,
+            ]
+            : []),
+        ],
+      });
+      const providerErrorCapture = new ProviderErrorCapturePlugin();
+      const runner = new Runner({
+        appName: APPLICATION_NAME,
+        agent,
+        sessionService: this.sessions,
+        plugins: [providerErrorCapture],
+      });
+      await this.runTurnDriver({
+        runner,
+        userId: command.workspaceId,
+        sessionId: command.threadId,
+        initialMessage: this.contentFromParts(command.content, resolved.selection),
+        signal: controller.signal,
+        onEvent: (event, textItems) => {
+          this.observeToolProgress(invalidArgumentGuard, event);
+          this.publishAgentEvent(command, event, textItems);
+        },
+        onCompletedEvent: (event) => this.persistModelHistory(command, event),
+        consumePendingResults: () =>
+          this.collaboration.consumePendingResults(
+            command.turnId,
+            controller.signal,
+          ),
+        completionGate: () =>
+          !controller.signal.aborted &&
+          ![...this.pendingUserInputs.values()].some(
+            (pending) => pending.turnId === command.turnId,
+          ) &&
+          ![...this.pendingApprovals.values()].some(
+            (approval) => approval.turnId === command.turnId,
+          ) &&
+          !(this.activeOperations.get(command.turnId)?.size),
+        retryFinalAfterToolFailure: () =>
+          this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
+        settleFinalCandidate: (accepted, textItems) =>
+          this.settleFinalCandidate(command, textItems, accepted),
+        takeProviderError: providerErrorCapture.takeCapturedError,
+        validateInvocation: () =>
+          this.assertInvalidArgumentProgress(invalidArgumentGuard),
+      });
+      this.emitCompleted(
+        command,
+        controller.signal.aborted ? 'interrupted' : 'completed',
+      );
+    } catch (error) {
+      this.collaboration.cancelTurn(command.turnId);
+      const details = providerError(error);
+      this.emitCompleted(
+        command,
+        details.kind === 'cancelled' ? 'interrupted' : 'failed',
+        details,
+      );
+    } finally {
+      this.collaboration.releaseTurn(command.turnId);
+      this.cancelTurnUserInputs(command.turnId);
+      this.activeTurns.delete(command.turnId);
+    }
+  };
+
+  private generateTitle = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    resolved: ResolvedProfile,
+    signal: AbortSignal,
+  ): Promise<void> => {
+    const source = titleSourceFromContent(command.content);
+    if (!source || !this.nativeRuntime) {
+      return;
+    }
+    const title = await generateThreadTitle(
+      this.createModel(resolved.provider),
+      source,
+      signal,
+    );
+    if (!title || signal.aborted || !this.nativeRuntime) {
+      return;
+    }
+    try {
+      const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+        this.nativeRuntime.updateThreadTitleJson(
+          command.threadId,
+          command.workspaceId,
+          title,
+          true,
+        ),
+      );
+      if (snapshot.thread.title !== title) {
+        return;
+      }
+      this.emit({
+        type: 'thread.mutated',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        operation: 'generateTitle',
+        threadId: command.threadId,
+        snapshot,
+      });
+    } catch {
+      // Title metadata failure never changes the owning Turn outcome.
+    }
+  };
+
+  private executeAgentTask = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    resolved: ResolvedProfile,
+    context: AgentTaskExecutionContext,
+  ): Promise<{
+    status: 'completed' | 'failed' | 'interrupted';
+    summaryMarkdown: string;
+    durationMs: number;
+  }> => {
+    const startedAt = Date.now();
+    const sessionKey = {
+      appName: APPLICATION_NAME,
+      userId: command.workspaceId,
+      sessionId: context.task.childThreadId,
+    };
+    context.publishProgress(
+      'waitingForModel',
+      'Initializing the isolated subagent session.',
+    );
+    await this.sessions.createSession(sessionKey);
+    const dependencyContext = context.dependencyResults
+      .map(
+        (dependency) =>
+          `## Dependency result: ${dependency.title}\n\n` +
+          `Status: ${dependency.status}\n\n` +
+          (dependency.result?.summaryMarkdown ?? ''),
+      )
+      .join('\n\n');
+    let input = dependencyContext.length > 0
+      ? `${context.task.taskMarkdown}\n\n# Dependency results\n\n${dependencyContext}`
+      : context.task.taskMarkdown;
+    if (context.task.role === 'auditor') {
+      input += `\n\n# Mandatory audit report format\n\n` +
+        `Return only a Markdown report with these headings:\n\n` +
+        `## Verdict\n\n## Findings\n\n## Acceptance criteria\n\n## Residual risks\n\n` +
+        `Each finding must include severity, evidence, and a concrete remediation.`;
+    }
+    let streamedSummary = '';
+    let completedSummary = '';
+    let lastProgressAt = 0;
+    let lastProgressStage: 'waitingForModel' | 'streaming' | 'runningTool' | null = null;
+    let lastProgressSummary = '';
+    try {
+      const publishProgress = (
+        stage: 'waitingForModel' | 'streaming' | 'runningTool',
+        summaryMarkdown: string,
+        force = false,
+      ): void => {
+        const now = Date.now();
+        if (
+          !force &&
+          stage === lastProgressStage &&
+          summaryMarkdown === lastProgressSummary
+        ) {
+          return;
+        }
+        if (!force && stage === 'streaming' && now - lastProgressAt < 250) {
+          return;
+        }
+        lastProgressAt = now;
+        lastProgressStage = stage;
+        lastProgressSummary = summaryMarkdown;
+        context.publishProgress(stage, summaryMarkdown);
+      };
+      publishProgress(
+        'waitingForModel',
+        'Subagent started and is waiting for the model response.',
+        true,
+      );
+      const runWithApprovalState = async <T>(operation: () => Promise<T>): Promise<T> => {
+        let waitingVisible = false;
+        const timer = setTimeout(() => {
+          waitingVisible = true;
+          context.setWaitingApproval(true);
+        }, AGENT_APPROVAL_STATUS_DELAY_MS);
+        timer.unref();
+        try {
+          return await operation();
+        } finally {
+          clearTimeout(timer);
+          if (waitingVisible) {
+            context.setWaitingApproval(false);
+          }
+        }
+      };
+      const tools = this.nativeRuntime
+        ? [
+            ...createWorkspaceTools(
+              this.nativeRuntime,
+              command.workspaceId,
+              (toolName, argumentsValue, execute) =>
+                runWithApprovalState(() =>
+                  this.runPrivilegedTool(
+                    command,
+                    toolName,
+                    argumentsValue,
+                    execute,
+                  ),
+                ),
+              (operationId, stream, delta) => {
+                this.emit({
+                  type: 'operation.output',
+                  requestId: command.requestId,
+                  workspaceId: command.workspaceId,
+                  threadId: command.threadId,
+                  turnId: command.turnId,
+                  operationId,
+                  stream,
+                  delta,
+                });
+              },
+              context.task.access,
+            ),
+            ...this.mcp.toolsForTurn((request) =>
+              runWithApprovalState(() => this.runMcpTool(command, request)),
+            ),
+          ]
+        : [];
+      const invalidArgumentGuard: InvalidArgumentGuard = {
+        repeats: new Map<string, number>(),
+        calls: new Map<string, string>(),
+        lastToolResponseRequiresRecovery: false,
+        finalRecoveryUsed: false,
+      };
+      const turnSkills = this.nativeRuntime
+        ? createTurnSkills(
+            this.nativeRuntime,
+            command.workspaceId,
+            command.content,
+          )
+        : { instruction: '', tools: [] };
+      const agent = new LlmAgent({
+        name: `sugarcode_${context.task.role}_agent`,
+        description: `${context.task.role} subagent for ${context.task.title}`,
+        instruction:
+          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n` +
+          `# Subagent boundary\n\n` +
+          `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
+          `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.` +
+          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
+        model: this.createModel(resolved.provider),
+        tools: [
+          this.invalidArgumentsTool(invalidArgumentGuard),
+          ...tools,
+          ...turnSkills.tools,
+        ],
+        includeContents: 'none',
+        beforeModelCallback: ({ request }) => {
+          this.assertInvalidArgumentProgress(invalidArgumentGuard);
+          const repeatedFailureRecovery =
+            this.takeRepeatedToolFailureRecovery(invalidArgumentGuard);
+          if (repeatedFailureRecovery) {
+            request.contents.push({
+              role: 'user',
+              parts: [{ text: repeatedFailureRecovery }],
+            });
+          }
+          publishProgress(
+            'waitingForModel',
+            streamedSummary || completedSummary
+              ? 'The subagent is waiting for the model to continue after its latest work.'
+              : 'Subagent started and is waiting for the model response.',
+            true,
+          );
+          const amendments = context.takeAmendments();
+          if (amendments.length > 0) {
+            request.contents.push({
+              role: 'user',
+              parts: [{
+                text:
+                  `# Task amendments\n\n${amendments
+                    .map((amendment, index) => `${index + 1}. ${amendment}`)
+                    .join('\n\n')}`,
+              }],
+            });
+          }
+          return undefined;
+        },
+      });
+      const providerErrorCapture = new ProviderErrorCapturePlugin();
+      const runner = new Runner({
+        appName: APPLICATION_NAME,
+        agent,
+        sessionService: this.sessions,
+        plugins: [providerErrorCapture],
+      });
+      await this.runTurnDriver({
+        runner,
+        userId: command.workspaceId,
+        sessionId: context.task.childThreadId,
+        initialMessage: { role: 'user', parts: [{ text: input }] },
+        signal: context.signal,
+        onEvent: (event) => {
+          this.observeToolProgress(invalidArgumentGuard, event);
+          const parts = event.content?.parts ?? [];
+          const text = parts
+            .filter(
+              (part) => !part.thought && typeof part.text === 'string',
+            )
+            .map((part) => part.text ?? '')
+            .join('');
+          if (event.partial && text.length > 0) {
+            streamedSummary += text;
+            publishProgress('streaming', streamedSummary.slice(-16 * 1024));
+          } else if (event.partial === false && text.length > 0) {
+            const outcome = readModelStepOutcome(parts) ??
+              this.fallbackOutcome(event);
+            if (outcome?.kind === 'final') {
+              completedSummary = parts
+                .filter((part) => {
+                  const metadata = readModelItemMetadata(part);
+                  return !part.thought && metadata?.phase !== 'commentary' &&
+                    typeof part.text === 'string';
+                })
+                .map((part) => part.text ?? '')
+                .join('');
+            }
+            publishProgress(
+              'streaming',
+              (completedSummary || streamedSummary).slice(-16 * 1024),
+              true,
+            );
+          }
+          const calledTools = parts.flatMap((part) =>
+            part.functionCall?.name ? [part.functionCall.name] : [],
+          );
+          if (calledTools.length > 0) {
+            publishProgress(
+              'runningTool',
+              `Running tool: ${[...new Set(calledTools)].map((name) => `\`${name}\``).join(', ')}`,
+              true,
+            );
+          }
+          const completedTools = parts.flatMap((part) =>
+            part.functionResponse?.name ? [part.functionResponse.name] : [],
+          );
+          if (completedTools.length > 0) {
+            publishProgress(
+              'waitingForModel',
+              `Tool completed; waiting for the model: ${[...new Set(completedTools)].map((name) => `\`${name}\``).join(', ')}`,
+              true,
+            );
+          }
+        },
+        completionGate: () => !context.signal.aborted,
+        retryFinalAfterToolFailure: () =>
+          this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
+        takeProviderError: providerErrorCapture.takeCapturedError,
+        validateInvocation: () =>
+          this.assertInvalidArgumentProgress(invalidArgumentGuard),
+      });
+      if (!completedSummary.trim()) {
+        throw new ProviderAdapterError({
+          kind: 'protocol',
+          retryable: false,
+          message: 'The subagent ended without a non-empty final answer.',
+        });
+      }
+      return {
+        status: context.signal.aborted ? 'interrupted' : 'completed',
+        summaryMarkdown: completedSummary.slice(0, 16 * 1024),
+        durationMs: Date.now() - startedAt,
+      };
+    } catch (error) {
+      return {
+        status: context.signal.aborted ? 'interrupted' : 'failed',
+        summaryMarkdown: context.signal.aborted
+          ? 'Agent task interrupted.'
+          : error instanceof Error
+            ? error.message
+            : 'Agent task failed.',
+        durationMs: Date.now() - startedAt,
+      };
+    } finally {
+      await this.sessions.deleteSession(sessionKey);
+    }
+  };
+
+  private publishAgentEvent = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    event: Event,
+    textItems: Map<string, TextItemState>,
+  ): void => {
+    const parts = event.content?.parts ?? [];
+    const hasVisibleModelText = parts.some(isVisibleModelTextPart);
+    const userText = command.content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+    for (const [index, part] of parts.entries()) {
+      if (isVisibleModelTextPart(part)) {
+        const metadata = readModelItemMetadata(part);
+        const initialPhase: ModelTextPhase = metadata?.phase ??
+          (part.thought ? 'commentary' : 'provisional');
+        const existingItem = [...textItems.entries()].find(
+          ([, item]) => !item.completed && item.phase === initialPhase,
+        );
+        const itemId = metadata?.itemId ?? existingItem?.[0] ??
+          `${command.turnId}:text:${textItems.size}`;
+        const state = textItems.get(itemId) ?? {
+          phase: initialPhase,
+          text: '',
+          started: false,
+          completed: false,
+          pendingFinal: false,
+        };
+        if (!state.started) {
+          state.started = true;
+          this.emitTransient({
+            type: 'turn.textStarted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            itemId,
+            phase: initialPhase,
+          });
+        }
+        if (event.partial === false) {
+          const outcome = metadata?.outcome ??
+            readModelStepOutcome(event.content?.parts ?? []);
+          const completedPhase = part.thought ||
+              initialPhase === 'commentary' ||
+              outcome?.kind !== 'final'
+            ? 'commentary' as const
+            : 'final' as const;
+          if (
+            state.completed &&
+            state.phase === completedPhase &&
+            state.text === part.text
+          ) {
+            continue;
+          }
+          state.phase = completedPhase;
+          state.text = part.text;
+          if (completedPhase === 'final') {
+            state.pendingFinal = true;
+          } else {
+            state.completed = true;
+            this.emit({
+              type: 'turn.textCompleted',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              itemId,
+              phase: completedPhase,
+              text: part.text,
+            });
+          }
+        } else {
+          state.text += part.text;
+          this.emitTransient({
+            type: 'turn.textDelta',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            itemId,
+            phase: initialPhase,
+            delta: part.text,
+          });
+        }
+        textItems.set(itemId, state);
+      }
+      if (part.functionCall?.name) {
+        const metadata = readModelItemMetadata(part);
+        const callId = part.functionCall.id ?? `${event.id}:${index}`;
+        if (event.partial === false && !hasVisibleModelText) {
+          const progress = toolProgressSummary(
+            userText,
+            part.functionCall.name,
+            part.functionCall.args ?? {},
+          );
+          const duplicate = progress && [...textItems.values()].some(
+            (item) =>
+              item.completed &&
+              item.phase === 'commentary' &&
+              item.text === progress,
+          );
+          if (progress && !duplicate) {
+            const progressItemId = `${command.turnId}:progress:${callId}`;
+            textItems.set(progressItemId, {
+              phase: 'commentary',
+              text: progress,
+              started: true,
+              completed: true,
+              pendingFinal: false,
+            });
+            this.emit({
+              type: 'turn.textCompleted',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              itemId: progressItemId,
+              phase: 'commentary',
+              text: progress,
+            });
+          }
+        }
+        this.emit({
+          type: 'turn.toolCall',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          itemId: metadata?.itemId ?? part.functionCall.id ?? `${event.id}:${index}`,
+          callId,
+          name: part.functionCall.name,
+          arguments: part.functionCall.args ?? {},
+        });
+      }
+      if (part.functionResponse?.name) {
+        const metadata = readModelItemMetadata(part);
+        this.emit({
+          type: 'turn.toolResult',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          itemId: metadata?.itemId ?? part.functionResponse.id ?? `${event.id}:${index}`,
+          callId: part.functionResponse.id ?? `${event.id}:${index}`,
+          result: part.functionResponse.response ?? {},
+        });
+      }
+    }
+    const usage = usageFromEvent(event);
+    if (usage) {
+      this.emit({
+        type: 'turn.usage',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        usage,
+      });
+    }
+  };
+
+  private settleFinalCandidate = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    textItems: Map<string, TextItemState>,
+    accepted: boolean,
+  ): void => {
+    for (const [itemId, state] of textItems) {
+      if (!state.pendingFinal) {
+        continue;
+      }
+      state.phase = accepted ? 'final' : 'commentary';
+      state.pendingFinal = false;
+      state.completed = true;
+      this.emit({
+        type: 'turn.textCompleted',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        itemId,
+        phase: state.phase,
+        text: state.text,
+      });
+    }
+  };
+
+  private runPrivilegedTool = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    execute: (operationId: string) => Promise<unknown>,
+  ): Promise<unknown> => {
+    const operationId = randomUUID();
+    const approvalId = randomUUID();
+    const argumentsJson = JSON.stringify(argumentsValue);
+    const requestHash = createHash('sha256').update(argumentsJson).digest('hex');
+    const approvalPresentation = {
+      kind: 'command' as const,
+      argumentsSummary: this.approvalArgumentsSummary(
+        toolName,
+        argumentsValue,
+        argumentsJson,
+      ),
+      fullAccess:
+        toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
+    };
+    this.requireNative().proposeOperation(
+      operationId,
+      approvalId,
+      command.turnId,
+      toolName,
+      requestHash,
+      argumentsJson,
+      JSON.stringify(approvalPresentation),
+    );
+    const decision = await new Promise<'approved' | 'denied'>((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        kind: 'command',
+        recovered: false,
+        publish: () => {
+          this.emit({
+            type: 'approval.requested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            approvalId,
+            operationId,
+            toolName,
+            argumentsSummary: approvalPresentation.argumentsSummary,
+            fullAccess: approvalPresentation.fullAccess,
+          });
+        },
+        resolve,
+      });
+      this.enqueueApproval(approvalId);
+    });
+    if (decision === 'denied') {
+      return { ok: false, error: 'userDenied' };
+    }
+    const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
+    operations.add(operationId);
+    this.activeOperations.set(command.turnId, operations);
+    try {
+      this.emit({
+        type: 'operation.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+      });
+      const result = await execute(operationId);
+      const succeeded = !(
+        isRecord(result) &&
+        (result.ok === false ||
+          result.status === 'error' ||
+          result.status === 'cancelled')
+      );
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        succeeded,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded,
+        result: isRecord(result) ? result : { value: result },
+      });
+      return result;
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error instanceof Error ? error.message : 'privilegedToolFailed',
+      };
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        false,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded: false,
+        result,
+      });
+      return result;
+    } finally {
+      const active = this.activeOperations.get(command.turnId);
+      active?.delete(operationId);
+      if (active?.size === 0) {
+        this.activeOperations.delete(command.turnId);
+      }
+    }
+  };
+
+  private setMcpSession = async (
+    command: Extract<RuntimeCommand, { type: 'mcp.sessionSet' }>,
+  ): Promise<void> => {
+    const hasBlockingApproval = [...this.pendingApprovals.values()].some(
+      (approval) => !approval.recovered || approval.kind !== 'mcp',
+    );
+    const action = this.activeTurns.size > 0
+      ? { accepted: false as const, reason: 'turnActive' as const }
+      : hasBlockingApproval
+        ? { accepted: false as const, reason: 'approvalPending' as const }
+        : await this.mcp.setActive(command.serverIds);
+    this.emit({
+      type: 'mcp.sessionAction',
+      requestId: command.requestId,
+      action,
+      activeServerIds: this.mcp.getActiveServerIds(),
+    });
+  };
+
+  private runMcpTool = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    request: McpToolApproval,
+  ): Promise<unknown> => {
+    const operationId = randomUUID();
+    const approvalId = randomUUID();
+    const argumentsJson = JSON.stringify(stableJsonValue(request.argumentsValue));
+    if (Buffer.byteLength(argumentsJson, 'utf8') > MAX_MCP_ARGUMENT_BYTES) {
+      return { ok: false, error: 'mcpArgumentsTooLarge' };
+    }
+    const argumentsSha256 = createHash('sha256')
+      .update(argumentsJson)
+      .digest('hex');
+    const approvalPresentation = {
+      kind: 'mcp' as const,
+      serverId: request.serverId,
+      name: request.name,
+      argumentsBytes: Buffer.byteLength(argumentsJson, 'utf8'),
+      argumentsSha256,
+      inventorySha256: request.inventorySha256,
+    };
+    this.requireNative().proposeOperation(
+      operationId,
+      approvalId,
+      command.turnId,
+      request.name,
+      argumentsSha256,
+      argumentsJson,
+      JSON.stringify(approvalPresentation),
+    );
+    const decision = await new Promise<'approved' | 'denied'>((resolve) => {
+      this.pendingApprovals.set(approvalId, {
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        kind: 'mcp',
+        recovered: false,
+        publish: () => {
+          this.emit({
+            type: 'mcp.approvalRequested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            approvalId,
+            operationId,
+            serverId: request.serverId,
+            name: request.name,
+            argumentsJson,
+            argumentsBytes: approvalPresentation.argumentsBytes,
+            argumentsSha256,
+            inventorySha256: request.inventorySha256,
+          });
+        },
+        resolve,
+      });
+      this.enqueueApproval(approvalId);
+    });
+    if (decision === 'denied') {
+      return { ok: false, error: 'userDenied' };
+    }
+    const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
+    operations.add(operationId);
+    this.activeOperations.set(command.turnId, operations);
+    try {
+      this.emit({
+        type: 'operation.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+      });
+      const output = await request.execute();
+      const result = isRecord(output) ? output : { value: output };
+      const succeeded = result.isError !== true;
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        succeeded,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded,
+        result,
+      });
+      return output;
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error instanceof Error ? error.message : 'mcpToolFailed',
+      };
+      this.requireNative().completeOperation(
+        operationId,
+        JSON.stringify(result),
+        false,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        operationId,
+        succeeded: false,
+        result,
+      });
+      return result;
+    } finally {
+      const active = this.activeOperations.get(command.turnId);
+      active?.delete(operationId);
+      if (active?.size === 0) {
+        this.activeOperations.delete(command.turnId);
+      }
+    }
+  };
+
+  private restorePendingApprovals = (): void => {
+    const value = this.parseNativeJson<unknown>(
+      this.requireNative().listPendingApprovalsJson(),
+    );
+    if (!Array.isArray(value)) {
+      throw new Error('Native pending approvals were invalid.');
+    }
+    for (const item of value) {
+      const record = this.recoveredApprovalRecord(item);
+      if (!record) {
+        throw new Error('Native pending approval coordinates were invalid.');
+      }
+      let argumentsValue: Readonly<Record<string, unknown>> | null = null;
+      try {
+        const parsed = JSON.parse(record.argumentsJson) as unknown;
+        if (isRecord(parsed)) {
+          argumentsValue = parsed;
+        }
+      } catch {
+        // Rejected below without exposing malformed persisted arguments.
+      }
+      const requestHash = createHash('sha256')
+        .update(record.argumentsJson)
+        .digest('hex');
+      const presentation = argumentsValue && requestHash === record.requestHash
+        ? this.recoveredApprovalPresentation(record, argumentsValue)
+        : null;
+      if (!argumentsValue || !presentation) {
+        this.rejectUnrecoverableApproval(record);
+        continue;
+      }
+      const pending: PendingApproval = {
+        requestId: record.requestId,
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.turnId,
+        operationId: record.operationId,
+        kind: presentation.kind,
+        recovered: true,
+        publish: () => {
+          if (presentation.kind === 'command') {
+            this.emitTransient({
+              type: 'approval.requested',
+              requestId: record.requestId,
+              workspaceId: record.workspaceId,
+              threadId: record.threadId,
+              turnId: record.turnId,
+              approvalId: record.approvalId,
+              operationId: record.operationId,
+              toolName: record.toolName,
+              argumentsSummary: presentation.argumentsSummary,
+              fullAccess: presentation.fullAccess,
+              recovered: true,
+            });
+          } else {
+            this.emitTransient({
+              type: 'mcp.approvalRequested',
+              requestId: record.requestId,
+              workspaceId: record.workspaceId,
+              threadId: record.threadId,
+              turnId: record.turnId,
+              approvalId: record.approvalId,
+              operationId: record.operationId,
+              serverId: presentation.serverId,
+              name: presentation.name,
+              argumentsJson: record.argumentsJson,
+              argumentsBytes: presentation.argumentsBytes,
+              argumentsSha256: presentation.argumentsSha256,
+              inventorySha256: presentation.inventorySha256,
+              recovered: true,
+            });
+          }
+        },
+        resolve: (decision) => {
+          if (decision === 'approved') {
+            void this.executeRecoveredApproval(
+              record,
+              argumentsValue,
+              presentation,
+            );
+          }
+        },
+      };
+      this.pendingApprovals.set(record.approvalId, pending);
+      this.approvalQueue.push(record.approvalId);
+    }
+  };
+
+  private recoveredApprovalRecord = (
+    value: unknown,
+  ): RecoveredApprovalRecord | null => {
+    if (!isRecord(value)) {
+      return null;
+    }
+    const stringField = (name: string): string | null =>
+      typeof value[name] === 'string' && value[name].length > 0
+        ? value[name]
+        : null;
+    const approvalId = stringField('approvalId');
+    const operationId = stringField('operationId');
+    const turnId = stringField('turnId');
+    const requestId = stringField('requestId');
+    const threadId = stringField('threadId');
+    const workspaceId = stringField('workspaceId');
+    const toolName = stringField('toolName');
+    const requestHash = stringField('requestHash');
+    const argumentsJson = stringField('argumentsJson');
+    if (
+      !approvalId ||
+      !operationId ||
+      !turnId ||
+      !requestId ||
+      !threadId ||
+      !workspaceId ||
+      !toolName ||
+      !requestHash ||
+      !argumentsJson ||
+      !/^[0-9a-f]{64}$/u.test(requestHash)
+    ) {
+      return null;
+    }
+    return {
+      approvalId,
+      operationId,
+      turnId,
+      requestId,
+      threadId,
+      workspaceId,
+      toolName,
+      requestHash,
+      argumentsJson,
+      approval: value.approval,
+    };
+  };
+
+  private recoveredApprovalPresentation = (
+    record: RecoveredApprovalRecord,
+    argumentsValue: Readonly<Record<string, unknown>>,
+  ): RecoveredApprovalPresentation | null => {
+    const payload = record.approval;
+    if (!record.toolName.startsWith('mcp__')) {
+      const fullAccess =
+        record.toolName === 'shell_exec' &&
+        argumentsValue.mode === 'fullAccess';
+      const computed: RecoveredApprovalPresentation = {
+        kind: 'command',
+        argumentsSummary: this.approvalArgumentsSummary(
+          record.toolName,
+          argumentsValue,
+          record.argumentsJson,
+        ),
+        fullAccess,
+      };
+      if (payload === null || payload === undefined) {
+        return computed;
+      }
+      const legacyArgumentsSummary =
+        `${record.toolName} (${Buffer.byteLength(record.argumentsJson, 'utf8')} bytes)`;
+      return isRecord(payload) &&
+        payload.kind === 'command' &&
+        (payload.argumentsSummary === computed.argumentsSummary ||
+          (record.toolName === 'workspace_apply_patch' &&
+            payload.argumentsSummary === legacyArgumentsSummary)) &&
+        payload.fullAccess === computed.fullAccess
+        ? computed
+        : null;
+    }
+    if (
+      !isRecord(payload) ||
+      payload.kind !== 'mcp' ||
+      typeof payload.serverId !== 'string' ||
+      typeof payload.name !== 'string' ||
+      payload.name !== record.toolName ||
+      !record.toolName.startsWith(`mcp__${payload.serverId}__`) ||
+      typeof payload.argumentsBytes !== 'number' ||
+      payload.argumentsBytes !== Buffer.byteLength(record.argumentsJson, 'utf8') ||
+      payload.argumentsSha256 !== record.requestHash ||
+      typeof payload.inventorySha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/u.test(payload.inventorySha256)
+    ) {
+      return null;
+    }
+    return {
+      kind: 'mcp',
+      serverId: payload.serverId,
+      name: payload.name,
+      argumentsBytes: payload.argumentsBytes,
+      argumentsSha256: record.requestHash,
+      inventorySha256: payload.inventorySha256,
+    };
+  };
+
+  private rejectUnrecoverableApproval = (
+    record: RecoveredApprovalRecord,
+  ): void => {
+    this.requireNative().resolveApproval(record.approvalId, 'denied');
+    this.emit({
+      type: record.toolName.startsWith('mcp__')
+        ? 'mcp.approvalResolved'
+        : 'approval.resolved',
+      requestId: record.requestId,
+      workspaceId: record.workspaceId,
+      threadId: record.threadId,
+      turnId: record.turnId,
+      approvalId: record.approvalId,
+      operationId: record.operationId,
+      decision: 'denied',
+      source: 'system',
+    });
+    this.emit({
+      type: 'runtime.log',
+      requestId: record.requestId,
+      level: 'warn',
+      message: `Rejected unrecoverable approval ${record.approvalId}.`,
+    });
+  };
+
+  private executeRecoveredApproval = async (
+    record: RecoveredApprovalRecord,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    presentation: RecoveredApprovalPresentation,
+  ): Promise<void> => {
+    const operations = this.activeOperations.get(record.turnId) ?? new Set<string>();
+    operations.add(record.operationId);
+    this.activeOperations.set(record.turnId, operations);
+    this.emit({
+      type: 'operation.started',
+      requestId: record.requestId,
+      workspaceId: record.workspaceId,
+      threadId: record.threadId,
+      turnId: record.turnId,
+      operationId: record.operationId,
+    });
+    try {
+      const output = presentation.kind === 'command'
+        ? await executePrivilegedWorkspaceTool(
+            this.requireNative(),
+            record.operationId,
+            record.workspaceId,
+            record.toolName,
+            argumentsValue,
+            (operationId, stream, delta) => {
+              this.emit({
+                type: 'operation.output',
+                requestId: record.requestId,
+                workspaceId: record.workspaceId,
+                threadId: record.threadId,
+                turnId: record.turnId,
+                operationId,
+                stream,
+                delta,
+              });
+            },
+          )
+        : await this.mcp.executeRecovered(
+            presentation.serverId,
+            presentation.name,
+            argumentsValue,
+            presentation.inventorySha256,
+            new AbortController().signal,
+          );
+      const result = isRecord(output) ? output : { value: output };
+      const succeeded = presentation.kind === 'mcp'
+        ? result.isError !== true
+        : !(result.ok === false ||
+            result.status === 'error' ||
+            result.status === 'cancelled');
+      this.requireNative().completeOperation(
+        record.operationId,
+        JSON.stringify(result),
+        succeeded,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: record.requestId,
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.turnId,
+        operationId: record.operationId,
+        succeeded,
+        result,
+      });
+    } catch (error) {
+      const result = {
+        ok: false,
+        error: error instanceof Error ? error.message : 'recoveredOperationFailed',
+      };
+      this.requireNative().completeOperation(
+        record.operationId,
+        JSON.stringify(result),
+        false,
+      );
+      this.emit({
+        type: 'operation.completed',
+        requestId: record.requestId,
+        workspaceId: record.workspaceId,
+        threadId: record.threadId,
+        turnId: record.turnId,
+        operationId: record.operationId,
+        succeeded: false,
+        result,
+      });
+    } finally {
+      const active = this.activeOperations.get(record.turnId);
+      active?.delete(record.operationId);
+      if (active?.size === 0) {
+        this.activeOperations.delete(record.turnId);
+      }
+    }
+  };
+
+  private enqueueApproval = (approvalId: string): void => {
+    this.approvalQueue.push(approvalId);
+    this.publishNextApproval();
+  };
+
+  private publishNextApproval = (): void => {
+    if (this.activeApprovalId) {
+      return;
+    }
+    while (this.approvalQueue.length > 0) {
+      const approvalId = this.approvalQueue[0];
+      const pending = this.pendingApprovals.get(approvalId);
+      if (!pending) {
+        this.approvalQueue.shift();
+        continue;
+      }
+      this.activeApprovalId = approvalId;
+      pending.publish();
+      return;
+    }
+  };
+
+  private finishApproval = (
+    approvalId: string,
+    pending: PendingApproval,
+    decision: 'approved' | 'denied',
+    requestId: string,
+    source: 'user' | 'policy' | 'system',
+  ): void => {
+    let effectiveDecision = decision;
+    try {
+      this.requireNative().resolveApproval(approvalId, decision);
+    } catch {
+      effectiveDecision = 'denied';
+    }
+    this.pendingApprovals.delete(approvalId);
+    const index = this.approvalQueue.indexOf(approvalId);
+    if (index >= 0) {
+      this.approvalQueue.splice(index, 1);
+    }
+    const wasActive = this.activeApprovalId === approvalId;
+    if (wasActive) {
+      this.activeApprovalId = null;
+      this.emit({
+        type: pending.kind === 'mcp'
+          ? 'mcp.approvalResolved'
+          : 'approval.resolved',
+        requestId,
+        workspaceId: pending.workspaceId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        approvalId,
+        operationId: pending.operationId,
+        decision: effectiveDecision,
+        source,
+      });
+    }
+    pending.resolve(effectiveDecision);
+    this.publishNextApproval();
+  };
+
+  private cancelTurnApprovals = (turnId: string): void => {
+    for (const [approvalId, pending] of this.pendingApprovals) {
+      if (pending.turnId !== turnId) {
+        continue;
+      }
+      this.finishApproval(
+        approvalId,
+        pending,
+        'denied',
+        pending.requestId,
+        'system',
+      );
+    }
+  };
+
+  private cancelTurnUserInputs = (turnId: string): void => {
+    for (const [inputRequestId, pending] of this.pendingUserInputs) {
+      if (pending.turnId !== turnId) {
+        continue;
+      }
+      this.pendingUserInputs.delete(inputRequestId);
+      pending.resolve({ cancelled: true });
+    }
+  };
+
+  private cancelTurnOperations = (turnId: string): void => {
+    const operations = this.activeOperations.get(turnId);
+    if (!operations) {
+      return;
+    }
+    for (const operationId of operations) {
+      try {
+        this.nativeRuntime?.cancelOperation(operationId);
+      } catch {
+        // Native operation recovery marks unfinished execution retryable on restart.
+      }
+    }
+  };
+
+  private approvalArgumentsSummary = (
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+    argumentsJson: string,
+  ): string => {
+    if (
+      toolName === 'workspace_apply_patch' &&
+      typeof argumentsValue.patch === 'string'
+    ) {
+      return workspacePatchApprovalSummary(argumentsValue.patch);
+    }
+    if (toolName !== 'shell_exec' || typeof argumentsValue.command !== 'string') {
+      return `${toolName} (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`;
+    }
+    const commandArguments = Array.isArray(argumentsValue.arguments) &&
+      argumentsValue.arguments.every((argument) => typeof argument === 'string')
+      ? argumentsValue.arguments.map((argument) => JSON.stringify(argument)).join(' ')
+      : '';
+    const rendered = [argumentsValue.command, commandArguments]
+      .filter((part) => part.length > 0)
+      .join(' ');
+    const prefix = argumentsValue.mode === 'fullAccess'
+      ? 'Full Access'
+      : 'Sandboxed';
+    const summary = `${prefix}: ${rendered}`;
+    return summary.length <= 4_096
+      ? summary
+      : `${summary.slice(0, 4_093)}...`;
+  };
+
+  private emitCompleted = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    status: 'completed' | 'interrupted' | 'failed',
+    error?: RuntimeProviderError,
+  ): void => {
+    try {
+      this.nativeRuntime?.finishTurn(
+        command.turnId,
+        status,
+        error ? JSON.stringify(error) : undefined,
+      );
+    } catch (persistenceError) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message:
+          persistenceError instanceof Error
+            ? persistenceError.message
+            : 'Failed to persist the terminal Turn state.',
+      });
+    }
+    this.emit({
+      type: 'turn.completed',
+      requestId: command.requestId,
+      workspaceId: command.workspaceId,
+      threadId: command.threadId,
+      turnId: command.turnId,
+      status,
+      ...(error ? { error } : {}),
+    });
+  };
+
+  private emit = (
+    event: RuntimeEventInput,
+  ): void => {
+    this.sequence += 1;
+    const normalized = { ...event, sequence: this.sequence } as RuntimeEvent;
+    const nativeRuntime = this.nativeRuntime;
+    if (
+      nativeRuntime &&
+      normalized.type !== 'runtime.ready' &&
+      normalized.type !== 'runtime.log' &&
+      normalized.type !== 'turn.completed' &&
+      'turnId' in normalized
+    ) {
+      const itemId =
+        'itemId' in normalized
+          ? normalized.itemId
+          : normalized.type === 'agent.task'
+            ? normalized.task.taskId
+            : 'approvalId' in normalized
+              ? normalized.approvalId
+              : 'inputRequestId' in normalized
+                ? normalized.inputRequestId
+              : String(normalized.sequence);
+      withDurableStateWrite(() =>
+        nativeRuntime.appendItem(
+          normalized.type === 'turn.textCompleted'
+            ? `${normalized.type}:${normalized.turnId}:${itemId}`
+            : `${normalized.type}:${normalized.turnId}:${itemId}:${normalized.sequence}`,
+          normalized.turnId,
+          normalized.sequence,
+          normalized.type,
+          JSON.stringify(normalized),
+        ));
+    }
+    this.postEvent(normalized);
+  };
+
+  private emitTransient = (event: RuntimeEventInput): void => {
+    this.sequence += 1;
+    this.postEvent({ ...event, sequence: this.sequence } as RuntimeEvent);
+  };
+}

@@ -234,6 +234,11 @@ const hasOnlyKeys = (
 
 const isId = (value: unknown): value is string =>
   typeof value === 'string' &&
+  /^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(value) &&
+  new TextEncoder().encode(value).byteLength <= 128;
+
+const isMcpServerId = (value: unknown): value is string =>
+  typeof value === 'string' &&
   /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(value) &&
   new TextEncoder().encode(value).byteLength <= 32;
 
@@ -281,7 +286,7 @@ const isLoopbackEndpoint = (value: unknown): value is string => {
 const isMcpServerConfig = (value: unknown): value is McpServerConfig => {
   if (
     !isRecord(value) ||
-    !isId(value.id) ||
+    !isMcpServerId(value.id) ||
     typeof value.transport !== 'string'
   ) {
     return false;
@@ -391,7 +396,7 @@ export const isMcpSessionStateSnapshot = (
     if (
       !isRecord(server) ||
       !hasOnlyKeys(server, ['id', 'transport']) ||
-      !isId(server.id) ||
+      !isMcpServerId(server.id) ||
       typeof server.transport !== 'string' ||
       !TRANSPORTS.has(server.transport as McpServerTransport) ||
       ids.has(server.id)
@@ -465,12 +470,14 @@ export const isMcpApprovalStateSnapshot = (
     request.projectTitle.length > 0 &&
     typeof request.conversationTitle === 'string' &&
     request.conversationTitle.length > 0 &&
-    isId(request.serverId) &&
+    isMcpServerId(request.serverId) &&
     typeof request.name === 'string' &&
     request.name.startsWith(`mcp__${request.serverId}__`) &&
     typeof request.argumentsJson === 'string' &&
     Number.isSafeInteger(request.argumentsBytes) &&
-    (request.argumentsBytes as number) >= 0 &&
+    (request.argumentsBytes as number) >= 2 &&
+    (request.argumentsBytes as number) <= 32 * 1024 &&
+    byteLength(request.argumentsJson) === request.argumentsBytes &&
     isSha256(request.argumentsSha256) &&
     isSha256(request.inventorySha256) &&
     Number.isSafeInteger(request.localExpiresAtMs) &&

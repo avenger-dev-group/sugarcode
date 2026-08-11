@@ -140,7 +140,13 @@ const stateColor = (state: CommandApprovalPresentationState): string => {
 export const CommandApprovalActivity = ({
   activity,
 }: CommandApprovalActivityProps) => {
-  const copy = STATE_COPY[activity.state];
+  const copy =
+    activity.state === 'approved' && activity.approvalSource === 'policy'
+      ? {
+          label: 'Approved by access policy',
+          detail: 'Inherited project or conversation access was applied',
+        }
+      : STATE_COPY[activity.state];
   return (
     <section
       className="ml-10 flex min-w-0 gap-3 rounded-xl border bg-surface px-3.5 py-3"
@@ -166,7 +172,13 @@ export const CommandApprovalActivity = ({
           <p className="text-sm font-medium leading-normal">{copy.label}</p>
           <span className="flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.14em] text-tertiary">
             <ShieldCheck className="size-3" aria-hidden="true" />
-            {activity.fullAccess ? 'Full Access Shell' : 'shell/exec'}
+            {activity.approvalSource === 'policy'
+              ? 'Inherited access'
+              : activity.operationKind === 'workspacePatch'
+                ? 'Workspace files'
+                : activity.fullAccess
+                ? 'Full Access Shell'
+                : 'shell/exec'}
           </span>
         </div>
         <code className="mt-1 block min-w-0 break-all font-mono text-xs font-normal leading-normal text-secondary">

@@ -1,3 +1,0 @@
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","title":"Golden Client","version":"1.0.0"}}}
-{"jsonrpc":"2.0","method":"initialized"}
-{"jsonrpc":"2.0","id":"after-ready","method":"unknown/method","params":{}}

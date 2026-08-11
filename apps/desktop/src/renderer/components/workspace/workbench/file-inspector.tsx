@@ -1,30 +1,20 @@
-import type { WorkspaceInspectDocument } from '@/shared/workspace';
+import { useMemo } from 'react';
 
-const languageForPath = (path: string): string => {
-  const extension = path.split('.').pop()?.toLowerCase();
-  return (
-    {
-      rs: 'Rust',
-      ts: 'TypeScript',
-      tsx: 'TypeScript React',
-      js: 'JavaScript',
-      jsx: 'JavaScript React',
-      json: 'JSON',
-      md: 'Markdown',
-      toml: 'TOML',
-      yaml: 'YAML',
-      yml: 'YAML',
-      css: 'CSS',
-      html: 'HTML',
-      py: 'Python',
-      sh: 'Shell',
-    }[extension ?? ''] ?? 'Plain text'
-  );
-};
+import { codeLanguageForPath } from '@/renderer/utils/code-language';
+import { highlightCode } from '@/renderer/utils/syntax-highlighter';
+import type { WorkspaceInspectDocument } from '@/shared/workspace';
 
 export const FileInspector = ({
   document,
 }: Readonly<{ document: WorkspaceInspectDocument | null }>) => {
+  const language = codeLanguageForPath(document?.path ?? '');
+  const highlightedCode = useMemo(
+    () =>
+      document && document.status !== 'error'
+        ? highlightCode(document.content, language.highlight)
+        : null,
+    [document, language.highlight],
+  );
   if (!document) {
     return (
       <div className="flex min-h-40 flex-1 items-center justify-center px-6 text-center text-xs text-tertiary">
@@ -58,7 +48,7 @@ export const FileInspector = ({
           {document.path}
         </p>
         <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.14em] text-tertiary">
-          {languageForPath(document.path)} · {document.bytes.toLocaleString()} bytes · {document.lines.toLocaleString()} lines
+          {language.label} · {document.bytes.toLocaleString()} bytes · {document.lines.toLocaleString()} lines
           {document.hasUtf8Bom ? ' · UTF-8 BOM' : ''}
         </p>
         {document.status === 'truncated' ? (
@@ -72,7 +62,16 @@ export const FileInspector = ({
           <pre className="sticky left-0 select-none border-r bg-background/95 px-3 py-3 text-right text-tertiary" aria-hidden="true">
             {lineNumbers}
           </pre>
-          <pre className="m-0 whitespace-pre px-4 py-3 text-foreground"><code>{document.content}</code></pre>
+          <pre className="m-0 whitespace-pre px-4 py-3 text-foreground">
+            {highlightedCode === null ? (
+              <code>{document.content}</code>
+            ) : (
+              <code
+                className="syntax-highlight hljs"
+                dangerouslySetInnerHTML={{ __html: highlightedCode }}
+              />
+            )}
+          </pre>
         </div>
       </div>
     </section>

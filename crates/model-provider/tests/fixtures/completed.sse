@@ -1,9 +1,0 @@
-data: {"id":"fixture","choices":[{"index":0,"delta":{"content":"SugarCode deterministic response."},"finish_reason":null}]}
-
-data: {"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
-
-data: {"id":"fixture","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":3,"total_tokens":4}}
-
-data: [DONE]
-
-: fixture terminator

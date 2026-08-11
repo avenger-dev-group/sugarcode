@@ -3,8 +3,13 @@ import type {
   WorkspaceInspectResult,
   WorkspaceListRequest,
   WorkspaceListResult,
+  WorkspacePathSearchRequest,
+  WorkspacePathSearchResult,
+  WorkspaceResolveRequest,
+  WorkspaceResolveResult,
   WorkspaceSelectResult,
   WorkspaceStateSnapshot,
+  WorkspaceTaskRenameRequest,
 } from '@/shared/workspace';
 
 export const getWorkspaceState = (): Promise<WorkspaceStateSnapshot> =>
@@ -26,6 +31,11 @@ export const activateWorkspaceProject = (
 ): Promise<WorkspaceSelectResult> =>
   window.sugarcode.activateWorkspaceProject(projectId);
 
+export const removeWorkspaceProject = (
+  projectId: string,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.removeWorkspaceProject(projectId);
+
 export const focusWorkspaceTask = (
   threadId: string,
 ): Promise<WorkspaceSelectResult> =>
@@ -35,6 +45,11 @@ export const deleteWorkspaceTask = (
   threadId: string,
 ): Promise<WorkspaceSelectResult> =>
   window.sugarcode.deleteWorkspaceTask(threadId);
+
+export const renameWorkspaceTask = (
+  request: WorkspaceTaskRenameRequest,
+): Promise<WorkspaceSelectResult> =>
+  window.sugarcode.renameWorkspaceTask(request);
 
 export const activateWorkspaceChat = (
   threadId?: string,
@@ -51,7 +66,17 @@ export const listWorkspace = (
 ): Promise<WorkspaceListResult> =>
   window.sugarcode.listWorkspace(request);
 
+export const searchWorkspacePaths = (
+  request: WorkspacePathSearchRequest,
+): Promise<WorkspacePathSearchResult> =>
+  window.sugarcode.searchWorkspacePaths(request);
+
 export const inspectWorkspace = (
   request: WorkspaceInspectRequest,
 ): Promise<WorkspaceInspectResult> =>
   window.sugarcode.inspectWorkspace(request);
+
+export const resolveWorkspaceFile = (
+  request: WorkspaceResolveRequest,
+): Promise<WorkspaceResolveResult> =>
+  window.sugarcode.resolveWorkspaceFile(request);

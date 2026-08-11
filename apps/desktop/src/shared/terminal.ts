@@ -15,7 +15,7 @@ export const TERMINAL_MAX_ROWS = 300;
 export type TerminalFailure =
   | 'spawnFailed'
   | 'protocolInvalid'
-  | 'bridgeCrashed'
+  | 'terminalCrashed'
   | 'outputOverload';
 
 export type TerminalExitReason =
@@ -337,7 +337,7 @@ export const isTerminalStateSnapshot = (
     [
       'spawnFailed',
       'protocolInvalid',
-      'bridgeCrashed',
+      'terminalCrashed',
       'outputOverload',
     ].includes(value.error as string)
   );

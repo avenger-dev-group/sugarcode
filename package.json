@@ -1,19 +1,29 @@
 {
   "name": "sugarcode",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "private": true,
   "packageManager": "pnpm@10.30.2",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron-winstaller",
+      "fs-xattr",
+      "macos-alias"
+    ]
+  },
   "scripts": {
-    "build:cli:dev": "cargo build --locked -p sugarcode-cli --target-dir target",
+    "build:native:dev": "node scripts/build-desktop-native.mjs",
+    "build:native:release": "node scripts/build-desktop-native.mjs --release",
     "dev": "pnpm --filter @sugarcode/desktop start",
     "desktop:start": "pnpm --filter @sugarcode/desktop start",
     "desktop:package": "pnpm --filter @sugarcode/desktop package",
     "desktop:make": "pnpm --filter @sugarcode/desktop make",
     "desktop:publish": "pnpm --filter @sugarcode/desktop publish",
-    "smoke:provider": "scripts/live-provider-smoke.sh",
     "lint": "pnpm --filter @sugarcode/desktop lint",
-    "typecheck": "pnpm --filter @sugarcode/desktop typecheck && pnpm --filter @sugarcode/app-server-protocol typecheck",
+    "typecheck": "pnpm --filter @sugarcode/desktop typecheck",
     "check:rust": "cargo metadata --locked --no-deps --format-version 1",
-    "check": "pnpm --filter @sugarcode/desktop check && pnpm --filter @sugarcode/app-server-protocol check && pnpm check:rust"
+    "check": "pnpm --filter @sugarcode/desktop check && pnpm check:rust"
+  },
+  "devDependencies": {
+    "node-gyp": "13.0.1"
   }
 }

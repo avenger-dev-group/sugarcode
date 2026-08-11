@@ -6,10 +6,20 @@ import {
   activateWorkspaceProject,
   deleteWorkspaceTask,
   focusWorkspaceTask,
+  getWorkspaceState,
+  removeWorkspaceProject,
   resumeWorkspaceProject,
   selectWorkspace,
 } from '@/renderer/services/workspace';
-import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
+import {
+  acceptWorkspaceSnapshot,
+  workspaceProjectionStore,
+} from '@/renderer/stores/workspace-projection-store';
+import {
+  acceptForegroundCommit,
+  beginConversationSelection,
+  failConversationSelection,
+} from '@/renderer/stores/conversation-projection-store';
 
 import type { WorkspaceNavigationStore } from './types';
 
@@ -36,6 +46,14 @@ export const useStore = (): WorkspaceNavigationStore => {
     setError(null);
     try {
       const result = await action();
+      if (result.accepted && result.commit) {
+        acceptWorkspaceSnapshot(result.commit.workspace);
+        acceptForegroundCommit(result.commit);
+      } else if (result.accepted) {
+        await getWorkspaceState()
+          .then(acceptWorkspaceSnapshot)
+          .catch((): undefined => undefined);
+      }
       if (!result.accepted && result.reason !== 'cancelled') {
         setError(
           result.reason === 'busy'
@@ -66,11 +84,25 @@ export const useStore = (): WorkspaceNavigationStore => {
         () => activateWorkspaceProject(projectId),
         '无法打开所选项目。',
       ),
-    focusTask: (threadId: string) =>
+    removeProject: (projectId: string) =>
       runSelection(
+        () => removeWorkspaceProject(projectId),
+        '无法从列表移除所选项目。',
+      ),
+    focusTask: async (threadId: string) => {
+      beginConversationSelection(threadId);
+      const accepted = await runSelection(
         () => focusWorkspaceTask(threadId),
         '无法打开所选会话。',
-      ),
+      );
+      if (!accepted) {
+        failConversationSelection(
+          threadId,
+          '无法打开所选会话。请重试。',
+        );
+      }
+      return accepted;
+    },
     activateChat: async (threadId?: string) => {
       const accepted = await runSelection(
         () => activateWorkspaceChat(threadId),
@@ -79,10 +111,10 @@ export const useStore = (): WorkspaceNavigationStore => {
       setFailedChatThreadId(accepted ? null : threadId ?? null);
       return accepted;
     },
-    deleteFailedChat: async (threadId: string) => {
+    deleteTask: async (threadId: string) => {
       const accepted = await runSelection(
         () => deleteWorkspaceTask(threadId),
-        '无法永久删除异常聊天。',
+        '无法删除所选会话。',
       );
       if (accepted && failedChatThreadId === threadId) {
         setFailedChatThreadId(null);

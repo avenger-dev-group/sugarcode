@@ -1,0 +1,30 @@
+[package]
+name = "sugarcode-desktop-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64.workspace = true
+napi = { version = "3.4.0", features = ["napi9", "tokio_rt"] }
+napi-derive = "3.3.0"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sugarcode-state = { path = "../state" }
+sugarcode-terminal = { path = "../terminal" }
+sugarcode-tools = { path = "../tools" }
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+
+[build-dependencies]
+napi-build = "2.2.3"
+
+[dev-dependencies]
+tempfile.workspace = true

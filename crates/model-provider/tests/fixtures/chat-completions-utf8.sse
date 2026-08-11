@@ -1,9 +1,0 @@
-data: {"id":"fixture","choices":[{"index":0,"delta":{"content":"你"},"finish_reason":null}]}
-
-data: {"id":"fixture","choices":[{"index":0,"delta":{"content":"好"},"finish_reason":null}]}
-
-data: {"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
-
-data: [DONE]
-
-: fixture terminator

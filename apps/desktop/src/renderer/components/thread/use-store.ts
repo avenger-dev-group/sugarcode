@@ -1,38 +1,52 @@
 import {
   type UIEvent,
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import {
-  archiveConversationThread,
   deleteConversationThread,
-  forkConversationThread,
-  getConversationState,
-  onConversationStateChanged,
-  selectConversationThread,
+  respondToConversationUserInput,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
-  unarchiveConversationThread,
 } from '@/renderer/services/conversation';
 import {
   getModelConfig,
   MODEL_CONFIG_CHANGED_EVENT,
 } from '@/renderer/services/model-config';
 import {
-  MAX_CONVERSATION_INPUT_BYTES,
+  activateWorkspaceChat,
+  focusWorkspaceTask,
+  getWorkspaceState,
+  renameWorkspaceTask,
+} from '@/renderer/services/workspace';
+import {
+  acceptForegroundCommit,
+  beginConversationSelection,
+  conversationProjectionStore,
+  failConversationSelection,
+} from '@/renderer/stores/conversation-projection-store';
+import {
+  acceptWorkspaceSnapshot,
+  workspaceProjectionStore,
+} from '@/renderer/stores/workspace-projection-store';
+import {
   MAX_CONVERSATION_ATTACHMENTS,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
+  isValidConversationTitle,
   type ConversationActionResult,
   type ConversationMessageStatus,
   type ConversationCommandApprovalActivity,
   type ConversationMcpActivity,
   type ConversationPhase,
+  type ConversationSkillActivity,
   type ConversationStateSnapshot,
   type ConversationThreadNavigatorSnapshot,
   type ConversationTurnStatus,
@@ -40,6 +54,7 @@ import {
   type ConversationWorkspaceReadActivity,
   type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
+import { parseComposerSubmission } from '@/shared/composer';
 
 import type {
   AgentMessagePresentationState,
@@ -56,33 +71,39 @@ import type {
 } from '../agent/types';
 import { toFileChangeReviewViewModel } from '../workspace/use-store';
 import type { McpActivityState, McpActivityViewModel } from '../mcp/types';
+import type { UserInputAnswer } from '../user-input/types';
 import type {
   ActivityDisclosureStore,
   ThreadStore,
   ThreadNavigatorViewModel,
   ThreadViewModel,
   DraftAttachmentViewModel,
+  SkillActivityPresentationState,
   TranscriptFollow,
   TranscriptMessageViewModel,
   TurnViewModel,
 } from './types';
 import {
-  contextBudget,
-  estimatedTokensFromContextBytes,
-  formatTokenUsageHint,
-  latestTurnUsage,
-} from './context-budget';
-import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
+import { shouldStartChatOnSend } from './composer-state';
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
+  shouldHoldTranscriptPlaceholder,
+  shouldResetTranscriptFollow,
 } from './transcript-follow';
-import { completedProcessDurationLabel } from './activity-disclosure';
+import {
+  completedProcessDurationLabel,
+  processLanguageFromText,
+} from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
-import { toActiveTurnProgress } from './turn-progress';
+import {
+  activeTurnOperationProgress,
+  toActiveTurnProgress,
+} from './turn-progress';
+import { collectTurnVerifiedFilePaths } from './verified-file-paths';
 
 export const useActivityDisclosureStore = (
   groupId: string,
@@ -95,25 +116,6 @@ export const useActivityDisclosureStore = (
   }, [groupId, initiallyExpanded]);
 
   return { expanded, setExpanded };
-};
-
-const INITIAL_SNAPSHOT: ConversationStateSnapshot = {
-  revision: 0,
-  phase: 'unavailable',
-  turns: [],
-  navigator: {
-    status: 'unavailable',
-    activeThreadIds: [],
-    activeThreadTitles: {},
-    activeTruncated: false,
-    search: {
-      query: '',
-      status: 'idle',
-      threadIds: [],
-      threadTitles: {},
-      truncated: false,
-    },
-  },
 };
 
 type ConversationProjectionSnapshot = Omit<
@@ -148,6 +150,30 @@ const toAgentMessagePresentationState = (
         'An active AgentMessage did not match the conversation phase.',
       );
   }
+};
+
+const commandOperationKind = (
+  activity: ConversationCommandApprovalActivity,
+): CommandApprovalActivityViewModel['operationKind'] =>
+  activity.operationKind === 'workspacePatch' ||
+  activity.command.startsWith('workspace_apply_patch') ||
+  activity.executionResult?.outcome.type === 'workspacePatch'
+    ? 'workspacePatch'
+    : 'shell';
+
+const commandDisplaySummary = (
+  activity: ConversationCommandApprovalActivity,
+): string => {
+  if (!activity.command.startsWith('workspace_apply_patch')) {
+    return activity.command;
+  }
+  const filesChanged =
+    activity.executionResult?.outcome.type === 'workspacePatch'
+      ? activity.executionResult.outcome.filesChanged
+      : undefined;
+  return filesChanged === undefined
+    ? 'Workspace file changes'
+    : `${filesChanged} workspace file ${filesChanged === 1 ? 'change' : 'changes'}`;
 };
 
 const toWorkspaceReadPresentationState = (
@@ -227,6 +253,32 @@ const toWorkspaceSearchPresentationState = (
       throw new Error(
         'Workspace search activity did not match its Turn phase.',
       );
+  }
+};
+
+const toSkillPresentationState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationSkillActivity,
+): SkillActivityPresentationState => {
+  if (activity.result?.status === 'completed') {
+    return activity.result.outcome.type === 'success' ? 'succeeded' : 'failed';
+  }
+  if (turnStatus === 'interrupted') {
+    return 'interrupted';
+  }
+  if (turnStatus !== 'inProgress') {
+    throw new Error('A terminal Skill activity has no durable result.');
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'running';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error('Skill activity did not match its Turn phase.');
   }
 };
 
@@ -331,6 +383,18 @@ export const toThreadViewModel = (
   );
   const turns = snapshot.turns.map((turn): TurnViewModel => {
     const previousTurn = previousTurns.get(turn.id);
+    const nextVerifiedFilePaths = collectTurnVerifiedFilePaths(turn);
+    const verifiedFilePaths =
+      JSON.stringify(previousTurn?.verifiedFilePaths) ===
+      JSON.stringify(nextVerifiedFilePaths)
+        ? previousTurn?.verifiedFilePaths ?? nextVerifiedFilePaths
+        : nextVerifiedFilePaths;
+    const processLanguage = processLanguageFromText(
+      turn.messages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.text)
+        .join('\n'),
+    );
     const model = turn.model
       ? {
           displayName: turn.model.displayName,
@@ -343,9 +407,12 @@ export const toThreadViewModel = (
           (entry) => entry.message.id === message.id,
         );
         if (message.role === 'user') {
+          const submission = parseComposerSubmission(message.text);
           if (
             previousMessage?.role === 'user' &&
-            previousMessage.message.text === message.text &&
+            previousMessage.message.text === submission.text &&
+            JSON.stringify(previousMessage.message.references) ===
+              JSON.stringify(submission.references) &&
             JSON.stringify(previousMessage.message.attachments) ===
               JSON.stringify(message.attachments ?? [])
           ) {
@@ -355,7 +422,8 @@ export const toThreadViewModel = (
             role: 'user',
             message: {
               id: message.id,
-              text: message.text,
+              text: submission.text,
+              references: submission.references,
               attachments: message.attachments ?? [],
             },
           };
@@ -367,7 +435,8 @@ export const toThreadViewModel = (
         if (
           previousMessage?.role === 'agent' &&
           previousMessage.message.text === message.text &&
-          previousMessage.message.state === state
+          previousMessage.message.state === state &&
+          previousMessage.message.verifiedFilePaths === verifiedFilePaths
         ) {
           return previousMessage;
         }
@@ -377,6 +446,7 @@ export const toThreadViewModel = (
             id: message.id,
             text: message.text,
             state,
+            verifiedFilePaths,
           },
         };
       },
@@ -393,54 +463,32 @@ export const toThreadViewModel = (
       id: `agent-output:${turn.id}:${output.responseOrdinal}:${output.outputIndex}`,
       text: output.text,
       state: 'streaming' as const,
+      verifiedFilePaths,
     }));
     const pendingAgentOutputs =
       JSON.stringify(previousTurn?.pendingAgentOutputs) ===
       JSON.stringify(nextPendingAgentOutputs)
         ? previousTurn?.pendingAgentOutputs
         : nextPendingAgentOutputs;
-    const nextContextCompactions = turn.contextCompactions?.map((activity) => {
-      const outcome = activity.outcome;
-      return {
-        id: activity.id,
-        ordinal: activity.ordinal,
-        state:
-          activity.status === 'inProgress'
-            ? ('compacting' as const)
-            : outcome?.type === 'completed'
-              ? ('completed' as const)
-              : outcome?.type === 'failed'
-                ? ('failed' as const)
-                : ('interrupted' as const),
-        preContextBytes: activity.preContextBytes,
-        ...(turn.model
-          ? {
-              contextWindowTokens: turn.model.contextWindowTokens,
-              estimatedPreContextTokens: estimatedTokensFromContextBytes(
-                activity.preContextBytes,
-              ),
-              budget: contextBudget(turn.model.contextWindowTokens),
-            }
-          : {}),
-        sourceMessages: activity.sourceMessages,
-        sourceBytes: activity.sourceBytes,
-        sourceSha256: activity.sourceSha256,
-        ...(outcome?.type === 'completed'
-          ? {
-              postContextBytes: outcome.postContextBytes,
-              summaryBytes: outcome.summaryBytes,
-              summarySha256: outcome.summarySha256,
-            }
-          : {}),
-        ...(outcome?.type === 'failed' ? { errorKind: outcome.kind } : {}),
-      };
-    });
-    const contextCompactions =
-      nextContextCompactions &&
-      JSON.stringify(previousTurn?.contextCompactions) ===
-        JSON.stringify(nextContextCompactions)
-        ? previousTurn?.contextCompactions
-        : nextContextCompactions;
+    const nextUserInputRequest = turn.userInputRequest
+      ? {
+          id: turn.userInputRequest.id,
+          questions: turn.userInputRequest.questions.map((question) => ({
+            id: question.id,
+            header: question.header,
+            question: question.question,
+            options: question.options.map((option) => ({
+              label: option.label,
+              description: option.description,
+            })),
+          })),
+        }
+      : undefined;
+    const userInputRequest =
+      JSON.stringify(previousTurn?.userInputRequest) ===
+      JSON.stringify(nextUserInputRequest)
+        ? previousTurn?.userInputRequest
+        : nextUserInputRequest;
     const nextWorkspaceRead = turn.workspaceRead
       ? (() => {
           const state = toWorkspaceReadPresentationState(
@@ -550,10 +598,14 @@ export const toThreadViewModel = (
     const nextCommandApproval = turn.commandApproval
       ? ({
           id: turn.commandApproval.id,
-          command: turn.commandApproval.command,
+          operationKind: commandOperationKind(turn.commandApproval),
+          command: commandDisplaySummary(turn.commandApproval),
           argumentCount: turn.commandApproval.argumentCount,
           ...(turn.commandApproval.fullAccess
             ? { fullAccess: true }
+            : {}),
+          ...(turn.commandApproval.decision?.source
+            ? { approvalSource: turn.commandApproval.decision.source }
             : {}),
           ...(turn.commandApproval.liveOutput
             ? { liveOutput: { ...turn.commandApproval.liveOutput } }
@@ -593,10 +645,14 @@ export const toThreadViewModel = (
     const commandApproval =
       nextCommandApproval &&
       previousTurn?.commandApproval?.id === nextCommandApproval.id &&
+      previousTurn.commandApproval.operationKind ===
+        nextCommandApproval.operationKind &&
       previousTurn.commandApproval.command === nextCommandApproval.command &&
       previousTurn.commandApproval.argumentCount ===
         nextCommandApproval.argumentCount &&
       previousTurn.commandApproval.fullAccess === nextCommandApproval.fullAccess &&
+      previousTurn.commandApproval.approvalSource ===
+        nextCommandApproval.approvalSource &&
       JSON.stringify(previousTurn.commandApproval.liveOutput) ===
         JSON.stringify(nextCommandApproval.liveOutput) &&
       previousTurn.commandApproval.state === nextCommandApproval.state &&
@@ -653,48 +709,6 @@ export const toThreadViewModel = (
                   : ('running' as const),
             },
           } as const;
-        case 'contextCompaction': {
-          const outcome = entry.activity.outcome;
-          return {
-            type: entry.type,
-            activity: {
-              id: entry.activity.id,
-              ordinal: entry.activity.ordinal,
-              state:
-                entry.activity.status === 'inProgress'
-                  ? ('compacting' as const)
-                  : outcome?.type === 'completed'
-                    ? ('completed' as const)
-                    : outcome?.type === 'failed'
-                      ? ('failed' as const)
-                      : ('interrupted' as const),
-              preContextBytes: entry.activity.preContextBytes,
-              ...(turn.model
-                ? {
-                    contextWindowTokens: turn.model.contextWindowTokens,
-                    estimatedPreContextTokens:
-                      estimatedTokensFromContextBytes(
-                        entry.activity.preContextBytes,
-                      ),
-                    budget: contextBudget(turn.model.contextWindowTokens),
-                  }
-                : {}),
-              sourceMessages: entry.activity.sourceMessages,
-              sourceBytes: entry.activity.sourceBytes,
-              sourceSha256: entry.activity.sourceSha256,
-              ...(outcome?.type === 'completed'
-                ? {
-                    postContextBytes: outcome.postContextBytes,
-                    summaryBytes: outcome.summaryBytes,
-                    summarySha256: outcome.summarySha256,
-                  }
-                : {}),
-              ...(outcome?.type === 'failed'
-                ? { errorKind: outcome.kind }
-                : {}),
-            },
-          } as const;
-        }
         case 'workspaceRead': {
           const outcome = entry.activity.result?.outcome;
           return {
@@ -754,6 +768,33 @@ export const toThreadViewModel = (
             },
           } as const;
         }
+        case 'skill': {
+          const outcome = entry.activity.result?.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              name: entry.activity.name,
+              state: toSkillPresentationState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
+              ...(outcome?.type === 'success' && outcome.purpose
+                ? { purpose: outcome.purpose }
+                : entry.activity.purpose
+                  ? { purpose: entry.activity.purpose }
+                  : {}),
+              ...(outcome?.type === 'success' && outcome.description
+                ? { description: outcome.description }
+                : {}),
+              ...(outcome?.type === 'success' && outcome.content
+                ? { content: outcome.content }
+                : {}),
+              ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+            },
+          } as const;
+        }
         case 'fileChange':
           return {
             type: entry.type,
@@ -768,8 +809,13 @@ export const toThreadViewModel = (
             type: entry.type,
             activity: {
               id: entry.activity.id,
-              command: entry.activity.command,
+              operationKind: commandOperationKind(entry.activity),
+              command: commandDisplaySummary(entry.activity),
               argumentCount: entry.activity.argumentCount,
+              ...(entry.activity.fullAccess ? { fullAccess: true } : {}),
+              ...(entry.activity.liveOutput
+                ? { liveOutput: { ...entry.activity.liveOutput } }
+                : {}),
               state: toCommandApprovalPresentationState(
                 snapshot.phase,
                 turn.status,
@@ -850,6 +896,9 @@ export const toThreadViewModel = (
                 amendments: task.amendments.map((amendment) => ({
                   ...amendment,
                 })),
+                ...(task.progress
+                  ? { progress: { ...task.progress } }
+                  : {}),
                 ...(task.result ? { result: { ...task.result } } : {}),
               })),
             },
@@ -863,7 +912,7 @@ export const toThreadViewModel = (
         ? previousTurn?.activities
         : nextActivities;
     const nextFailure = turn.error
-      ? toTurnFailureViewModel(turn.error, model?.wireApi)
+      ? toTurnFailureViewModel(turn.error, model?.wireApi, processLanguage)
       : undefined;
     const failure =
       nextFailure &&
@@ -881,16 +930,18 @@ export const toThreadViewModel = (
     const durationLabel = completedProcessDurationLabel(
       turn.id,
       completedAgentMessageId,
+      processLanguage,
     );
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&
+      previousTurn.verifiedFilePaths === verifiedFilePaths &&
+      previousTurn.processLanguage === processLanguage &&
       previousTurn.durationLabel === durationLabel &&
       previousTurn.model?.displayName === model?.displayName &&
       previousTurn.model?.wireApi === model?.wireApi &&
       previousTurn.messages === stableMessages &&
       previousTurn.pendingAgentOutputs === pendingAgentOutputs &&
-      previousTurn.contextCompactions === contextCompactions &&
       previousTurn.activities === activities &&
       previousTurn.workspaceRead === workspaceRead &&
       previousTurn.workspaceList === workspaceList &&
@@ -898,6 +949,7 @@ export const toThreadViewModel = (
       previousTurn.fileChange === fileChange &&
       previousTurn.commandApproval === commandApproval &&
       previousTurn.mcpActivities === mcpActivities &&
+      previousTurn.userInputRequest === userInputRequest &&
       previousTurn.terminalLabel === terminalLabel &&
       previousTurn.failure === failure &&
       previousTurn.isError === isError
@@ -907,11 +959,12 @@ export const toThreadViewModel = (
     return {
       id: turn.id,
       status: turn.status,
+      processLanguage,
+      verifiedFilePaths,
       ...(durationLabel ? { durationLabel } : {}),
       ...(model ? { model } : {}),
       messages: stableMessages,
       ...(pendingAgentOutputs ? { pendingAgentOutputs } : {}),
-      ...(contextCompactions ? { contextCompactions } : {}),
       ...(activities ? { activities } : {}),
       ...(workspaceRead ? { workspaceRead } : {}),
       ...(workspaceList ? { workspaceList } : {}),
@@ -919,6 +972,9 @@ export const toThreadViewModel = (
       ...(fileChange ? { fileChange } : {}),
       ...(commandApproval ? { commandApproval } : {}),
       ...(mcpActivities ? { mcpActivities } : {}),
+      ...(userInputRequest
+        ? { userInputRequest }
+        : {}),
       ...(terminalLabel ? { terminalLabel } : {}),
       ...(failure ? { failure } : {}),
       isError,
@@ -931,29 +987,12 @@ export const toThreadViewModel = (
       ? previous.turns
       : turns;
 
-  const statusLabel = (() => {
-    switch (snapshot.phase) {
-      case 'starting':
-        return 'Starting turn';
-      case 'inProgress':
-        return 'Agent working';
-      case 'stopping':
-        return 'Stopping safely';
-      case 'unavailable':
-        return 'Runtime unavailable';
-      case 'ready':
-        return 'Ready for the next turn';
-      default:
-        return 'Ready for a first turn';
-    }
-  })();
-
   return {
     phase: snapshot.phase,
+    workspaceIdentity: snapshot.workspaceId ?? null,
     threadIdentity: snapshot.threadId ?? null,
     turns: stableTurns,
     isEmpty: stableTurns.length === 0,
-    statusLabel,
     ...(snapshot.notice ? { notice: snapshot.notice.summary } : {}),
   };
 };
@@ -983,12 +1022,9 @@ export const toThreadNavigatorViewModel = (
     threadTitles: snapshot.navigator.activeThreadTitles,
     runningThreadIds: snapshot.navigator.runningThreadIds ?? [],
     unreadThreadStatuses: snapshot.navigator.unreadThreadStatuses ?? {},
-    reloadRequiredThreadIds:
-      snapshot.navigator.reloadRequiredThreadIds ?? [],
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
     pendingMutation: snapshot.navigator.pendingMutation ?? null,
-    archivedUndoThreadId: snapshot.navigator.archivedUndoThreadId ?? null,
     truncated: snapshot.navigator.activeTruncated,
     statusLabel,
     ...(snapshot.navigator.selectionNotice
@@ -1000,16 +1036,9 @@ export const toThreadNavigatorViewModel = (
   };
 };
 
-const inputBytes = (value: string): number =>
-  new TextEncoder().encode(value).byteLength;
-
-export const shouldAcceptSnapshot = (
-  currentRevision: number,
-  snapshot: ConversationStateSnapshot,
-): boolean => snapshot.revision > currentRevision;
-
 export const useTranscriptFollow = (
   thread: ThreadViewModel,
+  pendingThreadId: string | null,
 ): TranscriptFollow => {
   const transcriptContent = useRef<HTMLDivElement | null>(null);
   const transcriptEnd = useRef<HTMLDivElement | null>(null);
@@ -1018,6 +1047,14 @@ export const useTranscriptFollow = (
   const previousScrollTop = useRef<number>(0);
   const pointerScrollActive = useRef<boolean>(false);
   const previousThreadIdentity = useRef<string | null>(thread.threadIdentity);
+  const previousPendingThreadId = useRef<string | null>(pendingThreadId);
+  const deferredThreadIdentity = useDeferredValue(thread.threadIdentity);
+  const settlingThreadSelection = shouldHoldTranscriptPlaceholder({
+    deferredThreadId: deferredThreadIdentity,
+    pendingThreadId,
+    previousPendingThreadId: previousPendingThreadId.current,
+    threadId: thread.threadIdentity,
+  });
   const latestUserMessageId = (() => {
     for (
       let turnIndex = thread.turns.length - 1;
@@ -1091,26 +1128,43 @@ export const useTranscriptFollow = (
   };
 
   useLayoutEffect(() => {
-    const threadChanged =
-      previousThreadIdentity.current !== thread.threadIdentity;
+    if (settlingThreadSelection) {
+      return undefined;
+    }
     const userMessageAdded =
       latestUserMessageId !== null &&
       previousUserMessageId.current !== latestUserMessageId;
-    if (threadChanged || userMessageAdded) {
+    if (shouldResetTranscriptFollow({
+      previousThreadId: previousThreadIdentity.current,
+      threadId: thread.threadIdentity,
+      previousPendingThreadId: previousPendingThreadId.current,
+      pendingThreadId,
+      userMessageAdded,
+    })) {
       shouldFollowTranscript.current = true;
     }
     previousThreadIdentity.current = thread.threadIdentity;
+    previousPendingThreadId.current = pendingThreadId;
     previousUserMessageId.current = latestUserMessageId;
 
     if (shouldFollowTranscript.current) {
       scrollTranscriptToEnd();
-      const animationFrame = requestAnimationFrame(scrollTranscriptToEnd);
-      return () => cancelAnimationFrame(animationFrame);
+      let secondAnimationFrame = 0;
+      const firstAnimationFrame = requestAnimationFrame(() => {
+        scrollTranscriptToEnd();
+        secondAnimationFrame = requestAnimationFrame(scrollTranscriptToEnd);
+      });
+      return () => {
+        cancelAnimationFrame(firstAnimationFrame);
+        cancelAnimationFrame(secondAnimationFrame);
+      };
     }
     return undefined;
   }, [
     latestUserMessageId,
+    pendingThreadId,
     scrollTranscriptToEnd,
+    settlingThreadSelection,
     thread.phase,
     thread.threadIdentity,
     thread.turns,
@@ -1127,6 +1181,7 @@ export const useTranscriptFollow = (
   }, [scrollTranscriptToEnd]);
 
   return {
+    settlingThreadSelection,
     transcriptContent,
     transcriptEnd,
     transcriptViewport,
@@ -1139,19 +1194,31 @@ export const useTranscriptFollow = (
 };
 
 export const useStore = (): ThreadStore => {
-  const [snapshot, setSnapshot] =
-    useState<ConversationStateSnapshot>(INITIAL_SNAPSHOT);
+  const snapshot = useZustandStore(
+    conversationProjectionStore,
+    (projection) => projection.snapshot,
+  );
+  const projectionError = useZustandStore(
+    conversationProjectionStore,
+    (projection) => projection.loadError,
+  );
+  const workspaceSnapshot = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot,
+  );
   const [draft, setDraft] = useState<string>('');
   const [attachments, setAttachments] = useState<DraftAttachmentViewModel[]>([]);
   const [expandedProjectIds, setExpandedProjectIds] =
     useState<readonly string[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [activeQuietSeconds, setActiveQuietSeconds] = useState<number>(0);
-  const activeProgressClock = useRef<{
-    turnId: string;
-    observedAt: number;
-  } | null>(null);
+  const [renameRequest, setRenameRequest] = useState<Readonly<{
+    threadId: string;
+    title: string;
+  }> | null>(null);
+  const [renameDraft, setRenameDraftState] = useState<string>('');
+  const [renamePending, setRenamePending] = useState<boolean>(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
@@ -1169,30 +1236,7 @@ export const useStore = (): ThreadStore => {
   );
   const draftKey = useRef<string>('new');
   const modelSelections = useRef(new Map<string, string>());
-  const revision = useRef<number>(-1);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
-
-  useEffect(() => {
-    let active = true;
-    const acceptSnapshot = (next: ConversationStateSnapshot): void => {
-      if (active && shouldAcceptSnapshot(revision.current, next)) {
-        revision.current = next.revision;
-        setSnapshot(next);
-      }
-    };
-    const unsubscribe = onConversationStateChanged(acceptSnapshot);
-    void getConversationState()
-      .then(acceptSnapshot)
-      .catch(() => {
-        if (active) {
-          setActionError('Desktop could not read the current conversation.');
-        }
-      });
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1286,20 +1330,21 @@ export const useStore = (): ThreadStore => {
     );
   };
 
-  const bytes = inputBytes(draft);
   const attachmentBytes = attachments.reduce(
     (total, attachment) => total + attachment.sizeBytes,
     0,
   );
+  const startsChatOnSend = shouldStartChatOnSend(workspaceSnapshot);
   const phaseAllowsSend =
-    snapshot.phase === 'idle' || snapshot.phase === 'ready';
+    snapshot.phase === 'idle' ||
+    snapshot.phase === 'ready' ||
+    startsChatOnSend;
   const canSend =
     phaseAllowsSend &&
     !snapshot.navigator.pendingThreadId &&
     !snapshot.navigator.pendingMutation &&
     !isSending &&
     (draft.trim().length > 0 || attachments.length > 0) &&
-    bytes <= MAX_CONVERSATION_INPUT_BYTES &&
     selectedModelProfileId.length > 0 &&
     Boolean(
       modelInspection?.config?.profiles.some(
@@ -1369,6 +1414,25 @@ export const useStore = (): ThreadStore => {
     setIsSending(true);
     setActionError(null);
     try {
+      if (startsChatOnSend) {
+        const activation = await activateWorkspaceChat();
+        if (!activation.accepted) {
+          setActionError(
+            activation.reason === 'busy'
+              ? '正在切换会话，请稍后重试。'
+              : '无法开始聊天，请重试。',
+          );
+          return;
+        }
+        if (activation.commit) {
+          acceptWorkspaceSnapshot(activation.commit.workspace);
+          acceptForegroundCommit(activation.commit);
+        } else {
+          await getWorkspaceState()
+            .then(acceptWorkspaceSnapshot)
+            .catch((): undefined => undefined);
+        }
+      }
       const result = await sendConversationMessage({
         input: draft,
         ...(attachments.length > 0
@@ -1390,7 +1454,7 @@ export const useStore = (): ThreadStore => {
       } else {
         setActionError(
           result.reason === 'invalidInput'
-            ? 'Enter a message within the 64 KiB limit.'
+            ? '消息内容无效，请调整后重试。'
             : 'The local Agent is not ready for another Turn.',
         );
       }
@@ -1416,17 +1480,56 @@ export const useStore = (): ThreadStore => {
     }
   };
 
-  const selectThread = async (threadId: string): Promise<void> => {
+  const respondToUserInput = async (
+    turnId: string,
+    inputRequestId: string,
+    answers: readonly UserInputAnswer[],
+  ): Promise<boolean> => {
+    if (!snapshot.threadId) {
+      return false;
+    }
     setActionError(null);
     try {
-      const result = await selectConversationThread(threadId);
-      if (!result.accepted && result.reason === 'turnActive') {
-        setActionError('Stop the active Turn before switching Threads.');
+      const result = await respondToConversationUserInput({
+        threadId: snapshot.threadId,
+        turnId,
+        inputRequestId,
+        answers,
+      });
+      if (!result.accepted) {
+        setActionError('Agent 已不再等待这组回答，请检查当前任务状态。');
+      }
+      return result.accepted;
+    } catch {
+      setActionError('回答未能安全提交，请重试。');
+      return false;
+    }
+  };
+
+  const selectThread = async (threadId: string): Promise<void> => {
+    setActionError(null);
+    beginConversationSelection(threadId);
+    try {
+      const result = await focusWorkspaceTask(threadId);
+      if (result.accepted && result.commit) {
+        acceptWorkspaceSnapshot(result.commit.workspace);
+        acceptForegroundCommit(result.commit);
+      } else if (!result.accepted && result.reason === 'busy') {
+        failConversationSelection(
+          threadId,
+          'Stop the active Turn before switching Threads.',
+        );
       } else if (!result.accepted) {
-        setActionError('That durable Thread could not be selected.');
+        failConversationSelection(
+          threadId,
+          'That durable Thread could not be selected. Select it to retry.',
+        );
       }
     } catch {
-      setActionError('Desktop could not switch Threads safely.');
+      failConversationSelection(
+        threadId,
+        'Desktop could not switch Threads safely. Select it to retry.',
+      );
     }
   };
 
@@ -1473,27 +1576,6 @@ export const useStore = (): ThreadStore => {
     }
   };
 
-  const forkThread = (threadId: string): Promise<void> =>
-    runThreadMutation(
-      forkConversationThread,
-      threadId,
-      'That durable Thread could not be forked safely.',
-    );
-
-  const archiveThread = (threadId: string): Promise<void> =>
-    runThreadMutation(
-      archiveConversationThread,
-      threadId,
-      'That durable Thread could not be archived safely.',
-    );
-
-  const unarchiveThread = (threadId: string): Promise<void> =>
-    runThreadMutation(
-      unarchiveConversationThread,
-      threadId,
-      'That archived Thread could not be restored safely.',
-    );
-
   const deleteThread = (threadId: string): Promise<void> =>
     runThreadMutation(
       deleteConversationThread,
@@ -1501,58 +1583,72 @@ export const useStore = (): ThreadStore => {
       'That durable Thread could not be deleted safely.',
     );
 
+  const persistThreadRename = async (
+    threadId: string,
+    title: string,
+  ): Promise<boolean> => {
+    setActionError(null);
+    try {
+      const result = await renameWorkspaceTask({ threadId, title });
+      if (result.accepted) {
+        return true;
+      }
+      setActionError('That conversation could not be renamed.');
+      return false;
+    } catch {
+      setActionError('Desktop could not rename that conversation safely.');
+      return false;
+    }
+  };
+
+  const requestThreadRename = (threadId: string, title: string): void => {
+    setRenameRequest({ threadId, title });
+    setRenameDraftState(title);
+    setRenameError(null);
+  };
+
+  const setRenameDraft = (title: string): void => {
+    setRenameDraftState(title);
+    setRenameError(null);
+  };
+
+  const cancelThreadRename = (): void => {
+    if (renamePending) {
+      return;
+    }
+    setRenameRequest(null);
+    setRenameDraftState('');
+    setRenameError(null);
+  };
+
+  const confirmThreadRename = async (): Promise<void> => {
+    if (!renameRequest || renamePending) {
+      return;
+    }
+    const title = renameDraft.trim();
+    if (!isValidConversationTitle(title)) {
+      setRenameError('请输入不超过 80 个字符的有效名称。');
+      return;
+    }
+    setRenamePending(true);
+    setRenameError(null);
+    if (await persistThreadRename(renameRequest.threadId, title)) {
+      setRenameRequest(null);
+      setRenameDraftState('');
+    } else {
+      setRenameError('无法重命名这个对话，请稍后重试。');
+    }
+    setRenamePending(false);
+  };
+
   const thread = useMemo<ThreadViewModel>(() => {
     const next = toThreadViewModel(snapshot, previousThread.current);
     previousThread.current = next;
     return next;
   }, [snapshot]);
-  const activeTurnSnapshot = snapshot.activeTurnId
-    ? snapshot.turns.find((turn) => turn.id === snapshot.activeTurnId)
-    : undefined;
   const activeTurnView = snapshot.activeTurnId
     ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
     : undefined;
-  const activeUsageKey = activeTurnSnapshot?.usage
-    ? JSON.stringify(activeTurnSnapshot.usage)
-    : '';
-
-  useEffect(() => {
-    const turnId = activeTurnView?.id;
-    if (!turnId || snapshot.phase !== 'inProgress') {
-      activeProgressClock.current = null;
-      setActiveQuietSeconds(0);
-      return;
-    }
-    activeProgressClock.current = {
-      turnId,
-      observedAt: window.performance.now(),
-    };
-    setActiveQuietSeconds(0);
-    const updateElapsed = (): void => {
-      const clock = activeProgressClock.current;
-      if (!clock || clock.turnId !== turnId) {
-        return;
-      }
-      setActiveQuietSeconds(
-        Math.max(
-          0,
-          Math.floor((window.performance.now() - clock.observedAt) / 1_000),
-        ),
-      );
-    };
-    const interval = window.setInterval(updateElapsed, 1_000);
-    return () => window.clearInterval(interval);
-  }, [activeTurnView, activeUsageKey, snapshot.phase]);
-  const inputHint =
-    bytes > MAX_CONVERSATION_INPUT_BYTES
-      ? 'Message exceeds the 64 KiB limit'
-      : attachments.length > 0
-        ? `${attachments.length} attachment${attachments.length === 1 ? '' : 's'} · ${Math.ceil(attachmentBytes / 1024)} KiB`
-        : `${Math.ceil(bytes / 1024)} / 64 KiB`;
-  const latestUsage = latestTurnUsage(snapshot.turns);
-  const contextBudgetHint = latestUsage
-    ? formatTokenUsageHint(latestUsage)
-    : null;
   const navigator = useMemo(
     () => toThreadNavigatorViewModel(snapshot),
     [snapshot],
@@ -1565,9 +1661,7 @@ export const useStore = (): ThreadStore => {
       );
       return {
         profileId: profile.id,
-        label: `${profile.displayName} · ${
-          connection?.displayName ?? 'Unavailable'
-        }`,
+        label: profile.displayName,
         available: connection?.enabled === true,
       };
     });
@@ -1579,7 +1673,7 @@ export const useStore = (): ThreadStore => {
     ) {
       available.push({
         profileId: selectedModelProfileId,
-        label: `${selectedModelProfileId} · unavailable`,
+        label: '当前模型不可用',
         available: false,
       });
     }
@@ -1590,34 +1684,22 @@ export const useStore = (): ThreadStore => {
     if (!catalog || !pendingModelProfileId) {
       return null;
     }
-    const profileDetails = (profileId: string) => {
+    const profileName = (profileId: string): string => {
       const profile = catalog.profiles.find(
         (candidate) => candidate.id === profileId,
       );
-      const connection = catalog.connections.find(
-        (candidate) => candidate.id === profile?.connectionId,
-      );
-      return {
-        name: profile?.displayName ?? profileId,
-        wireApi: connection?.wireApi ?? 'unavailable',
-      };
+      return profile?.displayName ?? profileId;
     };
-    const source = profileDetails(selectedModelProfileId);
-    const target = profileDetails(pendingModelProfileId);
     return {
-      sourceName: source.name,
-      sourceWireApi: source.wireApi,
-      targetName: target.name,
-      targetWireApi: target.wireApi,
-      protocolChanges: source.wireApi !== target.wireApi,
+      sourceName: profileName(selectedModelProfileId),
+      targetName: profileName(pendingModelProfileId),
     };
   }, [modelInspection, pendingModelProfileId, selectedModelProfileId]);
   const activeTurnProgress = activeTurnView
     ? toActiveTurnProgress(
         activeTurnView.id,
-        activeTurnView.model?.displayName,
         snapshot.phase,
-        activeQuietSeconds,
+        activeTurnOperationProgress(activeTurnView),
       )
     : null;
 
@@ -1625,17 +1707,25 @@ export const useStore = (): ThreadStore => {
     thread,
     navigator,
     expandedProjectIds,
+    workspaceGeneration: workspaceSnapshot.generation,
+    workspaceReady: workspaceSnapshot.status === 'ready',
     draft,
     attachments,
-    inputBytes: bytes,
-    inputLimitBytes: MAX_CONVERSATION_INPUT_BYTES,
-    inputHint,
-    contextBudgetHint,
     canSend,
     canStop,
+    startsChatOnSend,
     activeTurnProgress,
     isSending,
-    actionError,
+    actionError: actionError ?? projectionError,
+    rename: {
+      request: renameRequest,
+      draft: renameDraft,
+      pending: renamePending,
+      error: renameError,
+      canSave:
+        isValidConversationTitle(renameDraft.trim()) &&
+        renameDraft.trim() !== renameRequest?.title,
+    },
     modelOptions,
     selectedModelProfileId,
     modelSelectionDisabled:
@@ -1653,11 +1743,13 @@ export const useStore = (): ThreadStore => {
     cancelModelSwitch,
     startNewThread,
     selectThread,
-    forkThread,
-    archiveThread,
-    unarchiveThread,
     deleteThread,
+    requestThreadRename,
+    setRenameDraft,
+    cancelThreadRename,
+    confirmThreadRename,
     send,
     stop,
+    respondToUserInput,
   };
 };

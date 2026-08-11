@@ -1,8 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import '@xyflow/react/dist/style.css';
 import { App } from '@/renderer/app';
+import { TooltipProvider } from '@/renderer/components/ui/tooltip';
+import { startConversationProjection } from '@/renderer/services/conversation-projection';
 import { startWorkspaceProjection } from '@/renderer/services/workspace-projection';
 import '@/renderer/styles/globals.css';
 
@@ -13,12 +14,18 @@ if (!rootElement) {
 }
 
 const stopWorkspaceProjection = startWorkspaceProjection();
+const stopConversationProjection = startConversationProjection();
 if (import.meta.hot) {
-  import.meta.hot.dispose(stopWorkspaceProjection);
+  import.meta.hot.dispose(() => {
+    stopConversationProjection();
+    stopWorkspaceProjection();
+  });
 }
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <TooltipProvider delayDuration={450} skipDelayDuration={100}>
+      <App />
+    </TooltipProvider>
   </StrictMode>,
 );

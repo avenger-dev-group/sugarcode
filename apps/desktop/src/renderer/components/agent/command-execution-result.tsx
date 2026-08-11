@@ -23,6 +23,9 @@ const outcomeLabel = (result: CommandExecutionResultViewModel): string => {
   if (result.outcome.type === 'error') {
     return `Execution failed: ${result.outcome.kind}`;
   }
+  if (result.outcome.type === 'workspacePatch') {
+    return `Workspace patch applied to ${result.outcome.filesChanged} file${result.outcome.filesChanged === 1 ? '' : 's'}`;
+  }
   switch (result.outcome.outcome.type) {
     case 'exitCode':
       return result.outcome.outcome.code === 0
@@ -37,8 +40,9 @@ const outcomeLabel = (result: CommandExecutionResultViewModel): string => {
 
 const isFailure = (result: CommandExecutionResultViewModel): boolean =>
   result.outcome.type === 'error' ||
-  result.outcome.outcome.type !== 'exitCode' ||
-  result.outcome.outcome.code !== 0;
+  (result.outcome.type === 'process' &&
+    (result.outcome.outcome.type !== 'exitCode' ||
+      result.outcome.outcome.code !== 0));
 
 export const CommandExecutionResult = ({
   result,
@@ -54,7 +58,7 @@ export const CommandExecutionResult = ({
       data-execution-outcome={
         result.outcome.type === 'process'
           ? result.outcome.outcome.type
-          : 'error'
+          : result.outcome.type
       }
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
@@ -77,9 +81,22 @@ export const CommandExecutionResult = ({
         </span>
       </div>
       {result.outcome.type === 'error' ? (
-        <code className="mt-2 block min-w-0 break-all rounded-md border px-2 py-1.5 font-mono text-[10px] leading-normal text-destructive">
-          {result.outcome.kind}
-        </code>
+        <div className="mt-2 min-w-0 rounded-md border px-2 py-1.5 text-destructive">
+          <code className="block break-all font-mono text-[10px] leading-normal">
+            {result.outcome.kind}
+            {result.outcome.failedPath ? ` · ${result.outcome.failedPath}` : ''}
+          </code>
+          {result.outcome.message ? (
+            <p className="mt-1 break-words text-xs font-normal leading-normal">
+              {result.outcome.message}
+            </p>
+          ) : null}
+        </div>
+      ) : result.outcome.type === 'workspacePatch' ? (
+        <p className="mt-2 rounded-md border px-2 py-1.5 font-mono text-[10px] text-secondary">
+          {result.outcome.filesChanged.toLocaleString('en-US')} file
+          {result.outcome.filesChanged === 1 ? '' : 's'} changed atomically
+        </p>
       ) : (
         <>
           <dl className="mt-2 grid min-w-0 grid-cols-1 gap-1.5 text-[10px] min-[390px]:grid-cols-3">

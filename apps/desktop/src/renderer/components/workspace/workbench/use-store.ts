@@ -12,9 +12,13 @@ import type {
   WorkspaceInspectDocument,
 } from '@/shared/workspace';
 
+import { orderWorkspaceEntries } from './file-entry-order';
 import type { WorkspaceWorkbenchStore } from './types';
 
-export const useStore = (): WorkspaceWorkbenchStore => {
+export const useStore = (
+  onOpenFile?: (path: string) => void,
+  activePath?: string,
+): WorkspaceWorkbenchStore => {
   const [open, setOpen] = useState(false);
   const state = useZustandStore(
     workspaceProjectionStore,
@@ -57,7 +61,7 @@ export const useStore = (): WorkspaceWorkbenchStore => {
     }
     setEntries((current) => {
       const next = new Map(current);
-      next.set(path, result.entries);
+      next.set(path, orderWorkspaceEntries(result.entries));
       return next;
     });
     setError(null);
@@ -79,6 +83,12 @@ export const useStore = (): WorkspaceWorkbenchStore => {
     void loadDirectory('', state);
   }, [state.generation, state.status]);
 
+  useEffect(() => {
+    if (activePath) {
+      setSelectedPath(activePath);
+    }
+  }, [activePath]);
+
   const chooseWorkspace = async (): Promise<void> => {
     const result = await selectWorkspace().catch((): null => null);
     if (!result) {
@@ -93,6 +103,7 @@ export const useStore = (): WorkspaceWorkbenchStore => {
   };
 
   const toggleDirectory = async (path: string): Promise<void> => {
+    setSelectedPath(path);
     if (expanded.has(path)) {
       setExpanded((current) => {
         const next = new Set(current);
@@ -111,6 +122,10 @@ export const useStore = (): WorkspaceWorkbenchStore => {
     setSelectedPath(path);
     setDocument(null);
     setError(null);
+    if (onOpenFile) {
+      onOpenFile(path);
+      return;
+    }
     const result = await inspectWorkspace({
       generation: state.generation,
       path,

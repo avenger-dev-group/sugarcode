@@ -24,11 +24,13 @@ export type CommandApprovalActionState =
 
 export type CommandApprovalViewModel = Readonly<{
   presentationId: string;
+  operationKind: 'workspacePatch' | 'shell';
   description: string;
   command: string;
   cwd: string;
   fullAccess: boolean;
   platformShell?: string;
+  workspaceId: string;
   threadId: string;
   turnId: string;
   queueCount: number;
@@ -47,8 +49,29 @@ export type CommandApprovalStateSnapshot = Readonly<{
   status: CommandApprovalStatus;
   mode: CommandApprovalMode;
   modeThreadId?: string;
+  modeWorkspaceId?: string;
   request?: CommandApprovalViewModel;
 }>;
+
+export const resolveCommandApprovalMode = (
+  snapshot: CommandApprovalStateSnapshot,
+  threadId: string | null,
+  workspaceId: string | null,
+): CommandApprovalMode => {
+  if (
+    snapshot.mode === 'thread' &&
+    snapshot.modeThreadId === threadId
+  ) {
+    return 'thread';
+  }
+  if (
+    snapshot.mode === 'workspace' &&
+    snapshot.modeWorkspaceId === workspaceId
+  ) {
+    return 'workspace';
+  }
+  return 'ask';
+};
 
 export type CommandApprovalActionResult = Readonly<{
   accepted: boolean;
@@ -74,6 +97,7 @@ export type CommandApprovalApi = Readonly<{
   setCommandApprovalMode: (
     mode: CommandApprovalMode,
     threadId?: string,
+    workspaceId?: string,
   ) => Promise<CommandApprovalActionResult>;
 }>;
 
@@ -123,10 +147,12 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
     value,
     [
       'presentationId',
+      'operationKind',
       'description',
       'command',
       'cwd',
       'fullAccess',
+      'workspaceId',
       'threadId',
       'turnId',
       'queueCount',
@@ -139,6 +165,7 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   ) &&
   typeof value.presentationId === 'string' &&
   value.presentationId.length > 0 &&
+  (value.operationKind === 'workspacePatch' || value.operationKind === 'shell') &&
   typeof value.description === 'string' &&
   value.description.length > 0 &&
   typeof value.command === 'string' &&
@@ -148,6 +175,8 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   typeof value.fullAccess === 'boolean' &&
   (value.platformShell === undefined ||
     (typeof value.platformShell === 'string' && value.platformShell.length > 0)) &&
+  typeof value.workspaceId === 'string' &&
+  value.workspaceId.length > 0 &&
   typeof value.threadId === 'string' &&
   value.threadId.length > 0 &&
   typeof value.turnId === 'string' &&
@@ -180,7 +209,7 @@ export const isCommandApprovalStateSnapshot = (
     !hasOnlyKeys(
       value,
       ['revision', 'status', 'mode'],
-      ['request', 'modeThreadId'],
+      ['request', 'modeThreadId', 'modeWorkspaceId'],
     ) ||
     typeof value.revision !== 'number' ||
     !Number.isSafeInteger(value.revision) ||
@@ -189,10 +218,14 @@ export const isCommandApprovalStateSnapshot = (
     !STATUSES.has(value.status as CommandApprovalStatus) ||
     typeof value.mode !== 'string' ||
     !MODES.has(value.mode as CommandApprovalMode) ||
+    (value.mode === 'thread') !== Object.hasOwn(value, 'modeThreadId') ||
     (Object.hasOwn(value, 'modeThreadId') &&
-      (value.mode !== 'thread' ||
-        typeof value.modeThreadId !== 'string' ||
-        value.modeThreadId.length === 0))
+      (typeof value.modeThreadId !== 'string' ||
+        value.modeThreadId.length === 0)) ||
+    (value.mode === 'workspace') !== Object.hasOwn(value, 'modeWorkspaceId') ||
+    (Object.hasOwn(value, 'modeWorkspaceId') &&
+      (typeof value.modeWorkspaceId !== 'string' ||
+        value.modeWorkspaceId.length === 0))
   ) {
     return false;
   }

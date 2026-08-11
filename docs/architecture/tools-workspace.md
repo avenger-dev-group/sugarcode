@@ -1,204 +1,231 @@
-# Tools and workspace boundary
+# Tools and workspace authority
 
 ## Authority
 
-Workspace authority begins at one explicit, canonical absolute root selected
-by the user or CLI caller. Rust opens that root as a capability boundary.
-Model-facing workspace read/list/search/apply-patch tools receive only
-workspace-relative UTF-8 paths. When Full Access shell is available, its
-per-request model schema additionally carries the exact authoritative absolute
-workspace root so the model never has to infer a host path.
+Electron Main validates and canonicalizes a selected project or isolated-chat
+root. The utility runtime registers that root with the native module under a
+deterministic workspace ID. Rust capabilities resolve every relative path
+beneath that root and reject traversal, symlink escape and cross-workspace IDs.
+Renderer and model output never choose a capability root.
 
-The same root supplies root-to-scope `AGENTS.md`, local Skills, read/list/search,
-file editing, command cwd, Git, Desktop explorer and optional local MCP
-discovery. Tools reject traversal, symlinks, Windows reparse points,
-unsupported file types and observed identity changes.
+Multiple registered workspaces may execute Turns concurrently. Every runtime
+command, event, approval and operation retains its workspace identity; changing
+the visible project changes presentation only and does not revoke or replace a
+background Turn's capability root.
 
-## Read tools
+## Local tools
 
-- `workspace/read` reads one stable bounded regular UTF-8 file and returns a
-  JSON object containing `content`, `bytes` and the exact content `sha256`.
-- `workspace/list` lists one directory level by default. `recursive: true`
-  returns sorted relative `path`, `name` and entry `kind` values plus `scanned`
-  and `truncated`; recursion never follows symlinks or reparse points. The
-  recursive walker reports but does not descend into VCS metadata or standard
-  generated dependency/build roots such as `.git`, `node_modules`, `dist` and
-  `target`, preventing repository internals from consuming the bounded result.
-  The preferred schema uses a JSON boolean. Runtime and Desktop live/durable
-  projection compatibility also accept the exact lowercase strings `"true"`
-  and `"false"`; other strings, numbers and null remain invalid.
-- `workspace/search` owns both search modes. The default remains bounded,
-  case-sensitive literal UTF-8 `content` search. Explicit `mode: "content"`
-  additionally supports `regex`, `caseSensitive` and `filePattern`, returning
-  a line number and at most 300 characters of excerpt. `mode: "path"` performs
-  a default case-insensitive substring search over relative paths. Neither mode
-  invokes shell, Git, host `rg` or ignore-file authority. The preferred schema
-  uses JSON booleans; runtime and Desktop also accept exact lowercase
-  `"true"` / `"false"` for the two boolean fields because compatible Responses
-  gateways may stringify them.
+Rust provides bounded file listing/inspection/search, content-addressed asset
+import, atomic multi-file patches, Git status/diff/stage/unstage/commit,
+sandboxed commands and PTY/ConPTY. Git uses libgit2 and does not invoke system
+Git, hooks, filters, signing, remotes, credentials or network access.
+Recursive listing and content/path search share one traversal policy. They do
+not descend into VCS metadata, dependency trees, generated output, coverage,
+cache, runtime-log or temporary directories, including ecosystem-specific
+locations such as `vendor`, `node_modules`, `target`, `.vite`, `.parcel-cache`,
+`.pytest_cache`, `.gradle`, `.dart_tool`, `.venv`, `storage/logs` and
+`bootstrap/cache`. Recursive listing and search also skip editor backups,
+temporary files, logs, source maps, TypeScript build metadata, platform/editor
+cache files and minified bundles. Direct listing still reports a skipped
+directory itself, and direct file reads remain capability-safe and available
+for an explicit task; the policy narrows broad discovery rather than removing
+the user's ability to inspect a named path.
+The Renderer may request a bounded, case-insensitive path-only search to power
+Composer `@` suggestions. The request is generation-scoped, accepts one
+bounded literal query, returns at most 64 regular-file paths and crosses the
+same preload, Main, utility-runtime and native capability boundary as Workspace
+listing. It uses the recursive traversal exclusions above, returns no file
+content, and becomes stale when the foreground Workspace generation changes.
+The Desktop private runtime protocol preserves the explorer's empty root key.
+Only the runtime host's native-list boundary maps that key to the tool's
+canonical `.` path, then projects returned children without a `./` prefix;
+every tool path still passes the same component, traversal and no-follow
+validation.
 
-Read-only batches validate completely, run with bounded concurrency and return
-durable results in model order.
+Sandboxed direct commands run against the capability root with the platform
+read-only and network-denied boundary. Full Access shell commands require an
+explicit persisted approval and use a separate bounded executor. Active process
+trees are keyed by `operationId`, so Turn cancellation and worker shutdown can
+terminate them.
 
-## Freeform patch editing
+The sandboxed command wire accepts exactly one absolute executable path plus a
+separate string argument array; its working directory is always the workspace
+root. Pipes, redirects, command chaining and other shell expressions belong to
+Full Access mode. The runtime validates these mode-specific arguments before it
+creates an operation or requests approval and returns actionable repair guidance
+to the Agent. Native validation repeats the absolute-path and bounded-argument
+checks as a defense-in-depth boundary. Full Access also starts at the selected
+workspace root unless its `cwd` names a real workspace-relative subdirectory;
+the Agent must not invent an absolute project path or prepend a redundant `cd`.
+The runtime rejects a Full Access command beginning with an absolute-path `cd`
+before it creates an operation or requests approval, and directs the Agent to
+omit it or use the workspace-relative `cwd` field.
 
-`workspace/apply-patch` is the only model-facing workspace write tool. It
-accepts the bounded Codex-style envelope from `*** Begin Patch` through
-`*** End Patch`, with up to 64 unique affected paths across `Add File`,
-`Update File`, `Delete File` and optional `Move to` markers. Update chunks use
-optional `@@` context and lines prefixed by space, `+` or `-`. A move is
-compiled to an atomic destination create plus source delete in the same
-ChangeSet, so destination conflicts or any later failure leave the source
-untouched.
+A completed command operation means its process outcome was durably observed,
+not that the command succeeded. Only `exitCode: 0` is successful; a non-zero
+exit code, signal or timeout remains a failed tool result for Turn recovery and
+completion gating.
 
-OpenAI Responses receives this through the native custom-tool wire name
-`apply_patch` and returns raw patch text without JSON escaping; internal and
-public state continue to use `workspace/apply-patch`. Its runtime-owned Lark
-grammar is intentionally one shallow terminal that constrains only the
-Begin/End envelope. It does not split arbitrary filenames and source lines
-across greedy terminals; the bounded local parser remains the semantic
-authority. Chat Completions and Anthropic receive the same internal tool through
-the exact fallback schema `{patch: string}`. Core accepts either representation
-and follows Codex's non-strict parse behavior: it trims harmless surrounding
-whitespace; accepts CRLF and the standard `<<EOF`, `<<'EOF'` and `<<"EOF"`
-wrappers; permits an omitted initial `@@`, unprefixed blank or non-empty
-unchanged context lines, trailing blank lines after `*** End of File`, empty
-added files and adjacent repeated updates for one path. Context lookup tries
-exact, trailing-whitespace, full-whitespace and Unicode-punctuation-normalized
-matching, with an end-of-file preference when requested. Once matched,
-unchanged context in the replacement is taken from the observed file rather
-than the normalized patch spelling, preventing fuzzy matching from changing
-indentation or typography. Unsafe paths, conflicting duplicate paths, unknown
-markers, oversized input and ambiguous or missing context still fail closed.
+Writes, Git mutations, Full Access commands and MCP calls first create a durable
+operation and approval proposal. Approval atomically claims the operation
+before native dispatch. A crash after the claim records failure and never
+replays the effect. Pending proposals may be re-presented after their stored
+arguments and approval metadata are validated.
 
-Argument-recovery feedback classifies the local parser result as an empty,
-oversized, boundary, hunk, file-count or duplicate-path failure and tells the
-model the corresponding correction action. Hunk feedback includes a complete
-minimal update example and states that an update needs at least one `-` or `+`
-line, avoiding repeated context-only retries. Raw rejected patch text remains
-absent from durable state; only its bounded byte count, hash and redacted
-failure class are retained. If the model still produces the same structural
-patch failure three consecutive times while `shell/exec` is available, Core
-withdraws apply-patch for the rest of that Turn and continues with shell as the
-write fallback. A later Turn advertises apply-patch normally again.
+The Main-owned approval policy has three process-local modes. `ask` presents
+every privileged operation; `thread` automatically approves later privileged
+operations only when the request carries the granted Thread ID; and `workspace`
+automatically approves requests from every Thread carrying the granted
+workspace ID. Full Access commands and MCP calls use the same scope resolver,
+so selecting either automatic mode does not leave a second approval path that
+continues prompting. Switching back to `ask` clears the active scoped grant.
+The Renderer may show another workspace or Thread, but that presentation change
+does not broaden a grant because Main matches the immutable request identities.
+Automatic resolutions retain the same durable approval audit boundary, while
+their live resolution event carries `policy` provenance. The Renderer labels
+them as inherited access and does not imply that the user answered a new
+prompt. A child task publishes a waiting-for-approval state only
+when the proposal remains unresolved beyond a short presentation delay, so an
+immediate scoped decision does not flash as a blocked child.
 
-File and move markers are the authoritative requested paths for this tool.
-Every path still passes the normal capability-relative traversal, symlink,
-reparse-point and identity checks. Updates and deletes are read through the
-opened workspace capability to bind them to the observed revision; matched
-context is compiled against the actual observed lines into revision-guarded
-line edits. Adds, updates, moves and deletes then enter the existing atomic
-ChangeSet prepare, write-ahead-log and commit path. A stale or ambiguous context
-is a structured `expectedMismatch` and performs no mutation.
+Workspace patches use the SugarCode `*** Begin Patch` / operation-marker /
+`*** End Patch` grammar. The runtime rejects malformed or GNU unified-diff
+documents before creating an operation or asking for approval. Native parser
+failures remain execution failures after an approved operation and are returned
+to the Agent with actionable format guidance; they must never be presented as
+approval denial. An `*** Update File:` body is a patch hunk, not whole-file
+replacement text: removed lines use `-`, added lines use `+`, and unchanged
+context may appear around `@@`. A new file accepts either the canonical form
+where every body line starts with `+`, or one complete unprefixed body; the
+parser decides once for the whole section so a literal leading plus is not
+silently removed. Compatible unchanged prelude before a first hunk marker is
+retained as matching context rather than rejected as a context-only hunk. A
+marker-correct update with no changed-line prefix is
+rejected before approval with a concrete example so a compatible model can
+repair it without asking the user to approve an operation that cannot run.
+Preflight unwraps a bounded patch/diff Markdown fence or a conventional
+`apply_patch` heredoc and collapses repeated unprefixed Begin/End envelope
+markers into one document before approval; malformed content markers and hunks
+remain rejected. A hunk that removes and re-adds identical text is also
+rejected. These structural no-ops never become durable operations or approval
+requests. Before a valid proposal crosses the approval boundary, the runtime
+derives a bounded create/update/delete/move path summary from the normalized
+document. Approval and process UI use that summary plus an explicit workspace
+patch kind, not the private tool name, byte count or raw patch body. If native
+matching finds stale context, the
+result identifies the affected path and line, confirms that the atomic patch
+changed no files, and directs the Agent to re-read and retry a small patch for
+that file. Matching tolerates a compatible provider doubling backslashes
+immediately before quotes, but does not normalize regular expression, path or
+other unrelated backslashes. A successful native receipt retains the bounded
+review diff, newline metadata and revision hashes for every changed file so the
+Desktop can disclose the exact change after execution without rereading a
+mutable workspace. Renderer review tabs consume only that frozen receipt;
+ordinary file tabs use the separately bounded workspace-inspection operation
+against the active generation and therefore cannot be confused with the
+historical review.
+An explicit Agent Markdown href may reference a file by basename when the model
+did not include its workspace-relative directory. Before inspection, Desktop
+resolves that basename through Rust's bounded, capability-scoped path search and
+opens it only when exactly one regular file matches. No match remains
+`notFound`; multiple matches are reported as ambiguous and are never guessed.
+References that already contain a relative directory bypass this lookup and
+retain their exact path. A code span does not independently request this search:
+the Renderer promotes it to a file reference only when it uniquely matches a
+successful read or non-deleted change recorded in the same Turn. This keeps
+member expressions and package identifiers as code and prevents transcript size
+from causing filesystem work. The exact path remains the reference identity;
+the Renderer may present a basename or shortest unique suffix in the transcript
+and expanded read rows while exposing the full path in their tooltip and
+accessible label. A generated read-progress sentence likewise uses compact
+basenames for small batches and a count for larger batches instead of repeating
+full directories in prose.
+An explicit absolute Markdown citation is preserved until Electron Main compares
+it with the active workspace's canonical root. A contained citation is converted
+to the existing workspace-relative inspection contract; an outside, foreign-OS
+or traversal-bearing citation is rejected and never downgraded to a basename
+search. Rust inspection still applies component, traversal and no-follow checks
+to the converted relative path, so model text never selects a capability root.
 
-## Internal write pipeline
+`workspace_read` declares either one `path` or a bounded `paths` batch of 1
+through 8 files. Batch reads execute through the same read-only workspace
+capability and return each result with its requested path. This gives compatible
+models a declared parallel-read shape without expanding authority or rewriting
+ambiguous tool intent. Before schema validation, the provider-neutral argument
+normalizer may unwrap a JSON-string-encoded `paths` array only when it contains
+1 through 8 non-empty strings. It never truncates an oversized batch or repairs
+other tools by analogy. As a bounded fallback for non-strict providers, a
+direct, unambiguous array of 9 through 16 paths is preserved and executed in
+waves of at most 8 native reads. Larger batches are rejected with instructions
+to split the request; the UI projects the actual requested path count rather
+than silently presenting only the first 8.
+The schema and base Agent contract identify these arguments as regular files,
+not directories. Broad review starts with `workspace_list`, reads only entries
+reported as files, avoids duplicate unchanged reads, prefers checked-in examples
+over secret-bearing files such as `.env`, and skips low-value dependency,
+generated, cache and temporary content unless the request specifically needs it.
+If a provider still passes a directory, the bounded `notRegularFile` result now
+directs it back to `workspace_list` instead of leaving an opaque failed read.
 
-The patch parser compiles every accepted envelope to one internal ChangeSet.
-Revision-bound line edits and unified-diff parsing remain internal executor
-mechanics; they are not separately advertised tool protocols. This keeps one
-write grammar in the model context and one correction target after validation
-failure.
+## Skills
 
-The complete change set is validated before mutation, rejects duplicate paths
-and stages data on the same filesystem. A persisted write-ahead log precedes
-the first create, atomic replacement or delete. Any recognized failure rolls
-the whole batch back; workspace open completes or rolls back an interrupted log
-before admitting another write. One call ID owns ordered create/update/delete
-`FileChange` records and the matching ToolResult contains all revision receipts.
-The absent side uses the SHA-256 of empty content and zero bytes.
+Desktop discovers personal Skills from its managed application data `skills`
+directory and workspace Skills from `.sugarcode/skills`, `.agents/skills` and
+`.claude/skills`. Each immediate child must be a real directory containing a
+regular UTF-8 `SKILL.md` with the bounded `name` and `description` frontmatter
+contract shared with the workspace tools crate. Symbolic links and special
+files are not followed. When names collide, workspace sources override the
+personal source in scan order, with `.claude`, then `.agents`, then
+`.sugarcode` as the effective precedence. The stable source-directory digest
+identifies the enabled preference, which is durable in the v3 SQLite store and
+defaults to enabled.
 
-Validation errors are structured:
+Import accepts any directory explicitly selected through Electron's native
+picker, rather than restricting the source to one legacy configuration root.
+Personal imports are copied to the managed application directory; current-
+project imports are copied to `.sugarcode/skills/<name>`. Export copies the
+selected complete Skill directory to a user-selected destination. Both flows
+reject destination conflicts, links, special files, recursive self-copy and
+project-root escape. A copy is bounded to 512 files and 16 MiB and removes only
+its newly-created partial destination after failure. Discovery is bounded to
+256 entries per source, 64 valid Skills overall and 32 KiB per `SKILL.md`; the
+enabled native snapshot is capped at 1 MiB.
 
-- `headerCountMismatch`;
-- `rangeOutOfBounds`;
-- `expectedMismatch`;
-- `baseRevisionMismatch`;
-- `unsupportedDiffFeature`.
+At a Turn boundary the runtime freezes the enabled inventory and contents.
+Names and descriptions are always available to the Agent; an explicit `$name`
+selection or the read-only `load_skill` tool may expose up to four Skill bodies
+and 128 KiB total from that snapshot. Refreshing, importing or toggling a Skill
+cannot change an already-running Turn, and Skill text never grants additional
+filesystem, process, network or approval authority.
+The `load_skill` schema enumerates the exact frozen names and instructs the
+model to choose the single best match. Its execution boundary also normalizes
+ASCII case, surrounding whitespace and one optional leading `$`, because `$name`
+is the user-facing invocation notation and must not create a false
+`skillNotFound` failure when copied into the tool argument. A genuinely unknown
+name returns the bounded frozen name list for one informed recovery attempt.
+The call may also carry one bounded public purpose sentence in the original
+user's language. That sentence explains how the selected Skill applies to the
+current task and becomes process presentation only; it does not change the
+Skill snapshot, tool result or authority.
 
-Diagnostics contain edit/hunk index, line, redacted expected/actual summaries
-and a suggested action. The model-facing tool result carries the same bounded
-diagnostic plus argument byte count and SHA-256 so a retry can be correlated;
-raw rejected arguments are not public.
+## MCP and collaboration
 
-Schema rejection uses the same JSON result envelope before any execution. For
-workspace tools it adds a JSONPath-like `fieldPath`, stable `reason`, bounded
-`expected`, value-free actual JSON type and `suggestedAction`. The result also
-states that completion is not allowed until the next valid advertised tool call
-continues the task. The rejected argument values remain private; durable audit
-retains only the safe diagnosis, argument byte count and SHA-256.
+MCP uses ADK `MCPToolset`. Configuration is durable, but enabled selections,
+inventories and transports are process-local. Tool names are namespaced by
+server; every call records the frozen inventory receipt and passes through the
+same approval/audit boundary and scoped automatic-approval policy as local
+privileged tools. HTTP servers are limited to explicitly configured loopback
+endpoints.
 
-## Workspace concurrency and shell
-
-Core owns one fair read/write permit shared by root and child Agents. Readers
-may coexist; a writer holds the exclusive permit. This coordinates SugarCode
-activity only and does not claim isolation from the user or another process.
-
-In multi-workspace app-server mode, every scope derived from the same canonical
-root also shares one workspace write gate. Apply-patch commits, Git
-stage/unstage/commit and workspace-write shell execution acquire that gate for
-their commit or process lifetime. Different canonical roots use independent
-gates and may write concurrently. Read-only operations remain concurrent, and
-the gate still makes no claim about external processes or user edits.
-
-`shell/exec` exposes exactly one model-facing argument shape per platform. On
-macOS and Windows that shape requires only one bounded complete `command`.
-Optional `cwd` defaults to the capability-owned workspace root and optional
-`timeoutMs` defaults to 300 seconds. It does not expose a discriminated union,
-`kind`, description metadata or argv fields, avoiding provider-generated
-hybrids that cannot be assigned a safe authority. The runtime still recognizes
-the exact-executable `argvJson` representation as an internal sandboxed-direct
-form, but it is not part of the model tool schema on these platforms.
-
-Any supplied cwd must be the authoritative absolute root or a validated
-workspace-relative subdirectory; another absolute path is rejected before
-approval or execution. The process already starts in cwd, so the schema directs
-the model not to invent a host path or prepend `cd` merely to re-enter the
-workspace. The account login shell (`-lc`) or `%COMSPEC% /C` gives pipes,
-redirections, conditionals, variables and globs their platform meaning.
-The default timeout is 300 seconds and the maximum is 600 seconds.
-The preferred schema keeps `timeoutMs` as an integer. Runtime compatibility
-also normalizes a bounded non-empty decimal string containing ASCII digits only;
-signs, units, whitespace, fractions, zero and values above the maximum remain
-invalid. This unambiguous normalization does not change shell authority.
-The complete-command shape is Full Access: it is not sandboxed, may use network
-and may read or write outside the workspace. It is denied by default and
-requires an explicit one-call, current-Thread or current-workspace Desktop
-authorization which is kept only in Main-process memory and cannot be inherited
-from direct sandbox auto-approval. Cancellation and timeout terminate the
-process tree. Output is streamed by call ID and the durable final stdout plus
-stderr is bounded to 64 KiB.
-
-Both execution authorities use a filtered `hostInheritedV1` environment. It
-preserves non-sensitive host variables such as `PATH`, `HOME`, locale/temp
-locations and language-toolchain roots, while credential-like names are
-excluded. The trusted Desktop sidecar inherits the Desktop process environment;
-the command supervisor applies the credential filter again and bounds the map.
-Desktop may remember each mode's approval scope for the current Thread or
-workspace. Direct approval does not expand filesystem, network, executable or
-workspace-write authority. Attempt-without-result means writes may have
-occurred.
-
-On platforms without Full Access shell support, the single advertised schema
-instead requires an absolute executable and encodes operands as one JSON string
-array in `argvJson`. Runtime also accepts the earlier array forms internally.
-A rejected call receives bounded field-specific guidance; durable diagnostics
-retain only that safe guidance plus argument byte count and SHA-256. SugarCode
-never repairs a bare direct command through `PATH`. An explicitly invoked
-absolute program may use inherited `PATH` internally. Full shell mode delegates
-parsing to the selected platform shell only after Full Access approval.
-Rollout validation distinguishes the two audit shapes: direct requires its
-sandbox and network-denial receipts, while Full Access requires `sandboxed:
-false`, empty argv and absent sandbox/network/workspace-write policies.
-
-## Other native capabilities
-
-The only model-visible built-in local tools are `workspace/read`,
-`workspace/list`, `workspace/search`, `workspace/apply-patch` and `shell/exec`.
-There is no parallel `read_file`, `search_code`, `workspace/find`,
-`workspace/change-set` or `shell/run` namespace.
-
-The Git engine opens only the exact root, uses vendored libgit2 and never runs
-system Git, hooks, filters, signing, credential helpers, remotes or network.
-MCP begins disabled and requires an explicit bounded selection plus inventory
-hashing and per-call approval. Desktop preview and terminal are user-owned
-capabilities, never Agent tools.
+Dynamic child Agents run as separate ADK invocations over a bounded persisted
+task DAG. The coordinator enforces dependency, concurrency, interruption and
+workspace read/write scheduling. Child sessions are temporary; task status and
+bounded results are durable. While a task is active, the coordinator also
+publishes bounded provider-neutral progress for initial model wait, streamed
+public text and current tool execution; provider event objects and tool
+arguments are never exposed as progress. Restart marks active tasks interrupted
+instead of replaying their work. A workspace-writing dispatch may provide a
+tailored read-only auditor depending on every writer. When it does not, the
+coordinator adds a bounded runtime auditor with those dependencies before it
+validates, persists or schedules the wave, so a missing auditor cannot force the
+model to resend every writer brief.

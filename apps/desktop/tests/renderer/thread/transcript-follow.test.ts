@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
+  shouldHoldTranscriptPlaceholder,
+  shouldResetTranscriptFollow,
 } from '../../../src/renderer/components/thread/transcript-follow.ts';
 
 test('layout shrink preserves tail following when scrollTop is clamped upward', () => {
@@ -55,4 +57,63 @@ test('keyboard scroll-up intent covers transcript navigation keys', () => {
   assert.equal(isTranscriptScrollUpKey(' ', true), true);
   assert.equal(isTranscriptScrollUpKey('PageDown', false), false);
   assert.equal(isTranscriptScrollUpKey(' ', false), false);
+});
+
+test('completed selection resets transcript following for the selected Thread', () => {
+  assert.equal(
+    shouldResetTranscriptFollow({
+      previousThreadId: 'thread-a',
+      threadId: 'thread-b',
+      previousPendingThreadId: 'thread-b',
+      pendingThreadId: null,
+      userMessageAdded: false,
+    }),
+    true,
+  );
+});
+
+test('completed selection holds its placeholder until deferred content is ready', () => {
+  assert.equal(
+    shouldHoldTranscriptPlaceholder({
+      deferredThreadId: 'thread-a',
+      pendingThreadId: null,
+      previousPendingThreadId: 'thread-b',
+      threadId: 'thread-b',
+    }),
+    true,
+  );
+  assert.equal(
+    shouldHoldTranscriptPlaceholder({
+      deferredThreadId: 'thread-b',
+      pendingThreadId: null,
+      previousPendingThreadId: 'thread-b',
+      threadId: 'thread-b',
+    }),
+    false,
+  );
+});
+
+test('new Threads render immediately without a selection placeholder', () => {
+  assert.equal(
+    shouldHoldTranscriptPlaceholder({
+      deferredThreadId: null,
+      pendingThreadId: null,
+      previousPendingThreadId: null,
+      threadId: 'thread-new',
+    }),
+    false,
+  );
+});
+
+test('failed selection keeps the current transcript follow preference', () => {
+  assert.equal(
+    shouldResetTranscriptFollow({
+      previousThreadId: 'thread-a',
+      threadId: 'thread-a',
+      previousPendingThreadId: 'thread-b',
+      pendingThreadId: 'thread-b',
+      userMessageAdded: false,
+    }),
+    false,
+  );
 });

@@ -1,9 +1,0 @@
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"golden-client","version":"1.0.0"}}}
-{"jsonrpc":"2.0","method":"initialized"}
-{"jsonrpc":"2.0","id":"start-1","method":"thread/start"}
-{"jsonrpc":"2.0","id":"archive-1","method":"thread/archive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
-{"jsonrpc":"2.0","id":"list","method":"thread/list"}
-{"jsonrpc":"2.0","id":"search","method":"thread/search","params":{"query":"SugarCode"}}
-{"jsonrpc":"2.0","id":"resume","method":"thread/resume","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
-{"jsonrpc":"2.0","id":"archive-2","method":"thread/archive","params":{"threadId":"00000000-0000-7000-8000-000000000001"}}
-{"jsonrpc":"2.0","id":"start-2","method":"thread/start"}

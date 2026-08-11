@@ -1,20 +1,24 @@
 import { memo, type ReactElement } from 'react';
 
+import { AgentMarkdown } from './agent-markdown';
 import type { AgentCommentaryProps } from './types';
 
 const AgentCommentaryView = ({
   commentary,
 }: AgentCommentaryProps): ReactElement => (
-  <p
-    className="whitespace-pre-wrap break-words text-sm font-normal leading-normal text-process"
+  <div
+    className="w-full max-w-full break-words text-sm font-normal leading-[22px]"
     aria-label={
       commentary.state === 'running'
         ? 'Agent progress'
         : 'Agent progress update'
     }
   >
-    {commentary.text}
-  </p>
+    <AgentMarkdown
+      source={commentary.text}
+      isStreaming={commentary.state === 'running'}
+    />
+  </div>
 );
 
 export const AgentCommentary = memo(AgentCommentaryView);

@@ -3,6 +3,11 @@ import type {
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationSendRequest,
+  ConversationProjectionDiagnostic,
+  ConversationThreadDeltaListener,
+  ConversationThreadProjectionListener,
+  ConversationThreadProjectionSnapshot,
+  ConversationUserInputResponse,
 } from '@/shared/conversation';
 
 const desktopApi = (): Window['sugarcode'] => window.sugarcode;
@@ -15,6 +20,23 @@ export const onConversationStateChanged = (
   listener: ConversationStateListener,
 ): (() => void) => desktopApi().onConversationStateChanged(listener);
 
+export const getConversationThreadProjection = (
+  threadId: string,
+): Promise<ConversationThreadProjectionSnapshot> =>
+  desktopApi().getConversationThreadProjection(threadId);
+
+export const onConversationThreadProjectionChanged = (
+  listener: ConversationThreadProjectionListener,
+  onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+): (() => void) =>
+  desktopApi().onConversationThreadProjectionChanged(listener, onDiagnostic);
+
+export const onConversationThreadDelta = (
+  listener: ConversationThreadDeltaListener,
+  onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
+): (() => void) =>
+  desktopApi().onConversationThreadDelta(listener, onDiagnostic);
+
 export const sendConversationMessage = (
   request: ConversationSendRequest,
 ): Promise<ConversationActionResult> =>
@@ -23,6 +45,11 @@ export const sendConversationMessage = (
 export const stopConversationTurn =
   (threadId: string): Promise<ConversationActionResult> =>
     desktopApi().stopConversationTurn(threadId);
+
+export const respondToConversationUserInput = (
+  response: ConversationUserInputResponse,
+): Promise<ConversationActionResult> =>
+  desktopApi().respondToConversationUserInput(response);
 
 export const searchConversationThreads = (
   query: string,
@@ -37,21 +64,6 @@ export const selectConversationThread = (
 export const startNewConversationThread =
   (): Promise<ConversationActionResult> =>
     desktopApi().startNewConversationThread();
-
-export const forkConversationThread = (
-  threadId: string,
-): Promise<ConversationActionResult> =>
-  desktopApi().forkConversationThread(threadId);
-
-export const archiveConversationThread = (
-  threadId: string,
-): Promise<ConversationActionResult> =>
-  desktopApi().archiveConversationThread(threadId);
-
-export const unarchiveConversationThread = (
-  threadId: string,
-): Promise<ConversationActionResult> =>
-  desktopApi().unarchiveConversationThread(threadId);
 
 export const deleteConversationThread = (
   threadId: string,

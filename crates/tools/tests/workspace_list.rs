@@ -94,12 +94,14 @@ async fn recursively_lists_relative_paths_in_stable_order() {
 }
 
 #[tokio::test]
-async fn recursive_listing_reports_but_does_not_descend_into_generated_or_vcs_directories() {
+async fn recursive_listing_skips_noise_directories_and_transient_files() {
     let workspace = tempfile::tempdir().expect("workspace");
     for directory in [
         ".git/objects",
         "node_modules/pkg",
+        "vendor/pkg",
         "dist/assets",
+        "storage/logs/archive",
         "src/nested",
     ] {
         fs::create_dir_all(workspace.path().join(directory)).expect("fixture directory");
@@ -111,7 +113,16 @@ async fn recursive_listing_reports_but_does_not_descend_into_generated_or_vcs_di
     )
     .expect("module fixture");
     fs::write(workspace.path().join("dist/assets/ignored.js"), "dist").expect("dist fixture");
+    fs::write(workspace.path().join("vendor/pkg/ignored.php"), "vendor").expect("vendor fixture");
+    fs::write(
+        workspace.path().join("storage/logs/archive/ignored.log"),
+        "runtime log",
+    )
+    .expect("log fixture");
     fs::write(workspace.path().join("src/nested/included.rs"), "source").expect("source fixture");
+    fs::write(workspace.path().join("src/scratch.tmp"), "temporary").expect("temporary fixture");
+    fs::write(workspace.path().join("src/bundle.min.js"), "generated").expect("minified fixture");
+    fs::write(workspace.path().join("src/source.js.map"), "source map").expect("map fixture");
     let tool = WorkspaceTool::open(workspace.path()).expect("tool");
 
     let WorkspaceRecursiveListOutcome::Entries { entries, .. } = tool
@@ -131,11 +142,18 @@ async fn recursive_listing_reports_but_does_not_descend_into_generated_or_vcs_di
         .collect::<Vec<_>>();
     assert!(paths.contains(&".git"));
     assert!(paths.contains(&"node_modules"));
+    assert!(paths.contains(&"vendor"));
     assert!(paths.contains(&"dist"));
+    assert!(paths.contains(&"storage/logs"));
     assert!(paths.contains(&"src/nested/included.rs"));
     assert!(!paths.iter().any(|path| path.starts_with(".git/")));
     assert!(!paths.iter().any(|path| path.starts_with("node_modules/")));
+    assert!(!paths.iter().any(|path| path.starts_with("vendor/")));
     assert!(!paths.iter().any(|path| path.starts_with("dist/")));
+    assert!(!paths.iter().any(|path| path.starts_with("storage/logs/")));
+    assert!(!paths.contains(&"src/scratch.tmp"));
+    assert!(!paths.contains(&"src/bundle.min.js"));
+    assert!(!paths.contains(&"src/source.js.map"));
 }
 
 #[cfg(unix)]

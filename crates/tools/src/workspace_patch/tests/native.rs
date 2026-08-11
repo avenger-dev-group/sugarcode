@@ -122,6 +122,96 @@ async fn workspace_freeform_patch_matches_codex_whitespace_fuzz() {
 }
 
 #[tokio::test]
+async fn workspace_freeform_patch_matches_provider_overescaped_quotes() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(
+        workspace.path().join("vite.config.ts"),
+        r#"const appVersion = packageJson.version;
+
+const htmlPluginOpt = {
+  headScripts: [
+    'globalThis.import_meta_env = JSON.parse(\'"import_meta_env_placeholder"\')',
+  ],
+};
+
+// config
+"#,
+    )
+    .expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Update File: vite.config.ts\n",
+        "@@\n",
+        " const appVersion = packageJson.version;\n",
+        " \n",
+        "-const htmlPluginOpt = {\n",
+        "-  headScripts: [\n",
+        "-    'globalThis.import_meta_env = JSON.parse(\\\\'\"import_meta_env_placeholder\"\\\\')',\n",
+        "-  ],\n",
+        "-};\n",
+        " \n",
+        " // config\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare overescaped compatible patch");
+    };
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { .. }
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("vite.config.ts")).expect("updated file"),
+        "const appVersion = packageJson.version;\n\n\n// config\n"
+    );
+}
+
+#[tokio::test]
+async fn workspace_freeform_patch_commits_unprefixed_add_and_update_prelude() {
+    let workspace = tempdir().expect("workspace");
+    fs::write(
+        workspace.path().join("notes.txt"),
+        "import alpha\nimport beta\nold\n",
+    )
+    .expect("seed file");
+    let tool = WorkspaceTool::open(workspace.path()).expect("open workspace");
+    let patch = concat!(
+        "*** Begin Patch\n",
+        "*** Add File: added.txt\n",
+        "created without prefixes\n",
+        "*** Update File: notes.txt\n",
+        "import alpha\n",
+        "import beta\n",
+        "@@\n",
+        "-old\n",
+        "+new\n",
+        "*** End Patch",
+    );
+
+    let WorkspaceChangeSetPrepareOutcome::Prepared(prepared) =
+        tool.prepare_freeform_patch(patch, &cancellation()).await
+    else {
+        panic!("prepare compatible patch");
+    };
+    assert!(matches!(
+        tool.commit_change_set(prepared, &cancellation()).await,
+        WorkspaceChangeSetCommitOutcome::Applied { receipts } if receipts.len() == 2
+    ));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("added.txt")).expect("added file"),
+        "created without prefixes\n"
+    );
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("notes.txt")).expect("updated file"),
+        "import alpha\nimport beta\nnew\n"
+    );
+}
+
+#[tokio::test]
 async fn compatible_context_does_not_rewrite_observed_indentation() {
     let workspace = tempdir().expect("workspace");
     fs::write(

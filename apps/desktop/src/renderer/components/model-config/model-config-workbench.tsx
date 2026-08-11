@@ -1,5 +1,4 @@
 import {
-  AlertTriangle,
   Check,
   Cpu,
   KeyRound,

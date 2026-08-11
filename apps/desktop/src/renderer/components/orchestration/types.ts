@@ -1,5 +1,7 @@
 import type { ConversationAgentTaskStatus } from '@/shared/conversation';
 
+import type { FileChangeReviewFile } from '../workspace/types';
+
 export type AgentTaskRole = 'explorer' | 'worker' | 'auditor';
 export type AgentTaskAccess = 'readOnly' | 'workspaceWrite';
 
@@ -14,6 +16,12 @@ export type AgentTaskResultViewModel = Readonly<{
   durationMs: number;
 }>;
 
+export type AgentTaskProgressViewModel = Readonly<{
+  stage: 'waitingForModel' | 'streaming' | 'runningTool';
+  summaryMarkdown: string;
+  updatedAt: number;
+}>;
+
 export type AgentTaskViewModel = Readonly<{
   id: string;
   taskId: string;
@@ -26,6 +34,7 @@ export type AgentTaskViewModel = Readonly<{
   taskMarkdown: string;
   status: ConversationAgentTaskStatus;
   amendments: readonly AgentTaskAmendmentViewModel[];
+  progress?: AgentTaskProgressViewModel;
   result?: AgentTaskResultViewModel;
 }>;
 
@@ -33,3 +42,20 @@ export type OrchestrationActivityViewModel = Readonly<{
   id: string;
   tasks: readonly AgentTaskViewModel[];
 }>;
+
+export type ContextRailResource =
+  | Readonly<{
+      kind: 'file';
+      path: string;
+    }>
+  | Readonly<{
+      kind: 'diff';
+      path: string;
+      changes: readonly FileChangeReviewFile[];
+    }>
+  | Readonly<{
+      kind: 'skill';
+      name: string;
+      description?: string;
+      content: string;
+    }>;
