@@ -42,6 +42,39 @@ const buildReleaseNative = async (
   });
 };
 
+const prepareWindowsMaker = async (): Promise<void> => {
+  if (process.platform !== 'win32') {
+    return;
+  }
+
+  const installerDirectory = path.join(
+    workspaceRoot,
+    'node_modules',
+    'electron-winstaller',
+  );
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [path.join(installerDirectory, 'script', 'select-7z-arch.js')],
+      { cwd: installerDirectory, stdio: 'inherit' },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          signal
+            ? `Windows maker preparation terminated by ${signal}.`
+            : `Windows maker preparation exited with code ${code ?? 'unknown'}.`,
+        ),
+      );
+    });
+  });
+};
+
 const config: ForgeConfig = {
   packagerConfig: {
     appBundleId: 'com.simonf.sugarcode',
@@ -71,11 +104,15 @@ const config: ForgeConfig = {
     prePackage: async (_forgeConfig, platform, arch) => {
       await buildReleaseNative(platform, arch);
     },
+    preMake: async () => {
+      await prepareWindowsMaker();
+    },
   },
   makers: [
     {
       name: '@electron-forge/maker-squirrel',
       config: {
+        name: 'SugarCode',
         setupIcon: `${appIconBasePath}.ico`,
       },
     },

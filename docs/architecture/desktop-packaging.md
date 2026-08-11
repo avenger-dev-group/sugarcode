@@ -26,9 +26,14 @@ The final application must contain:
 - `THIRD_PARTY_NOTICES.txt` for bundled native and model SDK dependencies.
 
 macOS uses the stable `com.simonf.sugarcode` bundle identifier and currently
-produces both DMG and ZIP artifacts. Development releases use a complete
-ad-hoc signature so local integrity verification succeeds, but they are not
-notarized and must not be represented as Developer ID signed releases.
+produces both DMG and ZIP artifacts for arm64 and x64 hosts. Development
+releases use a complete ad-hoc signature so local integrity verification
+succeeds, but they are not notarized and must not be represented as Developer
+ID signed releases. Windows x64 uses the stable `SugarCode` Squirrel package
+identity and produces Setup.exe, full NuGet package and RELEASES artifacts;
+these manual builds are not Authenticode signed. Forge's `preMake` hook
+explicitly selects the host-architecture 7-Zip helper required by Squirrel so
+the installer build does not depend on pnpm lifecycle-script cache state.
 
 It must not contain a `sugarcode` executable, CLI manifest, app-server,
 PTY sidecar executable or `sugarcode-sidecar` directory. The native terminal
@@ -40,6 +45,12 @@ stdio/JSONL entry point.
 Native modules are built and packaged on the target operating system. macOS and
 Windows CI run Rust formatting/checks/tests, the Desktop TypeScript suite and a
 Forge package build. Packaging does not contact a model provider.
+
+The manually dispatched `build-desktop.yml` workflow runs Forge `make` on
+macOS arm64, macOS x64 and Windows x64 target hosts. It verifies the packaged
+payload and native architecture, validates the platform installers and uploads
+versioned GitHub Actions artifacts for 14 days. It does not change versions,
+create tags or publish a GitHub Release.
 
 Renderer cannot select a native path, executable, argv, environment or utility
 entry point. Main resolves all packaged resources from trusted application

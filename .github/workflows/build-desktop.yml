@@ -1,0 +1,90 @@
+name: Build SugarCode Desktop
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sugarcode-desktop-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Desktop / ${{ matrix.asset_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+            asset_name: macos-arm64
+          - runner: macos-15-intel
+            platform: darwin
+            arch: x64
+            asset_name: macos-x64
+          - runner: windows-2025
+            platform: win32
+            arch: x64
+            asset_name: windows-x64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Install JavaScript dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Read Desktop version
+        id: desktop
+        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + require('./apps/desktop/package.json').version + require('node:os').EOL)"
+
+      - name: Build installers
+        run: pnpm desktop:make
+
+      - name: Verify packaged application
+        run: node scripts/verify-packaged-desktop.mjs ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Verify macOS artifacts
+        if: runner.os == 'macOS'
+        run: bash scripts/verify-macos-desktop-artifacts.sh ${{ matrix.arch }}
+
+      - name: Verify Windows artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-windows-desktop-artifacts.ps1 -Architecture ${{ matrix.arch }}
+
+      - name: Upload macOS artifacts
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SugarCode-${{ steps.desktop.outputs.version }}-${{ matrix.asset_name }}
+          path: |
+            apps/desktop/out/make/*.dmg
+            apps/desktop/out/make/zip/darwin/${{ matrix.arch }}/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Windows artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SugarCode-${{ steps.desktop.outputs.version }}-${{ matrix.asset_name }}
+          path: apps/desktop/out/make/squirrel.windows/${{ matrix.arch }}/*
+          if-no-files-found: error
+          retention-days: 14
