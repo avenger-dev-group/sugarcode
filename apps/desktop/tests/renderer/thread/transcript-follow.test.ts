@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
+  shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
 } from '../../../src/renderer/components/thread/transcript-follow.ts';
 
@@ -68,6 +69,39 @@ test('completed selection resets transcript following for the selected Thread', 
       userMessageAdded: false,
     }),
     true,
+  );
+});
+
+test('completed selection holds its placeholder until deferred content is ready', () => {
+  assert.equal(
+    shouldHoldTranscriptPlaceholder({
+      deferredThreadId: 'thread-a',
+      pendingThreadId: null,
+      previousPendingThreadId: 'thread-b',
+      threadId: 'thread-b',
+    }),
+    true,
+  );
+  assert.equal(
+    shouldHoldTranscriptPlaceholder({
+      deferredThreadId: 'thread-b',
+      pendingThreadId: null,
+      previousPendingThreadId: 'thread-b',
+      threadId: 'thread-b',
+    }),
+    false,
+  );
+});
+
+test('new Threads render immediately without a selection placeholder', () => {
+  assert.equal(
+    shouldHoldTranscriptPlaceholder({
+      deferredThreadId: null,
+      pendingThreadId: null,
+      previousPendingThreadId: null,
+      threadId: 'thread-new',
+    }),
+    false,
   );
 });
 

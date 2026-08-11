@@ -1,6 +1,7 @@
 import {
   type UIEvent,
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -90,6 +91,7 @@ import { shouldStartChatOnSend } from './composer-state';
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
+  shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
 } from './transcript-follow';
 import {
@@ -1046,6 +1048,13 @@ export const useTranscriptFollow = (
   const pointerScrollActive = useRef<boolean>(false);
   const previousThreadIdentity = useRef<string | null>(thread.threadIdentity);
   const previousPendingThreadId = useRef<string | null>(pendingThreadId);
+  const deferredThreadIdentity = useDeferredValue(thread.threadIdentity);
+  const settlingThreadSelection = shouldHoldTranscriptPlaceholder({
+    deferredThreadId: deferredThreadIdentity,
+    pendingThreadId,
+    previousPendingThreadId: previousPendingThreadId.current,
+    threadId: thread.threadIdentity,
+  });
   const latestUserMessageId = (() => {
     for (
       let turnIndex = thread.turns.length - 1;
@@ -1119,6 +1128,9 @@ export const useTranscriptFollow = (
   };
 
   useLayoutEffect(() => {
+    if (settlingThreadSelection) {
+      return undefined;
+    }
     const userMessageAdded =
       latestUserMessageId !== null &&
       previousUserMessageId.current !== latestUserMessageId;
@@ -1152,6 +1164,7 @@ export const useTranscriptFollow = (
     latestUserMessageId,
     pendingThreadId,
     scrollTranscriptToEnd,
+    settlingThreadSelection,
     thread.phase,
     thread.threadIdentity,
     thread.turns,
@@ -1168,6 +1181,7 @@ export const useTranscriptFollow = (
   }, [scrollTranscriptToEnd]);
 
   return {
+    settlingThreadSelection,
     transcriptContent,
     transcriptEnd,
     transcriptViewport,

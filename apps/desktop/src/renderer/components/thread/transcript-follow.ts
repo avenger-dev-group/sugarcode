@@ -52,3 +52,19 @@ export const shouldResetTranscriptFollow = ({
   (previousPendingThreadId !== null &&
     pendingThreadId === null &&
     threadId === previousPendingThreadId);
+
+export const shouldHoldTranscriptPlaceholder = ({
+  deferredThreadId,
+  pendingThreadId,
+  previousPendingThreadId,
+  threadId,
+}: Readonly<{
+  deferredThreadId: string | null;
+  pendingThreadId: string | null;
+  previousPendingThreadId: string | null;
+  threadId: string | null;
+}>): boolean =>
+  pendingThreadId === null &&
+  previousPendingThreadId !== null &&
+  threadId === previousPendingThreadId &&
+  deferredThreadId !== threadId;

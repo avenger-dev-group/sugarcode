@@ -456,6 +456,7 @@ export const ThreadWorkbenchView = ({
 }: ThreadWorkbenchViewProps) => {
   const agentTaskActivity = currentOrchestrationActivity(store);
   const {
+    settlingThreadSelection,
     transcriptContent,
     transcriptEnd,
     transcriptViewport,
@@ -614,7 +615,7 @@ export const ThreadWorkbenchView = ({
                 summary={selectionError}
                 onRetry={() => void store.selectThread(pendingThreadId)}
               />
-            ) : pendingThreadId ? (
+            ) : pendingThreadId || settlingThreadSelection ? (
               <ThreadSelectionSkeleton />
             ) : store.thread.isEmpty ? (
               <EmptyThreadState />

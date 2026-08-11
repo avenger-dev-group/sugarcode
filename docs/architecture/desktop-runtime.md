@@ -466,9 +466,11 @@ resolves that pending target before the active-Workspace projection, so its
 selection color and opening indicator respond to the click immediately while
 the transcript loads. A Chat switch whose target snapshot arrives before its
 Main response can still complete the selection.
-A successful selection restores tail-following and re-anchors the transcript
-after its Markdown layout settles; a failed selection retains its retry surface
-without changing the visible transcript position.
+A successful selection keeps the placeholder visible while React prepares the
+target transcript concurrently, then restores tail-following and reveals the
+content only after its first Markdown layout is anchored. Live updates within
+the selected Thread remain synchronous and are not deferred. A failed selection
+retains its retry surface without changing the visible transcript position.
 Optional navigator fields are omitted when cleared rather than serialized with
 `undefined`; every snapshot published by Main must pass the same preload
 validation used at the Renderer boundary.

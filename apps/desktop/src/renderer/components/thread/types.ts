@@ -326,6 +326,7 @@ export type TurnChangeSummaryProps = Readonly<{
 }>;
 
 export type TranscriptFollow = Readonly<{
+  settlingThreadSelection: boolean;
   transcriptContent: RefObject<HTMLDivElement | null>;
   transcriptEnd: RefObject<HTMLDivElement | null>;
   transcriptViewport: RefObject<HTMLDivElement | null>;
