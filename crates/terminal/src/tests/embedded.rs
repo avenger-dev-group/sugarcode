@@ -28,10 +28,6 @@ fn embedded_terminal_streams_output_and_exits() {
         .canonicalize()
         .expect("canonical workspace");
     let terminal = EmbeddedTerminal::spawn(&canonical_workspace, 80, 24).expect("spawn terminal");
-    #[cfg(windows)]
-    terminal
-        .input("echo SUGARCODE_EMBEDDED_PTY & exit\r".to_owned())
-        .expect("terminal input");
     #[cfg(not(windows))]
     terminal
         .input("printf 'SUGARCODE_EMBEDDED_PTY\\n'\nexit\n".to_owned())
@@ -40,10 +36,27 @@ fn embedded_terminal_streams_output_and_exits() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut transcript = String::new();
     let mut exited = false;
+    #[cfg(windows)]
+    let mut command_sent = false;
     while std::time::Instant::now() < deadline && !exited {
         for event in terminal.drain_events(128).expect("drain terminal") {
             match event {
-                EmbeddedTerminalEvent::Output { data, .. } => transcript.push_str(&data),
+                EmbeddedTerminalEvent::Output { data, .. } => {
+                    transcript.push_str(&data);
+                    #[cfg(windows)]
+                    if !command_sent && transcript.contains("\u{1b}[6n") {
+                        // ConPTY asks its terminal peer for the cursor position while
+                        // cmd.exe starts. xterm.js answers before forwarding user input;
+                        // mirror that handshake in this headless native test.
+                        terminal
+                            .input("\u{1b}[1;1R".to_owned())
+                            .expect("terminal cursor-position response");
+                        terminal
+                            .input("echo SUGARCODE_EMBEDDED_PTY & exit\r".to_owned())
+                            .expect("terminal input");
+                        command_sent = true;
+                    }
+                }
                 EmbeddedTerminalEvent::Exit { .. } => exited = true,
                 EmbeddedTerminalEvent::Error {
                     fatal: true,
@@ -62,6 +75,8 @@ fn embedded_terminal_streams_output_and_exits() {
         "embedded terminal did not exit; shell: {:?}; transcript: {transcript:?}",
         terminal.info().shell
     );
+    #[cfg(windows)]
+    assert!(command_sent, "ConPTY did not request a cursor position");
     assert!(
         transcript.contains("SUGARCODE_EMBEDDED_PTY"),
         "missing terminal output: {transcript:?}"
