@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   isThreadDeleteDisabled,
+  resolveDisplayedThreadId,
   toThreadNavigationStatus,
 } from '../../../src/renderer/components/thread/navigation-status.ts';
 
@@ -37,6 +38,27 @@ test('approval takes precedence over running and completed state', () => {
 
 test('opening takes precedence over a projected running state', () => {
   assert.equal(status({ pending: true, running: true }), 'opening');
+});
+
+test('pending selection is displayed before its workspace becomes active', () => {
+  assert.equal(
+    resolveDisplayedThreadId({
+      active: false,
+      pendingThreadId: 'thread-b',
+      selectedThreadId: 'thread-a',
+      threadIds: ['thread-b'],
+    }),
+    'thread-b',
+  );
+  assert.equal(
+    resolveDisplayedThreadId({
+      active: false,
+      pendingThreadId: 'thread-b',
+      selectedThreadId: 'thread-a',
+      threadIds: ['thread-a'],
+    }),
+    null,
+  );
 });
 
 test('saved Thread deletion is blocked only by a real conflicting operation', () => {

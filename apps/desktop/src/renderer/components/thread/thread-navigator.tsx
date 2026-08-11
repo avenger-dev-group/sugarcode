@@ -54,6 +54,7 @@ import appIcon from '../../../../assets/icon.png';
 
 import {
   isThreadDeleteDisabled,
+  resolveDisplayedThreadId,
   toThreadNavigationStatus,
 } from './navigation-status';
 import type { ThreadNavigationStatus, ThreadStore } from './types';
@@ -342,10 +343,12 @@ export const ThreadNavigator = ({
   ): ReactNode => {
     const visibleThreadIds = threadIds.slice(0, renderedThreadCount);
     const deferredThreadCount = threadIds.length - visibleThreadIds.length;
-    const displayedThreadId = active
-      ? store.navigator.pendingThreadId ??
-        store.navigator.selectedThreadId
-      : null;
+    const displayedThreadId = resolveDisplayedThreadId({
+      active,
+      pendingThreadId: store.navigator.pendingThreadId,
+      selectedThreadId: store.navigator.selectedThreadId,
+      threadIds,
+    });
     const itemDisabled = workspace.busy || (active && navigationDisabled);
     return (
       <div
@@ -368,8 +371,7 @@ export const ThreadNavigator = ({
             current={threadId === displayedThreadId}
             status={toThreadNavigationStatus({
               approvalRequired: approvalThreadIds.includes(threadId),
-              pending:
-                active && threadId === store.navigator.pendingThreadId,
+              pending: threadId === store.navigator.pendingThreadId,
               running: store.navigator.runningThreadIds.includes(threadId),
               terminalStatus:
                 store.navigator.unreadThreadStatuses[threadId],
@@ -870,7 +872,7 @@ const ThreadButton = ({
           data-thread-row
           className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
             current
-              ? 'bg-surface text-foreground'
+              ? 'bg-link/10 text-link'
               : 'text-navigation hover:bg-surface hover:text-foreground'
           }`}
         >

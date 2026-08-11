@@ -461,8 +461,11 @@ During a foreground Thread selection, Renderer-only pending state survives
 intermediate navigation snapshots and is cleared by either the matching atomic
 foreground commit or an authoritative conversation snapshot that already
 selects the pending target. This keeps one continuous selection placeholder
-instead of briefly exposing the previous or empty transcript while allowing a
-Chat switch whose target snapshot arrives before its Main response to complete.
+instead of briefly exposing the previous or empty transcript. The navigator
+resolves that pending target before the active-Workspace projection, so its
+selection color and opening indicator respond to the click immediately while
+the transcript loads. A Chat switch whose target snapshot arrives before its
+Main response can still complete the selection.
 A successful selection restores tail-following and re-anchors the transcript
 after its Markdown layout settles; a failed selection retains its retry surface
 without changing the visible transcript position.
