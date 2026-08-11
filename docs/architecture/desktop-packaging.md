@@ -48,9 +48,14 @@ Forge package build. Packaging does not contact a model provider.
 
 The manually dispatched `build-desktop.yml` workflow runs Forge `make` on
 macOS arm64, macOS x64 and Windows x64 target hosts. It verifies the packaged
-payload and native architecture, validates the platform installers and uploads
-versioned GitHub Actions artifacts for 14 days. It does not change versions,
-create tags or publish a GitHub Release.
+payload and native architecture, validates the platform installers and stages
+architecture-qualified release assets for one day. After every target succeeds,
+a dedicated publish job creates or updates the GitHub Release matching the
+Desktop package version and uploads DMG, macOS ZIP and Windows Setup.exe assets.
+New releases create a `v<version>` tag at the workflow revision; an existing tag
+must already point to that revision. ASAR payload verification normalizes
+host-specific path separators before applying the shared required and forbidden
+entry rules.
 
 Renderer cannot select a native path, executable, argv, environment or utility
 entry point. Main resolves all packaged resources from trusted application

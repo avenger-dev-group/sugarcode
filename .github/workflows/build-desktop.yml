@@ -69,22 +69,90 @@ jobs:
         shell: pwsh
         run: ./scripts/verify-windows-desktop-artifacts.ps1 -Architecture ${{ matrix.arch }}
 
-      - name: Upload macOS artifacts
+      - name: Prepare macOS release assets
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
-        with:
-          name: SugarCode-${{ steps.desktop.outputs.version }}-${{ matrix.asset_name }}
-          path: |
-            apps/desktop/out/make/*.dmg
-            apps/desktop/out/make/zip/darwin/${{ matrix.arch }}/*.zip
-          if-no-files-found: error
-          retention-days: 14
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+          DESKTOP_VERSION: ${{ steps.desktop.outputs.version }}
+        run: |
+          mkdir -p release-assets
+          dmg_source="$(find apps/desktop/out/make -maxdepth 1 -type f -name 'SugarCode-*.dmg' -print -quit)"
+          zip_source="$(find "apps/desktop/out/make/zip/darwin/${{ matrix.arch }}" -maxdepth 1 -type f -name 'SugarCode-*.zip' -print -quit)"
+          test -n "$dmg_source"
+          test -n "$zip_source"
+          cp "$dmg_source" "release-assets/SugarCode-${DESKTOP_VERSION}-${ASSET_NAME}.dmg"
+          cp "$zip_source" "release-assets/SugarCode-${DESKTOP_VERSION}-${ASSET_NAME}.zip"
 
-      - name: Upload Windows artifacts
+      - name: Prepare Windows release assets
         if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ASSET_NAME: ${{ matrix.asset_name }}
+          DESKTOP_VERSION: ${{ steps.desktop.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $setupFiles = @(Get-ChildItem "apps/desktop/out/make/squirrel.windows/${{ matrix.arch }}" -File -Filter "* Setup.exe")
+          if ($setupFiles.Count -ne 1) {
+            throw "Expected one Windows Setup.exe, found $($setupFiles.Count)."
+          }
+          Copy-Item $setupFiles[0].FullName "release-assets/SugarCode-$env:DESKTOP_VERSION-$env:ASSET_NAME-Setup.exe"
+
+      - name: Stage release assets
         uses: actions/upload-artifact@v4
         with:
-          name: SugarCode-${{ steps.desktop.outputs.version }}-${{ matrix.asset_name }}
-          path: apps/desktop/out/make/squirrel.windows/${{ matrix.arch }}/*
+          name: release-${{ matrix.asset_name }}
+          path: release-assets/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Read Desktop version
+        id: desktop
+        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT, 'version=' + require('./apps/desktop/package.json').version + require('node:os').EOL)"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.desktop.outputs.version }}
+        run: |
+          tag="v${RELEASE_VERSION}"
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$tag")" = "$GITHUB_SHA" || {
+              echo "Tag ${tag} already points to another commit."
+              exit 1
+            }
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber
+          elif git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            gh release create "$tag" release-assets/* \
+              --verify-tag \
+              --title "SugarCode ${tag}" \
+              --generate-notes \
+              --latest
+          else
+            gh release create "$tag" release-assets/* \
+              --target "$GITHUB_SHA" \
+              --title "SugarCode ${tag}" \
+              --generate-notes \
+              --latest
+          fi

@@ -72,6 +72,12 @@ before native dispatch. A crash after the claim records failure and never
 replays the effect. Pending proposals may be re-presented after their stored
 arguments and approval metadata are validated.
 
+Atomic multi-file workspace patches keep a flushed write-ahead log until every
+target reaches its verified revision. Unix additionally flushes the containing
+directories. Windows flushes the WAL and staged files and uses write-through
+`ReplaceFileW` / `MoveFileExW`; it does not treat unsupported directory-handle
+`FlushFileBuffers` calls as a failed patch.
+
 The Main-owned approval policy has three process-local modes. `ask` presents
 every privileged operation; `thread` automatically approves later privileged
 operations only when the request carries the granted Thread ID; and `workspace`

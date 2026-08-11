@@ -400,6 +400,10 @@ for a new foreground Workspace generation if the panel remains open, without a
 Renderer or native confirmation step. Main still revalidates the frozen
 Workspace identity immediately before dispatch, and the terminal controller
 retains its single-session, approval-pause and bounded-flow safeguards.
+The native terminal driver owns its process-containment resource for the whole
+PTY session. On Windows this is an `OwnedHandle` for the kill-on-close Job, so
+ownership can move safely to the driver thread and the handle is closed exactly
+once after that thread terminates.
 The composer identifies a project destination with a compact folder control
 above the prompt. Selecting that control reopens the folder picker. Before the
 first Turn creates a durable Thread, the control reveals a remove action on
