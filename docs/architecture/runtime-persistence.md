@@ -76,8 +76,11 @@ state.
 On open, unfinished Turns and active Agent tasks become `interrupted`.
 Operations already claimed as `executing` become failed and are never replayed.
 Pending approvals retain their identity and presentation; after validation the
-worker may present them again, but execution still requires a fresh explicit
-decision.
+worker may present them again. Main starts a new bounded visible decision window
+for a recovered proposal; an explicit user decision wins, while expiry records a
+`system` approval before execution. A decision already submitted before worker
+replacement is replayed with the same approval identity until the durable
+resolution arrives.
 
 Resolved approval records remain durable audit facts, but the current
 `ask`/Thread/project automatic-approval mode is intentionally process-local and
@@ -99,10 +102,14 @@ one immediate transaction. Completion is then persisted with the same
 commands and MCP calls.
 
 Completed provider-neutral user, assistant, reasoning, media, tool-call and
-tool-result items are used to rebuild model history. Incomplete Turns, orphaned
-calls and uncertain results are excluded. OpenAI Responses continuation data
-needed inside a live Turn remains exact and process-local; it is never flattened
-into misleading text or treated as portable history.
+tool-result items are used to rebuild model history. For an `interrupted` or
+`failed` Turn, only the verified original user content is rebuilt so a later
+message such as “continue” retains the task intent. Model-history items from
+that non-completed Turn, orphaned calls and uncertain results remain excluded;
+the next Turn must re-check current workspace state rather than replaying an
+incomplete side effect. OpenAI Responses continuation data needed inside a live
+Turn remains exact and process-local; it is never flattened into misleading
+text or treated as portable history.
 
 Completed reasoning may therefore exist inside `turn.modelHistory` without a
 corresponding public `turn.textCompleted` Item. Public text lifecycle Items are

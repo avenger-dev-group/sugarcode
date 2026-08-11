@@ -146,6 +146,11 @@ export const CommandApprovalActivity = ({
           label: 'Approved by access policy',
           detail: 'Inherited project or conversation access was applied',
         }
+      : activity.state === 'approved' && activity.approvalSource === 'system'
+        ? {
+            label: 'Approved after timeout',
+            detail: 'The approval window elapsed and the default was applied',
+          }
       : STATE_COPY[activity.state];
   return (
     <section
@@ -174,6 +179,8 @@ export const CommandApprovalActivity = ({
             <ShieldCheck className="size-3" aria-hidden="true" />
             {activity.approvalSource === 'policy'
               ? 'Inherited access'
+              : activity.approvalSource === 'system'
+                ? 'Timeout default'
               : activity.operationKind === 'workspacePatch'
                 ? 'Workspace files'
                 : activity.fullAccess

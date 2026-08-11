@@ -57,7 +57,7 @@ export const ContextRail = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="window-drag-region flex h-11 shrink-0 items-center border-b px-3">
+      <div className="window-context-titlebar window-drag-region flex h-11 shrink-0 items-center border-b pl-3">
         <div
           className="window-no-drag flex h-8 min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
           role="tablist"

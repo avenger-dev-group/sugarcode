@@ -2477,7 +2477,7 @@ test('RuntimeHost approves and persists command execution before native dispatch
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
 });
 
-test('RuntimeHost rebuilds completed neutral history into ADK and loads verified attachments', async () => {
+test('RuntimeHost rebuilds completed history and interrupted task intent into ADK', async () => {
   const events: RuntimeEvent[] = [];
   const model = new CaptureLlm({ model: 'fixture-model' });
   const sha256 = 'a'.repeat(64);
@@ -2499,16 +2499,28 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
       archivedAt: null,
       parentThreadId: null,
     },
-    turns: [{
-      id: 'turn-earlier',
-      requestId: 'request-earlier',
-      status: 'completed',
-      providerWireApi: 'openaiResponses',
-      model: 'fixture-model',
-      errorJson: null,
-      startedAt: 1,
-      completedAt: 2,
-    }],
+    turns: [
+      {
+        id: 'turn-earlier',
+        requestId: 'request-earlier',
+        status: 'completed',
+        providerWireApi: 'openaiResponses',
+        model: 'fixture-model',
+        errorJson: null,
+        startedAt: 1,
+        completedAt: 2,
+      },
+      {
+        id: 'turn-interrupted',
+        requestId: 'request-interrupted',
+        status: 'interrupted',
+        providerWireApi: 'openaiResponses',
+        model: 'fixture-model',
+        errorJson: '{"kind":"runtimeRestart"}',
+        startedAt: 3,
+        completedAt: 4,
+      },
+    ],
     items: [
       {
         id: 'earlier-user',
@@ -2563,6 +2575,30 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
               type: 'text',
               text: 'Earlier answer',
               reasoning: false,
+            }],
+          },
+        },
+      },
+      {
+        id: 'interrupted-user',
+        turnId: 'turn-interrupted',
+        sequence: 1,
+        kind: 'turn.userMessage',
+        payload: { content: [{ type: 'text', text: 'Interrupted request' }] },
+      },
+      {
+        id: 'interrupted-orphan-call',
+        turnId: 'turn-interrupted',
+        sequence: 2,
+        kind: 'turn.modelHistory',
+        payload: {
+          history: {
+            role: 'assistant',
+            parts: [{
+              type: 'toolCall',
+              id: 'call-interrupted',
+              name: 'workspace_apply_patch',
+              arguments: { patch: 'uncommitted' },
             }],
           },
         },
@@ -2675,6 +2711,7 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     'user',
     'model',
     'user',
+    'user',
   ]);
   assert.equal(contents[0]?.parts?.[0]?.text, 'Earlier request');
   assert.deepEqual(contents[1]?.parts?.[0]?.functionCall, {
@@ -2688,9 +2725,15 @@ test('RuntimeHost rebuilds completed neutral history into ADK and loads verified
     response: { content: 'fixture' },
   });
   assert.equal(contents[3]?.parts?.[0]?.text, 'Earlier answer');
+  assert.equal(contents[4]?.parts?.[0]?.text, 'Interrupted request');
   assert.equal(
-    contents[4]?.parts?.map((part) => part.text).filter(Boolean).join('\n'),
+    contents[5]?.parts?.map((part) => part.text).filter(Boolean).join('\n'),
     'Current request\nAttachment fixture.txt:\nfixture',
   );
+  assert.ok(!contents.some((content) =>
+    content.parts?.some(
+      (part) => part.functionCall?.id === 'call-interrupted',
+    ),
+  ));
   assert.ok(events.some((event) => event.type === 'turn.completed'));
 });

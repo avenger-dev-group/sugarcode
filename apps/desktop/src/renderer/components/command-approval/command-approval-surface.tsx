@@ -125,12 +125,12 @@ export const CommandApprovalView = ({
     actionState === 'submittingDenial';
   const pendingMessage =
     actionState === 'localWindowElapsed'
-      ? 'The local approval window elapsed. Waiting for SugarCode to confirm expiry.'
+      ? '授权等待已结束，正在按默认规则允许并继续。'
       : actionState === 'submittingApproval'
-        ? 'Submitting one-time approval. Waiting for the recorded decision.'
+        ? '正在记录本次授权…'
         : actionState === 'submittingDenial'
-          ? 'Submitting denial. Waiting for the recorded decision.'
-          : `${store.secondsRemaining} seconds remain locally. The server may expire this request sooner.`;
+          ? '正在记录拒绝决定…'
+          : `${store.secondsRemaining} 秒后将默认允许并继续。`;
 
   return (
     <>

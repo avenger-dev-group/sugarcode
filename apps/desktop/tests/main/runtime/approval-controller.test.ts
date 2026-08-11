@@ -8,6 +8,7 @@ import { isCommandApprovalStateSnapshot } from '../../../src/shared/command-appr
 
 class FixtureRuntime {
   readonly sent: Exclude<RuntimeCommand, { type: 'initialize' }>[] = [];
+  throwOnSend = false;
   private listener: ((event: RuntimeEvent) => void) | undefined;
 
   subscribe = (listener: (event: RuntimeEvent) => void): (() => void) => {
@@ -18,6 +19,9 @@ class FixtureRuntime {
   };
 
   send = (command: Exclude<RuntimeCommand, { type: 'initialize' }>): void => {
+    if (this.throwOnSend) {
+      throw new Error('The TypeScript runtime has been shut down.');
+    }
     this.sent.push(command);
   };
 
@@ -276,4 +280,80 @@ test('recovered runtime approval waits for the existing UI surface and deduplica
   const pending = controller.markSurfaceReady();
   assert.equal(pending.status, 'pending');
   assert.equal(pending.request?.cwd, '/fixture/recovered');
+});
+
+test('runtime approval timeout allows the operation and does not block shutdown cleanup', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeApprovalController(
+    fixture as unknown as RuntimeSupervisor,
+    5,
+  );
+  controller.markSurfaceReady();
+  fixture.emit({
+    type: 'approval.requested',
+    sequence: 1,
+    requestId: 'request-timeout',
+    workspaceId: 'workspace-timeout',
+    threadId: 'thread-timeout',
+    turnId: 'turn-timeout',
+    approvalId: 'approval-timeout',
+    operationId: 'operation-timeout',
+    toolName: 'workspace_apply_patch',
+    argumentsSummary: 'Update fixture.txt',
+    fullAccess: false,
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const automaticDecision = fixture.sent.at(-1);
+  assert.equal(automaticDecision?.type, 'approval.resolve');
+  if (automaticDecision?.type !== 'approval.resolve') {
+    throw new Error('Timed-out approval was not resolved.');
+  }
+  assert.equal(automaticDecision.decision, 'approved');
+  assert.equal(automaticDecision.source, 'system');
+  assert.equal(
+    controller.getSnapshot().request?.actionState,
+    'localWindowElapsed',
+  );
+
+  const decisionsBeforeRecovery = fixture.sent.length;
+  fixture.emit({
+    type: 'approval.requested',
+    sequence: 2,
+    requestId: 'request-timeout-recovered',
+    workspaceId: 'workspace-timeout',
+    threadId: 'thread-timeout',
+    turnId: 'turn-timeout',
+    approvalId: 'approval-timeout',
+    operationId: 'operation-timeout',
+    toolName: 'workspace_apply_patch',
+    argumentsSummary: 'Update fixture.txt',
+    fullAccess: false,
+    recovered: true,
+  });
+  assert.equal(fixture.sent.length, decisionsBeforeRecovery + 1);
+  const replayedDecision = fixture.sent.at(-1);
+  assert.equal(replayedDecision?.type, 'approval.resolve');
+  assert.equal(
+    replayedDecision?.type === 'approval.resolve'
+      ? replayedDecision.decision
+      : undefined,
+    'approved',
+  );
+
+  fixture.emit({
+    type: 'approval.requested',
+    sequence: 3,
+    requestId: 'request-shutdown',
+    workspaceId: 'workspace-timeout',
+    threadId: 'thread-timeout',
+    turnId: 'turn-shutdown',
+    approvalId: 'approval-shutdown',
+    operationId: 'operation-shutdown',
+    toolName: 'shell_exec',
+    argumentsSummary: 'Full Access: pnpm test',
+    fullAccess: true,
+  });
+  fixture.throwOnSend = true;
+  assert.doesNotThrow(() => controller.surfaceUnavailable());
 });

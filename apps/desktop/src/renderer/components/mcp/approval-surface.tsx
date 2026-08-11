@@ -170,11 +170,11 @@ const McpApprovalSurfaceContent = ({
                   {store.actionError}
                 </span>
               ) : request.actionState === 'localWindowElapsed' ? (
-                'The local window elapsed. Waiting for the durable outcome.'
+                'The approval window elapsed. Allowing this call by default…'
               ) : submitting ? (
                 'Recording the one-time decision…'
               ) : (
-                'Deny is the default. Escape also denies.'
+                `${store.secondsRemaining}s until this call is allowed by default. Escape denies.`
               )}
             </p>
             <AlertDialogCancel asChild>

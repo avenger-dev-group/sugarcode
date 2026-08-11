@@ -11,16 +11,24 @@ import type {
 import type { RuntimeEvent } from '../../runtime/protocol.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
-type PendingApproval = Readonly<{
-  approvalId: string;
-  operationId: string;
-  workspaceId: string;
-  threadId: string;
-  turnId: string;
-  toolName: string;
-  argumentsSummary: string;
-  fullAccess: boolean;
-}>;
+const LOCAL_APPROVAL_WINDOW_MS = 5 * 60_000;
+
+type PendingApproval = {
+  readonly approvalId: string;
+  readonly operationId: string;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly toolName: string;
+  readonly argumentsSummary: string;
+  readonly fullAccess: boolean;
+  timer: NodeJS.Timeout | null;
+  localExpiresAtMs: number;
+  actionState: CommandApprovalViewModel['actionState'];
+  responseCommitted: boolean;
+  committedDecision?: 'approved' | 'denied';
+  committedSource?: 'user' | 'policy' | 'system';
+};
 
 const result = (
   accepted: boolean,
@@ -37,9 +45,14 @@ export class RuntimeApprovalController {
   private modeThreadId: string | undefined;
   private modeWorkspaceId: string | undefined;
   private surfaceReady = false;
+  private readonly approvalWindowMs: number;
 
-  constructor(runtime: RuntimeSupervisor) {
+  constructor(
+    runtime: RuntimeSupervisor,
+    approvalWindowMs = LOCAL_APPROVAL_WINDOW_MS,
+  ) {
     this.runtime = runtime;
+    this.approvalWindowMs = approvalWindowMs;
     runtime.subscribe(this.handleRuntimeEvent);
   }
 
@@ -68,12 +81,24 @@ export class RuntimeApprovalController {
 
   markSurfaceReady = (): CommandApprovalStateSnapshot => {
     this.surfaceReady = true;
+    for (const pending of this.queue) {
+      this.startTimer(pending);
+    }
     return this.getSnapshot();
   };
 
   surfaceUnavailable = (): void => {
     this.surfaceReady = false;
     for (const pending of [...this.queue]) {
+      if (pending.responseCommitted) {
+        continue;
+      }
+      pending.responseCommitted = true;
+      pending.actionState = 'submittingDenial';
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
       this.resolve(pending, 'denied', 'system');
     }
   };
@@ -94,6 +119,9 @@ export class RuntimeApprovalController {
     if (presentationId !== pending.approvalId) {
       return result(false, 'stale');
     }
+    if (pending.responseCommitted) {
+      return result(false, 'stale');
+    }
     if (!['ask', 'thread', 'workspace'].includes(String(mode))) {
       return result(false, 'invalid');
     }
@@ -106,8 +134,7 @@ export class RuntimeApprovalController {
     ) {
       return result(false, 'invalid');
     }
-    this.resolve(pending, 'approved', 'user');
-    return result(true, 'accepted');
+    return this.respond(pending, 'approved');
   };
 
   deny = async (presentationId: unknown): Promise<CommandApprovalActionResult> => {
@@ -118,8 +145,10 @@ export class RuntimeApprovalController {
     if (presentationId !== pending.approvalId) {
       return result(false, 'stale');
     }
-    this.resolve(pending, 'denied', 'user');
-    return result(true, 'accepted');
+    if (pending.responseCommitted) {
+      return result(false, 'stale');
+    }
+    return this.respond(pending, 'denied');
   };
 
   setMode = (
@@ -145,7 +174,22 @@ export class RuntimeApprovalController {
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
     if (event.type === 'approval.requested') {
-      if (this.queue.some((pending) => pending.approvalId === event.approvalId)) {
+      const existing = this.queue.find(
+        (pending) => pending.approvalId === event.approvalId,
+      );
+      if (existing) {
+        if (
+          event.recovered === true &&
+          existing.responseCommitted &&
+          existing.committedDecision &&
+          existing.committedSource
+        ) {
+          this.resolve(
+            existing,
+            existing.committedDecision,
+            existing.committedSource,
+          );
+        }
         return;
       }
       const pending: PendingApproval = {
@@ -157,13 +201,22 @@ export class RuntimeApprovalController {
         toolName: event.toolName,
         argumentsSummary: event.argumentsSummary,
         fullAccess: event.fullAccess,
+        timer: null,
+        localExpiresAtMs: 0,
+        actionState: 'awaitingUser',
+        responseCommitted: false,
       };
       this.queue.push(pending);
       if (this.isAutoApproved(pending.workspaceId, pending.threadId)) {
+        pending.responseCommitted = true;
+        pending.actionState = 'submittingApproval';
         this.resolve(pending, 'approved', 'policy');
       } else if (!this.surfaceReady && event.recovered !== true) {
+        pending.responseCommitted = true;
+        pending.actionState = 'submittingDenial';
         this.resolve(pending, 'denied', 'system');
       } else {
+        this.startTimer(pending);
         this.publish();
       }
       return;
@@ -173,10 +226,31 @@ export class RuntimeApprovalController {
         (pending) => pending.approvalId === event.approvalId,
       );
       if (index >= 0) {
+        const timer = this.queue[index].timer;
+        if (timer) {
+          clearTimeout(timer);
+        }
         this.queue.splice(index, 1);
         this.publish();
       }
     }
+  };
+
+  private respond = (
+    pending: PendingApproval,
+    decision: 'approved' | 'denied',
+  ): CommandApprovalActionResult => {
+    pending.responseCommitted = true;
+    pending.actionState = decision === 'approved'
+      ? 'submittingApproval'
+      : 'submittingDenial';
+    if (pending.timer) {
+      clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+    this.publish();
+    this.resolve(pending, decision, 'user');
+    return result(true, 'accepted');
   };
 
   private resolve = (
@@ -184,16 +258,40 @@ export class RuntimeApprovalController {
     decision: 'approved' | 'denied',
     source: 'user' | 'policy' | 'system',
   ): void => {
-    this.runtime.send({
-      type: 'approval.resolve',
-      requestId: randomUUID(),
-      workspaceId: pending.workspaceId,
-      threadId: pending.threadId,
-      turnId: pending.turnId,
-      approvalId: pending.approvalId,
-      decision,
-      source,
-    });
+    pending.committedDecision = decision;
+    pending.committedSource = source;
+    try {
+      this.runtime.send({
+        type: 'approval.resolve',
+        requestId: randomUUID(),
+        workspaceId: pending.workspaceId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        approvalId: pending.approvalId,
+        decision,
+        source,
+      });
+    } catch {
+      // App shutdown can close the utility runtime before Electron disposes IPC.
+    }
+  };
+
+  private startTimer = (pending: PendingApproval): void => {
+    if (!this.surfaceReady || pending.timer || pending.responseCommitted) {
+      return;
+    }
+    pending.localExpiresAtMs = Date.now() + this.approvalWindowMs;
+    pending.timer = setTimeout(() => {
+      if (!this.queue.includes(pending) || pending.responseCommitted) {
+        return;
+      }
+      pending.responseCommitted = true;
+      pending.actionState = 'localWindowElapsed';
+      pending.timer = null;
+      this.publish();
+      this.resolve(pending, 'approved', 'system');
+    }, this.approvalWindowMs);
+    pending.timer.unref();
   };
 
   private assignMode = (
@@ -248,8 +346,8 @@ export class RuntimeApprovalController {
       queueCount: this.queue.length,
       projectTitle: path.basename(root) || 'Workspace',
       conversationTitle: pending.threadId,
-      localExpiresAtMs: Date.now() + 5 * 60_000,
-      actionState: 'awaitingUser',
+      localExpiresAtMs: pending.localExpiresAtMs,
+      actionState: pending.actionState,
     };
   };
 

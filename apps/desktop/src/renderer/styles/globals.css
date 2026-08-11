@@ -131,6 +131,18 @@
   --shadow-soft: rgb(from var(--primary) r g b / 8%);
 }
 
+:root {
+  --window-leading-toggle-x: 5.25rem;
+  --window-collapsed-header-padding: 8rem;
+  --window-titlebar-controls-width: 0rem;
+}
+
+:root[data-platform='windows'] {
+  --window-leading-toggle-x: 0.75rem;
+  --window-collapsed-header-padding: 3.25rem;
+  --window-titlebar-controls-width: 8.625rem;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -162,6 +174,22 @@
 
 .window-no-drag {
   -webkit-app-region: no-drag;
+}
+
+.window-leading-toggle {
+  left: var(--window-leading-toggle-x);
+}
+
+.window-collapsed-header {
+  padding-left: var(--window-collapsed-header-padding);
+}
+
+.window-titlebar-trailing-safe {
+  padding-right: calc(1.25rem + var(--window-titlebar-controls-width));
+}
+
+.window-context-titlebar {
+  padding-right: calc(0.75rem + var(--window-titlebar-controls-width));
 }
 
 .panel-resizer {

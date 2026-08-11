@@ -90,7 +90,12 @@ does not broaden a grant because Main matches the immutable request identities.
 Automatic resolutions retain the same durable approval audit boundary, while
 their live resolution event carries `policy` provenance. The Renderer labels
 them as inherited access and does not imply that the user answered a new
-prompt. A child task publishes a waiting-for-approval state only
+prompt. In `ask` mode, Main owns one fixed presentation deadline for each
+command or MCP proposal. An explicit deny or Escape still denies immediately;
+if the visible deadline elapses without a response, Main submits one `system`
+approval and keeps the surface non-interactive only until the durable resolution
+arrives. A recovered replay of that proposal resubmits the already committed
+decision instead of reopening or stranding the prompt. A child task publishes a waiting-for-approval state only
 when the proposal remains unresolved beyond a short presentation delay, so an
 immediate scoped decision does not flash as a blocked child.
 

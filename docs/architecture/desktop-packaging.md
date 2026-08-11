@@ -46,6 +46,12 @@ Native modules are built and packaged on the target operating system. macOS and
 Windows CI run Rust formatting/checks/tests, the Desktop TypeScript suite and a
 Forge package build. Packaging does not contact a model provider.
 
+The hidden custom title bar keeps platform-specific control safe areas.
+macOS reserves the traffic-light leading region. Windows places SugarCode's
+leading navigation control at the window edge and reserves the native caption
+button width on whichever Renderer pane reaches the trailing edge, so app
+controls never sit beneath minimize, maximize or close.
+
 The manually dispatched `build-desktop.yml` workflow runs Forge `make` on
 macOS arm64, macOS x64 and Windows x64 target hosts. It verifies the packaged
 payload and native architecture, validates the platform installers and stages

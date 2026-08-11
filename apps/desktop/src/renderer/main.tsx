@@ -13,6 +13,14 @@ if (!rootElement) {
   throw new Error('SugarCode renderer root was not found.');
 }
 
+document.documentElement.dataset.platform = /Windows/u.test(
+  navigator.userAgent,
+)
+  ? 'windows'
+  : /Macintosh|Mac OS X/u.test(navigator.userAgent)
+    ? 'macos'
+    : 'linux';
+
 const stopWorkspaceProjection = startWorkspaceProjection();
 const stopConversationProjection = startConversationProjection();
 if (import.meta.hot) {

@@ -81,6 +81,13 @@ in that project without leaking them to another project. Every resolution also
 carries provider-neutral provenance (`user`, `policy` or `system`). The audit
 timeline can therefore distinguish an inherited project/conversation grant
 from a fresh user interaction instead of presenting both as another prompt.
+When no broader scope applies, Main also owns the fixed visible approval
+deadline. Expiry submits a provider-neutral `system` approval for command and
+MCP proposals, and a recovered replay resends the already committed decision so
+the Renderer cannot remain trapped at zero seconds. Electron teardown may make
+the utility runtime unavailable before IPC disposal; system cleanup therefore
+treats a closed supervisor as an expected terminal state instead of throwing in
+the Main process.
 
 ## Agent and provider boundary
 
@@ -116,8 +123,11 @@ language and never copies private reasoning. Whitespace-only model messages are
 discarded, and identical synthesized summaries are not repeated.
 
 ADK sessions are process-local caches. Before a new Turn, provider-neutral
-completed history is rebuilt from Rust SQLite. Worker loss interrupts active
-Turns and child tasks; it never resumes an incomplete tool call or side effect.
+completed history is rebuilt from Rust SQLite. The original user content from a
+terminal `interrupted` or `failed` Turn is also restored as task intent, while
+that Turn's model/tool history is excluded. Worker loss therefore never resumes
+an incomplete tool call or side effect, but a later short continuation message
+still has the original request in context.
 
 Enabled Skills are snapshotted from Rust before each primary or child ADK
 invocation. The Agent instruction receives the bounded name/description

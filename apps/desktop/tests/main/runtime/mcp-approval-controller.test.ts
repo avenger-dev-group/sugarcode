@@ -180,3 +180,46 @@ test('MCP approval follows the shared thread and workspace Full Access policy', 
   assert.equal(controller.getSnapshot().status, 'pending');
   controller.surfaceUnavailable();
 });
+
+test('MCP approval timeout allows the call by default', async () => {
+  const commands: RuntimeCommand[] = [];
+  let listener: ((event: RuntimeEvent) => void) | undefined;
+  const runtime = {
+    subscribe: (next: (event: RuntimeEvent) => void) => {
+      listener = next;
+      return (): void => undefined;
+    },
+    send: (command: RuntimeCommand) => commands.push(command),
+  } as unknown as RuntimeSupervisor;
+  const controller = new RuntimeMcpApprovalController(
+    runtime,
+    () => false,
+    5,
+  );
+  controller.markSurfaceReady();
+  listener?.({
+    type: 'mcp.approvalRequested',
+    sequence: 1,
+    requestId: 'request-timeout',
+    workspaceId: 'workspace-timeout',
+    threadId: 'thread-timeout',
+    turnId: 'turn-timeout',
+    approvalId: 'approval-timeout',
+    operationId: 'operation-timeout',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const automaticDecision = commands.at(-1);
+  assert.equal(automaticDecision?.type, 'approval.resolve');
+  if (automaticDecision?.type !== 'approval.resolve') {
+    throw new Error('Timed-out MCP approval was not resolved.');
+  }
+  assert.equal(automaticDecision.decision, 'approved');
+  assert.equal(automaticDecision.source, 'system');
+});

@@ -540,16 +540,16 @@ export const ThreadWorkbenchView = ({
       ) : null}
       <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         <header
-          className={`window-drag-region relative flex h-[52px] shrink-0 items-center pr-5 transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
-            navigatorOpen ? 'pl-5' : 'pl-32'
-          }`}
+          className={`window-drag-region relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
+            navigatorOpen ? 'pl-5' : 'window-collapsed-header'
+          } ${contextRailOpen ? 'pr-5' : 'window-titlebar-trailing-safe'}`}
         >
           {onToggleNavigator ? (
             <Button
               type="button"
               size="icon-sm"
               variant="ghost"
-              className={`window-no-drag absolute left-[84px] top-1.5 hidden text-tertiary transition-opacity duration-150 md:inline-flex motion-reduce:transition-none ${
+              className={`window-leading-toggle window-no-drag absolute top-1.5 hidden text-tertiary transition-opacity duration-150 md:inline-flex motion-reduce:transition-none ${
                 navigatorOpen
                   ? 'pointer-events-none opacity-0'
                   : 'opacity-100'

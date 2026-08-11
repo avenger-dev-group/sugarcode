@@ -22,6 +22,8 @@ type PendingApproval = Extract<
 type PendingRuntimeApproval = PendingApproval & {
   localExpiresAtMs: number;
   responseCommitted: boolean;
+  committedDecision?: 'approved' | 'denied';
+  committedSource?: 'user' | 'policy' | 'system';
 };
 
 const action = (
@@ -41,14 +43,17 @@ export class RuntimeMcpApprovalController {
     workspaceId: string,
     threadId: string,
   ) => boolean;
+  private readonly approvalWindowMs: number;
 
   constructor(
     runtime: RuntimeSupervisor,
     shouldAutoApprove: (workspaceId: string, threadId: string) => boolean =
       () => false,
+    approvalWindowMs = LOCAL_APPROVAL_WINDOW_MS,
   ) {
     this.runtime = runtime;
     this.shouldAutoApprove = shouldAutoApprove;
+    this.approvalWindowMs = approvalWindowMs;
     runtime.subscribe(this.handleRuntimeEvent);
   }
 
@@ -135,21 +140,42 @@ export class RuntimeMcpApprovalController {
     decision: 'approved' | 'denied',
     source: 'user' | 'policy' | 'system',
   ): void => {
-    this.runtime.send({
-      type: 'approval.resolve',
-      requestId: randomUUID(),
-      workspaceId: pending.workspaceId,
-      threadId: pending.threadId,
-      turnId: pending.turnId,
-      approvalId: pending.approvalId,
-      decision,
-      source,
-    });
+    pending.committedDecision = decision;
+    pending.committedSource = source;
+    try {
+      this.runtime.send({
+        type: 'approval.resolve',
+        requestId: randomUUID(),
+        workspaceId: pending.workspaceId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        approvalId: pending.approvalId,
+        decision,
+        source,
+      });
+    } catch {
+      // App shutdown can close the utility runtime before Electron disposes IPC.
+    }
   };
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
     if (event.type === 'mcp.approvalRequested') {
-      if (this.queue.some((pending) => pending.approvalId === event.approvalId)) {
+      const existing = this.queue.find(
+        (pending) => pending.approvalId === event.approvalId,
+      );
+      if (existing) {
+        if (
+          event.recovered === true &&
+          existing.responseCommitted &&
+          existing.committedDecision &&
+          existing.committedSource
+        ) {
+          this.resolve(
+            existing,
+            existing.committedDecision,
+            existing.committedSource,
+          );
+        }
         return;
       }
       const pending: PendingRuntimeApproval = {
@@ -193,17 +219,18 @@ export class RuntimeMcpApprovalController {
     if (!this.surfaceReady || pending.timer || pending.responseCommitted) {
       return;
     }
-    pending.localExpiresAtMs = Date.now() + LOCAL_APPROVAL_WINDOW_MS;
+    pending.localExpiresAtMs = Date.now() + this.approvalWindowMs;
     pending.timer = setTimeout(() => {
-      if (!this.queue.includes(pending)) {
+      if (!this.queue.includes(pending) || pending.responseCommitted) {
         return;
       }
       pending.responseCommitted = true;
       pending.actionState = 'localWindowElapsed';
       pending.timer = null;
       this.publish();
-      this.resolve(pending, 'denied', 'system');
-    }, LOCAL_APPROVAL_WINDOW_MS);
+      this.resolve(pending, 'approved', 'system');
+    }, this.approvalWindowMs);
+    pending.timer.unref();
   };
 
   private viewModel = (pending: PendingRuntimeApproval): McpApprovalViewModel => {

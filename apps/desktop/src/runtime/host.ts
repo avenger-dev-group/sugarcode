@@ -1378,7 +1378,7 @@ export class RuntimeHost {
         this.nativeRuntime.loadThreadJson(command.threadId),
       );
       for (const turn of snapshot.turns) {
-        if (turn.status !== 'completed') {
+        if (turn.status === 'running') {
           continue;
         }
         const items = snapshot.items
@@ -1399,6 +1399,9 @@ export class RuntimeHost {
               content: this.contentFromParts(content, selection),
             }),
           });
+        }
+        if (turn.status !== 'completed') {
+          continue;
         }
         for (const item of items.filter(
           (candidate) => candidate.kind === 'turn.modelHistory',
