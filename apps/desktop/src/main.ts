@@ -32,6 +32,7 @@ import { RuntimeSkillsController } from '@/main/runtime/skills-controller';
 import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 
 let mainWindow: BrowserWindow | null = null;
+let isQuitting = false;
 let runtimeConnectionController: RuntimeConnectionController | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
@@ -78,6 +79,7 @@ const isAllowedRendererUrl = (url: string): boolean => {
 
 const createWindow = (): void => {
   const window = new BrowserWindow({
+    show: false,
     width: 1280,
     height: 800,
     minWidth: 360,
@@ -102,6 +104,11 @@ const createWindow = (): void => {
   });
   mainWindow = window;
 
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) {
+      window.show();
+    }
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (!isAllowedRendererUrl(url)) {
@@ -123,6 +130,12 @@ const createWindow = (): void => {
     runtimeMcpApprovalController?.surfaceUnavailable();
     previewController?.shutdown();
     terminalController?.rendererUnavailable();
+  });
+  window.on('close', (event) => {
+    if (process.platform === 'darwin' && !isQuitting) {
+      event.preventDefault();
+      window.hide();
+    }
   });
   window.once('closed', () => {
     runtimeApprovalController?.surfaceUnavailable();
@@ -355,12 +368,19 @@ if (started) {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow();
+      return;
     }
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore();
+    }
+    mainWindow.show();
+    mainWindow.focus();
   });
 
   app.on('before-quit', () => {
+    isQuitting = true;
     runtimeSupervisor?.shutdown();
     terminalController?.shutdown();
     previewController?.shutdown();

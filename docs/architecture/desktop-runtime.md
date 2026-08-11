@@ -225,6 +225,12 @@ terminal and orchestration keep their existing Renderer/preload surfaces.
 Private Main adapters translate these calls to the utility runtime. The old
 app-server public protocol, CLI supervisor and sidecar executable no longer
 exist.
+Main creates each Desktop window hidden and reveals it only after Electron's
+`ready-to-show` signal, so a cold start never presents an unpainted Renderer
+frame. On macOS, closing the main window hides it without destroying its
+Renderer; activating the app restores and focuses that same window, preserving
+ephemeral UI state such as expanded workspace directories. Application quit
+still destroys the window and shuts down the supervised runtime normally.
 The Skills Settings surface follows the 1.0 inventory/detail hierarchy while
 using the 3.0 process boundary: Renderer owns loading and selection state,
 preload exposes a fixed validated API, Main owns trusted IPC plus native
