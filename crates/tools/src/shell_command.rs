@@ -285,8 +285,6 @@ impl NativeShellCommandExecutor {
         // does support the separately approved Full Access shell executor.
         // Retain the configured policy so direct calls still fail closed at
         // execution time instead of disabling the whole executor at startup.
-        #[cfg(windows)]
-        let sandbox_policy = sandbox_policy;
         #[cfg(not(any(unix, windows)))]
         return Err(sugarcode_sandbox::SandboxError::unavailable(
             "native command execution is unavailable on this platform",
@@ -504,7 +502,7 @@ impl ShellCommandExecutor for EmbeddedShellCommandExecutor {
                     environment,
                     cancellation,
                 );
-                return ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable);
+                ShellCommandExecution::Error(ShellCommandErrorKind::SandboxUnavailable)
             }
             #[cfg(unix)]
             {
