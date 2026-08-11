@@ -64,7 +64,11 @@ for (const requiredPath of [
   }
 }
 
-const asarEntries = listPackage(asarPath);
+// @electron/asar builds its listing paths with the host path module, so Windows
+// returns backslash-separated entries while macOS returns POSIX paths.
+const asarEntries = listPackage(asarPath).map((entry) =>
+  entry.replaceAll(path.win32.sep, path.posix.sep),
+);
 for (const requiredEntry of [
   '/.vite/build/main.js',
   '/.vite/build/preload.js',
