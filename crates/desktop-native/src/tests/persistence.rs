@@ -133,7 +133,7 @@ async fn native_workspace_patch_receipt_retains_reviewable_diff_metadata() {
     )
     .expect("patch result JSON");
 
-    assert_eq!(result["ok"], true);
+    assert_eq!(result["ok"], true, "patch failed: {result}");
     assert_eq!(result["files"][0]["path"], "notes.txt");
     assert_eq!(result["files"][0]["newlineStyle"], "lf");
     assert_eq!(result["files"][0]["finalNewline"], true);
@@ -573,12 +573,16 @@ fn mcp_configuration_is_validated_revisioned_and_persisted_in_v3_sqlite() {
     assert_eq!(initial["contractVersion"], 1);
     assert_eq!(initial["servers"], serde_json::json!([]));
 
+    #[cfg(not(windows))]
+    let (executable, cwd) = ("/usr/bin/env", "/tmp");
+    #[cfg(windows)]
+    let (executable, cwd) = (r"C:\Program Files\nodejs\node.exe", r"C:\workspace");
     let servers = serde_json::json!([{
         "id": "fixture",
         "transport": "stdio",
-        "executable": "/usr/bin/env",
+        "executable": executable,
         "argv": ["node", "server.mjs"],
-        "cwd": "/tmp"
+        "cwd": cwd
     }]);
     let saved: Value = serde_json::from_str(
         &store

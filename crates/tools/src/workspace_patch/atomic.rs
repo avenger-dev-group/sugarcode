@@ -4,6 +4,23 @@ use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
 
+#[cfg(not(windows))]
+pub(super) fn sync_directory(directory: &Dir) -> Result<(), WorkspacePatchErrorKind> {
+    directory
+        .try_clone()
+        .map(Dir::into_std_file)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)
+}
+
+#[cfg(windows)]
+pub(super) fn sync_directory(_directory: &Dir) -> Result<(), WorkspacePatchErrorKind> {
+    // Windows does not expose the Unix directory-fsync contract through
+    // FlushFileBuffers. Callers flush WAL/file content directly and use the
+    // write-through ReplaceFileW/MoveFileExW operations below.
+    Ok(())
+}
+
 #[cfg(unix)]
 pub(super) fn same_device(root: &Dir, parent: &Dir) -> bool {
     use std::os::unix::fs::MetadataExt;

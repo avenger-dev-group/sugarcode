@@ -26,6 +26,7 @@ use atomic::atomic_create;
 use atomic::atomic_replace;
 use atomic::same_device;
 use atomic::same_device_file;
+use atomic::sync_directory;
 use conflict::TargetState;
 use conflict::create_temp;
 use conflict::create_temp_new;
@@ -1134,12 +1135,7 @@ impl WorkspaceTool {
                 if parent.symlink_metadata(&file_name).is_ok() {
                     return commit_error(WorkspacePatchErrorKind::AtomicReplaceUnavailable);
                 }
-                if parent
-                    .try_clone()
-                    .map(Dir::into_std_file)
-                    .and_then(|file| file.sync_all())
-                    .is_err()
-                {
+                if sync_directory(&parent).is_err() {
                     return commit_error(WorkspacePatchErrorKind::AtomicReplaceUnavailable);
                 }
             }
@@ -1345,11 +1341,7 @@ fn apply_staged(root: &Dir, staged: &mut StagedChange) -> Result<(), WorkspacePa
             parent
                 .remove_file(file_name)
                 .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)?;
-            parent
-                .try_clone()
-                .map(Dir::into_std_file)
-                .and_then(|file| file.sync_all())
-                .map_err(|_| WorkspacePatchErrorKind::AtomicReplaceUnavailable)
+            sync_directory(parent)
         }
     }
 }
@@ -1477,10 +1469,7 @@ fn write_change_set_wal(
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|_| WorkspacePatchErrorKind::Unavailable)?;
-    root.try_clone()
-        .map(Dir::into_std_file)
-        .and_then(|file| file.sync_all())
-        .map_err(|_| WorkspacePatchErrorKind::Unavailable)
+    sync_directory(root).map_err(|_| WorkspacePatchErrorKind::Unavailable)
 }
 
 fn remove_change_set_wal(root: &Dir) -> Result<(), WorkspacePatchErrorKind> {
@@ -1489,10 +1478,7 @@ fn remove_change_set_wal(root: &Dir) -> Result<(), WorkspacePatchErrorKind> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => return Err(WorkspacePatchErrorKind::Unavailable),
     }
-    root.try_clone()
-        .map(Dir::into_std_file)
-        .and_then(|file| file.sync_all())
-        .map_err(|_| WorkspacePatchErrorKind::Unavailable)
+    sync_directory(root).map_err(|_| WorkspacePatchErrorKind::Unavailable)
 }
 
 pub(crate) fn recover_pending_change_set(root: &Dir) -> Result<(), WorkspacePatchErrorKind> {
