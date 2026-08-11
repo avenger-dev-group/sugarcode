@@ -30,7 +30,7 @@ fn embedded_terminal_streams_output_and_exits() {
     let terminal = EmbeddedTerminal::spawn(&canonical_workspace, 80, 24).expect("spawn terminal");
     #[cfg(windows)]
     terminal
-        .input("echo SUGARCODE_EMBEDDED_PTY\rexit\r".to_owned())
+        .input("echo SUGARCODE_EMBEDDED_PTY & exit\r".to_owned())
         .expect("terminal input");
     #[cfg(not(windows))]
     terminal
@@ -57,7 +57,11 @@ fn embedded_terminal_streams_output_and_exits() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(exited, "embedded terminal did not exit");
+    assert!(
+        exited,
+        "embedded terminal did not exit; shell: {:?}; transcript: {transcript:?}",
+        terminal.info().shell
+    );
     assert!(
         transcript.contains("SUGARCODE_EMBEDDED_PTY"),
         "missing terminal output: {transcript:?}"
