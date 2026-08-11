@@ -52,16 +52,18 @@ leading navigation control at the window edge and reserves the native caption
 button width on whichever Renderer pane reaches the trailing edge, so app
 controls never sit beneath minimize, maximize or close.
 
-The manually dispatched `build-desktop.yml` workflow runs Forge `make` on
-macOS arm64, macOS x64 and Windows x64 target hosts. It verifies the packaged
-payload and native architecture, validates the platform installers and stages
-architecture-qualified release assets for one day. After every target succeeds,
-a dedicated publish job creates or updates the GitHub Release matching the
-Desktop package version and uploads DMG, macOS ZIP and Windows Setup.exe assets.
-New releases create a `v<version>` tag at the workflow revision; an existing tag
-must already point to that revision. ASAR payload verification normalizes
-host-specific path separators before applying the shared required and forbidden
-entry rules.
+The manually dispatched `build-desktop.yml` workflow requires a release version
+without a leading `v`. Its prepare job validates and synchronizes that version
+across the root JavaScript manifest, Desktop manifest, Cargo workspace and lock
+file, commits changed version metadata to `main`, and creates the matching source
+tag. macOS arm64, macOS x64 and Windows x64 then run Forge `make` from that exact
+prepared revision. The workflow verifies the packaged payload, native
+architecture and platform installers, and stages architecture-qualified release
+assets for one day. After every target succeeds, a dedicated publish job creates
+or updates the matching GitHub Release and uploads DMG, macOS ZIP and Windows
+Setup.exe assets. An existing tag must already point to the prepared revision.
+ASAR payload verification normalizes host-specific path separators before
+applying the shared required and forbidden entry rules.
 
 Renderer cannot select a native path, executable, argv, environment or utility
 entry point. Main resolves all packaged resources from trusted application

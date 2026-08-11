@@ -20,8 +20,9 @@
     "desktop:publish": "pnpm --filter @sugarcode/desktop publish",
     "lint": "pnpm --filter @sugarcode/desktop lint",
     "typecheck": "pnpm --filter @sugarcode/desktop typecheck",
+    "test:scripts": "node --test \"scripts/tests/**/*.test.mjs\"",
     "check:rust": "cargo metadata --locked --no-deps --format-version 1",
-    "check": "pnpm --filter @sugarcode/desktop check && pnpm check:rust"
+    "check": "pnpm --filter @sugarcode/desktop check && pnpm test:scripts && pnpm check:rust"
   },
   "devDependencies": {
     "node-gyp": "13.0.1"
