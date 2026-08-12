@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { copyCodeToClipboard } from '../../../src/renderer/components/agent/code-block/clipboard.ts';
+import { copyTextToClipboard } from '../../../src/renderer/components/message-actions/copy-text.ts';
 import { highlightCode } from '../../../src/renderer/utils/syntax-highlighter.ts';
 
 test('highlights supported fenced-code aliases and escapes source HTML', () => {
@@ -42,7 +42,7 @@ test('falls back to plain rendering for unknown languages', () => {
 test('copies the exact code text through the provided clipboard boundary', async () => {
   let copied = '';
 
-  await copyCodeToClipboard('const value = 1;\n', {
+  await copyTextToClipboard('const value = 1;\n', {
     writeText: (text) => {
       copied = text;
       return Promise.resolve();
@@ -54,7 +54,7 @@ test('copies the exact code text through the provided clipboard boundary', async
 
 test('surfaces clipboard rejection for copy-failure feedback', async () => {
   await assert.rejects(
-    copyCodeToClipboard('copy me', {
+    copyTextToClipboard('copy me', {
       writeText: () => Promise.reject(new Error('clipboard denied')),
     }),
     /clipboard denied/u,

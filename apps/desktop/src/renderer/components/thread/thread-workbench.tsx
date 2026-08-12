@@ -72,6 +72,7 @@ import { canRemoveDraftProject } from './composer-state';
 import { ContextCompactionActivity } from './context-compaction-activity';
 import { resolveConversationTitle } from './conversation-title';
 import { EmptyThreadState } from './empty-thread-state';
+import { hasCopyableUserText } from './message-edit';
 import { ProcessActivityGroup } from './process-activity-group';
 import { SkillActivity } from './skill-activity';
 import { ThreadNavigator } from './thread-navigator';
@@ -405,7 +406,7 @@ const TranscriptMessage = ({
             </div>
           ) : null}
           <div className="flex h-7 items-center justify-end gap-0.5 opacity-0 transition-opacity group-focus-within/user-message:opacity-100 group-hover/user-message:opacity-100 motion-reduce:transition-none">
-            {entry.message.text ? (
+            {hasCopyableUserText(entry.message.text) ? (
               <MessageCopyButton
                 text={entry.message.text}
                 className="text-tertiary hover:text-foreground"
@@ -420,7 +421,7 @@ const TranscriptMessage = ({
                 aria-label="编辑并重新发送消息"
                 title="编辑并重新发送"
                 onClick={() =>
-                  onBeginEdit(turnId, entry.message.text)
+                  onBeginEdit(turnId, entry.message.id, entry.message.text)
                 }
               >
                 <Pencil aria-hidden="true" />
@@ -546,7 +547,7 @@ const TranscriptTurnView = ({
   boundary,
   progress,
   onSubmitUserInput,
-  editable,
+  editableMessageId,
   messageEditor,
   onBeginMessageEdit,
   onSetMessageEditDraft,
@@ -575,9 +576,12 @@ const TranscriptTurnView = ({
             key={entry.message.id}
             entry={entry}
             turnId={turn.id}
-            editable={editable}
+            editable={editableMessageId === entry.message.id}
             editor={
-              messageEditor.turnId === turn.id ? messageEditor : undefined
+              messageEditor.turnId === turn.id &&
+                messageEditor.messageId === entry.message.id
+                ? messageEditor
+                : undefined
             }
             onBeginEdit={onBeginMessageEdit}
             onSetEditDraft={onSetMessageEditDraft}
@@ -942,7 +946,11 @@ export const ThreadWorkbenchView = ({
                         : undefined
                     }
                     onSubmitUserInput={store.respondToUserInput}
-                    editable={store.editableTurnId === turn.id}
+                    editableMessageId={
+                      store.editableMessageTarget?.turnId === turn.id
+                        ? store.editableMessageTarget.messageId
+                        : null
+                    }
                     messageEditor={store.messageEditor}
                     onBeginMessageEdit={store.beginMessageEdit}
                     onSetMessageEditDraft={store.setMessageEditDraft}

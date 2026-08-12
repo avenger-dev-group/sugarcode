@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { copyTextToClipboard } from '../../../src/renderer/components/message-actions/use-copy-text.ts';
+import { copyTextToClipboard } from '../../../src/renderer/components/message-actions/copy-text.ts';
 
 test('message copy preserves the exact source text', async () => {
   let copied = '';

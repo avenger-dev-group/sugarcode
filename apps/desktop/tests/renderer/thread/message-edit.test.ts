@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { latestEditableTurnId } from '../../../src/renderer/components/thread/message-edit.ts';
-import type { TurnViewModel } from '../../../src/renderer/components/thread/types.ts';
+import {
+  hasCopyableUserText,
+  isSameEditableMessageTarget,
+  latestEditableMessageTarget,
+} from '../../../src/renderer/components/thread/message-edit.ts';
+import type {
+  TranscriptMessageViewModel,
+  TurnViewModel,
+} from '../../../src/renderer/components/thread/types.ts';
 
 const turn = (
   id: string,
@@ -27,20 +34,56 @@ const turn = (
   isError: false,
 });
 
+test('copy actions require visible user text', () => {
+  assert.equal(hasCopyableUserText('  \n\t'), false);
+  assert.equal(hasCopyableUserText('  可见消息  '), true);
+});
+
 test('only the latest terminal user Turn can be edited', () => {
   const turns = [turn('first', 'completed'), turn('latest', 'interrupted')];
-  assert.equal(latestEditableTurnId(turns, 'ready', false), 'latest');
-  assert.equal(latestEditableTurnId(turns, 'inProgress', false), null);
-  assert.equal(latestEditableTurnId(turns, 'ready', true), null);
+  assert.deepEqual(
+    latestEditableMessageTarget(turns, 'ready', false),
+    { turnId: 'latest', messageId: 'latest:user' },
+  );
+  assert.equal(latestEditableMessageTarget(turns, 'inProgress', false), null);
+  assert.equal(latestEditableMessageTarget(turns, 'ready', true), null);
 });
 
 test('a trailing maintenance Turn prevents editing the previous user Turn', () => {
   assert.equal(
-    latestEditableTurnId(
+    latestEditableMessageTarget(
       [turn('user', 'completed'), turn('compact', 'completed', false)],
       'ready',
       false,
     ),
     null,
+  );
+});
+
+test('editing targets only the originating user message in the latest Turn', () => {
+  const latest = turn('latest', 'failed');
+  const secondUserMessage: TranscriptMessageViewModel = {
+    role: 'user' as const,
+    message: {
+      id: 'latest:follow-up',
+      text: '补充回答',
+      references: [],
+      attachments: [],
+    },
+  };
+  assert.deepEqual(
+    latestEditableMessageTarget(
+      [{ ...latest, messages: [...latest.messages, secondUserMessage] }],
+      'ready',
+      false,
+    ),
+    { turnId: 'latest', messageId: 'latest:user' },
+  );
+  assert.equal(
+    isSameEditableMessageTarget(
+      { turnId: 'latest', messageId: 'latest:user' },
+      { turnId: 'latest', messageId: 'latest:follow-up' },
+    ),
+    false,
   );
 });

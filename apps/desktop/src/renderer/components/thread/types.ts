@@ -16,6 +16,8 @@ import type {
 } from '@/shared/conversation';
 import type { ComposerReference } from '@/shared/composer';
 
+import type { EditableMessageTarget } from './message-edit';
+
 import type {
   AgentMessageViewModel,
   AgentCommentaryViewModel,
@@ -258,9 +260,10 @@ export type ThreadStore = Readonly<{
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
-  editableTurnId: string | null;
+  editableMessageTarget: EditableMessageTarget | null;
   messageEditor: Readonly<{
     turnId: string | null;
+    messageId: string | null;
     draft: string;
     pending: boolean;
     error: string | null;
@@ -284,7 +287,7 @@ export type ThreadStore = Readonly<{
     targetName: string;
   }> | null;
   setDraft: (value: string) => void;
-  beginMessageEdit: (turnId: string, text: string) => void;
+  beginMessageEdit: (turnId: string, messageId: string, text: string) => void;
   setMessageEditDraft: (value: string) => void;
   cancelMessageEdit: () => void;
   submitMessageEdit: () => Promise<void>;
@@ -330,7 +333,7 @@ export type TranscriptTurnProps = Readonly<{
   boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
   onSubmitUserInput: ThreadStore['respondToUserInput'];
-  editable: boolean;
+  editableMessageId: string | null;
   messageEditor: ThreadStore['messageEditor'];
   onBeginMessageEdit: ThreadStore['beginMessageEdit'];
   onSetMessageEditDraft: ThreadStore['setMessageEditDraft'];

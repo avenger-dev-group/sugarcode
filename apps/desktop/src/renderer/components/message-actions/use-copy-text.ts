@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { copyTextToClipboard } from './copy-text';
+
 export type CopyTextState = 'idle' | 'copied' | 'failed';
 
 const COPY_FEEDBACK_DURATION_MS = 2_000;
-
-export const copyTextToClipboard = (
-  text: string,
-  clipboard: Pick<Clipboard, 'writeText'> = navigator.clipboard,
-): Promise<void> => clipboard.writeText(text);
 
 export const useCopyText = (text: string) => {
   const [state, setState] = useState<CopyTextState>('idle');

@@ -11,6 +11,7 @@ import type {
   RuntimeThreadSnapshot,
 } from '../../../src/runtime/protocol.ts';
 import {
+  MAX_CONVERSATION_INPUT_BYTES,
   isConversationStateSnapshot,
   isConversationThreadProjectionDelta,
   isConversationThreadProjectionSnapshot,
@@ -443,6 +444,17 @@ test('revising the latest terminal Turn replaces its transcript and preserves se
     turnId: original.turnId,
     status: 'completed',
   });
+
+  assert.equal(
+    (
+      await controller.reviseTurn({
+        threadId: THREAD_ID,
+        turnId: original.turnId,
+        text: 'a'.repeat(MAX_CONVERSATION_INPUT_BYTES),
+      })
+    ).reason,
+    'invalidInput',
+  );
 
   const result = await controller.reviseTurn({
     threadId: THREAD_ID,

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { parseComposerSubmission } from '../../shared/composer.ts';
 
 import {
+  MAX_CONVERSATION_INPUT_BYTES,
   isConversationThreadProjectionDelta,
   isConversationThreadProjectionSnapshot,
   isConversationStateSnapshot,
@@ -839,6 +840,12 @@ export class RuntimeConversationController {
       ...references.map((reference) => reference.value),
       input.text,
     ].join('\n');
+    if (
+      new TextEncoder().encode(revisedInput).byteLength >
+        MAX_CONVERSATION_INPUT_BYTES
+    ) {
+      return rejected('invalidInput');
+    }
     if (
       revisedInput.trim().length === 0 &&
       (userMessage.attachments?.length ?? 0) === 0

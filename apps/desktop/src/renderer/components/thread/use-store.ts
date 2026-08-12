@@ -88,7 +88,10 @@ import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
-import { latestEditableTurnId } from './message-edit';
+import {
+  isSameEditableMessageTarget,
+  latestEditableMessageTarget,
+} from './message-edit';
 import {
   canStopTurn,
   shouldShowStopControl,
@@ -1261,6 +1264,9 @@ export const useStore = (): ThreadStore => {
   const [messageEditTurnId, setMessageEditTurnId] = useState<string | null>(
     null,
   );
+  const [messageEditMessageId, setMessageEditMessageId] = useState<
+    string | null
+  >(null);
   const [messageEditDraft, setMessageEditDraftState] = useState('');
   const [messageEditPending, setMessageEditPending] = useState(false);
   const [messageEditError, setMessageEditError] = useState<string | null>(null);
@@ -1338,6 +1344,7 @@ export const useStore = (): ThreadStore => {
     setAttachments(saved ? [...saved.attachments] : []);
     setPendingModelProfileId(null);
     setMessageEditTurnId(null);
+    setMessageEditMessageId(null);
     setMessageEditDraftState('');
     setMessageEditPending(false);
     setMessageEditError(null);
@@ -1535,8 +1542,21 @@ export const useStore = (): ThreadStore => {
     }
   };
 
-  const beginMessageEdit = (turnId: string, text: string): void => {
+  const beginMessageEdit = (
+    turnId: string,
+    messageId: string,
+    text: string,
+  ): void => {
+    if (
+      !isSameEditableMessageTarget(
+        { turnId, messageId },
+        editableMessageTarget,
+      )
+    ) {
+      return;
+    }
     setMessageEditTurnId(turnId);
+    setMessageEditMessageId(messageId);
     setMessageEditDraftState(text);
     setMessageEditError(null);
   };
@@ -1551,19 +1571,30 @@ export const useStore = (): ThreadStore => {
       return;
     }
     setMessageEditTurnId(null);
+    setMessageEditMessageId(null);
     setMessageEditDraftState('');
     setMessageEditError(null);
   };
 
   const submitMessageEdit = async (): Promise<void> => {
-    if (!snapshot.threadId || !messageEditTurnId || messageEditPending) {
+    if (
+      !snapshot.threadId ||
+      !messageEditTurnId ||
+      !messageEditMessageId ||
+      messageEditPending ||
+      !isSameEditableMessageTarget(
+        { turnId: messageEditTurnId, messageId: messageEditMessageId },
+        editableMessageTarget,
+      )
+    ) {
       return;
     }
     const targetTurn = snapshot.turns.find(
       (turn) => turn.id === messageEditTurnId,
     );
     const userMessage = targetTurn?.messages.find(
-      (message) => message.role === 'user',
+      (message) =>
+        message.role === 'user' && message.id === messageEditMessageId,
     );
     if (
       !userMessage ||
@@ -1586,6 +1617,7 @@ export const useStore = (): ThreadStore => {
       });
       if (result.accepted) {
         setMessageEditTurnId(null);
+        setMessageEditMessageId(null);
         setMessageEditDraftState('');
         return;
       }
@@ -1786,11 +1818,36 @@ export const useStore = (): ThreadStore => {
     previousThread.current = next;
     return next;
   }, [snapshot]);
-  const editableTurnId = latestEditableTurnId(
-    thread.turns,
-    snapshot.phase,
-    isSending,
+  const editableMessageTarget = useMemo(
+    () => latestEditableMessageTarget(
+      thread.turns,
+      snapshot.phase,
+      isSending,
+    ),
+    [isSending, snapshot.phase, thread.turns],
   );
+  useEffect(() => {
+    if (!messageEditTurnId || !messageEditMessageId || messageEditPending) {
+      return;
+    }
+    if (
+      isSameEditableMessageTarget(
+        { turnId: messageEditTurnId, messageId: messageEditMessageId },
+        editableMessageTarget,
+      )
+    ) {
+      return;
+    }
+    setMessageEditTurnId(null);
+    setMessageEditMessageId(null);
+    setMessageEditDraftState('');
+    setMessageEditError(null);
+  }, [
+    editableMessageTarget,
+    messageEditMessageId,
+    messageEditPending,
+    messageEditTurnId,
+  ]);
   const activeTurnView = snapshot.activeTurnId
     ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
     : undefined;
@@ -1863,9 +1920,10 @@ export const useStore = (): ThreadStore => {
     activeTurnProgress,
     isSending,
     actionError: actionError ?? projectionError,
-    editableTurnId,
+    editableMessageTarget,
     messageEditor: {
       turnId: messageEditTurnId,
+      messageId: messageEditMessageId,
       draft: messageEditDraft,
       pending: messageEditPending,
       error: messageEditError,
