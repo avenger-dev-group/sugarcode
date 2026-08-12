@@ -22,6 +22,10 @@ import type {
   Tool as OpenAiResponseTool,
 } from 'openai/resources/responses/responses';
 
+import {
+  DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+} from '../../shared/model-metadata.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
@@ -58,7 +62,7 @@ type TextItemAccumulator = {
   text: string;
 };
 
-const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
+const DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_AGENT_MAX_OUTPUT_TOKENS;
 const MAX_OUTPUT_TOKENS = 65_536;
 
 const maxOutputTokens = (request: NormalizedLlmRequest): number =>
@@ -479,7 +483,7 @@ export class OpenAiLlm extends BaseLlm {
     this.wireApi = options.wireApi;
     this.parallelTools = options.parallelTools ?? false;
     this.maxRetries = options.maxRetries ?? 2;
-    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
     this.compatibilityKey = `${options.wireApi}:${validateBaseUrl(options.baseUrl)}`;

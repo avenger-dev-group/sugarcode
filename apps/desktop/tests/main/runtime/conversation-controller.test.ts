@@ -206,6 +206,46 @@ test('UUIDv7 generator creates canonical time-ordered identifiers', () => {
   );
 });
 
+test('Stop records the user control as the cancellation source', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal(controller.startNewThread().accepted, true);
+  assert.equal((await controller.startTurn({ input: 'Long task' })).accepted, true);
+
+  assert.equal((await controller.stopTurn(THREAD_ID)).accepted, true);
+  const cancel = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.cancel' }> =>
+      command.type === 'turn.cancel',
+  );
+  assert.equal(cancel?.source, 'stopButton');
+  assert.equal(controller.getSnapshot().phase, 'stopping');
+
+  if (!cancel) {
+    throw new Error('Cancellation command was not sent.');
+  }
+  fixture.emit({
+    type: 'turn.completed',
+    sequence: 1,
+    requestId: cancel.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: cancel.turnId,
+    status: 'interrupted',
+    error: {
+      kind: 'cancelled',
+      retryable: false,
+      code: 'stopButton',
+      message: 'The Turn was stopped from the conversation Stop button.',
+    },
+  });
+  const interrupted = controller.getSnapshot().turns.at(-1);
+  assert.equal(interrupted?.status, 'interrupted');
+  assert.equal(interrupted?.error, undefined);
+});
+
 test('/compact starts a maintenance Turn without a user message', async () => {
   const fixture = new FixtureRuntime();
   const controller = new RuntimeConversationController(

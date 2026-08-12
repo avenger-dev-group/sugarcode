@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from '../../src/runtime/agent-instructions.ts';
+import {
+  hostPlatformInstruction,
+  SUGARCODE_BASE_AGENT_PROMPT_V1,
+} from '../../src/runtime/agent-instructions.ts';
 
 test('base Agent instructions localize visible output and reject repetitive process narration', () => {
   assert.match(
@@ -64,4 +67,14 @@ test('base Agent instructions localize visible output and reject repetitive proc
     SUGARCODE_BASE_AGENT_PROMPT_V1,
     /Keep the visible label concise/u,
   );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Split large writes into small, independently valid workspace_apply_patch operations/u,
+  );
+});
+
+test('host platform instructions prevent Unix-only commands on Windows', () => {
+  assert.match(hostPlatformInstruction('win32'), /operating system is Windows/u);
+  assert.match(hostPlatformInstruction('win32'), /cat, wc, grep, sed, or touch/u);
+  assert.match(hostPlatformInstruction('darwin'), /operating system is macOS/u);
 });

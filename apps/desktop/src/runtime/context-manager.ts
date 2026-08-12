@@ -2,6 +2,7 @@ import type { BaseLlm, LlmRequest, LlmResponse } from '@google/adk';
 import type { Content, Part } from '@google/genai';
 import { randomUUID } from 'node:crypto';
 
+import { DEFAULT_AGENT_MAX_OUTPUT_TOKENS } from '../shared/model-metadata.ts';
 import type { RuntimeModelSelection } from './protocol.ts';
 
 export type ContextCompactionTrigger = 'auto' | 'manual' | 'recovery';
@@ -82,7 +83,7 @@ const STRICT_SUMMARY_INSTRUCTION = `${SUMMARY_INSTRUCTION}
 The block must be non-empty, concise, factual, and below 6000 tokens.`;
 
 const CHECKPOINT_PREFIX = '[SugarCode context checkpoint]\n';
-const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
+const DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_AGENT_MAX_OUTPUT_TOKENS;
 const RECENT_HISTORY_TOKEN_LIMIT = 20_000;
 const LARGE_TOOL_RESULT_BYTES = 16 * 1024;
 

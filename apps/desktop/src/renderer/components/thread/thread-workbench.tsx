@@ -849,19 +849,30 @@ export const ThreadWorkbenchView = ({
                     {permissionControl}
                   </div>
                 </div>
-                {store.canStop ? (
+                {store.showStopControl ? (
                   <Button
                     type="button"
                     variant="outline"
                     onClick={() => void store.stop()}
-                    disabled={store.thread.phase === 'stopping'}
+                    disabled={!store.canStop}
                     aria-label="Stop current turn"
                   >
-                    <Square
-                      className="size-3 fill-current"
-                      aria-hidden="true"
-                    />
-                    {store.thread.phase === 'stopping' ? 'Stopping' : 'Stop'}
+                    {store.canStop ? (
+                      <Square
+                        className="size-3 fill-current"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <LoaderCircle
+                        className="size-3 animate-spin"
+                        aria-hidden="true"
+                      />
+                    )}
+                    {store.thread.phase === 'stopping'
+                      ? 'Stopping'
+                      : store.canStop
+                        ? 'Stop'
+                        : 'Starting'}
                   </Button>
                 ) : (
                   <Button

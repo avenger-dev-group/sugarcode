@@ -15,7 +15,10 @@ import {
   ContextManager,
   type RuntimeContextCheckpoint,
 } from './context-manager.ts';
-import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
+import {
+  hostPlatformInstruction,
+  SUGARCODE_BASE_AGENT_PROMPT_V1,
+} from './agent-instructions.ts';
 import {
   composerIntentInstruction,
   composerModelText,
@@ -33,6 +36,8 @@ import { AnthropicLlm } from './models/anthropic-llm.ts';
 import { discoverModels } from './models/discovery.ts';
 import { OpenAiLlm } from './models/openai-llm.ts';
 import {
+  DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
   knownContextWindowTokens,
   supportsNativeCompaction,
 } from '../shared/model-metadata.ts';
@@ -101,8 +106,8 @@ import type {
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
-const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
-const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
+const DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_AGENT_MAX_OUTPUT_TOKENS;
+const DEFAULT_PROVIDER_TIMEOUT_MS = DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
 const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
@@ -271,12 +276,28 @@ type InvalidArgumentGuard = {
     recoveryMarkdown: string;
     recoveryDelivered: boolean;
   }>;
-  lastToolResponseRequiresRecovery: boolean;
+  unresolvedToolFailures: Set<string>;
   finalRecoveryUsed: boolean;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const FUTURE_ACTION_PATTERN =
+  /(?:\b(?:let me|i(?:'ll| will| am going to)|next,? i(?:'ll| will))\s+(?:now\s+)?(?:start|begin|continue|create|generate|write|edit|update|inspect|read|run|implement|fix|complete)\b|(?:让我|讓我|现在|現在|接下来|接下來|下面|稍后|稍後)[，,\s]*(?:我)?(?:会|會|将|將|来|來)?(?:开始|開始|继续|繼續|生成|创建|建立|写入|寫入|修改|补充|補充|读取|讀取|运行|運行|实现|實現|完成))/iu;
+
+const COMPLETED_OR_BLOCKED_PATTERN =
+  /(?:\b(?:completed|finished|implemented|updated|created|wrote|blocked|cannot|failed)\b|(?:已经|已經|成功|完成了|修改了|生成了|创建了|建立了|写入了|寫入了|无法|無法|失败|失敗|阻塞|未能))/iu;
+
+export const isFutureActionOnlyFinal = (value: string): boolean => {
+  const text = value.trim();
+  return (
+    text.length > 0 &&
+    text.length <= 800 &&
+    FUTURE_ACTION_PATTERN.test(text) &&
+    !COMPLETED_OR_BLOCKED_PATTERN.test(text)
+  );
+};
 
 const boundedUserInputText = (
   value: unknown,
@@ -512,6 +533,7 @@ export class RuntimeHost {
   private readonly loadNative: NonNullable<RuntimeHostOptions['loadNative']>;
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
+  private readonly cancellationSources = new Map<string, 'stopButton'>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingUserInputs = new Map<string, PendingUserInput>();
   private readonly activeOperations = new Map<string, Set<string>>();
@@ -615,7 +637,10 @@ export class RuntimeHost {
         void this.compactContext(command);
         break;
       case 'turn.cancel':
-        this.activeTurns.get(command.turnId)?.abort();
+        if (this.activeTurns.has(command.turnId)) {
+          this.cancellationSources.set(command.turnId, command.source);
+          this.activeTurns.get(command.turnId)?.abort();
+        }
         this.collaboration.cancelTurn(command.turnId);
         this.cancelTurnApprovals(command.turnId);
         this.cancelTurnUserInputs(command.turnId);
@@ -2018,15 +2043,39 @@ export class RuntimeHost {
       }
       const result = part.functionResponse.response ?? {};
       const failed = toolResultFailed(result);
-      guard.lastToolResponseRequiresRecovery =
-        toolResultRequiresFinalRecovery(part.functionResponse.name, result);
-      if (!failed) {
-        guard.repeatedToolFailure = undefined;
-        guard.finalRecoveryUsed = false;
-        continue;
-      }
       const callId = part.functionResponse.id ?? part.functionResponse.name;
       const call = guard.calls.get(callId) ?? part.functionResponse.name;
+      const parsedCall = (() => {
+        try {
+          const value: unknown = JSON.parse(call);
+          return isRecord(value) ? value : undefined;
+        } catch {
+          return undefined;
+        }
+      })();
+      const parsedArguments = isRecord(parsedCall?.arguments)
+        ? parsedCall.arguments
+        : undefined;
+      const failureName =
+        part.functionResponse.name === INVALID_TOOL_ARGUMENTS_TOOL_NAME &&
+          typeof parsedArguments?.toolName === 'string'
+          ? parsedArguments.toolName
+          : part.functionResponse.name;
+      if (!failed) {
+        guard.unresolvedToolFailures.delete(part.functionResponse.name);
+        if (part.functionResponse.name === 'workspace_apply_patch') {
+          guard.unresolvedToolFailures.delete('workspace_apply_patch');
+        }
+        guard.repeatedToolFailure = undefined;
+        if (guard.unresolvedToolFailures.size === 0) {
+          guard.finalRecoveryUsed = false;
+        }
+        continue;
+      }
+      if (toolResultRequiresFinalRecovery(part.functionResponse.name, result)) {
+        guard.unresolvedToolFailures.add(failureName);
+        guard.finalRecoveryUsed = false;
+      }
       const key = JSON.stringify({ call, error: stableJsonValue(result) });
       const previous = guard.repeatedToolFailure;
       const count = previous?.key === key ? previous.count + 1 : 1;
@@ -2056,7 +2105,7 @@ export class RuntimeHost {
   private consumeToolFailureFinalRecovery = (
     guard: InvalidArgumentGuard,
   ): boolean => {
-    if (!guard.lastToolResponseRequiresRecovery || guard.finalRecoveryUsed) {
+    if (guard.unresolvedToolFailures.size === 0 || guard.finalRecoveryUsed) {
       return false;
     }
     guard.finalRecoveryUsed = true;
@@ -2101,6 +2150,7 @@ export class RuntimeHost {
     let invocation = 0;
     let commentaryOnlyCount = 0;
     let truncationCount = 0;
+    let futureActionFinalCount = 0;
     const textItems = new Map<string, TextItemState>();
     while (!options.signal.aborted) {
       invocation += 1;
@@ -2172,6 +2222,36 @@ export class RuntimeHost {
                 'The most recent tool result failed, so the candidate answer was not accepted as completion. ' +
                 'Continue with a corrected tool call or another concrete approach. If recovery is genuinely impossible, ' +
                 'submit a final answer that names the specific blocker and the work that remains incomplete. ' +
+                'Keep all visible text in the language of the original user request.',
+            }],
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
+        const candidateText = [...textItems.values()]
+          .filter((state) => state.pendingFinal)
+          .map((state) => state.text)
+          .join('\n\n');
+        if (isFutureActionOnlyFinal(candidateText)) {
+          options.settleFinalCandidate?.(false, textItems);
+          futureActionFinalCount += 1;
+          if (futureActionFinalCount >= 2) {
+            throw new ProviderAdapterError({
+              kind: 'protocol',
+              retryable: false,
+              message:
+                'The model repeatedly submitted a promise of future work as its final answer.',
+            });
+          }
+          message = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal continuation after premature final\n\n' +
+                'The candidate answer only announced future work, so it was not accepted as completion. ' +
+                'Perform the next concrete tool action now. Submit a final answer only after the requested work is complete and verified, ' +
+                'or name the specific blocker and the work that remains incomplete. ' +
                 'Keep all visible text in the language of the original user request.',
             }],
           };
@@ -2327,7 +2407,7 @@ export class RuntimeHost {
       const invalidArgumentGuard: InvalidArgumentGuard = {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
-        lastToolResponseRequiresRecovery: false,
+        unresolvedToolFailures: new Set<string>(),
         finalRecoveryUsed: false,
       };
       const turnSkills = this.nativeRuntime
@@ -2352,10 +2432,13 @@ export class RuntimeHost {
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
         instruction:
-          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
+          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${hostPlatformInstruction()}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
           (composerInstruction ? `\n\n${composerInstruction}` : '') +
           (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
         model: turnModel,
+        generateContentConfig: {
+          maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        },
         beforeModelCallback: async ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
           const repeatedFailureRecovery =
@@ -2532,6 +2615,9 @@ export class RuntimeHost {
       this.emitCompleted(
         command,
         controller.signal.aborted ? 'interrupted' : 'completed',
+        controller.signal.aborted
+          ? this.cancellationError(command.turnId)
+          : undefined,
       );
     } catch (error) {
       this.collaboration.cancelTurn(command.turnId);
@@ -2539,14 +2625,29 @@ export class RuntimeHost {
       this.emitCompleted(
         command,
         details.kind === 'cancelled' ? 'interrupted' : 'failed',
-        details,
+        details.kind === 'cancelled'
+          ? this.cancellationError(command.turnId) ?? details
+          : details,
       );
     } finally {
       this.collaboration.releaseTurn(command.turnId);
       this.cancelTurnUserInputs(command.turnId);
       this.activeTurns.delete(command.turnId);
+      this.cancellationSources.delete(command.turnId);
     }
   };
+
+  private cancellationError = (
+    turnId: string,
+  ): RuntimeProviderError | undefined =>
+    this.cancellationSources.get(turnId) === 'stopButton'
+      ? {
+          kind: 'cancelled',
+          retryable: false,
+          message: 'The Turn was stopped from the conversation Stop button.',
+          code: 'stopButton',
+        }
+      : undefined;
 
   private compactContext = async (
     command: Extract<RuntimeCommand, { type: 'context.compact' }>,
@@ -2663,16 +2764,22 @@ export class RuntimeHost {
       this.emitCompleted(
         command,
         controller.signal.aborted ? 'interrupted' : 'completed',
+        controller.signal.aborted
+          ? this.cancellationError(command.turnId)
+          : undefined,
       );
     } catch (error) {
       const details = providerError(error);
       this.emitCompleted(
         command,
         details.kind === 'cancelled' ? 'interrupted' : 'failed',
-        details,
+        details.kind === 'cancelled'
+          ? this.cancellationError(command.turnId) ?? details
+          : details,
       );
     } finally {
       this.activeTurns.delete(command.turnId);
+      this.cancellationSources.delete(command.turnId);
     }
   };
 
@@ -2839,7 +2946,7 @@ export class RuntimeHost {
       const invalidArgumentGuard: InvalidArgumentGuard = {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
-        lastToolResponseRequiresRecovery: false,
+        unresolvedToolFailures: new Set<string>(),
         finalRecoveryUsed: false,
       };
       const turnSkills = this.nativeRuntime
@@ -2853,12 +2960,15 @@ export class RuntimeHost {
         name: `sugarcode_${context.task.role}_agent`,
         description: `${context.task.role} subagent for ${context.task.title}`,
         instruction:
-          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n` +
+          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${hostPlatformInstruction()}\n\n` +
           `# Subagent boundary\n\n` +
           `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
           `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.` +
           (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
         model: this.createModel(resolved.provider),
+        generateContentConfig: {
+          maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
+        },
         tools: [
           this.invalidArgumentsTool(invalidArgumentGuard),
           ...tools,

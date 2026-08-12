@@ -133,7 +133,7 @@ test('OpenAI Chat Completions SDK streams text and usage into ADK responses', as
 
   assert.equal(receivedBody?.model, 'fixture-model');
   assert.equal(receivedBody?.stream, true);
-  assert.equal(receivedBody?.max_completion_tokens, 8_192);
+  assert.equal(receivedBody?.max_completion_tokens, 32_768);
   assert.equal(events[0]?.content?.parts?.[0]?.text, 'Hello');
   assert.equal(events.at(-1)?.turnComplete, true);
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 6);
@@ -240,7 +240,7 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   assert.equal(functionCall?.id, 'call_fixture');
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
-  assert.equal(receivedBody?.max_output_tokens, 8_192);
+  assert.equal(receivedBody?.max_output_tokens, 32_768);
   assert.equal(events.at(-1)?.turnComplete, true);
 });
 

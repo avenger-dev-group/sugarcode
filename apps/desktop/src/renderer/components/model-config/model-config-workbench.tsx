@@ -29,7 +29,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/renderer/components/ui/select';
-import { knownContextWindowTokens } from '@/shared/model-metadata';
+import {
+  DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+  knownContextWindowTokens,
+} from '@/shared/model-metadata';
 
 import type { ModelConfigSettingsPanelProps } from './types';
 import { PROVIDER_PRESETS, useStore } from './use-store';
@@ -58,7 +61,8 @@ export const ModelConfigSettingsPanel = (
     ? undefined
     : Math.min(
       Math.floor(contextWindow * 0.85),
-      contextWindow - 8_192 - Math.max(4_096, Math.ceil(contextWindow * 0.05)),
+      contextWindow - DEFAULT_AGENT_MAX_OUTPUT_TOKENS -
+        Math.max(4_096, Math.ceil(contextWindow * 0.05)),
     );
 
   return (

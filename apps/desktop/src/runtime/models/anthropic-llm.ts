@@ -20,6 +20,10 @@ import {
 } from '@google/adk';
 import { FinishReason, type Part } from '@google/genai';
 
+import {
+  DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+} from '../../shared/model-metadata.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
@@ -362,7 +366,7 @@ export class AnthropicLlm extends BaseLlm {
   constructor(options: ProviderAdapterOptions) {
     super({ model: options.model });
     this.maxRetries = options.maxRetries ?? 2;
-    this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
     this.compatibilityKey = `anthropicMessages:${validateBaseUrl(options.baseUrl)}`;
@@ -412,7 +416,10 @@ export class AnthropicLlm extends BaseLlm {
         create: async () => {
           const maxTokens = Math.max(
             1,
-            Math.min(request.config?.maxOutputTokens ?? 8_192, 65_536),
+            Math.min(
+              request.config?.maxOutputTokens ?? DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
+              65_536,
+            ),
           );
           if (!this.nativeCompaction) {
             const stream = await this.client.messages.create(

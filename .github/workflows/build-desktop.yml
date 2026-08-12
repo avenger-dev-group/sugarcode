@@ -167,7 +167,7 @@ jobs:
           retention-days: 1
 
   publish:
-    name: Publish GitHub Release
+    name: Publish desktop release
     needs: [prepare, build]
     runs-on: ubuntu-latest
     permissions:
@@ -220,3 +220,10 @@ jobs:
               --generate-notes \
               --latest
           fi
+
+      - name: Create or update GitCode Release
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: SugarCode ${{ inputs.version }}
+        run: node scripts/publish-gitcode-release.mjs

@@ -10,9 +10,14 @@ import {
 } from '@google/adk';
 import { FinishReason } from '@google/genai';
 
-import { RuntimeHost } from '../../src/runtime/host.ts';
+import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../../src/shared/model-metadata.ts';
+import {
+  isFutureActionOnlyFinal,
+  RuntimeHost,
+} from '../../src/runtime/host.ts';
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
+import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
 
@@ -763,6 +768,96 @@ class CaptureLlm extends BaseLlm {
   }
 }
 
+class FutureActionFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const text = this.requests.length === 1
+      ? '好的，现在我开始生成完整的演示文稿。'
+      : '处理完成：没有需要修改的文件。';
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          text,
+          partMetadata: modelItemMetadata(
+            `future-final-${this.requests.length}`,
+            { phase: 'final', outcome: { kind: 'final' } },
+          ),
+        }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class StickyWriteFailureLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  requestCount = 0;
+
+  async *generateContentAsync(
+    _request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    void _request;
+    this.requestCount += 1;
+    const parts = this.requestCount === 1
+      ? [{
+        functionCall: {
+          id: 'call-malformed-write',
+          name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
+          args: {
+            toolName: 'workspace_apply_patch',
+            argumentsText: '{"patch":"*** Begin Patch',
+          },
+        },
+      }]
+      : this.requestCount === 2
+        ? [{
+          functionCall: {
+            id: 'call-read-after-failed-write',
+            name: 'workspace_read',
+            args: { path: 'fixture.txt' },
+          },
+        }]
+        : this.requestCount === 3
+          ? [{ text: '项目检查结束。' }]
+          : [{ text: '无法继续：写入参数无效，文件仍未修改。' }];
+    yield {
+      content: { role: 'model', parts },
+      partial: false,
+      turnComplete: this.requestCount >= 3,
+      finishReason: this.requestCount >= 3 ? FinishReason.STOP : undefined,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+test('future-action-only final detection distinguishes promises from outcomes', () => {
+  assert.equal(DEFAULT_MODEL_REQUEST_TIMEOUT_MS, 600_000);
+  assert.equal(
+    isFutureActionOnlyFinal('好的，现在我开始生成完整的演示文稿。'),
+    true,
+  );
+  assert.equal(isFutureActionOnlyFinal('Let me now update the file.'), true);
+  assert.equal(isFutureActionOnlyFinal('文件已经更新并验证完成。'), false);
+  assert.equal(isFutureActionOnlyFinal('无法继续：缺少写入权限。'), false);
+});
+
 test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events', async () => {
   const events: RuntimeEvent[] = [];
   let resolveCompleted: (() => void) | undefined;
@@ -831,6 +926,135 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost retries a future-action-only final and uses the global output budget', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new FutureActionFinalLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => turnNativeFixture(),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-future-final',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-future-final-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-future-final',
+    workspaceId: 'workspace-future-final',
+    threadId: 'thread-future-final',
+    turnId: 'turn-future-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '完成任务。' }],
+  });
+
+  await completed;
+
+  assert.equal(model.requests.length, 2);
+  assert.equal(model.requests[0]?.config?.maxOutputTokens, 32_768);
+  assert.equal(
+    model.requests[1]?.contents.some((content) =>
+      content.parts?.some((part) =>
+        part.text?.includes('Internal continuation after premature final')
+      )
+    ),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '好的，现在我开始生成完整的演示文稿。',
+    ),
+    false,
+  );
+  assert.equal(
+    events.find((event) => event.type === 'turn.completed')?.status,
+    'completed',
+  );
+});
+
+test('RuntimeHost keeps a failed write unresolved across a successful read', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new StickyWriteFailureLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    ...turnNativeFixture(),
+    workspaceRead: async () => JSON.stringify({ ok: true, content: 'fixture' }),
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-sticky-write',
+    protocolVersion: 2,
+    dataDirectory: '/tmp/sugarcode-v3-sticky-write-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-sticky-write',
+    workspaceId: 'workspace-sticky-write',
+    threadId: 'thread-sticky-write',
+    turnId: 'turn-sticky-write',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '更新文件。' }],
+  });
+
+  await completed;
+
+  assert.equal(model.requestCount, 4);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '项目检查结束。',
+    ),
+    false,
+  );
+  assert.equal(
+    events.find((event) => event.type === 'turn.completed')?.status,
+    'completed',
+  );
 });
 
 test('RuntimeHost pauses for structured user input and resumes the same Turn', async () => {

@@ -49,17 +49,21 @@ type UpdateManifest = Readonly<{
   platforms: Readonly<Record<string, ManifestPlatform>>;
 }>;
 
-type GitHubReleaseAsset = Readonly<{
+type ReleaseAsset = Readonly<{
   name: string;
-  size: number;
-  browser_download_url: string;
+  size?: number;
+  browserDownloadUrl: string;
 }>;
 
-type GitHubRelease = Readonly<{
-  tag_name: string;
-  draft: boolean;
-  prerelease: boolean;
-  assets: readonly GitHubReleaseAsset[];
+type Release = Readonly<{
+  tagName: string;
+  assets: readonly ReleaseAsset[];
+}>;
+
+export type UpdateSource = Readonly<{
+  kind: 'gitcode' | 'github';
+  latestReleaseApiUrl: string;
+  downloadPageUrl: string;
 }>;
 
 type PendingUpdate = Readonly<{
@@ -74,8 +78,7 @@ export type UpdateControllerOptions = Readonly<{
   platform: UpdatePlatform | null;
   downloadsDirectory: string;
   pendingStatePath: string;
-  latestReleaseApiUrl: string;
-  downloadPageUrl: string;
+  sources: readonly UpdateSource[];
   getInstallBlock: () => boolean;
   launchInstaller: (installerPath: string) => Promise<boolean>;
   openDownloadPage: (url: string) => Promise<boolean>;
@@ -227,36 +230,59 @@ const parseManifest = (
   return value as UpdateManifest;
 };
 
-const parseRelease = (value: unknown): GitHubRelease => {
+const parseRelease = (value: unknown, source: UpdateSource): Release => {
   if (
     !isRecord(value) ||
     typeof value.tag_name !== 'string' ||
-    typeof value.draft !== 'boolean' ||
-    typeof value.prerelease !== 'boolean' ||
     !Array.isArray(value.assets) ||
     !value.assets.every(
       (asset) =>
         isRecord(asset) &&
         typeof asset.name === 'string' &&
-        Number.isSafeInteger(asset.size) &&
-        Number(asset.size) >= 0 &&
+        (asset.size === undefined ||
+          asset.size === null ||
+          (Number.isSafeInteger(asset.size) && Number(asset.size) >= 0)) &&
         typeof asset.browser_download_url === 'string',
     )
   ) {
     throw new Error('Invalid release response.');
   }
-  return value as unknown as GitHubRelease;
+  if (
+    source.kind === 'github'
+      ? value.draft !== false || value.prerelease !== false
+      : value.prerelease === true ||
+        (value.release_status !== undefined && value.release_status !== 'latest')
+  ) {
+    throw new Error('Latest release is unavailable.');
+  }
+  return {
+    tagName: value.tag_name,
+    assets: value.assets.map((asset) => {
+      const releaseAsset = asset as Record<string, unknown>;
+      return {
+        name: releaseAsset.name as string,
+        ...(typeof releaseAsset.size === 'number'
+          ? { size: releaseAsset.size }
+          : {}),
+        browserDownloadUrl: releaseAsset.browser_download_url as string,
+      };
+    }),
+  };
 };
 
-const assertTrustedDownloadUrl = (value: string): URL => {
+const assertTrustedDownloadUrl = (
+  value: string,
+  source: UpdateSource,
+): URL => {
   const url = new URL(value);
   const host = url.hostname.toLowerCase();
-  if (
-    url.protocol !== 'https:' ||
-    (host !== 'github.com' &&
-      host !== 'api.github.com' &&
-      !host.endsWith('.githubusercontent.com'))
-  ) {
+  const trustedHost =
+    source.kind === 'gitcode'
+      ? host === 'gitcode.com' || host.endsWith('.gitcode.com')
+      : host === 'github.com' ||
+        host === 'api.github.com' ||
+        host.endsWith('.githubusercontent.com');
+  if (url.protocol !== 'https:' || !trustedHost) {
     throw new Error('Untrusted update URL.');
   }
   return url;
@@ -304,14 +330,15 @@ const readBoundedResponse = async (
 };
 
 const findAsset = (
-  release: GitHubRelease,
+  release: Release,
   name: string,
-): GitHubReleaseAsset => {
+  source: UpdateSource,
+): ReleaseAsset => {
   const asset = release.assets.find((candidate) => candidate.name === name);
   if (!asset) {
     throw new Error('Release asset is missing.');
   }
-  assertTrustedDownloadUrl(asset.browser_download_url);
+  assertTrustedDownloadUrl(asset.browserDownloadUrl, source);
   return asset;
 };
 
@@ -418,8 +445,12 @@ export class UpdateController {
   };
 
   openDownloadPage = async (): Promise<UpdateActionResult> => {
+    const downloadPageUrl = this.options.sources[0]?.downloadPageUrl;
+    if (!downloadPageUrl) {
+      return rejected('unavailable');
+    }
     try {
-      return (await this.options.openDownloadPage(this.options.downloadPageUrl))
+      return (await this.options.openDownloadPage(downloadPageUrl))
         ? accepted()
         : rejected('failed');
     } catch {
@@ -432,40 +463,76 @@ export class UpdateController {
     if (!platform) {
       throw new Error('Update platform is unavailable.');
     }
+    if (this.options.sources.length === 0) {
+      throw new Error('No update source is configured.');
+    }
     if (!this.pending) {
       this.publish({ status: 'checking' });
     }
-    const releaseResponse = await this.fetch(this.options.latestReleaseApiUrl, {
+    let checkedSource = false;
+    let lastError: unknown;
+    for (const source of this.options.sources) {
+      try {
+        if (await this.performSourceCheck(source, platform)) {
+          return;
+        }
+        checkedSource = true;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!checkedSource) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('All update sources are unavailable.');
+    }
+    if (!this.pending) {
+      this.publish({ status: 'idle' });
+    }
+  };
+
+  private performSourceCheck = async (
+    source: UpdateSource,
+    platform: UpdatePlatform,
+  ): Promise<boolean> => {
+    const releaseResponse = await this.fetch(source.latestReleaseApiUrl, {
       headers: {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        Accept:
+          source.kind === 'github'
+            ? 'application/vnd.github+json'
+            : 'application/json',
+        'User-Agent': `SugarCode/${this.options.currentVersion}`,
+        ...(source.kind === 'github'
+          ? { 'X-GitHub-Api-Version': '2022-11-28' }
+          : {}),
       },
       signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
     });
-    const release = parseRelease(await releaseResponse.json());
-    if (!releaseResponse.ok || release.draft || release.prerelease) {
+    if (!releaseResponse.ok) {
       throw new Error('Latest release is unavailable.');
     }
+    const release = parseRelease(await releaseResponse.json(), source);
 
-    const manifestAsset = findAsset(release, MANIFEST_NAME);
+    const manifestAsset = findAsset(release, MANIFEST_NAME, source);
     const manifestBytes = await this.downloadSmallAsset(
       manifestAsset,
       MAX_MANIFEST_BYTES,
+      source,
     );
     const manifest = parseManifest(manifestBytes, platform);
-    if (release.tag_name !== `v${manifest.version}`) {
+    if (release.tagName !== `v${manifest.version}`) {
       throw new Error('Release version does not match its manifest.');
     }
     if (compareUpdateVersions(manifest.version, this.options.currentVersion) <= 0) {
-      if (!this.pending) {
-        this.publish({ status: 'idle' });
-      }
-      return;
+      return false;
     }
 
     const platformUpdate = manifest.platforms[platform];
-    const installerAsset = findAsset(release, platformUpdate.file);
-    if (installerAsset.size !== platformUpdate.size) {
+    const installerAsset = findAsset(release, platformUpdate.file, source);
+    if (
+      installerAsset.size !== undefined &&
+      installerAsset.size !== platformUpdate.size
+    ) {
       throw new Error('Installer size does not match its manifest.');
     }
     this.publish({ status: 'downloading' });
@@ -473,7 +540,12 @@ export class UpdateController {
       this.options.downloadsDirectory,
       platformUpdate.file,
     );
-    await this.ensureInstaller(installerAsset, platformUpdate, installerPath);
+    await this.ensureInstaller(
+      installerAsset,
+      platformUpdate,
+      installerPath,
+      source,
+    );
     const pending: PendingUpdate = {
       version: manifest.version,
       installerPath,
@@ -483,23 +555,27 @@ export class UpdateController {
     await this.writePending(pending);
     this.pending = pending;
     this.publish({ status: 'ready', version: pending.version });
+    return true;
   };
 
   private downloadSmallAsset = async (
-    asset: GitHubReleaseAsset,
+    asset: ReleaseAsset,
     maximumBytes: number,
+    source: UpdateSource,
   ): Promise<Buffer> => {
-    const response = await this.fetch(asset.browser_download_url, {
+    const response = await this.fetch(asset.browserDownloadUrl, {
+      headers: { 'User-Agent': `SugarCode/${this.options.currentVersion}` },
       signal: AbortSignal.timeout(METADATA_TIMEOUT_MS),
     });
-    assertTrustedDownloadUrl(response.url || asset.browser_download_url);
+    assertTrustedDownloadUrl(response.url || asset.browserDownloadUrl, source);
     return readBoundedResponse(response, maximumBytes);
   };
 
   private ensureInstaller = async (
-    asset: GitHubReleaseAsset,
+    asset: ReleaseAsset,
     expected: ManifestPlatform,
     installerPath: string,
+    source: UpdateSource,
   ): Promise<void> => {
     await mkdir(this.options.downloadsDirectory, { recursive: true });
     try {
@@ -524,13 +600,17 @@ export class UpdateController {
     await removeIfPresent(partPath);
     let output: WriteStream | undefined;
     try {
-      const response = await this.fetch(asset.browser_download_url, {
+      const response = await this.fetch(asset.browserDownloadUrl, {
+        headers: { 'User-Agent': `SugarCode/${this.options.currentVersion}` },
         signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
       });
       if (!response.ok || !response.body) {
         throw new Error('Installer download failed.');
       }
-      assertTrustedDownloadUrl(response.url || asset.browser_download_url);
+      assertTrustedDownloadUrl(
+        response.url || asset.browserDownloadUrl,
+        source,
+      );
       const declaredLengthHeader = response.headers.get('content-length');
       const declaredLength = Number(declaredLengthHeader);
       if (

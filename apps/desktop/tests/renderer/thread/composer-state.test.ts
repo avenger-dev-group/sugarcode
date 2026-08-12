@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canStopTurn,
   canRemoveDraftProject,
+  shouldShowStopControl,
   shouldStartChatOnSend,
+  TURN_STOP_SAFETY_DELAY_MS,
 } from '../../../src/renderer/components/thread/composer-state.ts';
 
 test('an unselected workspace starts an independent Chat on first send', () => {
@@ -74,4 +77,15 @@ test('only a new project draft can remove its project before first send', () => 
     canRemoveDraftProject({ ...project, status: 'selecting' }, null),
     false,
   );
+});
+
+test('the Stop control stays locked until the active Turn survives the safety delay', () => {
+  assert.equal(TURN_STOP_SAFETY_DELAY_MS, 1_000);
+  assert.equal(shouldShowStopControl('starting', false), true);
+  assert.equal(canStopTurn('starting', 'turn-1', null), false);
+  assert.equal(canStopTurn('inProgress', 'turn-1', null), false);
+  assert.equal(canStopTurn('inProgress', 'turn-1', 'turn-2'), false);
+  assert.equal(canStopTurn('inProgress', 'turn-1', 'turn-1'), true);
+  assert.equal(canStopTurn('stopping', 'turn-1', 'turn-1'), false);
+  assert.equal(shouldShowStopControl('ready', false), false);
 });

@@ -52,3 +52,35 @@ test('tool argument compatibility repair never changes unrelated tools', () => {
     },
   );
 });
+
+test('collaboration_dispatch repairs one bounded string-encoded tasks array', () => {
+  const tasks = [{
+    clientTaskKey: 'implementation',
+    title: 'Implement',
+    role: 'worker',
+    taskMarkdown: 'Implement the requested change.',
+  }];
+  assert.deepEqual(
+    normalizeToolArguments(
+      'collaboration_dispatch',
+      JSON.stringify({ tasks: JSON.stringify(tasks) }),
+    ),
+    {
+      name: 'collaboration_dispatch',
+      args: { tasks },
+    },
+  );
+});
+
+test('collaboration_dispatch preserves an invalid string-encoded tasks value', () => {
+  assert.deepEqual(
+    normalizeToolArguments(
+      'collaboration_dispatch',
+      JSON.stringify({ tasks: '{not json' }),
+    ),
+    {
+      name: 'collaboration_dispatch',
+      args: { tasks: '{not json' },
+    },
+  );
+});

@@ -2,6 +2,8 @@ import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './types.ts';
 
 const MAX_ARGUMENT_TEXT_BYTES = 4_096;
 const MAX_WORKSPACE_READ_PATHS = 8;
+const MAX_COLLABORATION_TASKS = 12;
+const MAX_COLLABORATION_TASKS_TEXT_BYTES = 64 * 1024;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -25,6 +27,29 @@ const repairWorkspaceReadArguments = (
   try {
     const parsed: unknown = JSON.parse(value.paths);
     return isBoundedPathArray(parsed) ? { paths: parsed } : value;
+  } catch {
+    return value;
+  }
+};
+
+const repairCollaborationDispatchArguments = (
+  value: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (
+    typeof value.tasks !== 'string' ||
+    Buffer.byteLength(value.tasks, 'utf8') >
+      MAX_COLLABORATION_TASKS_TEXT_BYTES
+  ) {
+    return value;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value.tasks);
+    return Array.isArray(parsed) &&
+        parsed.length >= 1 &&
+        parsed.length <= MAX_COLLABORATION_TASKS &&
+        parsed.every(isRecord)
+      ? { ...value, tasks: parsed }
+      : value;
   } catch {
     return value;
   }
@@ -105,6 +130,8 @@ export const normalizeToolArguments = (
         name: toolName,
         args: toolName === 'workspace_read'
           ? repairWorkspaceReadArguments(parsed)
+          : toolName === 'collaboration_dispatch'
+            ? repairCollaborationDispatchArguments(parsed)
           : parsed,
       };
     }

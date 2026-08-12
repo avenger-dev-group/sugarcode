@@ -253,6 +253,7 @@ export type ThreadStore = Readonly<{
   attachments: readonly DraftAttachmentViewModel[];
   canSend: boolean;
   canStop: boolean;
+  showStopControl: boolean;
   startsChatOnSend: boolean;
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;

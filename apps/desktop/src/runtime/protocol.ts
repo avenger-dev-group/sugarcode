@@ -297,6 +297,7 @@ export type RuntimeCommand =
       workspaceId: string;
       threadId: string;
       turnId: string;
+      source: 'stopButton';
     }>
   | Readonly<{
       type: 'context.compact';
@@ -1175,7 +1176,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
       return (
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string' &&
-        typeof value.turnId === 'string'
+        typeof value.turnId === 'string' &&
+        value.source === 'stopButton'
       );
     case 'context.compact':
       return (

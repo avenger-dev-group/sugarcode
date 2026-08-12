@@ -87,7 +87,12 @@ import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
-import { shouldStartChatOnSend } from './composer-state';
+import {
+  canStopTurn,
+  shouldShowStopControl,
+  shouldStartChatOnSend,
+  TURN_STOP_SAFETY_DELAY_MS,
+} from './composer-state';
 import {
   isTranscriptScrollUpKey,
   shouldFollowTranscriptAfterScroll,
@@ -1241,6 +1246,8 @@ export const useStore = (): ThreadStore => {
   const [expandedProjectIds, setExpandedProjectIds] =
     useState<readonly string[]>([]);
   const [isSending, setIsSending] = useState<boolean>(false);
+  const [stopUnlockedTurnId, setStopUnlockedTurnId] =
+    useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [renameRequest, setRenameRequest] = useState<Readonly<{
     threadId: string;
@@ -1266,7 +1273,21 @@ export const useStore = (): ThreadStore => {
   );
   const draftKey = useRef<string>('new');
   const modelSelections = useRef(new Map<string, string>());
+  const sendInFlight = useRef(false);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
+
+  useEffect(() => {
+    const turnId = snapshot.activeTurnId;
+    if (snapshot.phase !== 'inProgress' || !turnId) {
+      setStopUnlockedTurnId(null);
+      return;
+    }
+    setStopUnlockedTurnId(null);
+    const timer = window.setTimeout(() => {
+      setStopUnlockedTurnId(turnId);
+    }, TURN_STOP_SAFETY_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [snapshot.activeTurnId, snapshot.phase]);
 
   useEffect(() => {
     let active = true;
@@ -1387,8 +1408,12 @@ export const useStore = (): ThreadStore => {
           ),
       ),
     );
-  const canStop =
-    snapshot.phase === 'inProgress' || snapshot.phase === 'stopping';
+  const showStopControl = shouldShowStopControl(snapshot.phase, isSending);
+  const canStop = canStopTurn(
+    snapshot.phase,
+    snapshot.activeTurnId,
+    stopUnlockedTurnId,
+  );
 
   const addAttachments = async (files: readonly File[]): Promise<void> => {
     setActionError(null);
@@ -1438,9 +1463,10 @@ export const useStore = (): ThreadStore => {
   };
 
   const send = async (): Promise<void> => {
-    if (!canSend) {
+    if (!canSend || sendInFlight.current) {
       return;
     }
+    sendInFlight.current = true;
     setIsSending(true);
     setActionError(null);
     try {
@@ -1491,12 +1517,13 @@ export const useStore = (): ThreadStore => {
     } catch {
       setActionError('Desktop could not send this message safely.');
     } finally {
+      sendInFlight.current = false;
       setIsSending(false);
     }
   };
 
   const stop = async (): Promise<void> => {
-    if (!canStop || snapshot.phase === 'stopping') {
+    if (!canStop) {
       return;
     }
     setActionError(null);
@@ -1743,6 +1770,7 @@ export const useStore = (): ThreadStore => {
     attachments,
     canSend,
     canStop,
+    showStopControl,
     startsChatOnSend,
     activeTurnProgress,
     isSending,

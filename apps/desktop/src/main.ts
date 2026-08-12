@@ -352,10 +352,21 @@ const startApplication = async (): Promise<void> => {
     platform: updatePlatform(),
     downloadsDirectory: app.getPath('downloads'),
     pendingStatePath: path.join(app.getPath('userData'), 'pending-update-v1.json'),
-    latestReleaseApiUrl:
-      'https://api.github.com/repos/avenger-dev-group/sugarcode/releases/latest',
-    downloadPageUrl:
-      'https://github.com/avenger-dev-group/sugarcode/releases/latest',
+    sources: [
+      {
+        kind: 'gitcode',
+        latestReleaseApiUrl:
+          'https://api.gitcode.com/api/v5/repos/Simoonf/SugarCode/releases/latest?type=latest',
+        downloadPageUrl: 'https://gitcode.com/Simoonf/SugarCode/releases',
+      },
+      {
+        kind: 'github',
+        latestReleaseApiUrl:
+          'https://api.github.com/repos/avenger-dev-group/sugarcode/releases/latest',
+        downloadPageUrl:
+          'https://github.com/avenger-dev-group/sugarcode/releases/latest',
+      },
+    ],
     getInstallBlock: () => {
       const phase = runtimeConversationController?.getSnapshot().phase;
       return (

@@ -263,6 +263,14 @@ const runtimeError = (error: RuntimeProviderError): ConversationTurnError => {
   };
 };
 
+const visibleRuntimeError = (
+  error: RuntimeProviderError,
+  status: 'running' | 'completed' | 'failed' | 'interrupted',
+): ConversationTurnError | undefined =>
+  status === 'interrupted' && error.kind === 'cancelled'
+    ? undefined
+    : runtimeError(error);
+
 const fallbackModel = (
   wireApi: RuntimeThreadSnapshot['turns'][number]['providerWireApi'],
   model: string,
@@ -488,7 +496,10 @@ const projectThread = (
     const error = record.errorJson
       ? (() => {
           try {
-            return runtimeError(JSON.parse(record.errorJson) as RuntimeProviderError);
+            return visibleRuntimeError(
+              JSON.parse(record.errorJson) as RuntimeProviderError,
+              record.status,
+            );
           } catch {
             return { kind: 'stateUnavailable' as const, retryable: true };
           }
@@ -807,6 +818,7 @@ export class RuntimeConversationController {
       workspaceId: activeTurn.workspaceId,
       threadId,
       turnId: activeTurn.turnId,
+      source: 'stopButton',
     });
     this.publishThreadDelta(threadId, activeTurn.turnId);
     this.publish();
@@ -1602,7 +1614,12 @@ export class RuntimeConversationController {
           status: event.status,
           messages,
           ...(activities ? { activities } : {}),
-          ...(event.error ? { error: runtimeError(event.error) } : {}),
+          ...(event.error
+            ? (() => {
+                const error = visibleRuntimeError(event.error, event.status);
+                return error ? { error } : {};
+              })()
+            : {}),
         };
         if (this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId) {
           this.activeTurnsByThread.delete(event.threadId);

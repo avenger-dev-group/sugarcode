@@ -8,6 +8,9 @@ type KnownModel = Readonly<{
   contextWindowTokens: number;
 }>;
 
+export const DEFAULT_AGENT_MAX_OUTPUT_TOKENS = 32_768;
+export const DEFAULT_MODEL_REQUEST_TIMEOUT_MS = 600_000;
+
 const OPENAI_MODELS: readonly KnownModel[] = [
   { pattern: /^gpt-5(?:[.-]|$)/u, contextWindowTokens: 400_000 },
   { pattern: /^gpt-4\.1(?:[.-]|$)/u, contextWindowTokens: 1_047_576 },

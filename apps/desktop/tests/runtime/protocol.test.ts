@@ -8,6 +8,18 @@ import {
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+test('private runtime records an explicit user Stop source', () => {
+  const command = {
+    type: 'turn.cancel',
+    requestId: 'request-cancel',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+  };
+  assert.equal(isRuntimeCommand({ ...command, source: 'stopButton' }), true);
+  assert.equal(isRuntimeCommand(command), false);
+});
+
 test('private runtime validates bounded workspace path suggestions', () => {
   assert.equal(
     isRuntimeCommand({
