@@ -3,6 +3,7 @@ import type {
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationSendRequest,
+  ConversationReviseTurnRequest,
   ConversationProjectionDiagnostic,
   ConversationThreadDeltaListener,
   ConversationThreadProjectionListener,
@@ -41,6 +42,11 @@ export const sendConversationMessage = (
   request: ConversationSendRequest,
 ): Promise<ConversationActionResult> =>
   desktopApi().sendConversationMessage(request);
+
+export const reviseConversationTurn = (
+  request: ConversationReviseTurnRequest,
+): Promise<ConversationActionResult> =>
+  desktopApi().reviseConversationTurn(request);
 
 export const stopConversationTurn =
   (threadId: string): Promise<ConversationActionResult> =>

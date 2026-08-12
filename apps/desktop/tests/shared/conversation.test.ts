@@ -3,9 +3,30 @@ import test from 'node:test';
 
 import {
   isConversationStateSnapshot,
+  isConversationReviseTurnRequest,
   isConversationUserInputResponse,
   isValidConversationTitle,
 } from '../../src/shared/conversation.ts';
+
+test('conversation revision requests are bounded and identify their target Turn', () => {
+  assert.equal(
+    isConversationReviseTurnRequest({
+      threadId: THREAD_WEB,
+      turnId: TURN_REVIEW,
+      text: 'Revised request',
+      modelProfileId: 'profile_1',
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationReviseTurnRequest({
+      threadId: THREAD_WEB,
+      turnId: '',
+      text: 'Revised request',
+    }),
+    false,
+  );
+});
 
 const THREAD_WEB = '00000000-0001-7000-8000-000000000001';
 const THREAD_ADMIN = '00000000-0001-7000-8000-000000000002';

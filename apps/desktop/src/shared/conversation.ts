@@ -7,6 +7,7 @@ export const CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL =
 export const CONVERSATION_THREAD_DELTA_CHANNEL =
   'conversation-thread-projection:delta';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
+export const CONVERSATION_REVISE_CHANNEL = 'conversation:revise';
 export const CONVERSATION_STOP_CHANNEL = 'conversation:stop';
 export const CONVERSATION_USER_INPUT_RESPONSE_CHANNEL =
   'conversation:user-input-response';
@@ -54,6 +55,7 @@ export type ConversationAttachment = Readonly<{
   originalName: string;
   sizeBytes: number;
   kind: 'image' | 'pdf' | 'text';
+  pdfPages?: number;
   previewUrl?: string;
 }>;
 
@@ -649,6 +651,7 @@ export type ConversationActionResult = Readonly<{
     | 'accepted'
     | 'invalidInput'
     | 'invalidSearch'
+    | 'notLatestTurn'
     | 'unknownThread'
     | 'turnActive'
     | 'unavailable'
@@ -693,6 +696,9 @@ export type ConversationApi = Readonly<{
   sendConversationMessage: (
     request: ConversationSendRequest,
   ) => Promise<ConversationActionResult>;
+  reviseConversationTurn: (
+    request: ConversationReviseTurnRequest,
+  ) => Promise<ConversationActionResult>;
   stopConversationTurn: (threadId: string) => Promise<ConversationActionResult>;
   respondToConversationUserInput: (
     response: ConversationUserInputResponse,
@@ -712,6 +718,13 @@ export type ConversationApi = Readonly<{
 export type ConversationSendRequest = Readonly<{
   input: string;
   attachments?: readonly ConversationAttachmentUpload[];
+  modelProfileId?: string;
+}>;
+
+export type ConversationReviseTurnRequest = Readonly<{
+  threadId: string;
+  turnId: string;
+  text: string;
   modelProfileId?: string;
 }>;
 
@@ -798,6 +811,7 @@ const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'accepted',
   'invalidInput',
   'invalidSearch',
+  'notLatestTurn',
   'unknownThread',
   'turnActive',
   'unavailable',
@@ -1009,6 +1023,10 @@ const isConversationAttachment = (
   Number.isSafeInteger(value.sizeBytes) &&
   value.sizeBytes > 0 &&
   (value.kind === 'image' || value.kind === 'pdf' || value.kind === 'text') &&
+  (value.pdfPages === undefined ||
+    (value.kind === 'pdf' &&
+      Number.isSafeInteger(value.pdfPages) &&
+      Number(value.pdfPages) > 0)) &&
   (value.previewUrl === undefined ||
     (value.kind === 'image' &&
       typeof value.previewUrl === 'string' &&
@@ -2035,6 +2053,22 @@ export const isConversationSendRequest = (
     (Array.isArray(value.attachments) &&
       value.attachments.length <= MAX_CONVERSATION_ATTACHMENTS &&
       value.attachments.every(isConversationAttachmentUpload))) &&
+  (value.modelProfileId === undefined ||
+    (typeof value.modelProfileId === 'string' &&
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+
+export const isConversationReviseTurnRequest = (
+  value: unknown,
+): value is ConversationReviseTurnRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['threadId', 'turnId', 'text', 'modelProfileId'].includes(key),
+  ) &&
+  isId(value.threadId) &&
+  isId(value.turnId) &&
+  typeof value.text === 'string' &&
+  new TextEncoder().encode(value.text).byteLength <=
+    MAX_CONVERSATION_INPUT_BYTES &&
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
       /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));

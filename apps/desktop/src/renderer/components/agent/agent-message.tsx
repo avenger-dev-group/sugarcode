@@ -1,6 +1,8 @@
 import { LoaderCircle } from 'lucide-react';
 import { memo, type ReactElement } from 'react';
 
+import { MessageCopyButton } from '@/renderer/components/message-actions/message-copy-button';
+
 import { AgentMarkdown } from './agent-markdown';
 import type { AgentMessageProps } from './types';
 
@@ -61,6 +63,14 @@ const AgentMessageView = ({
           )}
         </p>
       )}
+      {message.state === 'completed' ? (
+        <div className="mt-2 flex h-6 items-center">
+          <MessageCopyButton
+            text={message.text}
+            className="text-tertiary hover:text-foreground"
+          />
+        </div>
+      ) : null}
     </article>
   );
 };

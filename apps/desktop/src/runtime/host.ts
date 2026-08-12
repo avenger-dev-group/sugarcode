@@ -236,8 +236,12 @@ type ResolvedProfile = Readonly<{
   selection: RuntimeModelSelection;
 }>;
 
-type TurnContextCommand =
+type TurnExecutionCommand =
   | Extract<RuntimeCommand, { type: 'turn.start' }>
+  | Extract<RuntimeCommand, { type: 'turn.revise' }>;
+
+type TurnContextCommand =
+  | TurnExecutionCommand
   | Extract<RuntimeCommand, { type: 'context.compact' }>;
 
 type TextItemState = {
@@ -629,6 +633,7 @@ export class RuntimeHost {
         });
         break;
       case 'turn.start':
+      case 'turn.revise':
         this.requireReady(command.requestId);
         void this.startTurn(command);
         break;
@@ -1546,7 +1551,7 @@ export class RuntimeHost {
     left.pdfPages === right.pdfPages;
 
   private persistModelHistory = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     event: Event,
   ): void => {
     if (!this.nativeRuntime || !event.content) {
@@ -1926,7 +1931,7 @@ export class RuntimeHost {
     });
 
   private requestUserInputTool = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
   ): FunctionTool<Schema> =>
     new FunctionTool({
       name: 'request_user_input',
@@ -2315,7 +2320,7 @@ export class RuntimeHost {
   };
 
   private startTurn = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
   ): Promise<void> => {
     if (this.activeTurns.has(command.turnId)) {
       this.emitCompleted(command, 'failed', {
@@ -2326,23 +2331,60 @@ export class RuntimeHost {
       return;
     }
     const controller = new AbortController();
+    let revisionCommitted = false;
     this.activeTurns.set(command.turnId, controller);
     try {
       const resolved = this.resolveProfile(command);
-      withDurableStateWrite(() =>
-        this.nativeRuntime?.ensureThread(
-          command.threadId,
-          command.workspaceId,
-        ));
-      await this.ensureSession(command, resolved.selection);
-      withDurableStateWrite(() =>
-        this.nativeRuntime?.startTurn(
-          command.turnId,
-          command.threadId,
-          command.requestId,
-          resolved.provider.wireApi,
-          resolved.provider.model,
-        ));
+      if (command.type === 'turn.revise') {
+        // Resolve and validate every retained asset before replacing durable history.
+        // Once the transaction commits, later provider failures belong to the new Turn.
+        this.contentFromParts(command.content, resolved.selection);
+        const nativeRuntime = this.requireNative();
+        if (!nativeRuntime.replaceLatestTurn) {
+          throw new Error('The native runtime cannot revise Turns.');
+        }
+        withDurableStateWrite(() =>
+          nativeRuntime.replaceLatestTurn?.(
+            command.replacedTurnId,
+            command.turnId,
+            command.threadId,
+            command.requestId,
+            resolved.provider.wireApi,
+            resolved.provider.model,
+          ));
+        this.emit({
+          type: 'turn.revised',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          replacedTurnId: command.replacedTurnId,
+          model: resolved.selection,
+          content: command.content,
+        });
+        revisionCommitted = true;
+        await this.sessions.deleteSession({
+          appName: APPLICATION_NAME,
+          userId: command.workspaceId,
+          sessionId: command.threadId,
+        });
+        await this.ensureSession(command, resolved.selection);
+      } else {
+        withDurableStateWrite(() =>
+          this.nativeRuntime?.ensureThread(
+            command.threadId,
+            command.workspaceId,
+          ));
+        await this.ensureSession(command, resolved.selection);
+        withDurableStateWrite(() =>
+          this.nativeRuntime?.startTurn(
+            command.turnId,
+            command.threadId,
+            command.requestId,
+            resolved.provider.wireApi,
+            resolved.provider.model,
+          ));
+      }
       this.emit({
         type: 'turn.started',
         requestId: command.requestId,
@@ -2622,6 +2664,14 @@ export class RuntimeHost {
     } catch (error) {
       this.collaboration.cancelTurn(command.turnId);
       const details = providerError(error);
+      if (command.type === 'turn.revise' && !revisionCommitted) {
+        this.emit({
+          type: 'runtime.log',
+          requestId: command.requestId,
+          level: 'error',
+          message: details.message,
+        });
+      }
       this.emitCompleted(
         command,
         details.kind === 'cancelled' ? 'interrupted' : 'failed',
@@ -2784,7 +2834,7 @@ export class RuntimeHost {
   };
 
   private generateTitle = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     resolved: ResolvedProfile,
     signal: AbortSignal,
   ): Promise<void> => {
@@ -2826,7 +2876,7 @@ export class RuntimeHost {
   };
 
   private executeAgentTask = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     resolved: ResolvedProfile,
     context: AgentTaskExecutionContext,
   ): Promise<{
@@ -3107,7 +3157,7 @@ export class RuntimeHost {
   };
 
   private publishAgentEvent = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     selection: RuntimeModelSelection,
     event: Event,
     textItems: Map<string, TextItemState>,
@@ -3271,7 +3321,7 @@ export class RuntimeHost {
   };
 
   private publishNativeCompaction = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     selection: RuntimeModelSelection,
     event: Event,
     parts: readonly Part[],
@@ -3356,7 +3406,7 @@ export class RuntimeHost {
   };
 
   private settleFinalCandidate = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     textItems: Map<string, TextItemState>,
     accepted: boolean,
   ): void => {
@@ -3381,7 +3431,7 @@ export class RuntimeHost {
   };
 
   private runPrivilegedTool = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     toolName: string,
     argumentsValue: Readonly<Record<string, unknown>>,
     execute: (operationId: string) => Promise<unknown>,
@@ -3456,7 +3506,7 @@ export class RuntimeHost {
   };
 
   private executeWorkspaceOperation = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     operationId: string,
     execute: (operationId: string) => Promise<unknown>,
   ): Promise<unknown> => {
@@ -3545,7 +3595,7 @@ export class RuntimeHost {
   };
 
   private runMcpTool = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnExecutionCommand,
     request: McpToolApproval,
   ): Promise<unknown> => {
     const operationId = randomUUID();

@@ -147,6 +147,35 @@ class FixtureRuntime {
         },
       } as RuntimeEvent;
     }
+    if (command.type === 'turn.revise') {
+      const event = {
+        type: 'turn.revised',
+        requestId: command.requestId,
+        sequence: 4,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        replacedTurnId: command.replacedTurnId,
+        model: {
+          profileId: command.modelProfileId ?? 'profile-1',
+          providerFamily: 'openai',
+          wireApi: 'openaiResponses',
+          modelId: 'gpt-5',
+          displayName: 'GPT-5',
+          contextWindowTokens: 400_000,
+          effectiveCapabilities: {
+            toolCalls: true,
+            strictTools: true,
+            parallelTools: true,
+            imageInput: true,
+            pdfInput: true,
+          },
+        },
+        content: command.content,
+      } as const satisfies RuntimeEvent;
+      this.emit(event);
+      return event;
+    }
     throw new Error(`Unexpected fixture request ${command.type}.`);
   };
 
@@ -317,6 +346,95 @@ test('/compact starts a maintenance Turn without a user message', async () => {
   assert.equal(
     fixture.sent.some((candidate) => candidate.type === 'turn.start'),
     false,
+  );
+});
+
+test('revising the latest terminal Turn replaces its transcript and preserves selections', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal(controller.startNewThread().accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: '$frontend-design\nOriginal request' }))
+      .accepted,
+    true,
+  );
+  const original = fixture.sent.find(
+    (candidate): candidate is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      candidate.type === 'turn.start',
+  );
+  assert.ok(original);
+  fixture.emit({
+    type: 'turn.userMessage',
+    sequence: 1,
+    requestId: original.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: original.threadId,
+    turnId: original.turnId,
+    itemId: `${original.turnId}:user`,
+    content: original.content,
+  });
+  fixture.emit({
+    type: 'turn.textCompleted',
+    sequence: 2,
+    requestId: original.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: original.threadId,
+    turnId: original.turnId,
+    itemId: 'answer-old',
+    phase: 'final',
+    text: 'Old answer',
+  });
+  fixture.emit({
+    type: 'turn.completed',
+    sequence: 3,
+    requestId: original.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: original.threadId,
+    turnId: original.turnId,
+    status: 'completed',
+  });
+
+  const result = await controller.reviseTurn({
+    threadId: THREAD_ID,
+    turnId: original.turnId,
+    text: 'Revised request',
+    modelProfileId: 'profile-2',
+  });
+  assert.equal(result.accepted, true);
+  const revisedCommand = fixture.sent.find(
+    (candidate): candidate is Extract<RuntimeCommand, { type: 'turn.revise' }> =>
+      candidate.type === 'turn.revise',
+  );
+  assert.ok(revisedCommand);
+  assert.equal(revisedCommand.replacedTurnId, original.turnId);
+  assert.equal(revisedCommand.modelProfileId, 'profile-2');
+  assert.equal(revisedCommand.content[0]?.type, 'text');
+  assert.equal(
+    revisedCommand.content[0]?.type === 'text'
+      ? revisedCommand.content[0].text
+      : '',
+    '$frontend-design\nRevised request',
+  );
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.turns.length, 1);
+  assert.notEqual(snapshot.turns[0]?.id, original.turnId);
+  assert.deepEqual(
+    snapshot.turns[0]?.messages.map((message) => [message.role, message.text]),
+    [['user', '$frontend-design\nRevised request']],
+  );
+  assert.equal(snapshot.activeTurnId, revisedCommand.turnId);
+  assert.equal(
+    (
+      await controller.reviseTurn({
+        threadId: THREAD_ID,
+        turnId: original.turnId,
+        text: 'Stale request',
+      })
+    ).reason,
+    'notLatestTurn',
   );
 });
 

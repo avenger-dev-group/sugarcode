@@ -6,6 +6,7 @@ import {
   isConversationThreadProjectionSnapshot,
   isConversationStateSnapshot,
   isConversationSendRequest,
+  isConversationReviseTurnRequest,
   isConversationUserInputResponse,
   isValidConversationTitle,
   isValidThreadSearchInput,
@@ -309,6 +310,9 @@ const attachmentFromPart = (
   originalName: part.asset.originalName,
   sizeBytes: part.asset.sizeBytes,
   kind: part.asset.kind,
+  ...(part.asset.pdfPages === undefined
+    ? {}
+    : { pdfPages: part.asset.pdfPages }),
 });
 
 const orchestrationActivity = (
@@ -800,6 +804,99 @@ export class RuntimeConversationController {
     }
   };
 
+  reviseTurn = async (input: unknown): Promise<ConversationActionResult> => {
+    if (!isConversationReviseTurnRequest(input)) {
+      return rejected('invalidInput');
+    }
+    if (!this.workspaceId || !this.available) {
+      return rejected('unavailable');
+    }
+    if (!this.threadId || input.threadId !== this.threadId) {
+      return rejected('unknownThread');
+    }
+    const workspaceId = this.workspaceId;
+    const turns = this.turnsByThread.get(input.threadId) ?? [];
+    const latestTurn = turns.at(-1);
+    if (!latestTurn || latestTurn.id !== input.turnId) {
+      return rejected('notLatestTurn');
+    }
+    if (
+      latestTurn.status === 'inProgress' ||
+      this.pendingTurnStartWorkspaces.has(workspaceId) ||
+      this.activeTurnsByThread.has(input.threadId) ||
+      this.navigator.pendingMutation
+    ) {
+      return rejected('turnActive');
+    }
+    const userMessage = latestTurn.messages.find(
+      (message) => message.role === 'user',
+    );
+    if (!userMessage) {
+      return rejected('notLatestTurn');
+    }
+    const references = parseComposerSubmission(userMessage.text).references;
+    const revisedInput = [
+      ...references.map((reference) => reference.value),
+      input.text,
+    ].join('\n');
+    if (
+      revisedInput.trim().length === 0 &&
+      (userMessage.attachments?.length ?? 0) === 0
+    ) {
+      return rejected('invalidInput');
+    }
+    const content: RuntimeContentPart[] = revisedInput.length > 0
+      ? [{ type: 'text', text: revisedInput }]
+      : [];
+    for (const attachment of userMessage.attachments ?? []) {
+      content.push({
+        type: 'asset',
+        asset: {
+          assetId: attachment.assetId,
+          sha256: attachment.sha256,
+          mediaType: attachment.mediaType,
+          originalName: attachment.originalName,
+          sizeBytes: attachment.sizeBytes,
+          kind: attachment.kind,
+          ...(attachment.pdfPages === undefined
+            ? {}
+            : { pdfPages: attachment.pdfPages }),
+        },
+      });
+    }
+    const turnId = createUuidV7();
+    this.pendingTurnStartWorkspaces.add(workspaceId);
+    this.notice = undefined;
+    this.publish();
+    try {
+      await this.runtime.request(
+        {
+          type: 'turn.revise',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId: input.threadId,
+          turnId,
+          replacedTurnId: input.turnId,
+          ...(input.modelProfileId
+            ? { modelProfileId: input.modelProfileId }
+            : {}),
+          content,
+        },
+        'turn.revised',
+      );
+      return accepted();
+    } catch {
+      this.notice = {
+        kind: 'requestFailed',
+        summary: 'The last Turn could not be revised safely.',
+      };
+      return rejected('unavailable');
+    } finally {
+      this.pendingTurnStartWorkspaces.delete(workspaceId);
+      this.publish();
+    }
+  };
+
   stopTurn = async (threadId: unknown): Promise<ConversationActionResult> => {
     if (typeof threadId !== 'string' || threadId !== this.threadId) {
       return rejected('unknownThread');
@@ -1204,6 +1301,56 @@ export class RuntimeConversationController {
       return;
     }
     const turns = [...(this.turnsByThread.get(event.threadId) ?? [])];
+    if (event.type === 'turn.revised') {
+      const replacedIndex = turns.findIndex(
+        (turn) => turn.id === event.replacedTurnId,
+      );
+      const replacedTurn = turns[replacedIndex];
+      const previousUserMessage = replacedTurn?.messages.find(
+        (message) => message.role === 'user',
+      );
+      if (
+        replacedIndex < 0 ||
+        replacedIndex !== turns.length - 1 ||
+        !previousUserMessage
+      ) {
+        return;
+      }
+      const text = event.content
+        .filter(
+          (part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+            part.type === 'text',
+        )
+        .map((part) => part.text)
+        .join('\n');
+      turns[replacedIndex] = {
+        id: event.turnId,
+        status: 'inProgress',
+        model: event.model,
+        messages: [
+          {
+            id: `${event.turnId}:user`,
+            role: 'user',
+            text,
+            ...(previousUserMessage.attachments?.length
+              ? { attachments: previousUserMessage.attachments }
+              : {}),
+            status: 'inProgress',
+          },
+        ],
+      };
+      this.turnsByThread.set(event.threadId, turns);
+      this.activeTurnsByThread.set(event.threadId, {
+        workspaceId: event.workspaceId,
+        turnId: event.turnId,
+        phase: 'starting',
+      });
+      this.unreadThreadStatuses.delete(event.threadId);
+      this.refreshNavigator();
+      this.publishThreadProjection(event.threadId, true);
+      this.publish();
+      return;
+    }
     const index = turns.findIndex((turn) => turn.id === event.turnId);
     if (index < 0) {
       return;

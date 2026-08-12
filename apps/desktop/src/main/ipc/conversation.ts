@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 
 import {
   CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_REVISE_CHANNEL,
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
@@ -37,6 +38,7 @@ type ConversationControllerBoundary = Readonly<{
     listener: ConversationThreadDeltaListener,
   ) => () => void;
   startTurn: (input: unknown) => Promise<ConversationActionResult>;
+  reviseTurn: (input: unknown) => Promise<ConversationActionResult>;
   stopTurn: (threadId: unknown) => Promise<ConversationActionResult>;
   respondToUserInput: (input: unknown) => Promise<ConversationActionResult>;
   searchThreads: (query: unknown) => Promise<ConversationActionResult>;
@@ -90,6 +92,16 @@ export const registerConversationIpc = (
         throw new Error('Conversation send came from an untrusted frame.');
       }
       return options.controller.startTurn(input);
+    },
+  );
+
+  ipcMain.handle(
+    CONVERSATION_REVISE_CHANNEL,
+    async (event, input: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Conversation revision came from an untrusted frame.');
+      }
+      return options.controller.reviseTurn(input);
     },
   );
 
@@ -173,6 +185,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_STATE_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_PROJECTION_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_REVISE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_USER_INPUT_RESPONSE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);

@@ -415,6 +415,96 @@ impl Store {
         Ok(())
     }
 
+    pub(super) fn replace_latest_turn(
+        &mut self,
+        replaced_turn_id: &str,
+        turn_id: &str,
+        thread_id: &str,
+        request_id: &str,
+        provider_wire_api: &str,
+        model: &str,
+    ) -> Result<()> {
+        for (name, value) in [
+            ("replaced_turn_id", replaced_turn_id),
+            ("turn_id", turn_id),
+            ("thread_id", thread_id),
+            ("request_id", request_id),
+        ] {
+            validate_id(name, value)?;
+        }
+        if !matches!(
+            provider_wire_api,
+            "openaiResponses" | "openaiChatCompletions" | "anthropicMessages"
+        ) {
+            return Err(PersistenceError::InvalidInput(
+                "unsupported provider wire API".to_owned(),
+            ));
+        }
+        if model.is_empty() {
+            return Err(PersistenceError::InvalidInput(
+                "model must not be empty".to_owned(),
+            ));
+        }
+
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let latest: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT id, status FROM turns WHERE thread_id = ?1 \
+                 ORDER BY started_at DESC, id DESC LIMIT 1",
+                [thread_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if latest.as_ref().map(|(id, _)| id.as_str()) != Some(replaced_turn_id) {
+            return Err(PersistenceError::Conflict(format!(
+                "turn {replaced_turn_id} is not the latest Turn"
+            )));
+        }
+        if latest
+            .as_ref()
+            .is_some_and(|(_, status)| status == "running")
+        {
+            return Err(PersistenceError::Conflict(format!(
+                "turn {replaced_turn_id} is still running"
+            )));
+        }
+
+        transaction.execute(
+            "DELETE FROM approvals WHERE turn_id = ?1",
+            [replaced_turn_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM operations WHERE turn_id = ?1",
+            [replaced_turn_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM agent_tasks WHERE turn_id = ?1",
+            [replaced_turn_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM turn_items WHERE turn_id = ?1",
+            [replaced_turn_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM turns WHERE id = ?1 AND thread_id = ?2",
+            params![replaced_turn_id, thread_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO turns \
+             (id, thread_id, request_id, status, provider_wire_api, model) \
+             VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
+            params![turn_id, thread_id, request_id, provider_wire_api, model],
+        )?;
+        transaction.execute(
+            "UPDATE threads SET updated_at = unixepoch() WHERE id = ?1",
+            [thread_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub(super) fn append_item(
         &mut self,
         item_id: &str,

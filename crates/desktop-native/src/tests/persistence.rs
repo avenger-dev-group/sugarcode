@@ -192,6 +192,76 @@ fn persists_provider_neutral_thread_history_and_deduplicates_items() {
 }
 
 #[test]
+fn replacing_latest_turn_is_atomic_and_removes_its_dependent_records() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = seeded_store(&directory);
+    store
+        .start_turn(
+            "turn-old",
+            "thread-1",
+            "request-old",
+            "openaiResponses",
+            "fixture-model",
+        )
+        .expect("start old turn");
+    store
+        .append_item(
+            "item-old",
+            "turn-old",
+            1,
+            "turn.userMessage",
+            r#"{"content":[{"type":"text","text":"Old"}]}"#,
+        )
+        .expect("old item");
+    store
+        .finish_turn("turn-old", "completed", None)
+        .expect("finish old turn");
+
+    store
+        .replace_latest_turn(
+            "turn-old",
+            "turn-new",
+            "thread-1",
+            "request-new",
+            "anthropicMessages",
+            "new-model",
+        )
+        .expect("replace latest turn");
+
+    let snapshot: Value = serde_json::from_str(
+        &store
+            .load_thread_json("thread-1")
+            .expect("load revised thread"),
+    )
+    .expect("snapshot JSON");
+    assert_eq!(snapshot["turns"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["turns"][0]["id"], "turn-new");
+    assert_eq!(snapshot["turns"][0]["status"], "running");
+    assert_eq!(snapshot["items"].as_array().map(Vec::len), Some(0));
+
+    assert!(
+        store
+            .replace_latest_turn(
+                "turn-old",
+                "turn-invalid",
+                "thread-1",
+                "request-invalid",
+                "openaiResponses",
+                "fixture-model",
+            )
+            .is_err()
+    );
+    let unchanged: Value = serde_json::from_str(
+        &store
+            .load_thread_json("thread-1")
+            .expect("reload revised thread"),
+    )
+    .expect("unchanged snapshot JSON");
+    assert_eq!(unchanged["turns"].as_array().map(Vec::len), Some(1));
+    assert_eq!(unchanged["turns"][0]["id"], "turn-new");
+}
+
+#[test]
 fn thread_index_delete_is_workspace_bound_and_durable() {
     let directory = tempfile::tempdir().expect("tempdir");
     let mut store = seeded_store(&directory);

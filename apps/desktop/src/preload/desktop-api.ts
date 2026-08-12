@@ -44,6 +44,7 @@ import {
 } from '@/shared/git';
 import {
   CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_REVISE_CHANNEL,
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
@@ -61,6 +62,7 @@ import {
   isConversationThreadProjectionSnapshot,
   type ConversationActionResult,
   type ConversationStateSnapshot,
+  type ConversationReviseTurnRequest,
   type ConversationThreadProjectionSnapshot,
   type ConversationUserInputResponse,
 } from '@/shared/conversation';
@@ -774,6 +776,18 @@ export const createDesktopApi = (
     );
     if (!isConversationActionResult(result)) {
       throw new Error('Main returned an invalid conversation send result.');
+    }
+    return result;
+  },
+  reviseConversationTurn: async (
+    request: ConversationReviseTurnRequest,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_REVISE_CHANNEL,
+      request,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid conversation revision result.');
     }
     return result;
   },

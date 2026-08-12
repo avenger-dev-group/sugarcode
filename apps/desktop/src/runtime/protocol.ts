@@ -292,6 +292,18 @@ export type RuntimeCommand =
       content: readonly RuntimeContentPart[];
     }>
   | Readonly<{
+      type: 'turn.revise';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      replacedTurnId: string;
+      provider?: RuntimeProviderConfig;
+      modelProfileId?: string;
+      generateTitle?: false;
+      content: readonly RuntimeContentPart[];
+    }>
+  | Readonly<{
       type: 'turn.cancel';
       requestId: string;
       workspaceId: string;
@@ -608,6 +620,16 @@ export type RuntimeEvent =
       Readonly<{
         type: 'asset.imported';
         asset: RuntimeAssetDescriptor;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.revised';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        replacedTurnId: string;
+        model: RuntimeModelSelection;
+        content: readonly RuntimeContentPart[];
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1155,6 +1177,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.data.length <= 27_962_032
       );
     case 'turn.start':
+    case 'turn.revise':
       return (
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string' &&
@@ -1168,6 +1191,10 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
                 /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))))) &&
         (value.generateTitle === undefined ||
           typeof value.generateTitle === 'boolean') &&
+        (value.type !== 'turn.revise' ||
+          (typeof value.replacedTurnId === 'string' &&
+            value.replacedTurnId.length > 0 &&
+            value.generateTitle !== true)) &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
@@ -1522,6 +1549,17 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       );
     case 'asset.imported':
       return isAssetDescriptor(value.asset);
+    case 'turn.revised':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.turnId === 'string' &&
+        typeof value.replacedTurnId === 'string' &&
+        isRecord(value.model) &&
+        Array.isArray(value.content) &&
+        value.content.length > 0 &&
+        value.content.every(isRuntimeContentPart)
+      );
     case 'turn.started':
       return hasTurnCoordinates(value) && isRecord(value.model);
     case 'turn.userMessage':

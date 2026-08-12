@@ -258,6 +258,13 @@ export type ThreadStore = Readonly<{
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
+  editableTurnId: string | null;
+  messageEditor: Readonly<{
+    turnId: string | null;
+    draft: string;
+    pending: boolean;
+    error: string | null;
+  }>;
   rename: Readonly<{
     request: Readonly<{ threadId: string; title: string }> | null;
     draft: string;
@@ -277,6 +284,10 @@ export type ThreadStore = Readonly<{
     targetName: string;
   }> | null;
   setDraft: (value: string) => void;
+  beginMessageEdit: (turnId: string, text: string) => void;
+  setMessageEditDraft: (value: string) => void;
+  cancelMessageEdit: () => void;
+  submitMessageEdit: () => Promise<void>;
   addAttachments: (files: readonly File[]) => Promise<void>;
   removeAttachment: (id: string) => void;
   toggleProjectExpanded: (projectId: string) => void;
@@ -319,6 +330,12 @@ export type TranscriptTurnProps = Readonly<{
   boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
   onSubmitUserInput: ThreadStore['respondToUserInput'];
+  editable: boolean;
+  messageEditor: ThreadStore['messageEditor'];
+  onBeginMessageEdit: ThreadStore['beginMessageEdit'];
+  onSetMessageEditDraft: ThreadStore['setMessageEditDraft'];
+  onCancelMessageEdit: ThreadStore['cancelMessageEdit'];
+  onSubmitMessageEdit: ThreadStore['submitMessageEdit'];
 }>;
 
 export type ActivityDisclosureStore = Readonly<{

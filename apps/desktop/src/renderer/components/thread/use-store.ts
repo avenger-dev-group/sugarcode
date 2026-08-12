@@ -13,6 +13,7 @@ import { useStore as useZustandStore } from 'zustand';
 import {
   deleteConversationThread,
   respondToConversationUserInput,
+  reviseConversationTurn,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
@@ -87,6 +88,7 @@ import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
+import { latestEditableTurnId } from './message-edit';
 import {
   canStopTurn,
   shouldShowStopControl,
@@ -1256,6 +1258,12 @@ export const useStore = (): ThreadStore => {
   const [renameDraft, setRenameDraftState] = useState<string>('');
   const [renamePending, setRenamePending] = useState<boolean>(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [messageEditTurnId, setMessageEditTurnId] = useState<string | null>(
+    null,
+  );
+  const [messageEditDraft, setMessageEditDraftState] = useState('');
+  const [messageEditPending, setMessageEditPending] = useState(false);
+  const [messageEditError, setMessageEditError] = useState<string | null>(null);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
@@ -1329,6 +1337,10 @@ export const useStore = (): ThreadStore => {
     setDraft(saved?.draft ?? '');
     setAttachments(saved ? [...saved.attachments] : []);
     setPendingModelProfileId(null);
+    setMessageEditTurnId(null);
+    setMessageEditDraftState('');
+    setMessageEditPending(false);
+    setMessageEditError(null);
   }, [snapshot.threadId]);
 
   useEffect(() => {
@@ -1395,6 +1407,7 @@ export const useStore = (): ThreadStore => {
     !snapshot.navigator.pendingThreadId &&
     !snapshot.navigator.pendingMutation &&
     !isSending &&
+    !messageEditTurnId &&
     (draft.trim().length > 0 || attachments.length > 0) &&
     selectedModelProfileId.length > 0 &&
     Boolean(
@@ -1519,6 +1532,76 @@ export const useStore = (): ThreadStore => {
     } finally {
       sendInFlight.current = false;
       setIsSending(false);
+    }
+  };
+
+  const beginMessageEdit = (turnId: string, text: string): void => {
+    setMessageEditTurnId(turnId);
+    setMessageEditDraftState(text);
+    setMessageEditError(null);
+  };
+
+  const setMessageEditDraft = (value: string): void => {
+    setMessageEditDraftState(value);
+    setMessageEditError(null);
+  };
+
+  const cancelMessageEdit = (): void => {
+    if (messageEditPending) {
+      return;
+    }
+    setMessageEditTurnId(null);
+    setMessageEditDraftState('');
+    setMessageEditError(null);
+  };
+
+  const submitMessageEdit = async (): Promise<void> => {
+    if (!snapshot.threadId || !messageEditTurnId || messageEditPending) {
+      return;
+    }
+    const targetTurn = snapshot.turns.find(
+      (turn) => turn.id === messageEditTurnId,
+    );
+    const userMessage = targetTurn?.messages.find(
+      (message) => message.role === 'user',
+    );
+    if (
+      !userMessage ||
+      (messageEditDraft.trim().length === 0 &&
+        (userMessage.attachments?.length ?? 0) === 0)
+    ) {
+      setMessageEditError('消息不能为空。');
+      return;
+    }
+    setMessageEditPending(true);
+    setMessageEditError(null);
+    try {
+      const result = await reviseConversationTurn({
+        threadId: snapshot.threadId,
+        turnId: messageEditTurnId,
+        text: messageEditDraft,
+        ...(selectedModelProfileId
+          ? { modelProfileId: selectedModelProfileId }
+          : {}),
+      });
+      if (result.accepted) {
+        setMessageEditTurnId(null);
+        setMessageEditDraftState('');
+        return;
+      }
+      setMessageEditError(
+        result.reason === 'notLatestTurn'
+          ? '这条消息已不是最后一轮，无法重新发送。'
+          : result.reason === 'turnActive'
+            ? 'Agent 正在运行，请等待当前任务结束。'
+            : result.reason === 'invalidInput'
+              ? '消息内容无效，请调整后重试。'
+              : '消息未能重新发送，请重试。',
+      );
+    } catch {
+      setMessageEditError('消息未能安全地重新发送，请重试。');
+    } finally {
+      setMessageEditPending(false);
     }
   };
 
@@ -1703,6 +1786,11 @@ export const useStore = (): ThreadStore => {
     previousThread.current = next;
     return next;
   }, [snapshot]);
+  const editableTurnId = latestEditableTurnId(
+    thread.turns,
+    snapshot.phase,
+    isSending,
+  );
   const activeTurnView = snapshot.activeTurnId
     ? thread.turns.find((turn) => turn.id === snapshot.activeTurnId)
     : undefined;
@@ -1775,6 +1863,13 @@ export const useStore = (): ThreadStore => {
     activeTurnProgress,
     isSending,
     actionError: actionError ?? projectionError,
+    editableTurnId,
+    messageEditor: {
+      turnId: messageEditTurnId,
+      draft: messageEditDraft,
+      pending: messageEditPending,
+      error: messageEditError,
+    },
     rename: {
       request: renameRequest,
       draft: renameDraft,
@@ -1790,9 +1885,14 @@ export const useStore = (): ThreadStore => {
       snapshot.phase === 'starting' ||
       snapshot.phase === 'inProgress' ||
       snapshot.phase === 'stopping' ||
-      isSending,
+      isSending ||
+      Boolean(messageEditTurnId),
     modelSwitchConfirmation,
     setDraft,
+    beginMessageEdit,
+    setMessageEditDraft,
+    cancelMessageEdit,
+    submitMessageEdit,
     addAttachments,
     removeAttachment,
     toggleProjectExpanded,

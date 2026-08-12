@@ -531,6 +531,28 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn replace_latest_turn(
+        &self,
+        replaced_turn_id: String,
+        turn_id: String,
+        thread_id: String,
+        request_id: String,
+        provider_wire_api: String,
+        model: String,
+    ) -> Result<()> {
+        self.with_store(|store| {
+            store.replace_latest_turn(
+                &replaced_turn_id,
+                &turn_id,
+                &thread_id,
+                &request_id,
+                &provider_wire_api,
+                &model,
+            )
+        })
+    }
+
+    #[napi]
     pub fn append_item(
         &self,
         item_id: String,
