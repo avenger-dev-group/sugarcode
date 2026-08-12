@@ -186,6 +186,16 @@ import {
   type TerminalSnapshotRequest,
   type TerminalStateSnapshot,
 } from '@/shared/terminal';
+import {
+  isUpdateActionResult,
+  isUpdateStateSnapshot,
+  UPDATE_DOWNLOAD_PAGE_CHANNEL,
+  UPDATE_INSTALL_CHANNEL,
+  UPDATE_STATE_CHANGED_CHANNEL,
+  UPDATE_STATE_GET_CHANNEL,
+  type UpdateActionResult,
+  type UpdateStateSnapshot,
+} from '@/shared/update';
 
 type StateChangedHandler = (
   event: IpcRendererEvent,
@@ -216,6 +226,44 @@ const invokeConversationThreadAction = async (
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
 ): DesktopApi => ({
+  getUpdateState: async (): Promise<UpdateStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      UPDATE_STATE_GET_CHANNEL,
+    );
+    if (!isUpdateStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid update state.');
+    }
+    return snapshot;
+  },
+  onUpdateStateChanged: (listener) => {
+    const handler = (
+      _event: IpcRendererEvent,
+      snapshot: unknown,
+    ): void => {
+      if (isUpdateStateSnapshot(snapshot)) {
+        listener(snapshot);
+      }
+    };
+    ipcRenderer.on(UPDATE_STATE_CHANGED_CHANNEL, handler);
+    return () =>
+      ipcRenderer.removeListener(UPDATE_STATE_CHANGED_CHANNEL, handler);
+  },
+  installUpdate: async (): Promise<UpdateActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(UPDATE_INSTALL_CHANNEL);
+    if (!isUpdateActionResult(result)) {
+      throw new Error('Main returned an invalid update install result.');
+    }
+    return result;
+  },
+  openUpdateDownloadPage: async (): Promise<UpdateActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      UPDATE_DOWNLOAD_PAGE_CHANNEL,
+    );
+    if (!isUpdateActionResult(result)) {
+      throw new Error('Main returned an invalid update download-page result.');
+    }
+    return result;
+  },
   getSkills: async (): Promise<SkillsInspection> => {
     const result: unknown = await ipcRenderer.invoke(SKILLS_GET_CHANNEL);
     if (!isSkillsInspection(result)) {

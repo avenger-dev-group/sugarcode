@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import started from 'electron-squirrel-startup';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -30,6 +31,8 @@ import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller
 import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
 import { RuntimeSkillsController } from '@/main/runtime/skills-controller';
 import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
+import { UpdateController } from '@/main/update/controller';
+import { registerUpdateIpc } from '@/main/update/ipc';
 
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
@@ -54,6 +57,9 @@ let runtimeGitAdapter: RuntimeGitAdapter | null = null;
 let runtimeMcpSessionController: McpSessionController | null = null;
 let runtimeMcpApprovalController: RuntimeMcpApprovalController | null = null;
 let disposeRuntimeEvents: (() => void) | null = null;
+let gitController: GitController | null = null;
+let updateController: UpdateController | null = null;
+let disposeUpdateIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -62,6 +68,19 @@ const rendererFilePath = path.join(
 const appIconPath = app.isPackaged
   ? path.join(process.resourcesPath, 'icon.png')
   : path.join(app.getAppPath(), 'assets', 'icon.png');
+
+const updatePlatform = (): 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | null => {
+  if (process.platform === 'darwin' && process.arch === 'arm64') {
+    return 'darwin-arm64';
+  }
+  if (process.platform === 'darwin' && process.arch === 'x64') {
+    return 'darwin-x64';
+  }
+  if (process.platform === 'win32' && process.arch === 'x64') {
+    return 'win32-x64';
+  }
+  return null;
+};
 
 const isAllowedRendererUrl = (url: string): boolean => {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -309,11 +328,12 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  gitController = new GitController({
+    supervisor: runtimeGitAdapter,
+    workspace: workspaceController,
+  });
   disposeGitIpc = registerGitIpc({
-    controller: new GitController({
-      supervisor: runtimeGitAdapter,
-      workspace: workspaceController,
-    }),
+    controller: gitController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -324,6 +344,54 @@ const startApplication = async (): Promise<void> => {
   });
   disposeTerminalIpc = registerTerminalIpc({
     controller: terminalController,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  updateController = new UpdateController({
+    currentVersion: app.getVersion(),
+    platform: updatePlatform(),
+    downloadsDirectory: app.getPath('downloads'),
+    pendingStatePath: path.join(app.getPath('userData'), 'pending-update-v1.json'),
+    latestReleaseApiUrl:
+      'https://api.github.com/repos/avenger-dev-group/sugarcode/releases/latest',
+    downloadPageUrl:
+      'https://github.com/avenger-dev-group/sugarcode/releases/latest',
+    publicKeyPem: SUGARCODE_UPDATE_PUBLIC_KEY,
+    getInstallBlock: () => {
+      const phase = runtimeConversationController?.getSnapshot().phase;
+      return (
+        phase === 'starting' ||
+        phase === 'inProgress' ||
+        phase === 'stopping' ||
+        runtimeApprovalController?.getSnapshot().status === 'pending' ||
+        runtimeMcpApprovalController?.getSnapshot().status === 'pending' ||
+        gitController?.getSnapshot().pending !== undefined ||
+        terminalController?.hasLiveSession() === true
+      );
+    },
+    launchInstaller: async (installerPath) => {
+      if (process.platform === 'darwin') {
+        return (await shell.openPath(installerPath)) === '';
+      }
+      if (process.platform === 'win32') {
+        const installer = spawn(installerPath, [], {
+          detached: true,
+          stdio: 'ignore',
+          windowsHide: false,
+        });
+        installer.unref();
+        return true;
+      }
+      return false;
+    },
+    openDownloadPage: async (url) => {
+      await shell.openExternal(url);
+      return true;
+    },
+    quitApplication: () => app.quit(),
+  });
+  disposeUpdateIpc = registerUpdateIpc({
+    controller: updateController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -356,6 +424,9 @@ const startApplication = async (): Promise<void> => {
     unsubscribeMcpApproval();
   };
   createWindow();
+  if (app.isPackaged) {
+    void updateController.start();
+  }
 };
 
 if (started) {
@@ -389,6 +460,8 @@ if (started) {
   });
 
   app.on('will-quit', () => {
+    updateController?.stop();
+    updateController = null;
     runtimeSupervisor?.shutdown();
     runtimeSupervisor = null;
     runtimeConversationController = null;
@@ -413,6 +486,9 @@ if (started) {
     disposeWorkspaceIpc = null;
     disposeGitIpc?.();
     disposeGitIpc = null;
+    gitController = null;
+    disposeUpdateIpc?.();
+    disposeUpdateIpc = null;
     disposePreviewIpc?.();
     disposePreviewIpc = null;
     disposeTerminalIpc?.();

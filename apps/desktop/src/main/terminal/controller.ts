@@ -92,6 +92,9 @@ export class TerminalController {
   getFailureDiagnostic = (): string | null =>
     this.active?.status === 'failed' ? this.active.error ?? 'terminalCrashed' : null;
 
+  hasLiveSession = (): boolean =>
+    this.operationActive || this.liveActive() !== null;
+
   getSnapshot = (request: TerminalSnapshotRequest): TerminalStateSnapshot => {
     const active = this.active;
     if (

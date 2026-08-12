@@ -8,6 +8,7 @@ import type { WorkspaceApi } from './workspace';
 import type { GitApi } from './git';
 import type { PreviewApi } from './preview';
 import type { TerminalApi } from './terminal';
+import type { UpdateApi } from './update';
 
 export type DesktopApi = Readonly<
   ConnectionApi &
@@ -19,5 +20,6 @@ export type DesktopApi = Readonly<
     WorkspaceApi &
     GitApi &
     PreviewApi &
-    TerminalApi
+    TerminalApi &
+    UpdateApi
 >;

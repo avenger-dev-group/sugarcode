@@ -115,7 +115,14 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify update public key
+        env:
+          SUGARCODE_UPDATE_PUBLIC_KEY_B64: ${{ vars.SUGARCODE_UPDATE_PUBLIC_KEY_B64 }}
+        run: node scripts/verify-update-signing-key.mjs
+
       - name: Build installers
+        env:
+          SUGARCODE_UPDATE_PUBLIC_KEY_B64: ${{ vars.SUGARCODE_UPDATE_PUBLIC_KEY_B64 }}
         run: pnpm desktop:make
 
       - name: Verify packaged application
@@ -185,6 +192,13 @@ jobs:
           pattern: release-*
           path: release-assets
           merge-multiple: true
+
+      - name: Create signed update manifest
+        env:
+          RELEASE_NOTES: SugarCode ${{ inputs.version }}
+          SUGARCODE_UPDATE_PRIVATE_KEY_B64: ${{ secrets.SUGARCODE_UPDATE_PRIVATE_KEY_B64 }}
+          SUGARCODE_UPDATE_PUBLIC_KEY_B64: ${{ vars.SUGARCODE_UPDATE_PUBLIC_KEY_B64 }}
+        run: node scripts/create-update-manifest.mjs "${{ inputs.version }}" release-assets
 
       - name: Create or update GitHub Release
         env:

@@ -9,6 +9,7 @@ import { SettingsDialog } from '@/renderer/components/settings/settings-dialog';
 import { ThreadWorkbenchView } from '@/renderer/components/thread/thread-workbench';
 import { useStore as useThreadStore } from '@/renderer/components/thread/use-store';
 import { OrchestrationStoreProvider } from '@/renderer/components/orchestration/use-store';
+import { UpdateAction } from '@/renderer/components/update/update-action';
 
 import { ContextRail } from './context-rail';
 import { useStore } from './use-store';
@@ -60,11 +61,14 @@ export const FoundationScreen = () => {
               />
             }
             navigationFooter={
-              <SettingsDialog
-                isDark={foundation.isDark}
-                themeLabel={foundation.themeLabel}
-                toggleTheme={foundation.toggleTheme}
-              />
+              <div className="space-y-1">
+                <UpdateAction />
+                <SettingsDialog
+                  isDark={foundation.isDark}
+                  themeLabel={foundation.themeLabel}
+                  toggleTheme={foundation.toggleTheme}
+                />
+              </div>
             }
             contextRail={<ContextRail />}
             approvalThreadIds={approvalThreadIds}

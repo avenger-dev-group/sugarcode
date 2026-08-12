@@ -18,6 +18,7 @@
     "desktop:package": "pnpm --filter @sugarcode/desktop package",
     "desktop:make": "pnpm --filter @sugarcode/desktop make",
     "desktop:publish": "pnpm --filter @sugarcode/desktop publish",
+    "release:update-manifest": "node scripts/create-update-manifest.mjs",
     "lint": "pnpm --filter @sugarcode/desktop lint",
     "typecheck": "pnpm --filter @sugarcode/desktop typecheck",
     "test:scripts": "node --test \"scripts/tests/**/*.test.mjs\"",
