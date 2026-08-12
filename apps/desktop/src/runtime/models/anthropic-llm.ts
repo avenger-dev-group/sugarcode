@@ -1,10 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type {
-  ContentBlockParam,
-  MessageParam,
-  RawMessageStreamEvent,
-  StopReason,
-  Tool as AnthropicTool,
+  BetaCompactionBlockParam,
+  BetaContentBlockParam as ContentBlockParam,
+  BetaMessageParam as MessageParam,
+  BetaRawMessageStreamEvent as RawMessageStreamEvent,
+  BetaStopReason as StopReason,
+  BetaTool as AnthropicTool,
+} from '@anthropic-ai/sdk/resources/beta/messages/messages';
+import type {
+  MessageParam as RegularMessageParam,
+  RawMessageStreamEvent as RegularRawMessageStreamEvent,
+  Tool as RegularAnthropicTool,
 } from '@anthropic-ai/sdk/resources/messages';
 import {
   BaseLlm,
@@ -36,7 +42,8 @@ type AnthropicBlockAccumulator =
       name: string;
       arguments: string;
     }
-  | { type: 'thinking'; signature: string; text: string };
+  | { type: 'thinking'; signature: string; text: string }
+  | { type: 'compaction'; content: string | null; encryptedContent: string | null };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -187,14 +194,42 @@ const messageContent = (
 
 const anthropicMessages = (
   request: NormalizedLlmRequest,
+  compatibilityKey: string,
 ): readonly MessageParam[] => {
   const names = providerNameByAdkName(request);
-  return request.messages.flatMap((message): readonly MessageParam[] => {
+  let startIndex = 0;
+  let checkpoint: BetaCompactionBlockParam | undefined;
+  for (const [index, message] of request.messages.entries()) {
+    for (const part of message.parts) {
+      const value = part.type === 'text' && isRecord(part.metadata?.anthropicCompaction)
+        ? part.metadata.anthropicCompaction
+        : undefined;
+      if (
+        isRecord(value) &&
+        value.type === 'compaction' &&
+        value.model === request.model &&
+        value.compatibilityKey === compatibilityKey
+      ) {
+        checkpoint = {
+          type: 'compaction',
+          ...(typeof value.content === 'string' ? { content: value.content } : {}),
+          ...(typeof value.encrypted_content === 'string'
+            ? { encrypted_content: value.encrypted_content }
+            : {}),
+        };
+        startIndex = index + 1;
+      }
+    }
+  }
+  const messages = request.messages.slice(startIndex).flatMap((message): readonly MessageParam[] => {
     const content = messageContent(message, names);
     return content.length === 0
       ? []
       : [{ role: message.role, content: [...content] }];
   });
+  return checkpoint
+    ? [{ role: 'assistant', content: [checkpoint] }, ...messages]
+    : messages;
 };
 
 const anthropicTools = (
@@ -224,6 +259,7 @@ const anthropicFinishReason = (
     case 'stop_sequence':
     case 'tool_use':
     case 'pause_turn':
+    case 'compaction':
       return FinishReason.STOP;
     default:
       return FinishReason.OTHER;
@@ -245,7 +281,7 @@ const anthropicUsage = (options: {
     ...(output === undefined ? {} : { candidatesTokenCount: output }),
     ...(input === undefined || output === undefined
       ? {}
-      : { totalTokenCount: input + output }),
+      : { totalTokenCount: input + cached + output }),
     ...(cached > 0 ? { cachedContentTokenCount: cached } : {}),
   };
 };
@@ -268,16 +304,22 @@ const mapAnthropicError = (
   }
   if (error instanceof Anthropic.APIError) {
     const status = error.status;
+    const contextWindowExceeded =
+      /context (?:length|window)|maximum context|too many tokens|prompt is too long/iu.test(
+        error.message,
+      );
     return new ProviderAdapterError({
       kind:
-        status === 401 || status === 403
+        contextWindowExceeded
+          ? 'contextWindowExceeded'
+          : status === 401 || status === 403
           ? 'authentication'
           : status === 429
             ? 'rateLimit'
             : status !== undefined && status >= 500
               ? 'server'
               : 'invalidRequest',
-      retryable: retryableStatus(status),
+      retryable: contextWindowExceeded ? false : retryableStatus(status),
       message: error.message,
       ...(status === undefined ? {} : { status }),
       ...(typeof error.requestID === 'string'
@@ -313,11 +355,17 @@ export class AnthropicLlm extends BaseLlm {
   private readonly client: Anthropic;
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
+  private nativeCompaction: boolean;
+  private readonly compactThresholdTokens?: number;
+  private readonly compatibilityKey: string;
 
   constructor(options: ProviderAdapterOptions) {
     super({ model: options.model });
     this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.nativeCompaction = options.nativeCompaction === true;
+    this.compactThresholdTokens = options.compactThresholdTokens;
+    this.compatibilityKey = `anthropicMessages:${validateBaseUrl(options.baseUrl)}`;
     this.client = new Anthropic({
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
@@ -349,6 +397,8 @@ export class AnthropicLlm extends BaseLlm {
     let outputTokens: number | undefined;
     let cacheCreationTokens: number | undefined;
     let cacheReadTokens: number | undefined;
+    let completedCompaction: Extract<AnthropicBlockAccumulator, { type: 'compaction' }> | undefined;
+    let contextInputTokens: number | undefined;
     let stopReason: StopReason | null | undefined;
     let completed = false;
     const textItemId = `message_${crypto.randomUUID()}`;
@@ -359,21 +409,53 @@ export class AnthropicLlm extends BaseLlm {
         maxRetries: this.maxRetries,
         shouldRetry: (error) =>
           mapAnthropicError(error, deadline.signal).details.retryable,
-        create: async () =>
-          this.client.messages.create(
+        create: async () => {
+          const maxTokens = Math.max(
+            1,
+            Math.min(request.config?.maxOutputTokens ?? 8_192, 65_536),
+          );
+          if (!this.nativeCompaction) {
+            const stream = await this.client.messages.create(
+              {
+                model: request.model,
+                max_tokens: maxTokens,
+                messages: [...anthropicMessages(request, this.compatibilityKey)] as RegularMessageParam[],
+                system: request.system || undefined,
+                tools: [...anthropicTools(request.tools)] as RegularAnthropicTool[],
+                stream: true,
+              },
+              { signal: deadline.signal },
+            );
+            return stream as AsyncIterable<RegularRawMessageStreamEvent> as
+              AsyncIterable<RawMessageStreamEvent>;
+          }
+          return this.client.beta.messages.create(
             {
               model: request.model,
-              max_tokens: Math.max(
-                1,
-                Math.min(request.config?.maxOutputTokens ?? 8_192, 65_536),
-              ),
-              messages: [...anthropicMessages(request)],
+              max_tokens: maxTokens,
+              messages: [...anthropicMessages(request, this.compatibilityKey)],
               system: request.system || undefined,
               tools: [...anthropicTools(request.tools)],
+              betas: ['context-management-2025-06-27'],
+              context_management: {
+                edits: [{
+                  type: 'compact_20260112',
+                  pause_after_compaction: true,
+                  ...(this.compactThresholdTokens === undefined
+                    ? {}
+                    : {
+                        trigger: {
+                          type: 'input_tokens',
+                          value: this.compactThresholdTokens,
+                        },
+                      }),
+                }],
+              },
               stream: true,
             },
             { signal: deadline.signal },
-          ),
+          );
+        },
       });
       for await (const event of stream) {
         switch (event.type) {
@@ -425,6 +507,12 @@ export class AnthropicLlm extends BaseLlm {
               }
             } else if (event.content_block.type === 'redacted_thinking') {
               redactedThinking.push(event.content_block.data);
+            } else if (event.content_block.type === 'compaction') {
+              blocks.set(event.index, {
+                type: 'compaction',
+                content: event.content_block.content,
+                encryptedContent: event.content_block.encrypted_content,
+              });
             } else if (event.content_block.type === 'tool_use') {
               blocks.set(event.index, {
                 type: 'tool',
@@ -483,6 +571,12 @@ export class AnthropicLlm extends BaseLlm {
               block?.type === 'tool'
             ) {
               block.arguments += event.delta.partial_json;
+            } else if (
+              event.delta.type === 'compaction_delta' &&
+              block?.type === 'compaction'
+            ) {
+              block.content = event.delta.content;
+              block.encryptedContent = event.delta.encrypted_content;
             }
             break;
           }
@@ -492,6 +586,8 @@ export class AnthropicLlm extends BaseLlm {
               completedToolCalls.push(block);
             } else if (block?.type === 'thinking' && block.signature) {
               thinkingSignature = block.signature;
+            } else if (block?.type === 'compaction') {
+              completedCompaction = block;
             }
             blocks.delete(event.index);
             break;
@@ -499,11 +595,32 @@ export class AnthropicLlm extends BaseLlm {
           case 'message_delta':
             stopReason = event.delta.stop_reason;
             outputTokens = event.usage.output_tokens;
+            if (typeof event.usage.input_tokens === 'number') {
+              inputTokens = event.usage.input_tokens;
+            }
+            if (typeof event.usage.cache_creation_input_tokens === 'number') {
+              cacheCreationTokens = event.usage.cache_creation_input_tokens;
+            }
+            if (typeof event.usage.cache_read_input_tokens === 'number') {
+              cacheReadTokens = event.usage.cache_read_input_tokens;
+            }
+            {
+              const finalMessageIteration = event.usage.iterations
+                ?.filter((iteration) => iteration.type === 'message')
+                .at(-1);
+              if (finalMessageIteration) {
+                contextInputTokens =
+                  finalMessageIteration.input_tokens +
+                  finalMessageIteration.cache_creation_input_tokens +
+                  finalMessageIteration.cache_read_input_tokens;
+              }
+            }
             break;
           case 'message_stop': {
             completed = true;
             const hasTools = completedToolCalls.length > 0;
-            const outcome: ModelStepOutcome = stopReason === 'pause_turn'
+            const outcome: ModelStepOutcome =
+              stopReason === 'pause_turn' || stopReason === 'compaction'
               ? { kind: 'continue', reason: 'pauseTurn' }
               : stopReason === 'max_tokens' ||
                   stopReason === 'model_context_window_exceeded'
@@ -542,6 +659,21 @@ export class AnthropicLlm extends BaseLlm {
                 partMetadata: { anthropicRedactedThinking: data },
               })),
             );
+            if (completedCompaction) {
+              parts.push({
+                text: '',
+                thought: true,
+                partMetadata: {
+                  anthropicCompaction: {
+                      type: 'compaction',
+                      model: request.model,
+                      compatibilityKey: this.compatibilityKey,
+                      content: completedCompaction.content,
+                    encrypted_content: completedCompaction.encryptedContent,
+                  },
+                },
+              });
+            }
             if (fullText) {
               parts.push({
                 text: fullText,
@@ -586,6 +718,15 @@ export class AnthropicLlm extends BaseLlm {
               customMetadata: {
                 provider: 'anthropic',
                 wireApi: 'anthropicMessages',
+                ...(contextInputTokens === undefined && inputTokens === undefined
+                  ? {}
+                  : {
+                      contextInputTokens:
+                        contextInputTokens ??
+                        ((inputTokens ?? 0) +
+                          (cacheCreationTokens ?? 0) +
+                          (cacheReadTokens ?? 0)),
+                    }),
               },
             };
             break;
@@ -605,6 +746,21 @@ export class AnthropicLlm extends BaseLlm {
           kind: 'timeout',
           retryable: true,
           message: `The model stream exceeded the ${this.timeoutMs} ms request deadline.`,
+        });
+      }
+      if (
+        this.nativeCompaction &&
+        error instanceof Anthropic.APIError &&
+        /context_management|compact_20260112|compaction/iu.test(error.message) &&
+        /unsupported|unknown|unrecognized|invalid/iu.test(error.message)
+      ) {
+        this.nativeCompaction = false;
+        throw new ProviderAdapterError({
+          kind: 'contextWindowExceeded',
+          retryable: false,
+          message:
+            'The endpoint does not support provider-native compaction; SugarCode will retry with application compaction.',
+          ...(error.status === undefined ? {} : { status: error.status }),
         });
       }
       throw mapAnthropicError(error, abortSignal);

@@ -48,3 +48,12 @@ test('composer references require token boundaries and commands require line-lea
     ],
   );
 });
+
+test('/compact is parsed as maintenance metadata with an optional focus', () => {
+  const submission = parseComposerSubmission('/compact 保留数据库迁移决策');
+  assert.equal(submission.text.trim(), '保留数据库迁移决策');
+  assert.deepEqual(submission.references.map(({ kind, target }) => ({
+    kind,
+    target,
+  })), [{ kind: 'command', target: 'compact' }]);
+});

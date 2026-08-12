@@ -59,6 +59,51 @@ test('runtime MCP approval keeps the existing UI contract and resolves by stable
   assert.equal(controller.getSnapshot().status, 'idle');
 });
 
+test('concurrent MCP approvals can be resolved from either active thread', async () => {
+  const commands: RuntimeCommand[] = [];
+  let listener: ((event: RuntimeEvent) => void) | undefined;
+  const runtime = {
+    subscribe: (next: (event: RuntimeEvent) => void) => {
+      listener = next;
+      return (): void => undefined;
+    },
+    send: (command: RuntimeCommand) => commands.push(command),
+  } as unknown as RuntimeSupervisor;
+  const controller = new RuntimeMcpApprovalController(runtime);
+  controller.markSurfaceReady();
+
+  for (const [index, threadId] of ['thread-1', 'thread-2'].entries()) {
+    listener?.({
+      type: 'mcp.approvalRequested',
+      sequence: index + 1,
+      requestId: `request-${index + 1}`,
+      workspaceId: 'workspace-fixture',
+      threadId,
+      turnId: `turn-${index + 1}`,
+      approvalId: `approval-${index + 1}`,
+      operationId: `operation-${index + 1}`,
+      serverId: 'fixture',
+      name: 'mcp__fixture__echo',
+      argumentsJson: '{}',
+      argumentsBytes: 2,
+      argumentsSha256: 'a'.repeat(64),
+      inventorySha256: 'b'.repeat(64),
+    });
+  }
+
+  assert.deepEqual(
+    controller.getSnapshot().requests?.map((request) => request.threadId),
+    ['thread-1', 'thread-2'],
+  );
+  assert.equal((await controller.approve('approval-2')).accepted, true);
+  const decision = commands.at(-1);
+  assert.equal(decision?.type, 'approval.resolve');
+  assert.equal(
+    decision?.type === 'approval.resolve' ? decision.approvalId : undefined,
+    'approval-2',
+  );
+});
+
 test('recovered MCP approval remains pending until the UI surface is ready', async () => {
   const commands: RuntimeCommand[] = [];
   let listener: ((event: RuntimeEvent) => void) | undefined;
@@ -179,6 +224,50 @@ test('MCP approval follows the shared thread and workspace Full Access policy', 
   assert.equal(commands.length, decisionCount);
   assert.equal(controller.getSnapshot().status, 'pending');
   controller.surfaceUnavailable();
+});
+
+test('MCP approvals already waiting are released when Full Access policy changes', () => {
+  const commands: RuntimeCommand[] = [];
+  let listener: ((event: RuntimeEvent) => void) | undefined;
+  let trusted = false;
+  const runtime = {
+    subscribe: (next: (event: RuntimeEvent) => void) => {
+      listener = next;
+      return (): void => undefined;
+    },
+    send: (command: RuntimeCommand) => commands.push(command),
+  } as unknown as RuntimeSupervisor;
+  const controller = new RuntimeMcpApprovalController(
+    runtime,
+    () => trusted,
+  );
+  controller.markSurfaceReady();
+  listener?.({
+    type: 'mcp.approvalRequested',
+    sequence: 1,
+    requestId: 'request-waiting',
+    workspaceId: 'workspace-trusted',
+    threadId: 'thread-trusted',
+    turnId: 'turn-trusted',
+    approvalId: 'approval-waiting',
+    operationId: 'operation-waiting',
+    serverId: 'fixture',
+    name: 'mcp__fixture__echo',
+    argumentsJson: '{}',
+    argumentsBytes: 2,
+    argumentsSha256: 'a'.repeat(64),
+    inventorySha256: 'b'.repeat(64),
+  });
+  assert.equal(commands.length, 0);
+
+  trusted = true;
+  controller.refreshPolicy();
+  const decision = commands.at(-1);
+  assert.equal(decision?.type, 'approval.resolve');
+  assert.equal(
+    decision?.type === 'approval.resolve' ? decision.source : undefined,
+    'policy',
+  );
 });
 
 test('MCP approval timeout allows the call by default', async () => {

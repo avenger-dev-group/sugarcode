@@ -58,6 +58,7 @@ import type {
   TranscriptTurnProps,
 } from './types';
 import { canRemoveDraftProject } from './composer-state';
+import { ContextCompactionActivity } from './context-compaction-activity';
 import { resolveConversationTitle } from './conversation-title';
 import { EmptyThreadState } from './empty-thread-state';
 import { ProcessActivityGroup } from './process-activity-group';
@@ -191,6 +192,8 @@ const TurnActivity = ({
       return turnStatus === 'inProgress' ? null : (
         <OrchestrationActivity activity={entry.activity} />
       );
+    case 'contextCompaction':
+      return <ContextCompactionActivity activity={entry.activity} />;
   }
 };
 

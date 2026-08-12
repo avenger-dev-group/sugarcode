@@ -131,6 +131,7 @@ export type McpApprovalStateSnapshot = Readonly<{
   revision: number;
   status: McpApprovalStatus;
   request?: McpApprovalViewModel;
+  requests?: readonly McpApprovalViewModel[];
 }>;
 
 export type McpApprovalActionResult = Readonly<{
@@ -421,25 +422,10 @@ export const isMcpSessionActionResult = (
   SESSION_REASONS.has(value.reason as McpSessionActionResult['reason']) &&
   value.accepted === (value.reason === 'accepted');
 
-export const isMcpApprovalStateSnapshot = (
-  value: unknown,
-): value is McpApprovalStateSnapshot => {
-  if (
-    !isRecord(value) ||
-    !hasOnlyKeys(value, ['revision', 'status'], ['request']) ||
-    !Number.isSafeInteger(value.revision) ||
-    (value.revision as number) < 0 ||
-    typeof value.status !== 'string' ||
-    !APPROVAL_STATUSES.has(value.status as McpApprovalStatus)
-  ) {
-    return false;
-  }
-  if (value.status !== 'pending') {
-    return value.request === undefined;
-  }
-  const request = value.request;
-  return (
-    isRecord(request) &&
+const isMcpApprovalViewModel = (
+  request: unknown,
+): request is McpApprovalViewModel =>
+  isRecord(request) &&
     hasOnlyKeys(
       request,
       [
@@ -492,7 +478,36 @@ export const isMcpApprovalStateSnapshot = (
         isId(request.sourceAgent.taskId) &&
         (request.sourceAgent.role === 'explorer' ||
           request.sourceAgent.role === 'worker' ||
-          request.sourceAgent.role === 'auditor')))
+          request.sourceAgent.role === 'auditor')));
+
+export const isMcpApprovalStateSnapshot = (
+  value: unknown,
+): value is McpApprovalStateSnapshot => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['revision', 'status'], ['request', 'requests']) ||
+    !Number.isSafeInteger(value.revision) ||
+    (value.revision as number) < 0 ||
+    typeof value.status !== 'string' ||
+    !APPROVAL_STATUSES.has(value.status as McpApprovalStatus) ||
+    (value.requests !== undefined &&
+      (!Array.isArray(value.requests) ||
+        value.requests.some((request) => !isMcpApprovalViewModel(request))))
+  ) {
+    return false;
+  }
+  const requests = value.requests as readonly McpApprovalViewModel[] | undefined;
+  if (value.status !== 'pending') {
+    return (
+      value.request === undefined &&
+      (requests === undefined || requests.length === 0)
+    );
+  }
+  return (
+    isMcpApprovalViewModel(value.request) &&
+    (requests === undefined ||
+      (requests.length > 0 &&
+        requests[0]?.presentationId === value.request.presentationId))
   );
 };
 

@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/renderer/components/ui/select';
+import { knownContextWindowTokens } from '@/shared/model-metadata';
 
 import type { ModelConfigSettingsPanelProps } from './types';
 import { PROVIDER_PRESETS, useStore } from './use-store';
@@ -48,6 +49,17 @@ export const ModelConfigSettingsPanel = (
     )?.label ?? store.selectedConnection.providerFamily;
   const isDefault =
     store.config.defaultProfileId === store.selectedProfile.id;
+  const contextWindow = store.selectedProfile.contextWindowTokens ??
+    knownContextWindowTokens(
+      store.selectedConnection.providerFamily,
+      store.selectedProfile.modelId,
+    );
+  const calculatedThreshold = contextWindow === undefined
+    ? undefined
+    : Math.min(
+      Math.floor(contextWindow * 0.85),
+      contextWindow - 8_192 - Math.max(4_096, Math.ceil(contextWindow * 0.05)),
+    );
 
   return (
     <>
@@ -306,6 +318,92 @@ export const ModelConfigSettingsPanel = (
                 />
                 <span>Supports image understanding (Vision)</span>
               </label>
+
+              <details className="rounded-lg border px-3.5 py-2.5 text-sm">
+                <summary className="cursor-pointer select-none text-secondary">
+                  Context compaction
+                </summary>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <label className="grid gap-1">
+                    <span className="text-secondary">Context window tokens</span>
+                    <Input
+                      type="number"
+                      min={4096}
+                      max={2097152}
+                      value={store.selectedProfile.contextWindowTokens ?? ''}
+                      placeholder={contextWindow === undefined
+                        ? 'Required for unknown models'
+                        : `Auto: ${contextWindow.toLocaleString()}`}
+                      onChange={(event) =>
+                        store.updateSelectedProfile({
+                          contextWindowTokens: event.target.value
+                            ? Number(event.target.value)
+                            : undefined,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-secondary">Compact at tokens</span>
+                    <Input
+                      type="number"
+                      min={4096}
+                      max={2097152}
+                      value={store.selectedProfile.compactThresholdTokens ?? ''}
+                      placeholder={calculatedThreshold === undefined
+                        ? 'Set a context window first'
+                        : `Auto: ${calculatedThreshold.toLocaleString()}`}
+                      onChange={(event) =>
+                        store.updateSelectedProfile({
+                          compactThresholdTokens: event.target.value
+                            ? Number(event.target.value)
+                            : undefined,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-secondary">Automatic compaction</span>
+                    <Select
+                      value={store.selectedProfile.autoCompaction ?? 'auto'}
+                      onValueChange={(value) =>
+                        store.updateSelectedProfile({
+                          autoCompaction: value as 'auto' | 'enabled' | 'disabled',
+                        })
+                      }
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto</SelectItem>
+                        <SelectItem value="enabled">Enabled</SelectItem>
+                        <SelectItem value="disabled">Disabled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                  <label className="grid gap-1">
+                    <span className="text-secondary">Provider-native compaction</span>
+                    <Select
+                      value={store.selectedProfile.nativeCompaction ?? 'auto'}
+                      onValueChange={(value) =>
+                        store.updateSelectedProfile({
+                          nativeCompaction: value as 'auto' | 'enabled' | 'disabled',
+                        })
+                      }
+                    >
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">Auto</SelectItem>
+                        <SelectItem value="enabled">Enabled</SelectItem>
+                        <SelectItem value="disabled">Disabled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </label>
+                </div>
+                <p className="mt-3 text-xs text-tertiary">
+                  Auto compaction requires a known context window. SugarCode reserves
+                  output capacity and a 5% safety margin before compacting.
+                </p>
+              </details>
 
               <div className="flex flex-col gap-3 border-t pt-4 sm:flex-row sm:items-center">
                 <div

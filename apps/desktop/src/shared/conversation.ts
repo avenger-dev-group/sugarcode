@@ -380,6 +380,19 @@ export type ConversationOrchestrationActivity = Readonly<{
   tasks: readonly ConversationAgentTask[];
 }>;
 
+export type ConversationContextCompactionActivity = Readonly<{
+  id: string;
+  status: 'inProgress' | 'completed' | 'failed' | 'interrupted';
+  trigger: 'auto' | 'manual' | 'recovery';
+  strategy: 'applicationSummary' | 'openaiNative' | 'anthropicNative';
+  beforeContextTokens?: number;
+  afterContextTokens?: number;
+  durationMs?: number;
+  readableSummary?: string;
+  opaqueCheckpoint?: boolean;
+  message?: string;
+}>;
+
 export type ConversationActivity =
   | Readonly<{
       type: 'commentary';
@@ -416,6 +429,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'orchestration';
       activity: ConversationOrchestrationActivity;
+    }>
+  | Readonly<{
+      type: 'contextCompaction';
+      activity: ConversationContextCompactionActivity;
     }>;
 
 export type ConversationTurnError = Readonly<{
@@ -460,6 +477,7 @@ export type ConversationTurnError = Readonly<{
 export type ConversationTokenUsage = Readonly<{
   lastRequest: Readonly<{
     inputTokens?: number;
+    contextInputTokens?: number;
     cachedInputTokens?: number;
     outputTokens?: number;
     reasoningTokens?: number;
@@ -487,6 +505,9 @@ export type ConversationModelSelection = Readonly<{
   modelId: string;
   displayName: string;
   contextWindowTokens: number;
+  autoCompaction?: 'auto' | 'enabled' | 'disabled';
+  compactThresholdTokens?: number;
+  nativeCompaction?: 'auto' | 'enabled' | 'disabled';
   effectiveCapabilities: Readonly<{
     toolCalls: boolean;
     strictTools: boolean;

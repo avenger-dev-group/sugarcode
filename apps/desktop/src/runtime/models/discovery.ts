@@ -5,6 +5,7 @@ import type {
   ModelConnectionValue,
   ModelDiscoveryResult,
 } from '../../shared/model-config.ts';
+import { knownContextWindowTokens } from '../../shared/model-metadata.ts';
 
 type ResolvedConnection = Readonly<{
   connection: ModelConnectionValue;
@@ -45,7 +46,11 @@ export const discoverModels = async (
   if (!apiKey) {
     throw new Error('The model connection has no API key.');
   }
-  const models: Array<{ modelId: string; displayName: string }> = [];
+  const models: Array<{
+    modelId: string;
+    displayName: string;
+    contextWindowTokens?: number;
+  }> = [];
   if (connection.providerFamily === 'openai') {
     const client = new OpenAI({
       apiKey,
@@ -53,7 +58,12 @@ export const discoverModels = async (
       maxRetries: 0,
     });
     for await (const model of client.models.list({ signal: abortSignal })) {
-      models.push({ modelId: model.id, displayName: model.id });
+      const contextWindowTokens = knownContextWindowTokens('openai', model.id);
+      models.push({
+        modelId: model.id,
+        displayName: model.id,
+        ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
+      });
       if (models.length >= 500) {
         break;
       }
@@ -65,9 +75,11 @@ export const discoverModels = async (
       maxRetries: 0,
     });
     for await (const model of client.models.list({}, { signal: abortSignal })) {
+      const contextWindowTokens = knownContextWindowTokens('anthropic', model.id);
       models.push({
         modelId: model.id,
         displayName: model.display_name || model.id,
+        ...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
       });
       if (models.length >= 500) {
         break;

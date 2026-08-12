@@ -6,10 +6,15 @@ import {
   Runner,
   type BaseLlm,
   type Event,
+  type LlmRequest,
 } from '@google/adk';
 import { Type, type Content, type Part, type Schema } from '@google/genai';
 import { createHash, randomUUID } from 'node:crypto';
 
+import {
+  ContextManager,
+  type RuntimeContextCheckpoint,
+} from './context-manager.ts';
 import { SUGARCODE_BASE_AGENT_PROMPT_V1 } from './agent-instructions.ts';
 import {
   composerIntentInstruction,
@@ -27,6 +32,10 @@ import {
 import { AnthropicLlm } from './models/anthropic-llm.ts';
 import { discoverModels } from './models/discovery.ts';
 import { OpenAiLlm } from './models/openai-llm.ts';
+import {
+  knownContextWindowTokens,
+  supportsNativeCompaction,
+} from '../shared/model-metadata.ts';
 import {
   readModelItemMetadata,
   readModelStepOutcome,
@@ -92,6 +101,7 @@ import type {
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
+const DEFAULT_MAX_OUTPUT_TOKENS = 8_192;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 300_000;
 const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -154,6 +164,7 @@ type PendingApproval = Readonly<{
   operationId: string;
   kind: 'command' | 'mcp';
   recovered: boolean;
+  requiresApproval: boolean;
   publish: () => void;
   resolve: (decision: 'approved' | 'denied') => void;
 }>;
@@ -207,6 +218,8 @@ const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
     headers: provider.headers,
     timeoutMs: provider.timeoutMs,
     parallelTools: provider.parallelTools,
+    compactThresholdTokens: provider.compactThresholdTokens,
+    nativeCompaction: provider.nativeCompaction,
   };
   return provider.wireApi === 'anthropicMessages'
     ? new AnthropicLlm(common)
@@ -217,6 +230,10 @@ type ResolvedProfile = Readonly<{
   provider: RuntimeProviderConfig;
   selection: RuntimeModelSelection;
 }>;
+
+type TurnContextCommand =
+  | Extract<RuntimeCommand, { type: 'turn.start' }>
+  | Extract<RuntimeCommand, { type: 'context.compact' }>;
 
 type TextItemState = {
   phase: ModelTextPhase;
@@ -358,6 +375,10 @@ const stableJsonValue = (value: unknown): unknown => {
 };
 
 const capabilityEnabled = (value: unknown): boolean => value !== 'disabled';
+const capabilityMode = (
+  value: unknown,
+): 'auto' | 'enabled' | 'disabled' =>
+  value === 'enabled' || value === 'disabled' ? value : 'auto';
 
 class RuntimeStateUnavailableError extends Error {
   constructor(error: unknown) {
@@ -411,8 +432,13 @@ const usageFromEvent = (event: Event): RuntimeUsage | undefined => {
   }
   const inputTokens = usage.promptTokenCount ?? 0;
   const outputTokens = usage.candidatesTokenCount ?? 0;
+  const contextInputTokens = isRecord(event.customMetadata) &&
+      typeof event.customMetadata.contextInputTokens === 'number'
+    ? event.customMetadata.contextInputTokens
+    : inputTokens;
   return {
     inputTokens,
+    contextInputTokens,
     outputTokens,
     ...(usage.thoughtsTokenCount === undefined
       ? {}
@@ -488,12 +514,11 @@ export class RuntimeHost {
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingUserInputs = new Map<string, PendingUserInput>();
-  private readonly approvalQueue: string[] = [];
-  private activeApprovalId: string | null = null;
   private readonly activeOperations = new Map<string, Set<string>>();
   private readonly terminals = new Map<string, ActiveTerminal>();
   private readonly mcp = new RuntimeMcpManager();
   private readonly collaboration = new CollaborationCoordinator();
+  private readonly contextManager = new ContextManager();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -526,7 +551,7 @@ export class RuntimeHost {
           requestId: command.requestId,
           protocolVersion: RUNTIME_PROTOCOL_VERSION,
         });
-        this.publishNextApproval();
+        this.publishPendingApprovals();
         break;
       case 'workspace.open':
         this.requireReady(command.requestId);
@@ -584,6 +609,10 @@ export class RuntimeHost {
       case 'turn.start':
         this.requireReady(command.requestId);
         void this.startTurn(command);
+        break;
+      case 'context.compact':
+        this.requireReady(command.requestId);
+        void this.compactContext(command);
         break;
       case 'turn.cancel':
         this.activeTurns.get(command.turnId)?.abort();
@@ -688,8 +717,7 @@ export class RuntimeHost {
           !pending ||
           pending.workspaceId !== command.workspaceId ||
           pending.threadId !== command.threadId ||
-          pending.turnId !== command.turnId ||
-          this.activeApprovalId !== command.approvalId
+          pending.turnId !== command.turnId
         ) {
           this.emit({
             type: 'runtime.log',
@@ -1358,7 +1386,7 @@ export class RuntimeHost {
   };
 
   private ensureSession = async (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnContextCommand,
     selection: RuntimeModelSelection,
   ): Promise<void> => {
     const key = {
@@ -1403,10 +1431,21 @@ export class RuntimeHost {
         if (turn.status !== 'completed') {
           continue;
         }
-        for (const item of items.filter(
-          (candidate) => candidate.kind === 'turn.modelHistory',
+        for (const item of items.filter((candidate) =>
+          candidate.kind === 'turn.modelHistory' ||
+          candidate.kind === 'turn.contextCheckpoint'
         )) {
-          const restored = this.parseStoredModelHistory(item.payload.history);
+          const restored = item.kind === 'turn.contextCheckpoint' &&
+              typeof item.payload.summary === 'string'
+            ? {
+                role: 'user' as const,
+                parts: [{
+                  type: 'text' as const,
+                  text: `[SugarCode context checkpoint]\n${item.payload.summary}`,
+                  reasoning: false,
+                }],
+              }
+            : this.parseStoredModelHistory(item.payload.history);
           await this.sessions.appendEvent({
             session,
             event: createEvent({
@@ -1500,6 +1539,24 @@ export class RuntimeHost {
         this.sequence,
         'turn.modelHistory',
         JSON.stringify({ history }),
+      ));
+  };
+
+  private persistContextCheckpoint = (
+    command: TurnContextCommand,
+    checkpoint: RuntimeContextCheckpoint,
+  ): void => {
+    if (!this.nativeRuntime) {
+      return;
+    }
+    this.sequence += 1;
+    withDurableStateWrite(() =>
+      this.nativeRuntime?.appendItem(
+        `checkpoint:${checkpoint.checkpointId}`,
+        command.turnId,
+        this.sequence,
+        'turn.contextCheckpoint',
+        JSON.stringify(checkpoint),
       ));
   };
 
@@ -1674,9 +1731,9 @@ export class RuntimeHost {
   });
 
   private resolveProfile = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnContextCommand,
   ): ResolvedProfile => {
-    if (command.provider) {
+    if ('provider' in command && command.provider) {
       const providerFamily = command.provider.wireApi === 'anthropicMessages'
         ? 'anthropic'
         : 'openai';
@@ -1689,6 +1746,8 @@ export class RuntimeHost {
           modelId: command.provider.model,
           displayName: command.provider.model,
           contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
+          autoCompaction: 'disabled',
+          nativeCompaction: 'disabled',
           effectiveCapabilities: {
             toolCalls: true,
             strictTools: false,
@@ -1731,10 +1790,25 @@ export class RuntimeHost {
       wireApi: wireApi as RuntimeModelSelection['wireApi'],
       modelId: profile.modelId,
       displayName: profile.displayName,
-      contextWindowTokens:
-        typeof profile.contextWindowTokens === 'number'
-          ? profile.contextWindowTokens
-          : DEFAULT_CONTEXT_WINDOW_TOKENS,
+      contextWindowTokens: typeof profile.contextWindowTokens === 'number'
+        ? profile.contextWindowTokens
+        : knownContextWindowTokens(
+          providerFamily as RuntimeModelSelection['providerFamily'],
+          profile.modelId,
+        ) ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
+      autoCompaction:
+        (typeof profile.contextWindowTokens === 'number' ||
+          knownContextWindowTokens(
+            providerFamily as RuntimeModelSelection['providerFamily'],
+            profile.modelId,
+          ) !== undefined)
+          ? capabilityMode(profile.autoCompaction)
+          : 'disabled',
+      ...(typeof profile.compactThresholdTokens === 'number'
+        ? { compactThresholdTokens: profile.compactThresholdTokens }
+        : {}),
+      nativeCompaction:
+        capabilityMode(profile.nativeCompaction),
       effectiveCapabilities: {
         toolCalls: capabilityEnabled(profile.toolCalls),
         strictTools: profile.strictTools === 'enabled',
@@ -1743,6 +1817,21 @@ export class RuntimeHost {
         pdfInput: capabilityEnabled(profile.pdfInput),
       },
     };
+    const nativeCompaction = selection.nativeCompaction === 'enabled' ||
+      (selection.nativeCompaction === 'auto' && supportsNativeCompaction(
+        selection.providerFamily,
+        selection.wireApi,
+        connection.baseUrl,
+      ));
+    const safety = Math.max(
+      4_096,
+      Math.ceil(selection.contextWindowTokens * 0.05),
+    );
+    const effectiveCompactThreshold = selection.compactThresholdTokens ??
+      Math.min(
+        Math.floor(selection.contextWindowTokens * 0.85),
+        selection.contextWindowTokens - DEFAULT_MAX_OUTPUT_TOKENS - safety,
+      );
     return {
       provider: {
         wireApi: selection.wireApi,
@@ -1753,6 +1842,10 @@ export class RuntimeHost {
           : {}),
         timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
         parallelTools: selection.effectiveCapabilities.parallelTools,
+        ...(effectiveCompactThreshold >= 4_096
+          ? { compactThresholdTokens: effectiveCompactThreshold }
+          : {}),
+        nativeCompaction,
       },
       selection,
     };
@@ -2245,6 +2338,16 @@ export class RuntimeHost {
           )
         : { instruction: '', tools: [] };
       const composerInstruction = composerIntentInstruction(command.content);
+      const currentUserContent = this.contentFromParts(
+        command.content,
+        resolved.selection,
+      );
+      const turnModel = this.createModel(resolved.provider);
+      const summarizer = this.createModel({
+        ...resolved.provider,
+        nativeCompaction: false,
+      });
+      let recoveryCompaction = false;
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
@@ -2252,8 +2355,8 @@ export class RuntimeHost {
           `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
           (composerInstruction ? `\n\n${composerInstruction}` : '') +
           (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
-        model: this.createModel(resolved.provider),
-        beforeModelCallback: ({ request }) => {
+        model: turnModel,
+        beforeModelCallback: async ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
           const repeatedFailureRecovery =
             this.takeRepeatedToolFailureRecovery(invalidArgumentGuard);
@@ -2261,6 +2364,71 @@ export class RuntimeHost {
             request.contents.push({
               role: 'user',
               parts: [{ text: repeatedFailureRecovery }],
+            });
+          }
+          try {
+            await this.contextManager.compactRequest({
+              threadId: command.threadId,
+              request,
+              currentUserContent,
+              selection: resolved.provider.nativeCompaction && !recoveryCompaction
+                ? {
+                    ...resolved.selection,
+                    compactThresholdTokens: Math.min(
+                      resolved.selection.contextWindowTokens -
+                        DEFAULT_MAX_OUTPUT_TOKENS -
+                        Math.max(
+                          4_096,
+                          Math.ceil(
+                            resolved.selection.contextWindowTokens * 0.05,
+                          ),
+                        ),
+                      (resolved.provider.compactThresholdTokens ?? 0) +
+                        Math.ceil(
+                          resolved.selection.contextWindowTokens * 0.05,
+                        ),
+                    ),
+                  }
+                : resolved.selection,
+              summarizer,
+              signal: controller.signal,
+              ...(recoveryCompaction
+                ? { trigger: 'recovery' as const, force: true }
+                : {}),
+              callbacks: {
+              onStarted: (event) => this.emit({
+                type: 'turn.contextCompactionStarted',
+                requestId: command.requestId,
+                workspaceId: command.workspaceId,
+                threadId: command.threadId,
+                turnId: command.turnId,
+                ...event,
+              }),
+              onFinished: (event) => this.emit({
+                type: 'turn.contextCompactionFinished',
+                requestId: command.requestId,
+                workspaceId: command.workspaceId,
+                threadId: command.threadId,
+                turnId: command.turnId,
+                ...event,
+              }),
+              persist: (checkpoint) =>
+                this.persistContextCheckpoint(command, checkpoint),
+              currentSequence: () => this.sequence,
+              },
+            });
+            recoveryCompaction = false;
+          } catch (error) {
+            if (controller.signal.aborted || recoveryCompaction) {
+              throw error;
+            }
+            this.emit({
+              type: 'runtime.log',
+              requestId: command.requestId,
+              level: 'warn',
+              message: error instanceof Error
+                ? `Automatic context compaction failed: ${error.message}`
+                : 'Automatic context compaction failed.',
             });
           }
           return undefined;
@@ -2309,39 +2477,58 @@ export class RuntimeHost {
         sessionService: this.sessions,
         plugins: [providerErrorCapture],
       });
-      await this.runTurnDriver({
-        runner,
-        userId: command.workspaceId,
-        sessionId: command.threadId,
-        initialMessage: this.contentFromParts(command.content, resolved.selection),
-        signal: controller.signal,
-        onEvent: (event, textItems) => {
-          this.observeToolProgress(invalidArgumentGuard, event);
-          this.publishAgentEvent(command, event, textItems);
-        },
-        onCompletedEvent: (event) => this.persistModelHistory(command, event),
-        consumePendingResults: () =>
-          this.collaboration.consumePendingResults(
-            command.turnId,
-            controller.signal,
-          ),
-        completionGate: () =>
-          !controller.signal.aborted &&
-          ![...this.pendingUserInputs.values()].some(
-            (pending) => pending.turnId === command.turnId,
-          ) &&
-          ![...this.pendingApprovals.values()].some(
-            (approval) => approval.turnId === command.turnId,
-          ) &&
-          !(this.activeOperations.get(command.turnId)?.size),
-        retryFinalAfterToolFailure: () =>
-          this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
-        settleFinalCandidate: (accepted, textItems) =>
-          this.settleFinalCandidate(command, textItems, accepted),
-        takeProviderError: providerErrorCapture.takeCapturedError,
-        validateInvocation: () =>
-          this.assertInvalidArgumentProgress(invalidArgumentGuard),
-      });
+      let driverMessage = currentUserContent;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await this.runTurnDriver({
+            runner,
+            userId: command.workspaceId,
+            sessionId: command.threadId,
+            initialMessage: driverMessage,
+            signal: controller.signal,
+            onEvent: (event, textItems) => {
+              this.observeToolProgress(invalidArgumentGuard, event);
+              this.publishAgentEvent(command, resolved.selection, event, textItems);
+            },
+            onCompletedEvent: (event) => this.persistModelHistory(command, event),
+            consumePendingResults: () =>
+              this.collaboration.consumePendingResults(
+                command.turnId,
+                controller.signal,
+              ),
+            completionGate: () =>
+              !controller.signal.aborted &&
+              ![...this.pendingUserInputs.values()].some(
+                (pending) => pending.turnId === command.turnId,
+              ) &&
+              ![...this.pendingApprovals.values()].some(
+                (approval) => approval.turnId === command.turnId,
+              ) &&
+              !(this.activeOperations.get(command.turnId)?.size),
+            retryFinalAfterToolFailure: () =>
+              this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
+            settleFinalCandidate: (accepted, textItems) =>
+              this.settleFinalCandidate(command, textItems, accepted),
+            takeProviderError: providerErrorCapture.takeCapturedError,
+            validateInvocation: () =>
+              this.assertInvalidArgumentProgress(invalidArgumentGuard),
+          });
+          break;
+        } catch (error) {
+          const details = providerError(error);
+          if (attempt > 0 || details.kind !== 'contextWindowExceeded') {
+            throw error;
+          }
+          recoveryCompaction = true;
+          driverMessage = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal context recovery\n\nRetry the original request after SugarCode compacts prior context.',
+            }],
+          };
+        }
+      }
       this.emitCompleted(
         command,
         controller.signal.aborted ? 'interrupted' : 'completed',
@@ -2357,6 +2544,134 @@ export class RuntimeHost {
     } finally {
       this.collaboration.releaseTurn(command.turnId);
       this.cancelTurnUserInputs(command.turnId);
+      this.activeTurns.delete(command.turnId);
+    }
+  };
+
+  private compactContext = async (
+    command: Extract<RuntimeCommand, { type: 'context.compact' }>,
+  ): Promise<void> => {
+    if (this.activeTurns.has(command.turnId)) {
+      this.emitCompleted(command, 'failed', {
+        kind: 'invalidRequest',
+        retryable: false,
+        message: 'The context compaction Turn is already active.',
+      });
+      return;
+    }
+    const controller = new AbortController();
+    this.activeTurns.set(command.turnId, controller);
+    try {
+      const resolved = this.resolveProfile(command);
+      withDurableStateWrite(() =>
+        this.nativeRuntime?.ensureThread(command.threadId, command.workspaceId));
+      await this.ensureSession(command, resolved.selection);
+      withDurableStateWrite(() =>
+        this.nativeRuntime?.startTurn(
+          command.turnId,
+          command.threadId,
+          command.requestId,
+          resolved.provider.wireApi,
+          resolved.provider.model,
+        ));
+      this.emit({
+        type: 'turn.started',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        model: resolved.selection,
+      });
+      const session = await this.sessions.getSession({
+        appName: APPLICATION_NAME,
+        userId: command.workspaceId,
+        sessionId: command.threadId,
+      });
+      const contents = (session?.events ?? []).flatMap((event) =>
+        event.content ? [event.content] : []
+      );
+      const request: LlmRequest = {
+        model: resolved.selection.modelId,
+        contents,
+        config: { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
+        liveConnectConfig: {},
+        toolsDict: {},
+      };
+      const compacted = await this.contextManager.compactRequest({
+        threadId: command.threadId,
+        request,
+        selection: resolved.selection,
+        summarizer: this.createModel({
+          ...resolved.provider,
+          nativeCompaction: false,
+        }),
+        signal: controller.signal,
+        trigger: 'manual',
+        focus: command.focus,
+        force: true,
+        callbacks: {
+          onStarted: (event) => this.emit({
+            type: 'turn.contextCompactionStarted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            ...event,
+          }),
+          onFinished: (event) => this.emit({
+            type: 'turn.contextCompactionFinished',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            ...event,
+          }),
+          persist: (checkpoint) =>
+            this.persistContextCheckpoint(command, checkpoint),
+          currentSequence: () => this.sequence,
+        },
+      });
+      if (!compacted) {
+        const compactionId = randomUUID();
+        this.emit({
+          type: 'turn.contextCompactionStarted',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          compactionId,
+          trigger: 'manual',
+          strategy: 'applicationSummary',
+          beforeContextTokens: 0,
+        });
+        this.emit({
+          type: 'turn.contextCompactionFinished',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          compactionId,
+          trigger: 'manual',
+          strategy: 'applicationSummary',
+          outcome: 'completed',
+          beforeContextTokens: 0,
+          afterContextTokens: 0,
+          durationMs: 0,
+          message: 'There is not enough context to compact.',
+        });
+      }
+      this.emitCompleted(
+        command,
+        controller.signal.aborted ? 'interrupted' : 'completed',
+      );
+    } catch (error) {
+      const details = providerError(error);
+      this.emitCompleted(
+        command,
+        details.kind === 'cancelled' ? 'interrupted' : 'failed',
+        details,
+      );
+    } finally {
       this.activeTurns.delete(command.turnId);
     }
   };
@@ -2683,10 +2998,12 @@ export class RuntimeHost {
 
   private publishAgentEvent = (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    selection: RuntimeModelSelection,
     event: Event,
     textItems: Map<string, TextItemState>,
   ): void => {
     const parts = event.content?.parts ?? [];
+    this.publishNativeCompaction(command, selection, event, parts);
     const hasVisibleModelText = parts.some(isVisibleModelTextPart);
     const userText = command.content
       .filter((part) => part.type === 'text')
@@ -2843,6 +3160,91 @@ export class RuntimeHost {
     }
   };
 
+  private publishNativeCompaction = (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    selection: RuntimeModelSelection,
+    event: Event,
+    parts: readonly Part[],
+  ): void => {
+    if (event.partial !== false) {
+      return;
+    }
+    for (const part of parts) {
+      if (!isRecord(part.partMetadata)) {
+        continue;
+      }
+      const openAi = part.partMetadata.openaiCompaction;
+      const anthropic = part.partMetadata.anthropicCompaction;
+      const artifact = isRecord(openAi)
+        ? openAi
+        : isRecord(anthropic)
+          ? anthropic
+          : undefined;
+      if (!artifact) {
+        continue;
+      }
+      const strategy = isRecord(openAi)
+        ? 'openaiNative' as const
+        : 'anthropicNative' as const;
+      const compactionId = typeof artifact.id === 'string'
+        ? artifact.id
+        : randomUUID();
+      const beforeContextTokens = isRecord(event.customMetadata) &&
+          typeof event.customMetadata.contextInputTokens === 'number'
+        ? event.customMetadata.contextInputTokens
+        : undefined;
+      const startedAt = Date.now();
+      this.emit({
+        type: 'turn.contextCompactionStarted',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        compactionId,
+        trigger: 'auto',
+        strategy,
+        ...(beforeContextTokens === undefined ? {} : { beforeContextTokens }),
+      });
+      const readableSummary = typeof artifact.content === 'string'
+        ? artifact.content
+        : undefined;
+      this.persistContextCheckpoint(command, {
+        version: 1,
+        checkpointId: compactionId,
+        trigger: 'auto',
+        strategy,
+        coveredThroughSequence: this.sequence,
+        ...(readableSummary === undefined ? {} : { summary: readableSummary }),
+        retainedItemIds: [],
+        providerArtifact: {
+          providerFamily: selection.providerFamily,
+          wireApi: selection.wireApi,
+          modelId: selection.modelId,
+          compatibilityKey:
+            `${selection.providerFamily}:${selection.wireApi}:${selection.modelId}`,
+          payload: artifact,
+        },
+        ...(beforeContextTokens === undefined ? {} : { beforeContextTokens }),
+        createdAt: new Date().toISOString(),
+      });
+      this.emit({
+        type: 'turn.contextCompactionFinished',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        compactionId,
+        trigger: 'auto',
+        strategy,
+        outcome: 'completed',
+        ...(beforeContextTokens === undefined ? {} : { beforeContextTokens }),
+        durationMs: Date.now() - startedAt,
+        ...(readableSummary === undefined ? {} : { readableSummary }),
+        opaqueCheckpoint: strategy === 'openaiNative',
+      });
+    }
+  };
+
   private settleFinalCandidate = (
     command: Extract<RuntimeCommand, { type: 'turn.start' }>,
     textItems: Map<string, TextItemState>,
@@ -2897,6 +3299,18 @@ export class RuntimeHost {
       argumentsJson,
       JSON.stringify(approvalPresentation),
     );
+    const requiresApproval = this.commandRequiresApproval(
+      toolName,
+      argumentsValue,
+    );
+    if (!requiresApproval) {
+      try {
+        this.requireNative().resolveApproval(approvalId, 'approved');
+      } catch {
+        return { ok: false, error: 'automaticApprovalFailed' };
+      }
+      return this.executeWorkspaceOperation(command, operationId, execute);
+    }
     const decision = await new Promise<'approved' | 'denied'>((resolve) => {
       this.pendingApprovals.set(approvalId, {
         requestId: command.requestId,
@@ -2906,6 +3320,7 @@ export class RuntimeHost {
         operationId,
         kind: 'command',
         recovered: false,
+        requiresApproval: true,
         publish: () => {
           this.emit({
             type: 'approval.requested',
@@ -2922,11 +3337,19 @@ export class RuntimeHost {
         },
         resolve,
       });
-      this.enqueueApproval(approvalId);
+      this.publishApproval(approvalId);
     });
     if (decision === 'denied') {
       return { ok: false, error: 'userDenied' };
     }
+    return this.executeWorkspaceOperation(command, operationId, execute);
+  };
+
+  private executeWorkspaceOperation = async (
+    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    operationId: string,
+    execute: (operationId: string) => Promise<unknown>,
+  ): Promise<unknown> => {
     const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
     operations.add(operationId);
     this.activeOperations.set(command.turnId, operations);
@@ -3050,6 +3473,7 @@ export class RuntimeHost {
         operationId,
         kind: 'mcp',
         recovered: false,
+        requiresApproval: true,
         publish: () => {
           this.emit({
             type: 'mcp.approvalRequested',
@@ -3069,7 +3493,7 @@ export class RuntimeHost {
         },
         resolve,
       });
-      this.enqueueApproval(approvalId);
+      this.publishApproval(approvalId);
     });
     if (decision === 'denied') {
       return { ok: false, error: 'userDenied' };
@@ -3174,6 +3598,9 @@ export class RuntimeHost {
         operationId: record.operationId,
         kind: presentation.kind,
         recovered: true,
+        requiresApproval:
+          presentation.kind === 'mcp' ||
+          this.commandRequiresApproval(record.toolName, argumentsValue),
         publish: () => {
           if (presentation.kind === 'command') {
             this.emitTransient({
@@ -3219,7 +3646,6 @@ export class RuntimeHost {
         },
       };
       this.pendingApprovals.set(record.approvalId, pending);
-      this.approvalQueue.push(record.approvalId);
     }
   };
 
@@ -3446,25 +3872,42 @@ export class RuntimeHost {
     }
   };
 
-  private enqueueApproval = (approvalId: string): void => {
-    this.approvalQueue.push(approvalId);
-    this.publishNextApproval();
+  private commandRequiresApproval = (
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+  ): boolean => {
+    if (toolName === 'workspace_apply_patch') {
+      return false;
+    }
+    return !(
+      toolName === 'shell_exec' && argumentsValue.mode === 'sandboxed'
+    );
   };
 
-  private publishNextApproval = (): void => {
-    if (this.activeApprovalId) {
+  private publishApproval = (approvalId: string): void => {
+    if (!this.initialized) {
       return;
     }
-    while (this.approvalQueue.length > 0) {
-      const approvalId = this.approvalQueue[0];
-      const pending = this.pendingApprovals.get(approvalId);
-      if (!pending) {
-        this.approvalQueue.shift();
-        continue;
-      }
-      this.activeApprovalId = approvalId;
-      pending.publish();
+    const pending = this.pendingApprovals.get(approvalId);
+    if (!pending) {
       return;
+    }
+    if (!pending.requiresApproval) {
+      this.finishApproval(
+        approvalId,
+        pending,
+        'approved',
+        pending.requestId,
+        'policy',
+      );
+    } else {
+      pending.publish();
+    }
+  };
+
+  private publishPendingApprovals = (): void => {
+    for (const approvalId of [...this.pendingApprovals.keys()]) {
+      this.publishApproval(approvalId);
     }
   };
 
@@ -3482,29 +3925,20 @@ export class RuntimeHost {
       effectiveDecision = 'denied';
     }
     this.pendingApprovals.delete(approvalId);
-    const index = this.approvalQueue.indexOf(approvalId);
-    if (index >= 0) {
-      this.approvalQueue.splice(index, 1);
-    }
-    const wasActive = this.activeApprovalId === approvalId;
-    if (wasActive) {
-      this.activeApprovalId = null;
-      this.emit({
-        type: pending.kind === 'mcp'
-          ? 'mcp.approvalResolved'
-          : 'approval.resolved',
-        requestId,
-        workspaceId: pending.workspaceId,
-        threadId: pending.threadId,
-        turnId: pending.turnId,
-        approvalId,
-        operationId: pending.operationId,
-        decision: effectiveDecision,
-        source,
-      });
-    }
+    this.emit({
+      type: pending.kind === 'mcp'
+        ? 'mcp.approvalResolved'
+        : 'approval.resolved',
+      requestId,
+      workspaceId: pending.workspaceId,
+      threadId: pending.threadId,
+      turnId: pending.turnId,
+      approvalId,
+      operationId: pending.operationId,
+      decision: effectiveDecision,
+      source,
+    });
     pending.resolve(effectiveDecision);
-    this.publishNextApproval();
   };
 
   private cancelTurnApprovals = (turnId: string): void => {
@@ -3577,7 +4011,7 @@ export class RuntimeHost {
   };
 
   private emitCompleted = (
-    command: Extract<RuntimeCommand, { type: 'turn.start' }>,
+    command: TurnContextCommand,
     status: 'completed' | 'interrupted' | 'failed',
     error?: RuntimeProviderError,
   ): void => {

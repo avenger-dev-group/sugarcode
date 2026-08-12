@@ -59,6 +59,14 @@ const COMMANDS: readonly ComposerSuggestion[] = [
     description: '分析仓库并创建或完善项目的 AGENTS.md 指引',
     insertion: '/init',
   },
+  {
+    id: 'command:compact',
+    kind: 'command',
+    label: '压缩上下文',
+    alias: '/compact',
+    description: '压缩当前任务上下文，可在后面注明需要重点保留的内容',
+    insertion: '/compact',
+  },
 ];
 
 const isTrigger = (value: string): value is ComposerTrigger =>

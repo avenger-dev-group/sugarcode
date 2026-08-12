@@ -51,6 +51,9 @@ export type CommandApprovalStateSnapshot = Readonly<{
   modeThreadId?: string;
   modeWorkspaceId?: string;
   request?: CommandApprovalViewModel;
+  requests?: readonly CommandApprovalViewModel[];
+  threadModeIds?: readonly string[];
+  workspaceModeIds?: readonly string[];
 }>;
 
 export const resolveCommandApprovalMode = (
@@ -58,6 +61,18 @@ export const resolveCommandApprovalMode = (
   threadId: string | null,
   workspaceId: string | null,
 ): CommandApprovalMode => {
+  if (
+    workspaceId !== null &&
+    snapshot.workspaceModeIds?.includes(workspaceId) === true
+  ) {
+    return 'workspace';
+  }
+  if (
+    threadId !== null &&
+    snapshot.threadModeIds?.includes(threadId) === true
+  ) {
+    return 'thread';
+  }
   if (
     snapshot.mode === 'thread' &&
     snapshot.modeThreadId === threadId
@@ -209,7 +224,14 @@ export const isCommandApprovalStateSnapshot = (
     !hasOnlyKeys(
       value,
       ['revision', 'status', 'mode'],
-      ['request', 'modeThreadId', 'modeWorkspaceId'],
+      [
+        'request',
+        'requests',
+        'modeThreadId',
+        'modeWorkspaceId',
+        'threadModeIds',
+        'workspaceModeIds',
+      ],
     ) ||
     typeof value.revision !== 'number' ||
     !Number.isSafeInteger(value.revision) ||
@@ -225,13 +247,42 @@ export const isCommandApprovalStateSnapshot = (
     (value.mode === 'workspace') !== Object.hasOwn(value, 'modeWorkspaceId') ||
     (Object.hasOwn(value, 'modeWorkspaceId') &&
       (typeof value.modeWorkspaceId !== 'string' ||
-        value.modeWorkspaceId.length === 0))
+        value.modeWorkspaceId.length === 0)) ||
+    (value.threadModeIds !== undefined &&
+      (!Array.isArray(value.threadModeIds) ||
+        value.threadModeIds.some(
+          (id) => typeof id !== 'string' || id.length === 0,
+        ) ||
+        new Set(value.threadModeIds).size !== value.threadModeIds.length)) ||
+    (value.workspaceModeIds !== undefined &&
+      (!Array.isArray(value.workspaceModeIds) ||
+        value.workspaceModeIds.some(
+          (id) => typeof id !== 'string' || id.length === 0,
+        ) ||
+        new Set(value.workspaceModeIds).size !== value.workspaceModeIds.length)) ||
+    (value.requests !== undefined &&
+      (!Array.isArray(value.requests) ||
+        value.requests.some((request) => !isViewModel(request))))
   ) {
     return false;
   }
-  return value.status === 'pending'
-    ? Object.hasOwn(value, 'request') && isViewModel(value.request)
-    : !Object.hasOwn(value, 'request');
+  const requests = value.requests as
+    | readonly CommandApprovalViewModel[]
+    | undefined;
+  if (value.status === 'pending') {
+    if (!Object.hasOwn(value, 'request') || !isViewModel(value.request)) {
+      return false;
+    }
+    return (
+      requests === undefined ||
+      (requests.length > 0 &&
+        requests[0]?.presentationId === value.request.presentationId)
+    );
+  }
+  return (
+    !Object.hasOwn(value, 'request') &&
+    (requests === undefined || requests.length === 0)
+  );
 };
 
 export const isCommandApprovalActionResult = (

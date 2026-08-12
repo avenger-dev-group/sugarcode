@@ -40,6 +40,9 @@ export class RuntimeApprovalController {
   private readonly listeners = new Set<CommandApprovalStateListener>();
   private readonly queue: PendingApproval[] = [];
   private readonly workspaceRoots = new Map<string, string>();
+  private readonly threadWorkspaces = new Map<string, string>();
+  private readonly threadModeIds = new Set<string>();
+  private readonly workspaceModeIds = new Set<string>();
   private revision = 0;
   private mode: CommandApprovalMode = 'ask';
   private modeThreadId: string | undefined;
@@ -65,17 +68,21 @@ export class RuntimeApprovalController {
 
   getSnapshot = (): CommandApprovalStateSnapshot => {
     const pending = this.queue[0];
+    const requests = this.queue.map((item) => this.viewModel(item));
     return {
       revision: this.revision,
       status: pending ? 'pending' : 'idle',
       mode: this.mode,
+      requests,
+      threadModeIds: [...this.threadModeIds],
+      workspaceModeIds: [...this.workspaceModeIds],
       ...(this.mode === 'thread' && this.modeThreadId
         ? { modeThreadId: this.modeThreadId }
         : {}),
       ...(this.mode === 'workspace' && this.modeWorkspaceId
         ? { modeWorkspaceId: this.modeWorkspaceId }
         : {}),
-      ...(pending ? { request: this.viewModel(pending) } : {}),
+      ...(pending ? { request: requests[0] } : {}),
     };
   };
 
@@ -112,9 +119,11 @@ export class RuntimeApprovalController {
     presentationId: unknown,
     mode: unknown,
   ): Promise<CommandApprovalActionResult> => {
-    const pending = this.queue[0];
+    const pending = this.queue.find(
+      (item) => item.approvalId === presentationId,
+    );
     if (!pending) {
-      return result(false, 'unavailable');
+      return result(false, this.queue.length === 0 ? 'unavailable' : 'stale');
     }
     if (presentationId !== pending.approvalId) {
       return result(false, 'stale');
@@ -134,13 +143,18 @@ export class RuntimeApprovalController {
     ) {
       return result(false, 'invalid');
     }
-    return this.respond(pending, 'approved');
+    const response = this.respond(pending, 'approved', false);
+    this.approveMatchingPending();
+    this.publish();
+    return response;
   };
 
   deny = async (presentationId: unknown): Promise<CommandApprovalActionResult> => {
-    const pending = this.queue[0];
+    const pending = this.queue.find(
+      (item) => item.approvalId === presentationId,
+    );
     if (!pending) {
-      return result(false, 'unavailable');
+      return result(false, this.queue.length === 0 ? 'unavailable' : 'stale');
     }
     if (presentationId !== pending.approvalId) {
       return result(false, 'stale');
@@ -168,6 +182,7 @@ export class RuntimeApprovalController {
     ) {
       return result(false, 'invalid');
     }
+    this.approveMatchingPending();
     this.publish();
     return result(true, 'accepted');
   };
@@ -206,6 +221,7 @@ export class RuntimeApprovalController {
         actionState: 'awaitingUser',
         responseCommitted: false,
       };
+      this.threadWorkspaces.set(event.threadId, event.workspaceId);
       this.queue.push(pending);
       if (this.isAutoApproved(pending.workspaceId, pending.threadId)) {
         pending.responseCommitted = true;
@@ -239,6 +255,7 @@ export class RuntimeApprovalController {
   private respond = (
     pending: PendingApproval,
     decision: 'approved' | 'denied',
+    publish = true,
   ): CommandApprovalActionResult => {
     pending.responseCommitted = true;
     pending.actionState = decision === 'approved'
@@ -248,7 +265,9 @@ export class RuntimeApprovalController {
       clearTimeout(pending.timer);
       pending.timer = null;
     }
-    this.publish();
+    if (publish) {
+      this.publish();
+    }
     this.resolve(pending, decision, 'user');
     return result(true, 'accepted');
   };
@@ -313,6 +332,32 @@ export class RuntimeApprovalController {
     ) {
       return false;
     }
+    const resolvedThreadId = typeof threadId === 'string' ? threadId : undefined;
+    const resolvedWorkspaceId =
+      typeof workspaceId === 'string' ? workspaceId : undefined;
+    if (mode === 'ask') {
+      if (!resolvedThreadId && !resolvedWorkspaceId) {
+        this.threadModeIds.clear();
+        this.workspaceModeIds.clear();
+      } else if (resolvedThreadId) {
+        this.threadModeIds.delete(resolvedThreadId);
+      }
+      if (resolvedWorkspaceId) {
+        this.workspaceModeIds.delete(resolvedWorkspaceId);
+      }
+    } else if (mode === 'thread' && resolvedThreadId) {
+      this.threadModeIds.add(resolvedThreadId);
+      if (resolvedWorkspaceId) {
+        this.workspaceModeIds.delete(resolvedWorkspaceId);
+      }
+    } else if (mode === 'workspace' && resolvedWorkspaceId) {
+      this.workspaceModeIds.add(resolvedWorkspaceId);
+      for (const [knownThreadId, knownWorkspaceId] of this.threadWorkspaces) {
+        if (knownWorkspaceId === resolvedWorkspaceId) {
+          this.threadModeIds.delete(knownThreadId);
+        }
+      }
+    }
     this.mode = mode;
     this.modeThreadId = mode === 'thread' ? threadId as string : undefined;
     this.modeWorkspaceId =
@@ -321,9 +366,25 @@ export class RuntimeApprovalController {
   };
 
   isAutoApproved = (workspaceId: string, threadId: string): boolean =>
-    (this.mode === 'thread' && this.modeThreadId === threadId) ||
-    (this.mode === 'workspace' &&
-      this.modeWorkspaceId === workspaceId);
+    this.threadModeIds.has(threadId) || this.workspaceModeIds.has(workspaceId);
+
+  private approveMatchingPending = (): void => {
+    for (const pending of this.queue) {
+      if (
+        pending.responseCommitted ||
+        !this.isAutoApproved(pending.workspaceId, pending.threadId)
+      ) {
+        continue;
+      }
+      pending.responseCommitted = true;
+      pending.actionState = 'submittingApproval';
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
+      this.resolve(pending, 'approved', 'policy');
+    }
+  };
 
   private viewModel = (pending: PendingApproval): CommandApprovalViewModel => {
     const root = this.workspaceRoots.get(pending.workspaceId) ?? 'Local workspace';

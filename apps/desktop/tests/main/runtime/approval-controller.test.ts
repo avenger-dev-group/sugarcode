@@ -253,6 +253,104 @@ test('workspace Full Access automatically approves every thread only in that wor
   assert.equal(controller.getSnapshot().status, 'pending');
 });
 
+test('concurrent threads expose and resolve their own approval requests independently', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeApprovalController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  controller.openWorkspace('workspace-1', '/fixture/project');
+  controller.markSurfaceReady();
+
+  for (const [index, threadId] of ['thread-1', 'thread-2'].entries()) {
+    fixture.emit({
+      type: 'approval.requested',
+      sequence: index + 1,
+      requestId: `request-${index + 1}`,
+      workspaceId: 'workspace-1',
+      threadId,
+      turnId: `turn-${index + 1}`,
+      approvalId: `approval-${index + 1}`,
+      operationId: `operation-${index + 1}`,
+      toolName: 'shell_exec',
+      argumentsSummary: `Full Access: command-${index + 1}`,
+      fullAccess: true,
+    });
+  }
+
+  assert.deepEqual(
+    controller.getSnapshot().requests?.map((request) => request.threadId),
+    ['thread-1', 'thread-2'],
+  );
+  assert.equal((await controller.approve('approval-2', 'ask')).accepted, true);
+  const secondThreadDecision = fixture.sent.at(-1);
+  assert.equal(secondThreadDecision?.type, 'approval.resolve');
+  assert.equal(
+    secondThreadDecision?.type === 'approval.resolve'
+      ? secondThreadDecision.approvalId
+      : undefined,
+    'approval-2',
+  );
+});
+
+test('Full Access grants are retained per scope and release matching queued requests', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeApprovalController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  controller.openWorkspace('workspace-1', '/fixture/project-one');
+  controller.openWorkspace('workspace-2', '/fixture/project-two');
+  controller.markSurfaceReady();
+
+  for (const [index, threadId] of ['thread-1', 'thread-1', 'thread-2'].entries()) {
+    fixture.emit({
+      type: 'approval.requested',
+      sequence: index + 1,
+      requestId: `request-queued-${index + 1}`,
+      workspaceId: 'workspace-1',
+      threadId,
+      turnId: `turn-queued-${index + 1}`,
+      approvalId: `approval-queued-${index + 1}`,
+      operationId: `operation-queued-${index + 1}`,
+      toolName: 'shell_exec',
+      argumentsSummary: `Full Access: queued-${index + 1}`,
+      fullAccess: true,
+    });
+  }
+
+  assert.equal(
+    (await controller.approve('approval-queued-1', 'thread')).accepted,
+    true,
+  );
+  const decisions = fixture.sent.filter(
+    (command) => command.type === 'approval.resolve',
+  );
+  assert.deepEqual(
+    decisions.map((command) => command.approvalId),
+    ['approval-queued-1', 'approval-queued-2'],
+  );
+  assert.equal(decisions[0]?.source, 'user');
+  assert.equal(decisions[1]?.source, 'policy');
+
+  assert.equal(
+    controller.setMode('thread', 'thread-3', 'workspace-2').accepted,
+    true,
+  );
+  assert.equal(controller.isAutoApproved('workspace-1', 'thread-1'), true);
+  assert.equal(controller.isAutoApproved('workspace-2', 'thread-3'), true);
+  assert.equal(controller.isAutoApproved('workspace-1', 'thread-2'), false);
+
+  assert.equal(
+    controller.setMode('workspace', undefined, 'workspace-1').accepted,
+    true,
+  );
+  assert.equal(
+    controller.setMode('workspace', undefined, 'workspace-2').accepted,
+    true,
+  );
+  assert.equal(controller.isAutoApproved('workspace-1', 'new-thread-1'), true);
+  assert.equal(controller.isAutoApproved('workspace-2', 'new-thread-2'), true);
+});
+
 test('recovered runtime approval waits for the existing UI surface and deduplicates replay', () => {
   const fixture = new FixtureRuntime();
   const controller = new RuntimeApprovalController(

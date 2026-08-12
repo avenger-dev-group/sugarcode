@@ -11,6 +11,7 @@ import {
   resolveCommandApprovalMode,
   type CommandApprovalMode,
   type CommandApprovalStateSnapshot,
+  type CommandApprovalViewModel,
 } from '@/shared/command-approval';
 
 import type { CommandApprovalStore } from './types';
@@ -26,10 +27,11 @@ export const useStore = (): CommandApprovalStore => {
     useState<CommandApprovalStateSnapshot>(INITIAL_SNAPSHOT);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [actionError, setActionError] = useState<string | null>(null);
-  const [actionPending, setActionPending] = useState<boolean>(false);
+  const [actionPendingIds, setActionPendingIds] = useState<readonly string[]>([]);
   const [modePending, setModePending] = useState<boolean>(false);
-  const [selectedMode, setSelectedMode] =
-    useState<CommandApprovalMode>('ask');
+  const [selectedModes, setSelectedModes] = useState<
+    Readonly<Record<string, CommandApprovalMode>>
+  >({});
   const revisionRef = useRef<number>(INITIAL_SNAPSHOT.revision);
 
   const acceptSnapshot = useCallback(
@@ -39,16 +41,26 @@ export const useStore = (): CommandApprovalStore => {
       }
       revisionRef.current = nextSnapshot.revision;
       setSnapshot(nextSnapshot);
-      setSelectedMode(
-        nextSnapshot.request
-          ? resolveCommandApprovalMode(
-              nextSnapshot,
-              nextSnapshot.request.threadId,
-              nextSnapshot.request.workspaceId,
-            )
-          : nextSnapshot.mode,
+      const nextRequests = nextSnapshot.requests ??
+        (nextSnapshot.request ? [nextSnapshot.request] : []);
+      setSelectedModes((current) =>
+        Object.fromEntries(
+          nextRequests.map((request) => [
+            request.presentationId,
+            current[request.presentationId] ??
+              resolveCommandApprovalMode(
+                nextSnapshot,
+                request.threadId,
+                request.workspaceId,
+              ),
+          ]),
+        ),
       );
-      setActionPending(false);
+      setActionPendingIds((current) =>
+        current.filter((id) =>
+          nextRequests.some((request) => request.presentationId === id),
+        ),
+      );
       setModePending(false);
       setActionError(null);
       setNowMs(Date.now());
@@ -69,7 +81,8 @@ export const useStore = (): CommandApprovalStore => {
   useEffect(() => {
     if (
       snapshot.status !== 'pending' ||
-      snapshot.request?.actionState !== 'awaitingUser'
+      !(snapshot.requests ?? (snapshot.request ? [snapshot.request] : []))
+        .some((request) => request.actionState === 'awaitingUser')
     ) {
       return;
     }
@@ -79,44 +92,62 @@ export const useStore = (): CommandApprovalStore => {
     return () => window.clearInterval(interval);
   }, [snapshot]);
 
-  const request =
-    snapshot.status === 'pending' && snapshot.request
-      ? snapshot.request
-      : null;
-  const secondsRemaining = request
-    ? Math.max(0, Math.ceil((request.localExpiresAtMs - nowMs) / 1000))
-    : 0;
-  const canAct =
-    request?.actionState === 'awaitingUser' &&
-    secondsRemaining > 0 &&
-    !actionPending;
+  const requests = snapshot.status === 'pending'
+    ? snapshot.requests ?? (snapshot.request ? [snapshot.request] : [])
+    : [];
+  const request = requests[0] ?? null;
+  const secondsRemaining = useCallback(
+    (item: CommandApprovalViewModel): number =>
+      Math.max(0, Math.ceil((item.localExpiresAtMs - nowMs) / 1000)),
+    [nowMs],
+  );
+  const canAct = useCallback(
+    (item: CommandApprovalViewModel): boolean =>
+      item.actionState === 'awaitingUser' &&
+      secondsRemaining(item) > 0 &&
+      !actionPendingIds.includes(item.presentationId),
+    [actionPendingIds, secondsRemaining],
+  );
+  const selectedMode = useCallback(
+    (item: CommandApprovalViewModel): CommandApprovalMode =>
+      selectedModes[item.presentationId] ??
+      resolveCommandApprovalMode(snapshot, item.threadId, item.workspaceId),
+    [selectedModes, snapshot],
+  );
 
   const submit = useCallback(
-    async (decision: 'approved' | 'denied'): Promise<void> => {
-      if (!request || !canAct) {
+    async (
+      item: CommandApprovalViewModel,
+      decision: 'approved' | 'denied',
+    ): Promise<void> => {
+      if (!canAct(item)) {
         return;
       }
-      setActionPending(true);
+      setActionPendingIds((current) => [...current, item.presentationId]);
       setActionError(null);
       try {
         const result =
           decision === 'approved'
-            ? await approveCommand(request.presentationId, selectedMode)
-            : await denyCommand(request.presentationId);
+            ? await approveCommand(item.presentationId, selectedMode(item))
+            : await denyCommand(item.presentationId);
         if (!result.accepted) {
           setActionError(
             result.reason === 'stale'
               ? 'This command request is no longer active.'
               : 'Command approval is unavailable.',
           );
-          setActionPending(false);
+          setActionPendingIds((current) =>
+            current.filter((id) => id !== item.presentationId),
+          );
         }
       } catch {
         setActionError('Command approval is unavailable.');
-        setActionPending(false);
+        setActionPendingIds((current) =>
+          current.filter((id) => id !== item.presentationId),
+        );
       }
     },
-    [canAct, request, selectedMode],
+    [canAct, selectedMode],
   );
 
   const changeMode = useCallback(
@@ -125,7 +156,7 @@ export const useStore = (): CommandApprovalStore => {
       threadId?: string,
       workspaceId?: string,
     ): Promise<void> => {
-      if (modePending || snapshot.status === 'pending') {
+      if (modePending) {
         return;
       }
       setModePending(true);
@@ -145,21 +176,23 @@ export const useStore = (): CommandApprovalStore => {
         setModePending(false);
       }
     },
-    [modePending, snapshot.status],
+    [modePending],
   );
 
   return {
     snapshot,
     request,
-    isOpen: request !== null,
+    requests,
+    isOpen: requests.length > 0,
     canAct,
     secondsRemaining,
     selectedMode,
     modePending,
     actionError,
-    setSelectedMode,
+    setSelectedMode: (presentationId, mode) =>
+      setSelectedModes((current) => ({ ...current, [presentationId]: mode })),
     changeMode,
-    approve: () => submit('approved'),
-    deny: () => submit('denied'),
+    approve: (item) => submit(item, 'approved'),
+    deny: (item) => submit(item, 'denied'),
   };
 };

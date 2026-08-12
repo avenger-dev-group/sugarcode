@@ -122,6 +122,19 @@ export type SkillActivityProps = Readonly<{
   language: ProcessLanguage;
 }>;
 
+export type ContextCompactionActivityViewModel = Readonly<{
+  id: string;
+  state: 'running' | 'completed' | 'failed' | 'interrupted';
+  trigger: 'auto' | 'manual' | 'recovery';
+  strategy: 'applicationSummary' | 'openaiNative' | 'anthropicNative';
+  beforeContextTokens?: number;
+  afterContextTokens?: number;
+  durationMs?: number;
+  readableSummary?: string;
+  opaqueCheckpoint?: boolean;
+  message?: string;
+}>;
+
 export type TurnActivityViewModel =
   | Readonly<{
       type: 'commentary';
@@ -149,6 +162,10 @@ export type TurnActivityViewModel =
   | Readonly<{
       type: 'orchestration';
       activity: OrchestrationActivityViewModel;
+    }>
+  | Readonly<{
+      type: 'contextCompaction';
+      activity: ContextCompactionActivityViewModel;
     }>;
 
 export type CompactToolActivity = Extract<

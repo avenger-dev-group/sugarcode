@@ -57,6 +57,8 @@ const INITIAL_PROFILE: ModelProfileValue = {
   connectionId: INITIAL_CONNECTION.id,
   displayName: 'Work model',
   modelId: '',
+  autoCompaction: 'auto',
+  nativeCompaction: 'auto',
   toolCalls: 'auto',
   strictTools: 'auto',
   parallelTools: 'auto',
@@ -286,14 +288,7 @@ export const useStore = ({
       setNotice('Configuration name and model ID are required.');
       return;
     }
-    const savedConfig: ModelConfigValue = {
-      ...config,
-      profiles: config.profiles.map((profile) => {
-        const withoutContext = { ...profile };
-        delete withoutContext.contextWindowTokens;
-        return withoutContext;
-      }),
-    };
+    const savedConfig: ModelConfigValue = config;
     setPhase('saving');
     setNotice(null);
     void saveModelConfig({

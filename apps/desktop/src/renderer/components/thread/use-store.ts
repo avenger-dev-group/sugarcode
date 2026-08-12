@@ -903,6 +903,36 @@ export const toThreadViewModel = (
               })),
             },
           } as const;
+        case 'contextCompaction':
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              state: entry.activity.status === 'inProgress'
+                ? ('running' as const)
+                : entry.activity.status,
+              trigger: entry.activity.trigger,
+              strategy: entry.activity.strategy,
+              ...(entry.activity.beforeContextTokens === undefined
+                ? {}
+                : { beforeContextTokens: entry.activity.beforeContextTokens }),
+              ...(entry.activity.afterContextTokens === undefined
+                ? {}
+                : { afterContextTokens: entry.activity.afterContextTokens }),
+              ...(entry.activity.durationMs === undefined
+                ? {}
+                : { durationMs: entry.activity.durationMs }),
+              ...(entry.activity.readableSummary === undefined
+                ? {}
+                : { readableSummary: entry.activity.readableSummary }),
+              ...(entry.activity.opaqueCheckpoint === undefined
+                ? {}
+                : { opaqueCheckpoint: entry.activity.opaqueCheckpoint }),
+              ...(entry.activity.message === undefined
+                ? {}
+                : { message: entry.activity.message }),
+            },
+          } as const;
       }
     });
     const activities =

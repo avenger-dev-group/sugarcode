@@ -8,6 +8,7 @@ const COMMAND_INTENT: Readonly<Record<string, string>> = {
   test: 'Run tests relevant to the current changes and resolve any failures in scope.',
   explain: 'Explain the specified code, files, or behavior and identify the important locations.',
   init: 'Analyze the repository and create or improve its AGENTS.md guidance.',
+  compact: 'Compact the active conversation context while preserving the requested focus.',
 };
 
 export const composerModelText = (value: string): string => {

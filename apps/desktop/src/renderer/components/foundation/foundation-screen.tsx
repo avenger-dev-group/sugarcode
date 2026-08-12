@@ -22,8 +22,8 @@ export const FoundationScreen = () => {
   const approvalThreadIds = Array.from(
     new Set(
       [
-        commandApprovalStore.request?.threadId,
-        mcpStore.approvalRequest?.threadId,
+        ...commandApprovalStore.requests.map((request) => request.threadId),
+        ...mcpStore.approvalRequests.map((request) => request.threadId),
       ].filter((threadId): threadId is string => threadId !== undefined),
     ),
   );

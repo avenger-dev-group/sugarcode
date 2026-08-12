@@ -70,6 +70,8 @@ export type RuntimeProviderConfig = Readonly<{
   headers?: Readonly<Record<string, string>>;
   timeoutMs: number;
   parallelTools: boolean;
+  compactThresholdTokens?: number;
+  nativeCompaction?: boolean;
 }>;
 
 export type RuntimeApprovalDecisionSource = 'user' | 'policy' | 'system';
@@ -180,6 +182,9 @@ export type RuntimeModelSelection = Readonly<{
   modelId: string;
   displayName: string;
   contextWindowTokens: number;
+  autoCompaction?: 'auto' | 'enabled' | 'disabled';
+  compactThresholdTokens?: number;
+  nativeCompaction?: 'auto' | 'enabled' | 'disabled';
   effectiveCapabilities: Readonly<{
     toolCalls: boolean;
     strictTools: boolean;
@@ -292,6 +297,15 @@ export type RuntimeCommand =
       workspaceId: string;
       threadId: string;
       turnId: string;
+    }>
+  | Readonly<{
+      type: 'context.compact';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      modelProfileId?: string;
+      focus?: string;
     }>
   | Readonly<{
       type: 'turn.userInputResponse';
@@ -478,6 +492,7 @@ export type RuntimeCommand =
 
 export type RuntimeUsage = Readonly<{
   inputTokens: number;
+  contextInputTokens?: number;
   outputTokens: number;
   reasoningTokens?: number;
   cachedInputTokens?: number;
@@ -490,6 +505,7 @@ const isRuntimeUsage = (value: unknown): value is RuntimeUsage => {
   }
   const allowedFields = new Set([
     'inputTokens',
+    'contextInputTokens',
     'outputTokens',
     'reasoningTokens',
     'cachedInputTokens',
@@ -500,6 +516,8 @@ const isRuntimeUsage = (value: unknown): value is RuntimeUsage => {
   return (
     Object.keys(value).every((field) => allowedFields.has(field)) &&
     isTokenCount(value.inputTokens) &&
+    (!Object.hasOwn(value, 'contextInputTokens') ||
+      isTokenCount(value.contextInputTokens)) &&
     isTokenCount(value.outputTokens) &&
     isTokenCount(value.totalTokens) &&
     (!Object.hasOwn(value, 'reasoningTokens') ||
@@ -514,6 +532,7 @@ export type RuntimeProviderError = Readonly<{
     | 'authentication'
     | 'rateLimit'
     | 'invalidRequest'
+    | 'contextWindowExceeded'
     | 'timeout'
     | 'connection'
     | 'protocol'
@@ -642,6 +661,34 @@ export type RuntimeEvent =
         threadId: string;
         turnId: string;
         usage: RuntimeUsage;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.contextCompactionStarted';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        compactionId: string;
+        trigger: 'auto' | 'manual' | 'recovery';
+        strategy: 'applicationSummary' | 'openaiNative' | 'anthropicNative';
+        beforeContextTokens?: number;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.contextCompactionFinished';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        compactionId: string;
+        trigger: 'auto' | 'manual' | 'recovery';
+        strategy: 'applicationSummary' | 'openaiNative' | 'anthropicNative';
+        outcome: 'completed' | 'failed' | 'interrupted';
+        beforeContextTokens?: number;
+        afterContextTokens?: number;
+        durationMs: number;
+        readableSummary?: string;
+        opaqueCheckpoint?: boolean;
+        message?: string;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1008,7 +1055,12 @@ const isProviderConfig = (value: unknown): value is RuntimeProviderConfig =>
   Number.isInteger(value.timeoutMs) &&
   value.timeoutMs >= 1_000 &&
   value.timeoutMs <= 600_000 &&
-  typeof value.parallelTools === 'boolean';
+  typeof value.parallelTools === 'boolean' &&
+  (value.compactThresholdTokens === undefined ||
+    (Number.isInteger(value.compactThresholdTokens) &&
+      Number(value.compactThresholdTokens) >= 4_096)) &&
+  (value.nativeCompaction === undefined ||
+    typeof value.nativeCompaction === 'boolean');
 
 export const isRuntimeContentPart = (value: unknown): value is RuntimeContentPart => {
   if (!isRecord(value)) {
@@ -1124,6 +1176,18 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.workspaceId === 'string' &&
         typeof value.threadId === 'string' &&
         typeof value.turnId === 'string'
+      );
+    case 'context.compact':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.turnId === 'string' &&
+        (value.modelProfileId === undefined ||
+          (typeof value.modelProfileId === 'string' &&
+            /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        (value.focus === undefined ||
+          (typeof value.focus === 'string' &&
+            utf8ByteLength(value.focus) <= 4_096))
       );
     case 'turn.userInputResponse':
       return (
@@ -1487,6 +1551,41 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       );
     case 'turn.usage':
       return hasTurnCoordinates(value) && isRuntimeUsage(value.usage);
+    case 'turn.contextCompactionStarted':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.compactionId === 'string' &&
+        ['auto', 'manual', 'recovery'].includes(String(value.trigger)) &&
+        ['applicationSummary', 'openaiNative', 'anthropicNative'].includes(
+          String(value.strategy),
+        ) &&
+        (value.beforeContextTokens === undefined ||
+          (Number.isSafeInteger(value.beforeContextTokens) &&
+            Number(value.beforeContextTokens) >= 0))
+      );
+    case 'turn.contextCompactionFinished':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.compactionId === 'string' &&
+        ['auto', 'manual', 'recovery'].includes(String(value.trigger)) &&
+        ['applicationSummary', 'openaiNative', 'anthropicNative'].includes(
+          String(value.strategy),
+        ) &&
+        ['completed', 'failed', 'interrupted'].includes(String(value.outcome)) &&
+        Number.isSafeInteger(value.durationMs) &&
+        Number(value.durationMs) >= 0 &&
+        (value.beforeContextTokens === undefined ||
+          (Number.isSafeInteger(value.beforeContextTokens) &&
+            Number(value.beforeContextTokens) >= 0)) &&
+        (value.afterContextTokens === undefined ||
+          (Number.isSafeInteger(value.afterContextTokens) &&
+            Number(value.afterContextTokens) >= 0)) &&
+        (value.readableSummary === undefined ||
+          typeof value.readableSummary === 'string') &&
+        (value.opaqueCheckpoint === undefined ||
+          typeof value.opaqueCheckpoint === 'boolean') &&
+        (value.message === undefined || typeof value.message === 'string')
+      );
     case 'turn.toolCall':
       return (
         hasTurnCoordinates(value) &&

@@ -23,7 +23,11 @@ const McpApprovalSurfaceContent = ({
   activeThreadId,
 }: McpApprovalSurfaceProps) => {
   const denyRef = useRef<HTMLButtonElement>(null);
-  const request = store.approvalRequest;
+  const request = store.approvalRequests.find(
+    (item) => item.threadId === activeThreadId,
+  );
+  const canApprove = request ? store.canApprove(request) : false;
+  const secondsRemaining = request ? store.secondsRemaining(request) : 0;
   const submitting =
     request?.actionState === 'submittingApproval' ||
     request?.actionState === 'submittingDenial';
@@ -39,8 +43,8 @@ const McpApprovalSurfaceContent = ({
         <AlertDialogContent
           onEscapeKeyDown={(event) => {
             event.preventDefault();
-            if (store.canApprove) {
-              void store.deny();
+            if (canApprove) {
+              void store.deny(request);
             }
           }}
           onOpenAutoFocus={(event) => {
@@ -66,7 +70,7 @@ const McpApprovalSurfaceContent = ({
                 </div>
                 <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border bg-surface px-2.5 py-1 font-mono text-xs text-secondary">
                   <Clock3 className="size-3.5" aria-hidden="true" />
-                  {store.secondsRemaining}s
+                  {secondsRemaining}s
                 </span>
               </div>
             </AlertDialogHeader>
@@ -174,7 +178,7 @@ const McpApprovalSurfaceContent = ({
               ) : submitting ? (
                 'Recording the one-time decision…'
               ) : (
-                `${store.secondsRemaining}s until this call is allowed by default. Escape denies.`
+                `${secondsRemaining}s until this call is allowed by default. Escape denies.`
               )}
             </p>
             <AlertDialogCancel asChild>
@@ -182,8 +186,8 @@ const McpApprovalSurfaceContent = ({
                 ref={denyRef}
                 type="button"
                 variant="outline"
-                disabled={!store.canApprove}
-                onClick={() => void store.deny()}
+                disabled={!canApprove}
+                onClick={() => void store.deny(request)}
               >
                 Deny
               </Button>
@@ -192,8 +196,8 @@ const McpApprovalSurfaceContent = ({
               <Button
                 type="button"
                 variant="destructive"
-                disabled={!store.canApprove}
-                onClick={() => void store.approve()}
+                disabled={!canApprove}
+                onClick={() => void store.approve(request)}
               >
                 Approve once
               </Button>

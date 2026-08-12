@@ -31,6 +31,9 @@ export type ModelProfileValue = Readonly<{
   displayName: string;
   modelId: string;
   contextWindowTokens?: number;
+  autoCompaction?: ModelCapabilityMode;
+  compactThresholdTokens?: number;
+  nativeCompaction?: ModelCapabilityMode;
   toolCalls: ModelCapabilityMode;
   strictTools: ModelCapabilityMode;
   parallelTools: ModelCapabilityMode;
@@ -187,7 +190,12 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
       'imageInput',
       'pdfInput',
     ],
-    ['contextWindowTokens'],
+    [
+      'contextWindowTokens',
+      'autoCompaction',
+      'compactThresholdTokens',
+      'nativeCompaction',
+    ],
   ) &&
   isId(value.id) &&
   isId(value.connectionId) &&
@@ -199,6 +207,14 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
     (Number.isInteger(value.contextWindowTokens) &&
       (value.contextWindowTokens as number) >= 4_096 &&
       (value.contextWindowTokens as number) <= 2_097_152)) &&
+  (value.autoCompaction === undefined ||
+    CAPABILITY_MODES.includes(value.autoCompaction as ModelCapabilityMode)) &&
+  (value.compactThresholdTokens === undefined ||
+    (Number.isInteger(value.compactThresholdTokens) &&
+      (value.compactThresholdTokens as number) >= 4_096 &&
+      (value.compactThresholdTokens as number) <= 2_097_152)) &&
+  (value.nativeCompaction === undefined ||
+    CAPABILITY_MODES.includes(value.nativeCompaction as ModelCapabilityMode)) &&
   CAPABILITY_MODES.includes(value.toolCalls as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.strictTools as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.parallelTools as ModelCapabilityMode) &&
@@ -238,6 +254,12 @@ export const isModelConfigValue = (
     profileIds.size !== profiles.length ||
     profiles.some(
       (profile) => !connectionIds.has(profile.connectionId),
+    ) ||
+    profiles.some(
+      (profile) =>
+        profile.contextWindowTokens !== undefined &&
+        profile.compactThresholdTokens !== undefined &&
+        profile.compactThresholdTokens >= profile.contextWindowTokens,
     )
   ) {
     return false;

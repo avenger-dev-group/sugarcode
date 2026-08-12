@@ -711,7 +711,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'workspace_apply_patch',
     description:
-      'Create, update, move, or delete workspace files with an atomic apply_patch document. User approval is required before commit.',
+      'Create, update, move, or delete files inside the open workspace with an atomic apply_patch document. Valid workspace-confined changes execute automatically.',
     parameters: patchSchema,
     execute: async (input) => {
       if (
@@ -752,7 +752,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'shell_exec',
     description:
-      'Run a bounded command in the workspace. Prefer sandboxed for a single absolute executable plus a separate arguments array; it is filesystem-read-only and network-denied. Use fullAccess only when shell syntax or writes are required. Every valid execution requires user approval.',
+      'Run a bounded command in the workspace. Prefer sandboxed for a single absolute executable plus a separate arguments array; it is filesystem-read-only, network-denied, and executes automatically. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval unless the current conversation or project is trusted.',
     parameters: commandSchema,
     execute: async (input) => {
       if (

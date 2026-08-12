@@ -173,6 +173,7 @@ test('private runtime validates complete non-negative usage samples', () => {
     ...coordinates,
     usage: {
       inputTokens: 10,
+      contextInputTokens: 14,
       outputTokens: 2,
       reasoningTokens: 1,
       cachedInputTokens: 4,
@@ -194,6 +195,43 @@ test('private runtime validates complete non-negative usage samples', () => {
   for (const usage of invalidUsages) {
     assert.equal(isRuntimeEvent({ ...coordinates, usage }), false);
   }
+});
+
+test('private runtime validates context compaction commands and lifecycle', () => {
+  const coordinates = {
+    requestId: 'request-compact',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-fixture',
+  };
+  assert.equal(isRuntimeCommand({
+    type: 'context.compact',
+    ...coordinates,
+    modelProfileId: 'model_primary',
+    focus: 'Keep migration decisions',
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'turn.contextCompactionStarted',
+    sequence: 1,
+    ...coordinates,
+    compactionId: 'compact-fixture',
+    trigger: 'manual',
+    strategy: 'applicationSummary',
+    beforeContextTokens: 90_000,
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'turn.contextCompactionFinished',
+    sequence: 2,
+    ...coordinates,
+    compactionId: 'compact-fixture',
+    trigger: 'manual',
+    strategy: 'applicationSummary',
+    outcome: 'completed',
+    beforeContextTokens: 90_000,
+    afterContextTokens: 31_000,
+    durationMs: 400,
+    readableSummary: 'Continue the migration task.',
+  }), true);
 });
 
 test('private Workspace protocol stays provider-neutral and bounds browser payloads', () => {

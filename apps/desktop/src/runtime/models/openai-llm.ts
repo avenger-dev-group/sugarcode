@@ -15,6 +15,7 @@ import type {
   EasyInputMessage,
   ResponseFunctionToolCall,
   ResponseInput,
+  ResponseCompactionItemParam,
   ResponseInputContent,
   ResponseOutputMessage,
   ResponseStreamEvent,
@@ -185,10 +186,39 @@ const responseMessageContent = (
     return [];
   });
 
-const responseInput = (request: NormalizedLlmRequest): ResponseInput => {
+const responseInput = (
+  request: NormalizedLlmRequest,
+  compatibilityKey: string,
+): ResponseInput => {
   const result: ResponseInput = [];
   const names = providerNameByAdkName(request);
-  for (const message of request.messages) {
+  let startIndex = 0;
+  let checkpoint: ResponseCompactionItemParam | undefined;
+  for (const [index, message] of request.messages.entries()) {
+    for (const part of message.parts) {
+      const value = part.type === 'text' && isRecord(part.metadata?.openaiCompaction)
+        ? part.metadata.openaiCompaction
+        : undefined;
+      if (
+        isRecord(value) &&
+        value.type === 'compaction' &&
+        value.model === request.model &&
+        value.compatibilityKey === compatibilityKey &&
+        typeof value.encrypted_content === 'string'
+      ) {
+        checkpoint = {
+          type: 'compaction',
+          encrypted_content: value.encrypted_content,
+          ...(typeof value.id === 'string' ? { id: value.id } : {}),
+        };
+        startIndex = index + 1;
+      }
+    }
+  }
+  if (checkpoint) {
+    result.push(checkpoint);
+  }
+  for (const message of request.messages.slice(startIndex)) {
     const content = responseMessageContent(message);
     if (content.length > 0) {
       const phase = message.role === 'assistant'
@@ -375,16 +405,23 @@ const mapOpenAiError = (
   }
   if (error instanceof OpenAI.APIError) {
     const status = error.status;
+    const contextWindowExceeded =
+      error.code === 'context_length_exceeded' ||
+      /context (?:length|window)|maximum context|too many tokens/iu.test(
+        error.message,
+      );
     return new ProviderAdapterError({
       kind:
-        status === 401 || status === 403
+        contextWindowExceeded
+          ? 'contextWindowExceeded'
+          : status === 401 || status === 403
           ? 'authentication'
           : status === 429
             ? 'rateLimit'
             : status !== undefined && status >= 500
               ? 'server'
               : 'invalidRequest',
-      retryable: isRetryableStatus(status),
+      retryable: contextWindowExceeded ? false : isRetryableStatus(status),
       message: error.message,
       ...(status === undefined ? {} : { status }),
       ...(typeof error.code === 'string' ? { code: error.code } : {}),
@@ -433,6 +470,9 @@ export class OpenAiLlm extends BaseLlm {
   private readonly parallelTools: boolean;
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
+  private nativeCompaction: boolean;
+  private readonly compactThresholdTokens?: number;
+  private readonly compatibilityKey: string;
 
   constructor(options: OpenAiLlmOptions) {
     super({ model: options.model });
@@ -440,6 +480,9 @@ export class OpenAiLlm extends BaseLlm {
     this.parallelTools = options.parallelTools ?? false;
     this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.nativeCompaction = options.nativeCompaction === true;
+    this.compactThresholdTokens = options.compactThresholdTokens;
+    this.compatibilityKey = `${options.wireApi}:${validateBaseUrl(options.baseUrl)}`;
     this.client = new OpenAI({
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
@@ -469,6 +512,21 @@ export class OpenAiLlm extends BaseLlm {
           kind: 'timeout',
           retryable: true,
           message: `The model stream exceeded the ${this.timeoutMs} ms request deadline.`,
+        });
+      }
+      if (
+        this.nativeCompaction &&
+        error instanceof OpenAI.APIError &&
+        /context_management|compaction/iu.test(error.message) &&
+        /unsupported|unknown|unrecognized|invalid/iu.test(error.message)
+      ) {
+        this.nativeCompaction = false;
+        throw new ProviderAdapterError({
+          kind: 'contextWindowExceeded',
+          retryable: false,
+          message:
+            'The endpoint does not support provider-native compaction; SugarCode will retry with application compaction.',
+          ...(error.status === undefined ? {} : { status: error.status }),
         });
       }
       throw mapOpenAiError(error, abortSignal);
@@ -560,11 +618,21 @@ export class OpenAiLlm extends BaseLlm {
         this.client.responses.create(
           {
             model: request.model,
-            input: responseInput(request),
+            input: responseInput(request, this.compatibilityKey),
             instructions: request.system || undefined,
             tools: [...responseTools(request.tools)],
             parallel_tool_calls: this.parallelTools,
             max_output_tokens: maxOutputTokens(request),
+            ...(this.nativeCompaction
+              ? {
+                  context_management: [{
+                    type: 'compaction',
+                    ...(this.compactThresholdTokens === undefined
+                      ? {}
+                      : { compact_threshold: this.compactThresholdTokens }),
+                  }],
+                }
+              : {}),
             stream: true,
             store: false,
           },
@@ -760,6 +828,23 @@ export class OpenAiLlm extends BaseLlm {
               }),
             });
           }
+          for (const output of event.response.output ?? []) {
+            if (output.type === 'compaction') {
+              parts.push({
+                text: '',
+                thought: true,
+                partMetadata: {
+                  openaiCompaction: {
+                    type: 'compaction',
+                    id: output.id,
+                    model: request.model,
+                    compatibilityKey: this.compatibilityKey,
+                    encrypted_content: output.encrypted_content,
+                  },
+                },
+              });
+            }
+          }
           yield {
             content: { role: 'model', parts },
             partial: false,
@@ -770,6 +855,9 @@ export class OpenAiLlm extends BaseLlm {
               provider: 'openai',
               wireApi: 'openaiResponses',
               responseId: event.response.id,
+              ...(typeof event.response.usage?.input_tokens === 'number'
+                ? { contextInputTokens: event.response.usage.input_tokens }
+                : {}),
             },
           };
           break;
@@ -1029,6 +1117,9 @@ export class OpenAiLlm extends BaseLlm {
       customMetadata: {
         provider: 'openai',
         wireApi: 'openaiChatCompletions',
+        ...(isRecord(usage) && typeof usage.prompt_tokens === 'number'
+          ? { contextInputTokens: usage.prompt_tokens }
+          : {}),
       },
     };
   }

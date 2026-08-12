@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { parseComposerSubmission } from '../../shared/composer.ts';
 
 import {
   isConversationThreadProjectionDelta,
@@ -246,6 +247,7 @@ const runtimeError = (error: RuntimeProviderError): ConversationTurnError => {
               ? 'server'
               : [
                     'authentication',
+                    'contextWindowExceeded',
                     'invalidRequest',
                     'timeout',
                     'protocol',
@@ -337,6 +339,71 @@ const orchestrationActivity = (
   };
 };
 
+const contextCompactionActivities = (
+  items: readonly RuntimeTurnItemRecord[],
+): ConversationActivity[] => {
+  const activities = new Map<string, Extract<ConversationActivity, {
+    type: 'contextCompaction';
+  }>>();
+  for (const item of items) {
+    const payload = item.payload;
+    if (
+      item.kind !== 'turn.contextCompactionStarted' &&
+      item.kind !== 'turn.contextCompactionFinished'
+    ) {
+      continue;
+    }
+    if (
+      typeof payload.compactionId !== 'string' ||
+      !['auto', 'manual', 'recovery'].includes(String(payload.trigger)) ||
+      !['applicationSummary', 'openaiNative', 'anthropicNative'].includes(
+        String(payload.strategy),
+      )
+    ) {
+      continue;
+    }
+    const previous = activities.get(payload.compactionId);
+    const finished = item.kind === 'turn.contextCompactionFinished';
+    activities.set(payload.compactionId, {
+      type: 'contextCompaction',
+      activity: {
+        id: payload.compactionId,
+        status: finished && ['completed', 'failed', 'interrupted'].includes(
+          String(payload.outcome),
+        )
+          ? payload.outcome as 'completed' | 'failed' | 'interrupted'
+          : previous?.activity.status ?? 'inProgress',
+        trigger: payload.trigger as 'auto' | 'manual' | 'recovery',
+        strategy: payload.strategy as
+          | 'applicationSummary'
+          | 'openaiNative'
+          | 'anthropicNative',
+        ...(typeof payload.beforeContextTokens === 'number'
+          ? { beforeContextTokens: payload.beforeContextTokens }
+          : previous?.activity.beforeContextTokens === undefined
+            ? {}
+            : { beforeContextTokens: previous.activity.beforeContextTokens }),
+        ...(typeof payload.afterContextTokens === 'number'
+          ? { afterContextTokens: payload.afterContextTokens }
+          : {}),
+        ...(typeof payload.durationMs === 'number'
+          ? { durationMs: payload.durationMs }
+          : {}),
+        ...(typeof payload.readableSummary === 'string'
+          ? { readableSummary: payload.readableSummary }
+          : {}),
+        ...(typeof payload.opaqueCheckpoint === 'boolean'
+          ? { opaqueCheckpoint: payload.opaqueCheckpoint }
+          : {}),
+        ...(typeof payload.message === 'string'
+          ? { message: payload.message }
+          : {}),
+      },
+    });
+  }
+  return [...activities.values()];
+};
+
 const projectThread = (
   snapshot: RuntimeThreadSnapshot,
 ): readonly ConversationTurn[] =>
@@ -401,6 +468,7 @@ const projectThread = (
     const restoredOrchestration = orchestrationActivity(restoredTasks);
     const activities = [
       ...restoredActivities,
+      ...contextCompactionActivities(items),
       ...(restoredOrchestration ? [restoredOrchestration] : []),
     ];
     const messages = [
@@ -570,6 +638,10 @@ export class RuntimeConversationController {
     }
     const workspaceId = this.workspaceId;
     let threadId = this.threadId;
+    const submission = parseComposerSubmission(input.input);
+    const compactCommand = submission.references.some(
+      (reference) => reference.kind === 'command' && reference.target === 'compact',
+    );
     let generateTitle = threadId
       ? this.threadRecords.get(threadId)?.title === null
       : true;
@@ -579,6 +651,35 @@ export class RuntimeConversationController {
       this.navigator.pendingMutation
     ) {
       return rejected('turnActive');
+    }
+    if (compactCommand) {
+      if (!threadId || (input.attachments?.length ?? 0) > 0) {
+        return rejected('invalidInput');
+      }
+      const turnId = createUuidV7();
+      this.turnsByThread.set(threadId, [
+        ...(this.turnsByThread.get(threadId) ?? []),
+        { id: turnId, status: 'inProgress', messages: [] },
+      ]);
+      this.activeTurnsByThread.set(threadId, {
+        workspaceId,
+        turnId,
+        phase: 'starting',
+      });
+      this.unreadThreadStatuses.delete(threadId);
+      this.runtime.send({
+        type: 'context.compact',
+        requestId: randomUUID(),
+        workspaceId,
+        threadId,
+        turnId,
+        ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
+        ...(submission.text.trim() ? { focus: submission.text.trim() } : {}),
+      });
+      this.refreshNavigator();
+      this.publishThreadProjection(threadId, true);
+      this.publish();
+      return accepted();
     }
     this.pendingTurnStartWorkspaces.add(workspaceId);
     this.notice = undefined;
@@ -1250,6 +1351,60 @@ export class RuntimeConversationController {
             source: 'provider',
           },
         };
+        break;
+      }
+      case 'turn.contextCompactionStarted': {
+        const activities = [...(turn.activities ?? [])];
+        activities.push({
+          type: 'contextCompaction',
+          activity: {
+            id: event.compactionId,
+            status: 'inProgress',
+            trigger: event.trigger,
+            strategy: event.strategy,
+            ...(event.beforeContextTokens === undefined
+              ? {}
+              : { beforeContextTokens: event.beforeContextTokens }),
+          },
+        });
+        turns[index] = { ...turn, activities };
+        break;
+      }
+      case 'turn.contextCompactionFinished': {
+        const activities = [...(turn.activities ?? [])];
+        const activityIndex = activities.findIndex(
+          (activity) => activity.type === 'contextCompaction' &&
+            activity.activity.id === event.compactionId,
+        );
+        const next = {
+          type: 'contextCompaction' as const,
+          activity: {
+            id: event.compactionId,
+            status: event.outcome,
+            trigger: event.trigger,
+            strategy: event.strategy,
+            ...(event.beforeContextTokens === undefined
+              ? {}
+              : { beforeContextTokens: event.beforeContextTokens }),
+            ...(event.afterContextTokens === undefined
+              ? {}
+              : { afterContextTokens: event.afterContextTokens }),
+            durationMs: event.durationMs,
+            ...(event.readableSummary === undefined
+              ? {}
+              : { readableSummary: event.readableSummary }),
+            ...(event.opaqueCheckpoint === undefined
+              ? {}
+              : { opaqueCheckpoint: event.opaqueCheckpoint }),
+            ...(event.message === undefined ? {} : { message: event.message }),
+          },
+        };
+        if (activityIndex >= 0) {
+          activities[activityIndex] = next;
+        } else {
+          activities.push(next);
+        }
+        turns[index] = { ...turn, activities };
         break;
       }
       case 'agent.task': {

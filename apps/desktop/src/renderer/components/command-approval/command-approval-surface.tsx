@@ -49,7 +49,7 @@ const MODE_COPY: Record<
 > = {
   ask: {
     label: '请求批准',
-    description: '写入项目文件或访问网络前，先征求你的同意',
+    description: '访问网络、项目外文件或运行非沙箱命令前请求批准',
     icon: Hand,
   },
   thread: {
@@ -118,8 +118,12 @@ export const CommandApprovalView = ({
   activeThreadId,
 }: CommandApprovalViewProps) => {
   const denyButtonRef = useRef<HTMLButtonElement>(null);
-  const { request } = store;
+  const request = store.requests.find(
+    (item) => item.threadId === activeThreadId,
+  );
   const actionState = request?.actionState;
+  const canAct = request ? store.canAct(request) : false;
+  const secondsRemaining = request ? store.secondsRemaining(request) : 0;
   const isSubmitting =
     actionState === 'submittingApproval' ||
     actionState === 'submittingDenial';
@@ -130,7 +134,7 @@ export const CommandApprovalView = ({
         ? '正在记录本次授权…'
         : actionState === 'submittingDenial'
           ? '正在记录拒绝决定…'
-          : `${store.secondsRemaining} 秒后将默认允许并继续。`;
+          : `${secondsRemaining} 秒后将默认允许并继续。`;
 
   return (
     <>
@@ -144,8 +148,8 @@ export const CommandApprovalView = ({
           <AlertDialogContent
             onEscapeKeyDown={(event) => {
               event.preventDefault();
-              if (store.canAct) {
-                void store.deny();
+              if (canAct) {
+                void store.deny(request);
               }
             }}
             onOpenAutoFocus={(event) => {
@@ -170,7 +174,7 @@ export const CommandApprovalView = ({
                   </div>
                   <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border bg-surface px-2.5 py-1 font-mono text-xs font-normal text-secondary">
                     <Clock3 className="size-3.5" aria-hidden="true" />
-                    {store.secondsRemaining}s
+                    {secondsRemaining}s
                   </div>
                 </div>
               </AlertDialogHeader>
@@ -184,8 +188,8 @@ export const CommandApprovalView = ({
                   </p>
                   <p className="mt-0.5 text-[11px] text-tertiary">
                     {request.queueCount > 1
-                      ? `全局审批队列中共 ${request.queueCount} 项`
-                      : '全局审批队列中的当前项目'}
+                      ? `当前共有 ${request.queueCount} 项待授权，可分别处理`
+                      : '当前任务有 1 项待授权'}
                   </p>
                 </div>
                 <Button
@@ -220,14 +224,16 @@ export const CommandApprovalView = ({
               </div>
               <div className="mt-4">
                 <PermissionModeOptions
-                  selectedMode={store.selectedMode}
-                  onSelect={store.setSelectedMode}
+                  selectedMode={store.selectedMode(request)}
+                  onSelect={(mode) =>
+                    store.setSelectedMode(request.presentationId, mode)
+                  }
                 />
               </div>
               <p className="mt-3 text-xs leading-5 text-tertiary">
                 {request.fullAccess
                   ? 'Full Access 可访问网络及工作区外文件。完全访问授权仅保存在当前应用会话中，可随时切回请求批准。'
-                  : '完全访问模式会自动批准后续受控操作；切回请求批准即可恢复逐次确认。'}
+                  : '项目内原子修改和只读禁网命令会自动执行；高权限操作仍会请求批准。'}
               </p>
             </div>
 
@@ -250,8 +256,8 @@ export const CommandApprovalView = ({
                   ref={denyButtonRef}
                   type="button"
                   variant="outline"
-                  disabled={!store.canAct}
-                  onClick={() => void store.deny()}
+                  disabled={!canAct}
+                  onClick={() => void store.deny(request)}
                 >
                   拒绝
                 </Button>
@@ -260,8 +266,8 @@ export const CommandApprovalView = ({
                 <Button
                   type="button"
                   variant="destructive"
-                  disabled={!store.canAct}
-                  onClick={() => void store.approve()}
+                  disabled={!canAct}
+                  onClick={() => void store.approve(request)}
                 >
                   {isSubmitting ? '正在记录授权…' : '允许并继续'}
                 </Button>
@@ -289,7 +295,7 @@ export const CommandApprovalModeControl = ({
   return (
     <Select
       value={effectiveMode}
-      disabled={disabled || store.modePending || store.isOpen}
+      disabled={disabled || store.modePending}
       onValueChange={(value) =>
         void store.changeMode(
           value as CommandApprovalMode,

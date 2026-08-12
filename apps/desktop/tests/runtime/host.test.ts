@@ -2110,7 +2110,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   );
 });
 
-test('RuntimeHost restores a pending approval without replay and executes only after approval', async () => {
+test('RuntimeHost automatically resumes a recovered workspace patch', async () => {
   const argumentsJson = JSON.stringify({
     patch: '*** Begin Patch\n*** Add File: recovered.txt\n+fixture\n*** End Patch',
   });
@@ -2181,32 +2181,11 @@ test('RuntimeHost restores a pending approval without replay and executes only a
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
-  const approval = events.find(
-    (event): event is Extract<RuntimeEvent, { type: 'approval.requested' }> =>
-      event.type === 'approval.requested',
-  );
-  assert.ok(approval);
-  assert.equal(approval.recovered, true);
-  assert.equal(
-    approval.argumentsSummary,
-    '1 workspace file change\nCreate recovered.txt',
-  );
-  assert.doesNotMatch(approval.argumentsSummary, /workspace_apply_patch/u);
-  assert.equal(applyCount, 0);
-  assert.equal(approvalStatus, 'pending');
-  assert.ok(!persistedKinds.includes('approval.requested'));
-
-  host.handle({
-    type: 'approval.resolve',
-    requestId: 'request-recovered-decision',
-    workspaceId: approval.workspaceId,
-    threadId: approval.threadId,
-    turnId: approval.turnId,
-    approvalId: approval.approvalId,
-    decision: 'approved',
-    source: 'user',
-  });
   await completed;
+  assert.equal(
+    events.some((event) => event.type === 'approval.requested'),
+    false,
+  );
   assert.equal(approvalStatus, 'approved');
   assert.equal(operationStatus, 'completed');
   assert.equal(applyCount, 1);
@@ -2214,7 +2193,104 @@ test('RuntimeHost restores a pending approval without replay and executes only a
   assert.ok(persistedKinds.includes('operation.completed'));
 });
 
-test('RuntimeHost persists approval before committing a workspace patch', async () => {
+test('RuntimeHost publishes concurrent approvals and resolves either one independently', () => {
+  const commandArguments = [
+    {
+      mode: 'fullAccess',
+      command: 'git status',
+      arguments: [] as string[],
+      cwd: '.',
+      timeoutMs: 300_000,
+    },
+    {
+      mode: 'fullAccess',
+      command: 'npm test',
+      arguments: [] as string[],
+      cwd: '.',
+      timeoutMs: 300_000,
+    },
+  ];
+  const records = commandArguments.map((argumentsValue, index) => {
+    const argumentsJson = JSON.stringify(argumentsValue);
+    return {
+      approvalId: `approval-${index + 1}`,
+      operationId: `operation-${index + 1}`,
+      turnId: `turn-${index + 1}`,
+      requestId: `request-${index + 1}`,
+      threadId: `thread-${index + 1}`,
+      workspaceId: `workspace-${index + 1}`,
+      toolName: 'shell_exec',
+      requestHash: createHash('sha256').update(argumentsJson).digest('hex'),
+      argumentsJson,
+    };
+  });
+  const events: RuntimeEvent[] = [];
+  const decisions: Array<readonly [string, string]> = [];
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    listPendingApprovalsJson: () => JSON.stringify(records),
+    appendItem: () => true,
+    resolveApproval: (approvalId: string, decision: string) => {
+      decisions.push([approvalId, decision]);
+      return true;
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    loadNative: () => native,
+    postEvent: (event) => events.push(event),
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize',
+    protocolVersion: 2,
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+  });
+
+  const approvals = events.filter(
+    (event): event is Extract<RuntimeEvent, { type: 'approval.requested' }> =>
+      event.type === 'approval.requested',
+  );
+  assert.deepEqual(
+    approvals.map((approval) => approval.approvalId),
+    ['approval-1', 'approval-2'],
+  );
+
+  host.handle({
+    type: 'approval.resolve',
+    requestId: 'request-decision-2',
+    workspaceId: 'workspace-2',
+    threadId: 'thread-2',
+    turnId: 'turn-2',
+    approvalId: 'approval-2',
+    decision: 'denied',
+    source: 'user',
+  });
+
+  assert.deepEqual(decisions, [['approval-2', 'denied']]);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'approval.resolved' &&
+        event.approvalId === 'approval-2',
+    ),
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'approval.resolved' &&
+        event.approvalId === 'approval-1',
+    ),
+    false,
+  );
+});
+
+test('RuntimeHost automatically authorizes a workspace patch', async () => {
   const events: RuntimeEvent[] = [];
   let applyCount = 0;
   let proposalCount = 0;
@@ -2318,31 +2394,21 @@ test('RuntimeHost persists approval before committing a workspace patch', async 
     },
     content: [{ type: 'text', text: 'Patch fixture.txt' }],
   });
-  let approval: Extract<RuntimeEvent, { type: 'approval.requested' }> | undefined;
-  for (let attempt = 0; attempt < 20 && !approval; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    approval = events.find((event) => event.type === 'approval.requested');
-  }
-  assert.ok(approval);
-  assert.equal(proposalCount, 1);
-  assert.equal(applyCount, 0);
-  host.handle({
-    type: 'approval.resolve',
-    requestId: 'request-approval',
-    workspaceId: approval.workspaceId,
-    threadId: approval.threadId,
-    turnId: approval.turnId,
-    approvalId: approval.approvalId,
-    decision: 'approved',
-    source: 'user',
-  });
   await completed;
+  assert.equal(proposalCount, 1);
   assert.equal(applyCount, 1);
-  assert.ok(events.some((event) => event.type === 'approval.resolved'));
+  assert.equal(
+    events.some((event) => event.type === 'approval.requested'),
+    false,
+  );
+  assert.equal(
+    events.some((event) => event.type === 'approval.resolved'),
+    false,
+  );
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
 });
 
-test('RuntimeHost approves and persists command execution before native dispatch', async () => {
+test('RuntimeHost automatically authorizes a sandboxed command', async () => {
   const events: RuntimeEvent[] = [];
   let claimCount = 0;
   let executeCount = 0;
@@ -2450,30 +2516,13 @@ test('RuntimeHost approves and persists command execution before native dispatch
     },
     content: [{ type: 'text', text: 'Show the workspace path' }],
   });
-  let approval: Extract<RuntimeEvent, { type: 'approval.requested' }> | undefined;
-  for (let attempt = 0; attempt < 20 && !approval; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    approval = events.find((event) => event.type === 'approval.requested');
-  }
-  assert.ok(approval);
-  assert.equal(approval.toolName, 'shell_exec');
-  assert.equal(approval.argumentsSummary, 'Sandboxed: /bin/pwd');
-  assert.equal(approval.fullAccess, false);
-  assert.equal(claimCount, 0);
-  assert.equal(executeCount, 0);
-  host.handle({
-    type: 'approval.resolve',
-    requestId: 'request-approval',
-    workspaceId: approval.workspaceId,
-    threadId: approval.threadId,
-    turnId: approval.turnId,
-    approvalId: approval.approvalId,
-    decision: 'approved',
-    source: 'user',
-  });
   await completed;
   assert.equal(claimCount, 1);
   assert.equal(executeCount, 1);
+  assert.equal(
+    events.some((event) => event.type === 'approval.requested'),
+    false,
+  );
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
 });
 

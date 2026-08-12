@@ -39,6 +39,26 @@ test('approval modes resolve only inside their granted scope', () => {
   );
 });
 
+test('approval modes resolve every independently granted scope', () => {
+  const snapshot: CommandApprovalStateSnapshot = {
+    revision: 1,
+    status: 'idle',
+    mode: 'thread',
+    modeThreadId: 'thread-2',
+    threadModeIds: ['thread-1', 'thread-2'],
+    workspaceModeIds: ['workspace-2'],
+  };
+
+  assert.equal(
+    resolveCommandApprovalMode(snapshot, 'thread-1', 'workspace-1'),
+    'thread',
+  );
+  assert.equal(
+    resolveCommandApprovalMode(snapshot, 'thread-3', 'workspace-2'),
+    'workspace',
+  );
+});
+
 test('approval snapshots require the identifier for their active scope', () => {
   assert.equal(
     isCommandApprovalStateSnapshot({

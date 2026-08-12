@@ -345,8 +345,10 @@ const startApplication = async (): Promise<void> => {
       mainWindow.focus();
     }
   };
-  const unsubscribeCommandApproval =
-    runtimeApprovalController.subscribe(hidePreviewForApproval);
+  const unsubscribeCommandApproval = runtimeApprovalController.subscribe(() => {
+    runtimeMcpApprovalController?.refreshPolicy();
+    hidePreviewForApproval();
+  });
   const unsubscribeMcpApproval =
     runtimeMcpApprovalController.subscribe(hidePreviewForApproval);
   disposePreviewApprovalSubscriptions = () => {

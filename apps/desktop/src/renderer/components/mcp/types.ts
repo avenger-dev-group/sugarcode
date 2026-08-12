@@ -12,15 +12,16 @@ export type McpStore = Readonly<{
   session: McpSessionStateSnapshot;
   approval: McpApprovalStateSnapshot;
   approvalRequest: McpApprovalViewModel | null;
-  secondsRemaining: number;
-  canApprove: boolean;
+  approvalRequests: readonly McpApprovalViewModel[];
+  secondsRemaining: (request: McpApprovalViewModel) => number;
+  canApprove: (request: McpApprovalViewModel) => boolean;
   sessionBusy: boolean;
   actionError: string | null;
   toggleServer: (serverId: string) => Promise<void>;
   enable: () => Promise<void>;
   disable: () => Promise<void>;
-  approve: () => Promise<void>;
-  deny: () => Promise<void>;
+  approve: (request: McpApprovalViewModel) => Promise<void>;
+  deny: (request: McpApprovalViewModel) => Promise<void>;
 }>;
 
 export type McpSessionPanelProps = Readonly<{

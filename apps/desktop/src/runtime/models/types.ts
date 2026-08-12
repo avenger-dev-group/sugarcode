@@ -11,6 +11,8 @@ export type ProviderAdapterOptions = Readonly<{
   timeoutMs?: number;
   parallelTools?: boolean;
   maxRetries?: number;
+  compactThresholdTokens?: number;
+  nativeCompaction?: boolean;
 }>;
 
 export const INVALID_TOOL_ARGUMENTS_TOOL_NAME =

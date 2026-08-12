@@ -206,6 +206,80 @@ test('UUIDv7 generator creates canonical time-ordered identifiers', () => {
   );
 });
 
+test('/compact starts a maintenance Turn without a user message', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal(controller.startNewThread().accepted, true);
+  assert.equal((await controller.startTurn({ input: 'Seed history' })).accepted, true);
+  const seed = fixture.sent.find(
+    (candidate): candidate is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      candidate.type === 'turn.start',
+  );
+  assert.ok(seed);
+  fixture.emit({
+    type: 'turn.started',
+    sequence: 1,
+    requestId: seed.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: seed.threadId,
+    turnId: seed.turnId,
+    model: {
+      profileId: 'profile-1',
+      providerFamily: 'openai',
+      wireApi: 'openaiResponses',
+      modelId: 'gpt-5',
+      displayName: 'GPT-5',
+      contextWindowTokens: 400_000,
+      effectiveCapabilities: {
+        toolCalls: true,
+        strictTools: true,
+        parallelTools: true,
+        imageInput: true,
+        pdfInput: false,
+      },
+    },
+  });
+  fixture.emit({
+    type: 'turn.userMessage',
+    sequence: 2,
+    requestId: seed.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: seed.threadId,
+    turnId: seed.turnId,
+    itemId: `${seed.turnId}:user`,
+    content: seed.content,
+  });
+  fixture.emit({
+    type: 'turn.completed',
+    sequence: 3,
+    requestId: seed.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: seed.threadId,
+    turnId: seed.turnId,
+    status: 'completed',
+  });
+  fixture.sent.length = 0;
+  assert.equal((await controller.startTurn({
+    input: '/compact 保留数据库迁移决策',
+    modelProfileId: 'profile-1',
+  })).accepted, true);
+  const command = fixture.sent.find(
+    (candidate): candidate is Extract<RuntimeCommand, { type: 'context.compact' }> =>
+      candidate.type === 'context.compact',
+  );
+  assert.ok(command);
+  assert.equal(command.focus, '保留数据库迁移决策');
+  assert.equal(command.modelProfileId, 'profile-1');
+  assert.deepEqual(controller.getSnapshot().turns.at(-1)?.messages, []);
+  assert.equal(
+    fixture.sent.some((candidate) => candidate.type === 'turn.start'),
+    false,
+  );
+});
+
 test('runtime conversation controller preserves the Renderer snapshot contract', async () => {
   const fixture = new FixtureRuntime();
   const controller = new RuntimeConversationController(

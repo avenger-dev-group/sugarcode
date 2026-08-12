@@ -66,10 +66,12 @@ export class RuntimeMcpApprovalController {
 
   getSnapshot = (): McpApprovalStateSnapshot => {
     const pending = this.queue[0];
+    const requests = this.queue.map((item) => this.viewModel(item));
     return {
       revision: this.revision,
       status: pending ? 'pending' : 'idle',
-      ...(pending ? { request: this.viewModel(pending) } : {}),
+      requests,
+      ...(pending ? { request: requests[0] } : {}),
     };
   };
 
@@ -109,6 +111,29 @@ export class RuntimeMcpApprovalController {
   deny = async (presentationId: unknown): Promise<McpApprovalActionResult> =>
     this.respond(presentationId, 'denied');
 
+  refreshPolicy = (): void => {
+    let changed = false;
+    for (const pending of this.queue) {
+      if (
+        pending.responseCommitted ||
+        !this.shouldAutoApprove(pending.workspaceId, pending.threadId)
+      ) {
+        continue;
+      }
+      pending.responseCommitted = true;
+      pending.actionState = 'submittingApproval';
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+        pending.timer = null;
+      }
+      this.resolve(pending, 'approved', 'policy');
+      changed = true;
+    }
+    if (changed) {
+      this.publish();
+    }
+  };
+
   private respond = (
     presentationId: unknown,
     decision: 'approved' | 'denied',
@@ -116,9 +141,11 @@ export class RuntimeMcpApprovalController {
     if (typeof presentationId !== 'string' || presentationId.length === 0) {
       return action('invalid');
     }
-    const pending = this.queue[0];
-    if (!pending || pending.approvalId !== presentationId) {
-      return action('stale');
+    const pending = this.queue.find(
+      (item) => item.approvalId === presentationId,
+    );
+    if (!pending) {
+      return action(this.queue.length === 0 ? 'unavailable' : 'stale');
     }
     if (pending.responseCommitted) {
       return action('stale');

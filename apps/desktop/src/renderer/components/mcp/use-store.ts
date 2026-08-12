@@ -13,6 +13,7 @@ import {
 } from '@/renderer/services/mcp';
 import type {
   McpApprovalStateSnapshot,
+  McpApprovalViewModel,
   McpSessionActionResult,
   McpSessionStateSnapshot,
 } from '@/shared/mcp';
@@ -57,7 +58,11 @@ export const useStore = (): McpStore => {
     useState<McpApprovalStateSnapshot>(INITIAL_APPROVAL);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [actionError, setActionError] = useState<string | null>(null);
-  const [actionPending, setActionPending] = useState<boolean>(false);
+  const [sessionActionPending, setSessionActionPending] =
+    useState<boolean>(false);
+  const [approvalActionPendingIds, setApprovalActionPendingIds] = useState<
+    readonly string[]
+  >([]);
   const sessionRevision = useRef<number>(0);
   const approvalRevision = useRef<number>(0);
 
@@ -67,7 +72,7 @@ export const useStore = (): McpStore => {
     }
     sessionRevision.current = next.revision;
     setSession(next);
-    setActionPending(false);
+    setSessionActionPending(false);
   }, []);
   const acceptApproval = useCallback(
     (next: McpApprovalStateSnapshot): void => {
@@ -76,7 +81,12 @@ export const useStore = (): McpStore => {
       }
       approvalRevision.current = next.revision;
       setApproval(next);
-      setActionPending(false);
+      const nextRequests = next.requests ?? (next.request ? [next.request] : []);
+      setApprovalActionPendingIds((current) =>
+        current.filter((id) =>
+          nextRequests.some((request) => request.presentationId === id),
+        ),
+      );
       setNowMs(Date.now());
     },
     [],
@@ -100,7 +110,8 @@ export const useStore = (): McpStore => {
   useEffect(() => {
     if (
       approval.status !== 'pending' ||
-      approval.request?.actionState !== 'awaitingUser'
+      !(approval.requests ?? (approval.request ? [approval.request] : []))
+        .some((request) => request.actionState === 'awaitingUser')
     ) {
       return;
     }
@@ -112,73 +123,89 @@ export const useStore = (): McpStore => {
     async (
       action: () => Promise<McpSessionActionResult>,
     ): Promise<void> => {
-      setActionPending(true);
+      setSessionActionPending(true);
       setActionError(null);
       try {
         const response = await action();
         if (!response.accepted) {
           setActionError(sessionFailure(response.reason));
-          setActionPending(false);
+          setSessionActionPending(false);
         }
       } catch {
         setActionError('The MCP session could not be changed safely.');
-        setActionPending(false);
+        setSessionActionPending(false);
       }
     },
     [],
   );
 
-  const approvalRequest =
-    approval.status === 'pending' && approval.request
-      ? approval.request
-      : null;
-  const secondsRemaining = approvalRequest
-    ? Math.max(
+  const approvalRequests = approval.status === 'pending'
+    ? approval.requests ?? (approval.request ? [approval.request] : [])
+    : [];
+  const approvalRequest = approvalRequests[0] ?? null;
+  const secondsRemaining = useCallback(
+    (request: McpApprovalViewModel): number =>
+      Math.max(
         0,
-        Math.ceil((approvalRequest.localExpiresAtMs - nowMs) / 1_000),
-      )
-    : 0;
-  const canApprove =
-    approvalRequest?.actionState === 'awaitingUser' &&
-    secondsRemaining > 0 &&
-    !actionPending;
+        Math.ceil((request.localExpiresAtMs - nowMs) / 1_000),
+      ),
+    [nowMs],
+  );
+  const canApprove = useCallback(
+    (request: McpApprovalViewModel): boolean =>
+      request.actionState === 'awaitingUser' &&
+      secondsRemaining(request) > 0 &&
+      !approvalActionPendingIds.includes(request.presentationId),
+    [approvalActionPendingIds, secondsRemaining],
+  );
 
   const respond = useCallback(
-    async (decision: 'approved' | 'denied'): Promise<void> => {
-      if (!approvalRequest || !canApprove) {
+    async (
+      request: McpApprovalViewModel,
+      decision: 'approved' | 'denied',
+    ): Promise<void> => {
+      if (!canApprove(request)) {
         return;
       }
-      setActionPending(true);
+      setApprovalActionPendingIds((current) => [
+        ...current,
+        request.presentationId,
+      ]);
       setActionError(null);
       try {
         const response =
           decision === 'approved'
-            ? await approveMcpCall(approvalRequest.presentationId)
-            : await denyMcpCall(approvalRequest.presentationId);
+            ? await approveMcpCall(request.presentationId)
+            : await denyMcpCall(request.presentationId);
         if (!response.accepted) {
           setActionError(
             response.reason === 'stale'
               ? 'This MCP request is no longer active.'
               : 'MCP approval is unavailable.',
           );
-          setActionPending(false);
+          setApprovalActionPendingIds((current) =>
+            current.filter((id) => id !== request.presentationId),
+          );
         }
       } catch {
         setActionError('MCP approval is unavailable.');
-        setActionPending(false);
+        setApprovalActionPendingIds((current) =>
+          current.filter((id) => id !== request.presentationId),
+        );
       }
     },
-    [approvalRequest, canApprove],
+    [canApprove],
   );
 
   return {
     session,
     approval,
     approvalRequest,
+    approvalRequests,
     secondsRemaining,
     canApprove,
     sessionBusy:
-      actionPending ||
+      sessionActionPending ||
       ['loading', 'enabling', 'disabling', 'rollingBack'].includes(
         session.status,
       ),
@@ -192,7 +219,7 @@ export const useStore = (): McpStore => {
     disable: async () => {
       await runSessionAction(disableMcpSession);
     },
-    approve: () => respond('approved'),
-    deny: () => respond('denied'),
+    approve: (request) => respond(request, 'approved'),
+    deny: (request) => respond(request, 'denied'),
   };
 };
