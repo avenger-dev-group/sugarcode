@@ -39,7 +39,7 @@ import {
   type SkillsInspection,
 } from '../shared/skills.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 2 as const;
+export const RUNTIME_PROTOCOL_VERSION = 3 as const;
 
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;

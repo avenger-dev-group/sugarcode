@@ -28,12 +28,16 @@ class FixtureRuntime {
   readonly sent: Exclude<RuntimeCommand, { type: 'initialize' }>[] = [];
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private readonly beforeThreadCreated?: (workspaceId: string) => Promise<void>;
+  private readonly failRevisionAfterCommit: boolean;
+  private reconciledRevision?: Extract<RuntimeCommand, { type: 'turn.revise' }>;
   private createdThreads = 0;
 
   constructor(
     beforeThreadCreated?: (workspaceId: string) => Promise<void>,
+    failRevisionAfterCommit = false,
   ) {
     this.beforeThreadCreated = beforeThreadCreated;
+    this.failRevisionAfterCommit = failRevisionAfterCommit;
   }
 
   subscribe = (listener: (event: RuntimeEvent) => void): (() => void) => {
@@ -125,6 +129,45 @@ class FixtureRuntime {
       } as RuntimeEvent;
     }
     if (command.type === 'thread.load') {
+      if (this.reconciledRevision) {
+        const revision = this.reconciledRevision;
+        return {
+          type: 'thread.loaded',
+          requestId: command.requestId,
+          sequence: 5,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          snapshot: {
+            thread: {
+              id: command.threadId,
+              workspaceId: command.workspaceId,
+              title: 'First task',
+              createdAt: 1,
+              updatedAt: 2,
+              archivedAt: null,
+              parentThreadId: null,
+            },
+            turns: [{
+              id: revision.turnId,
+              requestId: revision.requestId,
+              status: 'interrupted',
+              providerWireApi: 'openaiResponses',
+              model: 'gpt-5',
+              errorJson: '{"kind":"runtimeRestart"}',
+              startedAt: 2,
+              completedAt: 3,
+            }],
+            items: [{
+              id: `${revision.turnId}:user`,
+              turnId: revision.turnId,
+              sequence: 0,
+              kind: 'turn.userMessage',
+              payload: { content: revision.content },
+            }],
+            agentTasks: [],
+          },
+        } as RuntimeEvent;
+      }
       return {
         type: 'thread.loaded',
         requestId: command.requestId,
@@ -148,6 +191,10 @@ class FixtureRuntime {
       } as RuntimeEvent;
     }
     if (command.type === 'turn.revise') {
+      if (this.failRevisionAfterCommit) {
+        this.reconciledRevision = command;
+        throw new Error('Runtime exited after committing the replacement.');
+      }
       const event = {
         type: 'turn.revised',
         requestId: command.requestId,
@@ -435,6 +482,48 @@ test('revising the latest terminal Turn replaces its transcript and preserves se
       })
     ).reason,
     'notLatestTurn',
+  );
+});
+
+test('revising reconciles a committed replacement after Runtime confirmation fails', async () => {
+  const fixture = new FixtureRuntime(undefined, true);
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal(controller.startNewThread().accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'Original request' })).accepted,
+    true,
+  );
+  const original = fixture.sent.find(
+    (candidate): candidate is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      candidate.type === 'turn.start',
+  );
+  assert.ok(original);
+  fixture.emit({
+    type: 'turn.completed',
+    sequence: 3,
+    requestId: original.requestId,
+    workspaceId: WORKSPACE_ID,
+    threadId: original.threadId,
+    turnId: original.turnId,
+    status: 'completed',
+  });
+
+  const result = await controller.reviseTurn({
+    threadId: THREAD_ID,
+    turnId: original.turnId,
+    text: 'Recovered revised request',
+  });
+  assert.equal(result.accepted, true);
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.turns.length, 1);
+  assert.notEqual(snapshot.turns[0]?.id, original.turnId);
+  assert.equal(snapshot.turns[0]?.status, 'interrupted');
+  assert.equal(
+    snapshot.turns[0]?.messages[0]?.text,
+    'Recovered revised request',
   );
 });
 

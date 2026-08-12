@@ -531,7 +531,7 @@ impl NativeRuntime {
     }
 
     #[napi]
-    pub fn replace_latest_turn(
+    pub fn replace_latest_turn_with_user_message(
         &self,
         replaced_turn_id: String,
         turn_id: String,
@@ -539,15 +539,17 @@ impl NativeRuntime {
         request_id: String,
         provider_wire_api: String,
         model: String,
+        user_content_json: String,
     ) -> Result<()> {
         self.with_store(|store| {
-            store.replace_latest_turn(
+            store.replace_latest_turn_with_user_message(
                 &replaced_turn_id,
                 &turn_id,
                 &thread_id,
                 &request_id,
                 &provider_wire_api,
                 &model,
+                &user_content_json,
             )
         })
     }

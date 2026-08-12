@@ -415,7 +415,7 @@ impl Store {
         Ok(())
     }
 
-    pub(super) fn replace_latest_turn(
+    pub(super) fn replace_latest_turn_with_user_message(
         &mut self,
         replaced_turn_id: &str,
         turn_id: &str,
@@ -423,6 +423,7 @@ impl Store {
         request_id: &str,
         provider_wire_api: &str,
         model: &str,
+        user_content_json: &str,
     ) -> Result<()> {
         for (name, value) in [
             ("replaced_turn_id", replaced_turn_id),
@@ -445,6 +446,20 @@ impl Store {
                 "model must not be empty".to_owned(),
             ));
         }
+        let user_content: Value = serde_json::from_str(user_content_json)?;
+        if !user_content
+            .as_array()
+            .is_some_and(|content| !content.is_empty())
+        {
+            return Err(PersistenceError::InvalidInput(
+                "user content must be a non-empty JSON array".to_owned(),
+            ));
+        }
+        let user_item_id = format!("{turn_id}:user");
+        validate_id("user_item_id", &user_item_id)?;
+        let user_payload_json = serde_json::to_string(&serde_json::json!({
+            "content": user_content,
+        }))?;
 
         let transaction = self
             .connection
@@ -496,6 +511,11 @@ impl Store {
              (id, thread_id, request_id, status, provider_wire_api, model) \
              VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
             params![turn_id, thread_id, request_id, provider_wire_api, model],
+        )?;
+        transaction.execute(
+            "INSERT INTO turn_items (id, turn_id, sequence, kind, payload_json) \
+             VALUES (?1, ?2, 0, 'turn.userMessage', ?3)",
+            params![user_item_id, turn_id, user_payload_json],
         )?;
         transaction.execute(
             "UPDATE threads SET updated_at = unixepoch() WHERE id = ?1",

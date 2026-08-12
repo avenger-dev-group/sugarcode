@@ -886,6 +886,15 @@ export class RuntimeConversationController {
       );
       return accepted();
     } catch {
+      const reconciliation = await this.reconcileTurnRevision({
+        workspaceId,
+        threadId: input.threadId,
+        replacedTurnId: input.turnId,
+        turnId,
+      });
+      if (reconciliation === 'committed') {
+        return accepted();
+      }
       this.notice = {
         kind: 'requestFailed',
         summary: 'The last Turn could not be revised safely.',
@@ -894,6 +903,55 @@ export class RuntimeConversationController {
     } finally {
       this.pendingTurnStartWorkspaces.delete(workspaceId);
       this.publish();
+    }
+  };
+
+  private reconcileTurnRevision = async ({
+    workspaceId,
+    threadId,
+    replacedTurnId,
+    turnId,
+  }: Readonly<{
+    workspaceId: string;
+    threadId: string;
+    replacedTurnId: string;
+    turnId: string;
+  }>): Promise<'committed' | 'notCommitted' | 'unavailable'> => {
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'thread.load',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+        },
+        'thread.loaded',
+      );
+      if (
+        event.workspaceId !== workspaceId ||
+        event.snapshot.thread.id !== threadId ||
+        event.snapshot.thread.workspaceId !== workspaceId
+      ) {
+        return 'unavailable';
+      }
+      const turns = [...projectThread(event.snapshot)];
+      this.threadRecords.set(threadId, event.snapshot.thread);
+      this.turnsByThread.set(threadId, turns);
+      this.activeTurnsByThread.delete(threadId);
+      this.refreshNavigator();
+      if (this.threadId === threadId) {
+        this.publishThreadProjection(threadId, true);
+      }
+      this.publish();
+      if (turns.some((turn) => turn.id === turnId)) {
+        this.notice = undefined;
+        return 'committed';
+      }
+      return turns.at(-1)?.id === replacedTurnId
+        ? 'notCommitted'
+        : 'unavailable';
+    } catch {
+      return 'unavailable';
     }
   };
 

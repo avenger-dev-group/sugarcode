@@ -549,6 +549,7 @@ export class RuntimeHost {
   private initialized = false;
   private shuttingDown = false;
   private nativeRuntime: NativeRuntimeBinding | null = null;
+  private revisionNativeAvailable = false;
 
   constructor(options: RuntimeHostOptions) {
     this.postEvent = options.postEvent;
@@ -564,6 +565,9 @@ export class RuntimeHost {
             command.nativeModulePath,
             command.dataDirectory,
           );
+          this.revisionNativeAvailable =
+            typeof this.nativeRuntime.replaceLatestTurnWithUserMessage ===
+              'function';
           this.mcp.configure(
             this.parseNativeJson<McpConfigInspection>(
               this.nativeRuntime.inspectMcpConfigJson(),
@@ -2340,19 +2344,23 @@ export class RuntimeHost {
         // Once the transaction commits, later provider failures belong to the new Turn.
         this.contentFromParts(command.content, resolved.selection);
         const nativeRuntime = this.requireNative();
-        if (!nativeRuntime.replaceLatestTurn) {
+        if (
+          !this.revisionNativeAvailable ||
+          !nativeRuntime.replaceLatestTurnWithUserMessage
+        ) {
           throw new Error('The native runtime cannot revise Turns.');
         }
         withDurableStateWrite(() =>
-          nativeRuntime.replaceLatestTurn?.(
+          nativeRuntime.replaceLatestTurnWithUserMessage?.(
             command.replacedTurnId,
             command.turnId,
             command.threadId,
             command.requestId,
             resolved.provider.wireApi,
             resolved.provider.model,
+            JSON.stringify(command.content),
           ));
-        this.emit({
+        this.emitTransient({
           type: 'turn.revised',
           requestId: command.requestId,
           workspaceId: command.workspaceId,
@@ -2393,7 +2401,7 @@ export class RuntimeHost {
         turnId: command.turnId,
         model: resolved.selection,
       });
-      this.emit({
+      const userMessageEvent = {
         type: 'turn.userMessage',
         requestId: command.requestId,
         workspaceId: command.workspaceId,
@@ -2401,7 +2409,12 @@ export class RuntimeHost {
         turnId: command.turnId,
         itemId: `${command.turnId}:user`,
         content: command.content,
-      });
+      } as const;
+      if (command.type === 'turn.revise') {
+        this.emitTransient(userMessageEvent);
+      } else {
+        this.emit(userMessageEvent);
+      }
       if (command.generateTitle) {
         void this.generateTitle(command, resolved, controller.signal);
       }

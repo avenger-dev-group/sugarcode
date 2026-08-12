@@ -85,7 +85,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 2,
+    protocolVersion: 3,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(first.messages[1]?.type, 'workspace.open');
@@ -124,7 +124,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 2,
+    protocolVersion: 3,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(second?.messages[1]?.type, 'workspace.open');
@@ -147,7 +147,7 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 2,
+    protocolVersion: 3,
   });
   const response = supervisor.request(
     { type: 'model.inspect', requestId: 'request-model-inspect' },
@@ -166,6 +166,54 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
     },
   });
   assert.equal((await response).inspection.config, null);
+  supervisor.shutdown();
+});
+
+test('RuntimeSupervisor rejects an unconfirmed revision when its Turn ends', async () => {
+  const child = new FixtureChild();
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => child as never,
+  });
+  supervisor.start();
+  child.emit('spawn');
+  child.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: child.messages[0]?.requestId,
+    protocolVersion: 3,
+  });
+  const response = supervisor.request(
+    {
+      type: 'turn.revise',
+      requestId: 'request-revise',
+      workspaceId: 'workspace-fixture',
+      threadId: 'thread-fixture',
+      turnId: 'turn-new',
+      replacedTurnId: 'turn-old',
+      provider: {
+        wireApi: 'openaiResponses',
+        model: 'fixture-model',
+        baseUrl: 'http://127.0.0.1:1/v1',
+        timeoutMs: 5_000,
+        parallelTools: false,
+      },
+      content: [{ type: 'text', text: 'Revised request' }],
+    },
+    'turn.revised',
+  );
+  child.emit('message', {
+    type: 'turn.completed',
+    sequence: 2,
+    requestId: 'request-revise',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-new',
+    status: 'interrupted',
+  });
+  await assert.rejects(response, /ended before confirming/u);
   supervisor.shutdown();
 });
 
@@ -190,7 +238,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 2,
+    protocolVersion: 3,
   });
   supervisor.send({
     type: 'mcp.sessionSet',
@@ -232,7 +280,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 2,
+    protocolVersion: 3,
   });
   assert.equal(second.messages[1]?.type, 'mcp.sessionSet');
   assert.deepEqual(

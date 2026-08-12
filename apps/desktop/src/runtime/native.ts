@@ -76,13 +76,14 @@ export type NativeRuntimeBinding = Readonly<{
     providerWireApi: string,
     model: string,
   ) => void;
-  replaceLatestTurn?: (
+  replaceLatestTurnWithUserMessage?: (
     replacedTurnId: string,
     turnId: string,
     threadId: string,
     requestId: string,
     providerWireApi: string,
     model: string,
+    userContentJson: string,
   ) => void;
   appendItem: (
     itemId: string,

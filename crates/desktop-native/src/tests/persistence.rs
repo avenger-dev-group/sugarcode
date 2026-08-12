@@ -218,13 +218,14 @@ fn replacing_latest_turn_is_atomic_and_removes_its_dependent_records() {
         .expect("finish old turn");
 
     store
-        .replace_latest_turn(
+        .replace_latest_turn_with_user_message(
             "turn-old",
             "turn-new",
             "thread-1",
             "request-new",
             "anthropicMessages",
             "new-model",
+            r#"[{"type":"text","text":"New"}]"#,
         )
         .expect("replace latest turn");
 
@@ -237,17 +238,21 @@ fn replacing_latest_turn_is_atomic_and_removes_its_dependent_records() {
     assert_eq!(snapshot["turns"].as_array().map(Vec::len), Some(1));
     assert_eq!(snapshot["turns"][0]["id"], "turn-new");
     assert_eq!(snapshot["turns"][0]["status"], "running");
-    assert_eq!(snapshot["items"].as_array().map(Vec::len), Some(0));
+    assert_eq!(snapshot["items"].as_array().map(Vec::len), Some(1));
+    assert_eq!(snapshot["items"][0]["id"], "turn-new:user");
+    assert_eq!(snapshot["items"][0]["kind"], "turn.userMessage");
+    assert_eq!(snapshot["items"][0]["payload"]["content"][0]["text"], "New");
 
     assert!(
         store
-            .replace_latest_turn(
+            .replace_latest_turn_with_user_message(
                 "turn-old",
                 "turn-invalid",
                 "thread-1",
                 "request-invalid",
                 "openaiResponses",
                 "fixture-model",
+                r#"[{"type":"text","text":"Invalid"}]"#,
             )
             .is_err()
     );
@@ -259,6 +264,83 @@ fn replacing_latest_turn_is_atomic_and_removes_its_dependent_records() {
     .expect("unchanged snapshot JSON");
     assert_eq!(unchanged["turns"].as_array().map(Vec::len), Some(1));
     assert_eq!(unchanged["turns"][0]["id"], "turn-new");
+
+    drop(store);
+    let mut reopened = Store::open(directory.path()).expect("reopen revised store");
+    let recovered: Value = serde_json::from_str(
+        &reopened
+            .load_thread_json("thread-1")
+            .expect("load recovered revised thread"),
+    )
+    .expect("recovered snapshot JSON");
+    assert_eq!(recovered["turns"][0]["status"], "interrupted");
+    assert_eq!(recovered["items"][0]["kind"], "turn.userMessage");
+    assert_eq!(
+        recovered["items"][0]["payload"]["content"][0]["text"],
+        "New"
+    );
+}
+
+#[test]
+fn failed_latest_turn_replacement_rolls_back_every_delete() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = seeded_store(&directory);
+    store
+        .start_turn(
+            "turn-anchor",
+            "thread-1",
+            "request-anchor",
+            "openaiResponses",
+            "fixture-model",
+        )
+        .expect("start anchor turn");
+    store
+        .finish_turn("turn-anchor", "completed", None)
+        .expect("finish anchor turn");
+    store
+        .start_turn(
+            "turn-old",
+            "thread-1",
+            "request-old",
+            "openaiResponses",
+            "fixture-model",
+        )
+        .expect("start old turn");
+    store
+        .append_item(
+            "item-old",
+            "turn-old",
+            1,
+            "turn.userMessage",
+            r#"{"content":[{"type":"text","text":"Old"}]}"#,
+        )
+        .expect("old item");
+    store
+        .finish_turn("turn-old", "completed", None)
+        .expect("finish old turn");
+
+    assert!(
+        store
+            .replace_latest_turn_with_user_message(
+                "turn-old",
+                "turn-anchor",
+                "thread-1",
+                "request-new",
+                "openaiResponses",
+                "fixture-model",
+                r#"[{"type":"text","text":"New"}]"#,
+            )
+            .is_err()
+    );
+    let snapshot: Value = serde_json::from_str(
+        &store
+            .load_thread_json("thread-1")
+            .expect("load rolled back thread"),
+    )
+    .expect("rolled back snapshot JSON");
+    assert_eq!(snapshot["turns"].as_array().map(Vec::len), Some(2));
+    assert_eq!(snapshot["turns"][1]["id"], "turn-old");
+    assert_eq!(snapshot["items"][0]["id"], "item-old");
 }
 
 #[test]

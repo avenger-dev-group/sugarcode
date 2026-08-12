@@ -147,6 +147,13 @@ export class RuntimeSupervisor {
         if (event.type === expectedType) {
           finish();
           resolve(event as Extract<RuntimeEvent, { type: TType }>);
+        } else if (
+          command.type === 'turn.revise' &&
+          expectedType === 'turn.revised' &&
+          event.type === 'turn.completed'
+        ) {
+          finish();
+          reject(new Error('The Runtime ended before confirming the revised Turn.'));
         } else if (event.type === 'runtime.log' && event.level === 'error') {
           finish();
           reject(new Error(event.message));
