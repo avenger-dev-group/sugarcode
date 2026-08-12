@@ -54,23 +54,34 @@ The release workflow builds these installers from one source revision:
 - macOS Intel DMG
 - Windows x64 Setup executable
 
-It then creates one `update-manifest.json`, publishes the same files to GitHub
-Release, and mirrors the update files to GitCode Release. To publish a release:
+It then creates one `update-manifest.json` and publishes all files to GitHub
+Release. GitCode is published separately from a local computer, following the
+SugarCode 1.0 release flow:
 
-1. Create a GitCode personal access token that can manage releases in
-   `Simoonf/SugarCode` and save it as the GitHub repository Actions secret
-   `GITCODE_TOKEN`. This is the only extra one-time configuration; no update
-   signing key is used.
-2. Open GitHub Actions, select **Build SugarCode Desktop**, choose the `main`
+1. Open GitHub Actions, select **Build SugarCode Desktop**, choose the `main`
    branch, click **Run workflow**, and enter a SemVer version without `v`, such
    as `3.0.3`.
-3. The workflow synchronizes the source version, creates `v3.0.3`, builds and
-   verifies all three installers, and publishes both release platforms.
-4. Confirm that both release pages contain the three installers and
-   `update-manifest.json`. macOS ZIP files may additionally appear on GitHub,
-   but they are not used by the updater.
+2. The workflow synchronizes the source version, creates `v3.0.3`, builds and
+   verifies all three installers, and publishes the GitHub Release.
+3. On a local computer, make sure GitHub CLI is installed and authenticated
+   with `gh auth login`, then export a GitCode token that can manage releases in
+   `Simoonf/SugarCode`:
 
-The GitCode upload is resumable and safe to retry. If a run fails after the
-GitHub Release is created, rerun the same workflow with the same version; files
-already present in the GitCode prerelease are skipped before it is marked as
-the latest release.
+   ```bash
+   export GITCODE_TOKEN="your-token"
+   pnpm release:gitcode:local 3.0.3
+   ```
+
+4. The local script downloads the three updater installers and
+   `update-manifest.json` from GitHub, verifies their sizes and SHA-256 hashes,
+   and uploads them to GitCode. Temporary files are kept under
+   `release-assets/v3.0.3` for inspection or retry.
+5. Confirm that GitCode Release contains the three installers and
+   `update-manifest.json`. macOS ZIP files remain on GitHub and are not copied
+   because the updater does not use them.
+
+Use `pnpm release:gitcode:local 3.0.3 --download-only` to download and verify
+without changing GitCode. GitCode publishing is resumable: already uploaded
+files are skipped, and the release is marked latest only after every required
+file is present. No GitCode token is stored in GitHub Actions or bundled into
+the desktop application.

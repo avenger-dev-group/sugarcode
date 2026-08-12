@@ -20,6 +20,7 @@
     "desktop:publish": "pnpm --filter @sugarcode/desktop publish",
     "release:update-manifest": "node scripts/create-update-manifest.mjs",
     "release:gitcode": "node scripts/publish-gitcode-release.mjs",
+    "release:gitcode:local": "node scripts/publish-gitcode-from-github.mjs",
     "lint": "pnpm --filter @sugarcode/desktop lint",
     "typecheck": "pnpm --filter @sugarcode/desktop typecheck",
     "test:scripts": "node --test \"scripts/tests/**/*.test.mjs\"",

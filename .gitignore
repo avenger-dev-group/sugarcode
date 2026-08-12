@@ -92,6 +92,7 @@ typings/
 
 # Electron-Forge
 out/
+release-assets/
 
 .History
 
