@@ -415,6 +415,9 @@ impl Store {
         Ok(())
     }
 
+    // Keep this boundary aligned with the versioned Native method. Grouping the
+    // fields here would create a second representation of the atomic request.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn replace_latest_turn_with_user_message(
         &mut self,
         replaced_turn_id: &str,
@@ -447,9 +450,9 @@ impl Store {
             ));
         }
         let user_content: Value = serde_json::from_str(user_content_json)?;
-        if !user_content
+        if user_content
             .as_array()
-            .is_some_and(|content| !content.is_empty())
+            .is_none_or(|content| content.is_empty())
         {
             return Err(PersistenceError::InvalidInput(
                 "user content must be a non-empty JSON array".to_owned(),

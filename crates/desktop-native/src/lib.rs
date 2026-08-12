@@ -531,6 +531,9 @@ impl NativeRuntime {
     }
 
     #[napi]
+    // The flattened arguments are the Runtime v3 ABI. Replacing them with an
+    // object would silently break an older generated Native binding.
+    #[allow(clippy::too_many_arguments)]
     pub fn replace_latest_turn_with_user_message(
         &self,
         replaced_turn_id: String,
