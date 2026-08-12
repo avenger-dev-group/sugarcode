@@ -1,5 +1,7 @@
 import {
   ArrowUp,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
   FileText,
   Folder,
@@ -12,7 +14,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import { memo, useRef } from 'react';
+import { memo, useId, useLayoutEffect, useRef, useState } from 'react';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
@@ -87,21 +89,50 @@ const currentOrchestrationActivity = (
   return null;
 };
 
-const TranscriptMessage = ({
-  entry,
-}: Readonly<{ entry: TranscriptMessageViewModel }>) =>
-  entry.role === 'agent' ? (
-    <AgentMessage message={entry.message} />
-  ) : (
-    <div className="ml-auto w-fit max-w-[82%]">
-      {entry.message.text || entry.message.attachments.length > 0 ? (
-        <article
-          className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
-          aria-label="Your message"
+const COLLAPSED_USER_MESSAGE_HEIGHT = 220;
+
+const UserMessageContent = ({
+  message,
+}: Readonly<{
+  message: Extract<TranscriptMessageViewModel, { role: 'user' }>['message'];
+}>) => {
+  const contentId = useId();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [canCollapse, setCanCollapse] = useState(false);
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) {
+      return;
+    }
+
+    const measureOverflow = () => {
+      setCanCollapse(
+        content.scrollHeight > COLLAPSED_USER_MESSAGE_HEIGHT + 1,
+      );
+    };
+
+    measureOverflow();
+    const observer = new ResizeObserver(measureOverflow);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [message.attachments.length, message.text]);
+
+  return (
+    <>
+      <div className="relative">
+        <div
+          ref={contentRef}
+          id={contentId}
+          className={expanded ? undefined : 'overflow-hidden'}
+          style={
+            expanded ? undefined : { maxHeight: COLLAPSED_USER_MESSAGE_HEIGHT }
+          }
         >
-          {entry.message.attachments.length > 0 ? (
+          {message.attachments.length > 0 ? (
             <div className="mb-2 flex flex-wrap gap-2">
-              {entry.message.attachments.map((attachment) => (
+              {message.attachments.map((attachment) => (
                 <div
                   key={attachment.assetId}
                   className="flex max-w-56 items-center gap-2 rounded-xl bg-background/70 px-2.5 py-2"
@@ -124,11 +155,52 @@ const TranscriptMessage = ({
               ))}
             </div>
           ) : null}
-          {entry.message.text ? (
+          {message.text ? (
             <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-              {entry.message.text}
+              {message.text}
             </p>
           ) : null}
+        </div>
+        {canCollapse && !expanded ? (
+          <div
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-linear-to-b from-transparent to-user-message"
+            aria-hidden="true"
+          />
+        ) : null}
+      </div>
+      {canCollapse ? (
+        <button
+          type="button"
+          className="mt-1.5 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-sm font-medium text-current/70 transition-colors hover:bg-background/25 hover:text-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/40"
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? (
+            <ChevronUp className="size-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronDown className="size-3.5" aria-hidden="true" />
+          )}
+          {expanded ? '收起' : '展开'}
+        </button>
+      ) : null}
+    </>
+  );
+};
+
+const TranscriptMessage = ({
+  entry,
+}: Readonly<{ entry: TranscriptMessageViewModel }>) =>
+  entry.role === 'agent' ? (
+    <AgentMessage message={entry.message} />
+  ) : (
+    <div className="ml-auto w-fit max-w-[82%]">
+      {entry.message.text || entry.message.attachments.length > 0 ? (
+        <article
+          className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
+          aria-label="Your message"
+        >
+          <UserMessageContent message={entry.message} />
         </article>
       ) : null}
       {entry.message.references.length > 0 ? (
