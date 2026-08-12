@@ -1,12 +1,55 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
+import * as conversation from '../../src/shared/conversation.ts';
+
+const {
   isConversationStateSnapshot,
   isConversationReviseTurnRequest,
   isConversationUserInputResponse,
   isValidConversationTitle,
-} from '../../src/shared/conversation.ts';
+} = conversation;
+
+test('conversation compatibility barrel preserves its public runtime exports', () => {
+  assert.deepEqual(Object.keys(conversation).sort(), [
+    'CONVERSATION_REVISE_CHANNEL',
+    'CONVERSATION_SEND_CHANNEL',
+    'CONVERSATION_STATE_CHANGED_CHANNEL',
+    'CONVERSATION_STATE_GET_CHANNEL',
+    'CONVERSATION_STOP_CHANNEL',
+    'CONVERSATION_THREAD_DELETE_CHANNEL',
+    'CONVERSATION_THREAD_DELTA_CHANNEL',
+    'CONVERSATION_THREAD_NEW_CHANNEL',
+    'CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL',
+    'CONVERSATION_THREAD_PROJECTION_GET_CHANNEL',
+    'CONVERSATION_THREAD_SEARCH_CHANNEL',
+    'CONVERSATION_THREAD_SELECT_CHANNEL',
+    'CONVERSATION_USER_INPUT_RESPONSE_CHANNEL',
+    'MAX_CONVERSATION_ATTACHMENTS',
+    'MAX_CONVERSATION_ATTACHMENT_BYTES',
+    'MAX_CONVERSATION_INPUT_BYTES',
+    'MAX_CONVERSATION_TITLE_BYTES',
+    'MAX_FILE_CHANGE_DIFF_BYTES',
+    'MAX_FILE_CHANGE_DIFF_LINES',
+    'MAX_THREAD_SEARCH_BYTES',
+    'MAX_USER_INPUT_ANSWER_BYTES',
+    'MAX_USER_INPUT_OPTIONS',
+    'MAX_USER_INPUT_QUESTIONS',
+    'isConversationActionResult',
+    'isConversationReviseTurnRequest',
+    'isConversationSendRequest',
+    'isConversationStateSnapshot',
+    'isConversationThreadProjectionDelta',
+    'isConversationThreadProjectionSnapshot',
+    'isConversationUserInputResponse',
+    'isValidConversationInput',
+    'isValidConversationTitle',
+    'isValidFileChangeDiff',
+    'isValidFileChangePath',
+    'isValidSha256',
+    'isValidThreadSearchInput',
+  ]);
+});
 
 test('conversation revision requests are bounded and identify their target Turn', () => {
   assert.equal(
