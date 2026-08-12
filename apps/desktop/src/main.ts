@@ -356,7 +356,6 @@ const startApplication = async (): Promise<void> => {
       'https://api.github.com/repos/avenger-dev-group/sugarcode/releases/latest',
     downloadPageUrl:
       'https://github.com/avenger-dev-group/sugarcode/releases/latest',
-    publicKeyPem: SUGARCODE_UPDATE_PUBLIC_KEY,
     getInstallBlock: () => {
       const phase = runtimeConversationController?.getSnapshot().phase;
       return (

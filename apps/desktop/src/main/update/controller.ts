@@ -1,8 +1,4 @@
-import {
-  createHash,
-  createPublicKey,
-  verify as verifySignature,
-} from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
   createReadStream,
   createWriteStream,
@@ -26,10 +22,8 @@ import type {
 } from '@/shared/update';
 
 const MANIFEST_NAME = 'update-manifest.json';
-const SIGNATURE_NAME = 'update-manifest.sig';
 const MANIFEST_SCHEMA_VERSION = 1;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
-const MAX_SIGNATURE_BYTES = 16 * 1024;
 const MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_INITIAL_DELAY_MS = 15_000;
 const DEFAULT_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -73,8 +67,6 @@ type PendingUpdate = Readonly<{
   installerPath: string;
   sha256: string;
   size: number;
-  manifestBase64: string;
-  signatureBase64: string;
 }>;
 
 export type UpdateControllerOptions = Readonly<{
@@ -84,7 +76,6 @@ export type UpdateControllerOptions = Readonly<{
   pendingStatePath: string;
   latestReleaseApiUrl: string;
   downloadPageUrl: string;
-  publicKeyPem: string;
   getInstallBlock: () => boolean;
   launchInstaller: (installerPath: string) => Promise<boolean>;
   openDownloadPage: (url: string) => Promise<boolean>;
@@ -324,18 +315,6 @@ const findAsset = (
   return asset;
 };
 
-const decodeSignature = (bytes: Buffer): Buffer => {
-  const value = bytes.toString('utf8').trim();
-  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(value)) {
-    throw new Error('Invalid update signature.');
-  }
-  const decoded = Buffer.from(value, 'base64');
-  if (decoded.byteLength !== 64) {
-    throw new Error('Invalid update signature.');
-  }
-  return decoded;
-};
-
 export class UpdateController {
   private readonly options: UpdateControllerOptions;
   private readonly listeners = new Set<Listener>();
@@ -450,8 +429,8 @@ export class UpdateController {
 
   private performCheck = async (): Promise<void> => {
     const platform = this.options.platform;
-    if (!platform || !this.options.publicKeyPem.trim()) {
-      throw new Error('Update verification key is unavailable.');
+    if (!platform) {
+      throw new Error('Update platform is unavailable.');
     }
     if (!this.pending) {
       this.publish({ status: 'checking' });
@@ -469,12 +448,10 @@ export class UpdateController {
     }
 
     const manifestAsset = findAsset(release, MANIFEST_NAME);
-    const signatureAsset = findAsset(release, SIGNATURE_NAME);
-    const [manifestBytes, signatureBytes] = await Promise.all([
-      this.downloadSmallAsset(manifestAsset, MAX_MANIFEST_BYTES),
-      this.downloadSmallAsset(signatureAsset, MAX_SIGNATURE_BYTES),
-    ]);
-    this.verifyManifestSignature(manifestBytes, signatureBytes);
+    const manifestBytes = await this.downloadSmallAsset(
+      manifestAsset,
+      MAX_MANIFEST_BYTES,
+    );
     const manifest = parseManifest(manifestBytes, platform);
     if (release.tag_name !== `v${manifest.version}`) {
       throw new Error('Release version does not match its manifest.');
@@ -502,8 +479,6 @@ export class UpdateController {
       installerPath,
       sha256: platformUpdate.sha256.toLowerCase(),
       size: platformUpdate.size,
-      manifestBase64: manifestBytes.toString('base64'),
-      signatureBase64: signatureBytes.toString('base64'),
     };
     await this.writePending(pending);
     this.pending = pending;
@@ -519,23 +494,6 @@ export class UpdateController {
     });
     assertTrustedDownloadUrl(response.url || asset.browser_download_url);
     return readBoundedResponse(response, maximumBytes);
-  };
-
-  private verifyManifestSignature = (
-    manifestBytes: Buffer,
-    signatureBytes: Buffer,
-  ): void => {
-    const publicKey = createPublicKey(this.options.publicKeyPem);
-    if (
-      !verifySignature(
-        null,
-        manifestBytes,
-        publicKey,
-        decodeSignature(signatureBytes),
-      )
-    ) {
-      throw new Error('Update manifest signature verification failed.');
-    }
   };
 
   private ensureInstaller = async (
@@ -646,42 +604,27 @@ export class UpdateController {
 
   private isPendingUpdate = (value: unknown): value is PendingUpdate =>
     isRecord(value) &&
-    Object.keys(value).length === 6 &&
+    Object.keys(value).length === 4 &&
     typeof value.version === 'string' &&
     parseSemver(value.version) !== null &&
     typeof value.installerPath === 'string' &&
     isSha256(value.sha256) &&
     Number.isSafeInteger(value.size) &&
     Number(value.size) > 0 &&
-    Number(value.size) <= MAX_INSTALLER_BYTES &&
-    typeof value.manifestBase64 === 'string' &&
-    typeof value.signatureBase64 === 'string';
+    Number(value.size) <= MAX_INSTALLER_BYTES;
 
   private validatePending = async (pending: PendingUpdate): Promise<void> => {
     const platform = this.options.platform;
     if (!platform || compareUpdateVersions(pending.version, this.options.currentVersion) <= 0) {
       throw new Error('Pending update is not newer than this application.');
     }
-    const manifestBytes = Buffer.from(pending.manifestBase64, 'base64');
-    const signatureBytes = Buffer.from(pending.signatureBase64, 'base64');
+    const installerName = path.basename(pending.installerPath);
     if (
-      manifestBytes.byteLength === 0 ||
-      manifestBytes.byteLength > MAX_MANIFEST_BYTES ||
-      signatureBytes.byteLength === 0 ||
-      signatureBytes.byteLength > MAX_SIGNATURE_BYTES
+      !isSafeInstallerName(installerName, platform) ||
+      path.join(this.options.downloadsDirectory, installerName) !==
+        pending.installerPath
     ) {
-      throw new Error('Pending update verification data is invalid.');
-    }
-    this.verifyManifestSignature(manifestBytes, signatureBytes);
-    const manifest = parseManifest(manifestBytes, platform);
-    const expected = manifest.platforms[platform];
-    if (
-      manifest.version !== pending.version ||
-      path.join(this.options.downloadsDirectory, expected.file) !== pending.installerPath ||
-      expected.sha256.toLowerCase() !== pending.sha256.toLowerCase() ||
-      expected.size !== pending.size
-    ) {
-      throw new Error('Pending update does not match its manifest.');
+      throw new Error('Pending update path is invalid.');
     }
     const metadata = await lstat(pending.installerPath);
     if (

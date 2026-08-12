@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,8 +42,6 @@ const createFixture = async () => {
   const downloadsDirectory = path.join(root, 'Downloads');
   const pendingStatePath = path.join(root, 'state', 'pending.json');
   const installer = Buffer.from('verified SugarCode installer');
-  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
-  const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
   const installerName = 'SugarCode-3.1.0-macos-arm64.dmg';
   const sha256 = (await import('node:crypto'))
     .createHash('sha256')
@@ -68,12 +65,8 @@ const createFixture = async () => {
       2,
     )}\n`,
   );
-  const signatureBytes = Buffer.from(
-    `${sign(null, manifestBytes, privateKey).toString('base64')}\n`,
-  );
   const assets = new Map<string, Buffer>([
     ['update-manifest.json', manifestBytes],
-    ['update-manifest.sig', signatureBytes],
     [installerName, installer],
   ]);
   const release = {
@@ -99,7 +92,6 @@ const createFixture = async () => {
     root,
     downloadsDirectory,
     pendingStatePath,
-    publicKeyPem,
     installer,
     installerName,
     fetch,
@@ -113,7 +105,7 @@ test('compares stable and prerelease update versions', () => {
   assert.throws(() => compareUpdateVersions('3.01.0', '3.1.0'));
 });
 
-test('silently downloads a signed installer and only then becomes ready', async () => {
+test('silently downloads a verified installer and only then becomes ready', async () => {
   const fixture = await createFixture();
   const states: string[] = [];
   let launchedPath: string | null = null;
@@ -125,7 +117,6 @@ test('silently downloads a signed installer and only then becomes ready', async 
     pendingStatePath: fixture.pendingStatePath,
     latestReleaseApiUrl: RELEASE_API,
     downloadPageUrl: DOWNLOAD_PAGE,
-    publicKeyPem: fixture.publicKeyPem,
     getInstallBlock: () => false,
     launchInstaller: async (installerPath) => {
       launchedPath = installerPath;
@@ -176,7 +167,6 @@ test('blocks installation while work is active', async () => {
     pendingStatePath: fixture.pendingStatePath,
     latestReleaseApiUrl: RELEASE_API,
     downloadPageUrl: DOWNLOAD_PAGE,
-    publicKeyPem: fixture.publicKeyPem,
     getInstallBlock: () => true,
     launchInstaller: async () => {
       throw new Error('must not launch');
@@ -209,7 +199,6 @@ test('shows the download-page fallback only after repeated failures', async () =
     pendingStatePath: fixture.pendingStatePath,
     latestReleaseApiUrl: RELEASE_API,
     downloadPageUrl: DOWNLOAD_PAGE,
-    publicKeyPem: fixture.publicKeyPem,
     getInstallBlock: () => false,
     launchInstaller: async () => false,
     openDownloadPage: async (url) => {
