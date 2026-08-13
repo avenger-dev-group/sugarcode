@@ -637,11 +637,46 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     'input-scope',
   );
   assert.deepEqual(
+    controller.getSnapshot().navigator.inputRequiredThreadIds,
+    [THREAD_ID],
+  );
+  assert.equal(
+    controller.getSnapshot().turns[0]?.activities?.find(
+      (entry) => entry.type === 'userInput',
+    )?.activity.state,
+    'awaiting',
+  );
+  assert.deepEqual(
     await controller.respondToUserInput({
       threadId: THREAD_ID,
       turnId: started.turnId,
       inputRequestId: 'input-scope',
-      answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+      submission: {
+        kind: 'submitted',
+        decisions: [{
+          questionId: 'scope',
+          kind: 'answered',
+          source: 'option',
+          answer: '不存在的选项',
+        }],
+      },
+    }),
+    { accepted: false, reason: 'invalidInput' },
+  );
+  assert.deepEqual(
+    await controller.respondToUserInput({
+      threadId: THREAD_ID,
+      turnId: started.turnId,
+      inputRequestId: 'input-scope',
+      submission: {
+        kind: 'submitted',
+        decisions: [{
+          questionId: 'scope',
+          kind: 'answered',
+          source: 'option',
+          answer: '完整链路（推荐）',
+        }],
+      },
     }),
     { accepted: true, reason: 'accepted' },
   );
@@ -649,6 +684,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     (command) => command.type === 'turn.userInputResponse',
   );
   assert.equal(inputResponse?.type, 'turn.userInputResponse');
+  assert.equal(inputResponse?.submission.kind, 'submitted');
   fixture.emit({
     type: 'turn.userInputResolved',
     requestId: 'request-answer',
@@ -657,11 +693,40 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     threadId: THREAD_ID,
     turnId: started.turnId,
     inputRequestId: 'input-scope',
-    answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+    submission: {
+      kind: 'submitted',
+      decisions: [{
+        questionId: 'scope',
+        kind: 'answered',
+        source: 'option',
+        answer: '完整链路（推荐）',
+      }],
+    },
   });
   assert.equal(
     controller.getSnapshot().turns[0]?.userInputRequest,
     undefined,
+  );
+  assert.deepEqual(
+    controller.getSnapshot().navigator.inputRequiredThreadIds,
+    [],
+  );
+  const userInputActivity = controller.getSnapshot().turns[0]?.activities?.find(
+    (entry) => entry.type === 'userInput',
+  );
+  assert.equal(userInputActivity?.type, 'userInput');
+  if (userInputActivity?.type === 'userInput') {
+    assert.equal(userInputActivity.activity.state, 'submitted');
+    assert.equal(userInputActivity.activity.decisions[0]?.kind, 'answered');
+  }
+  assert.deepEqual(
+    await controller.respondToUserInput({
+      threadId: THREAD_ID,
+      turnId: started.turnId,
+      inputRequestId: 'input-scope',
+      submission: { kind: 'cancelled', decisions: [] },
+    }),
+    { accepted: false, reason: 'noActiveTurn' },
   );
   fixture.emit({
     type: 'turn.textDelta',

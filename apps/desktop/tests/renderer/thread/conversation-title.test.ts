@@ -53,6 +53,7 @@ const navigator: ThreadNavigatorViewModel = {
   threadIds: [],
   threadTitles: {},
   runningThreadIds: [],
+  inputRequiredThreadIds: [],
   unreadThreadStatuses: {},
   selectedThreadId: null,
   pendingThreadId: TARGET_THREAD_ID,

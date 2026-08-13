@@ -71,7 +71,7 @@ import type {
 } from '../agent/types';
 import { toFileChangeReviewViewModel } from '../workspace/use-store';
 import type { McpActivityState, McpActivityViewModel } from '../mcp/types';
-import type { UserInputAnswer } from '../user-input/types';
+import type { UserInputSubmission } from '../user-input/types';
 import type {
   ActivityDisclosureStore,
   ThreadStore,
@@ -939,6 +939,23 @@ export const toThreadViewModel = (
                 : { message: entry.activity.message }),
             },
           } as const;
+        case 'userInput':
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              state: entry.activity.state,
+              questions: entry.activity.questions.map((question) => ({
+                id: question.id,
+                header: question.header,
+                question: question.question,
+                options: question.options.map((option) => ({ ...option })),
+              })),
+              decisions: entry.activity.decisions.map((decision) => ({
+                ...decision,
+              })),
+            },
+          } as const;
       }
     });
     const activities =
@@ -1057,6 +1074,7 @@ export const toThreadNavigatorViewModel = (
     threadIds,
     threadTitles: snapshot.navigator.activeThreadTitles,
     runningThreadIds: snapshot.navigator.runningThreadIds ?? [],
+    inputRequiredThreadIds: snapshot.navigator.inputRequiredThreadIds ?? [],
     unreadThreadStatuses: snapshot.navigator.unreadThreadStatuses ?? {},
     selectedThreadId: snapshot.threadId ?? null,
     pendingThreadId: snapshot.navigator.pendingThreadId ?? null,
@@ -1555,7 +1573,7 @@ export const useStore = (): ThreadStore => {
   const respondToUserInput = async (
     turnId: string,
     inputRequestId: string,
-    answers: readonly UserInputAnswer[],
+    submission: UserInputSubmission,
   ): Promise<boolean> => {
     if (!snapshot.threadId) {
       return false;
@@ -1566,7 +1584,7 @@ export const useStore = (): ThreadStore => {
         threadId: snapshot.threadId,
         turnId,
         inputRequestId,
-        answers,
+        submission,
       });
       if (!result.accepted) {
         setActionError('Agent 已不再等待这组回答，请检查当前任务状态。');

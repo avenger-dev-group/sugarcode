@@ -127,6 +127,7 @@ export const ComposerInput = (props: ComposerInputProps) => {
           aria-expanded={Boolean(store.token)}
           aria-activedescendant={activeId}
           placeholder="描述任务，输入 / 使用命令、$ 使用 Skill、@ 引用文件…"
+          autoFocus
           className="relative min-h-16 max-h-64 overflow-y-auto px-4 pt-3 pb-2 text-transparent caret-primary selection:bg-link/20 [field-sizing:content] [scrollbar-gutter:stable]"
         />
       </div>

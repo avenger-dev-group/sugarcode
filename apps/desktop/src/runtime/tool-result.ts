@@ -1,6 +1,45 @@
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const WORKSPACE_INSPECTION_RECOVERY_KEY = 'workspaceInspection';
+const WORKSPACE_INSPECTION_TOOLS = new Set([
+  'workspace_list',
+  'workspace_read',
+  'workspace_search',
+]);
+const SHELL_INSPECTION_EXECUTABLES = new Set([
+  'cat',
+  'find',
+  'grep',
+  'head',
+  'ls',
+  'pwd',
+  'rg',
+  'stat',
+  'tail',
+  'wc',
+]);
+
+export const toolFailureRecoveryKey = (
+  toolName: string,
+  argumentsValue: Readonly<Record<string, unknown>> | undefined,
+): string => {
+  if (WORKSPACE_INSPECTION_TOOLS.has(toolName)) {
+    return WORKSPACE_INSPECTION_RECOVERY_KEY;
+  }
+  if (
+    toolName === 'shell_exec' &&
+    argumentsValue?.mode === 'sandboxed' &&
+    typeof argumentsValue.command === 'string'
+  ) {
+    const executable = argumentsValue.command.split(/[\\/]/u).at(-1);
+    if (executable && SHELL_INSPECTION_EXECUTABLES.has(executable)) {
+      return WORKSPACE_INSPECTION_RECOVERY_KEY;
+    }
+  }
+  return toolName;
+};
+
 const processOutcomeFailed = (value: unknown): boolean => {
   if (!isRecord(value) || typeof value.type !== 'string') {
     return false;

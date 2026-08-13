@@ -30,16 +30,21 @@ export const isThreadDeleteDisabled = ({
 }>): boolean => workspaceBusy || lifecycleMutationPending || running;
 
 export const toThreadNavigationStatus = ({
+  inputRequired,
   approvalRequired,
   pending,
   running,
   terminalStatus,
 }: Readonly<{
+  inputRequired: boolean;
   approvalRequired: boolean;
   pending: boolean;
   running: boolean;
   terminalStatus?: ConversationTerminalTurnStatus;
 }>): ThreadNavigationStatus => {
+  if (inputRequired) {
+    return 'inputRequired';
+  }
   if (approvalRequired) {
     return 'approvalRequired';
   }

@@ -71,8 +71,39 @@ test('private runtime validates bounded user-input requests and answers', () => 
     type: 'turn.userInputResponse',
     requestId: 'request-answer',
     ...coordinates,
-    answers: [{ questionId: 'delivery_mode', answer: '完整实现（推荐）' }],
+    submission: {
+      kind: 'submitted',
+      decisions: [{
+        questionId: 'delivery_mode',
+        kind: 'answered',
+        source: 'option',
+        answer: '完整实现（推荐）',
+      }],
+    },
   }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'turn.userInputResponse',
+    requestId: 'request-cancel',
+    ...coordinates,
+    submission: {
+      kind: 'cancelled',
+      decisions: [{ questionId: 'delivery_mode', kind: 'skipped' }],
+    },
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'turn.userInputResponse',
+    requestId: 'request-invalid-source',
+    ...coordinates,
+    submission: {
+      kind: 'submitted',
+      decisions: [{
+        questionId: 'delivery_mode',
+        kind: 'answered',
+        source: 'guessed',
+        answer: '完整实现（推荐）',
+      }],
+    },
+  }), false);
   assert.equal(isRuntimeEvent({
     type: 'turn.userInputRequested',
     sequence: 2,

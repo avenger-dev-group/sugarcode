@@ -17,7 +17,29 @@ export type UserInputRequestViewModel = Readonly<{
 
 export type UserInputAnswer = Readonly<{
   questionId: string;
+  kind: 'answered';
+  source: 'option' | 'custom';
   answer: string;
+}> | Readonly<{
+  questionId: string;
+  kind: 'skipped';
+}>;
+
+export type UserInputSubmission =
+  | Readonly<{
+      kind: 'submitted';
+      decisions: readonly UserInputAnswer[];
+    }>
+  | Readonly<{
+      kind: 'cancelled';
+      decisions: readonly UserInputAnswer[];
+    }>;
+
+export type UserInputActivityViewModel = Readonly<{
+  id: string;
+  questions: readonly UserInputQuestionViewModel[];
+  state: 'awaiting' | 'submitted' | 'cancelled' | 'interrupted';
+  decisions: readonly UserInputAnswer[];
 }>;
 
 export type UserInputSurfaceProps = Readonly<{
@@ -26,14 +48,14 @@ export type UserInputSurfaceProps = Readonly<{
   onSubmit: (
     turnId: string,
     inputRequestId: string,
-    answers: readonly UserInputAnswer[],
+    submission: UserInputSubmission,
   ) => Promise<boolean>;
 }>;
 
 export type UserInputDraftState = Readonly<{
   questionIndex: number;
-  answers: Readonly<Record<string, string>>;
-  selectedOptions: Readonly<Record<string, string>>;
+  decisions: Readonly<Record<string, UserInputAnswer>>;
+  customAnswers: Readonly<Record<string, string>>;
   submitting: boolean;
   error: string | null;
 }>;

@@ -82,26 +82,40 @@ export const isConversationUserInputResponse = (
 ): value is ConversationUserInputResponse =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['threadId', 'turnId', 'inputRequestId', 'answers'].includes(key),
+    ['threadId', 'turnId', 'inputRequestId', 'submission'].includes(key),
   ) &&
   isId(value.threadId) &&
   isId(value.turnId) &&
   isId(value.inputRequestId) &&
-  Array.isArray(value.answers) &&
-  value.answers.length >= 1 &&
-  value.answers.length <= MAX_USER_INPUT_QUESTIONS &&
-  value.answers.every(
-    (answer) =>
-      isRecord(answer) &&
-      Object.keys(answer).every((key) =>
-        ['questionId', 'answer'].includes(key),
-      ) &&
-      typeof answer.questionId === 'string' &&
-      /^[a-z][a-z0-9_]{0,63}$/u.test(answer.questionId) &&
-      hasBoundedText(answer.answer, MAX_USER_INPUT_ANSWER_BYTES),
+  isRecord(value.submission) &&
+  (value.submission.kind === 'submitted' ||
+    value.submission.kind === 'cancelled') &&
+  Object.keys(value.submission).every((key) =>
+    ['kind', 'decisions'].includes(key),
   ) &&
-  new Set(value.answers.map((answer) => answer.questionId)).size ===
-    value.answers.length;
+  Array.isArray(value.submission.decisions) &&
+  value.submission.decisions.length <= MAX_USER_INPUT_QUESTIONS &&
+  (value.submission.kind === 'cancelled' ||
+    value.submission.decisions.length >= 1) &&
+  value.submission.decisions.every(
+    (decision) =>
+      isRecord(decision) &&
+      typeof decision.questionId === 'string' &&
+      /^[a-z][a-z0-9_]{0,63}$/u.test(decision.questionId) &&
+      (decision.kind === 'skipped'
+        ? Object.keys(decision).every((key) =>
+            ['questionId', 'kind'].includes(key),
+          )
+        : decision.kind === 'answered' &&
+          (decision.source === 'option' || decision.source === 'custom') &&
+          hasBoundedText(decision.answer, MAX_USER_INPUT_ANSWER_BYTES) &&
+          Object.keys(decision).every((key) =>
+            ['questionId', 'kind', 'source', 'answer'].includes(key),
+          )),
+  ) &&
+  new Set(
+    value.submission.decisions.map((decision) => decision.questionId),
+  ).size === value.submission.decisions.length;
 
 const isConversationAttachmentUpload = (
   value: unknown,

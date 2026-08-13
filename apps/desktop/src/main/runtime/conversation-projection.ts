@@ -15,7 +15,10 @@ import {
   type RuntimeThreadSnapshot,
   type RuntimeTurnItemRecord,
 } from '../../runtime/protocol.ts';
-import { projectTurnActivities } from './conversation-tool-activities.ts';
+import {
+  interruptPendingUserInputActivities,
+  projectTurnActivities,
+} from './conversation-tool-activities.ts';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -361,7 +364,9 @@ export const projectThread = (
           )
           .map((item) => String(item.payload.delta ?? ''))
           .join('');
-    const restoredActivities = projectTurnActivities(items);
+    const restoredActivities = interruptPendingUserInputActivities(
+      projectTurnActivities(items),
+    );
     const durableTasks = snapshot.agentTasks
       .filter((task) => task.turnId === record.id)
       .map((task) => ({ ...task.payload, status: task.status }));

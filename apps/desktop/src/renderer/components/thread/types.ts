@@ -31,8 +31,9 @@ import type { McpActivityViewModel } from '../mcp/types';
 import type { OrchestrationActivityViewModel } from '../orchestration/types';
 import type { PanelResizeHandle } from '../foundation/types';
 import type {
-  UserInputAnswer,
+  UserInputActivityViewModel,
   UserInputRequestViewModel,
+  UserInputSubmission,
 } from '../user-input/types';
 
 export type UserMessageViewModel = Readonly<{
@@ -168,6 +169,10 @@ export type TurnActivityViewModel =
   | Readonly<{
       type: 'contextCompaction';
       activity: ContextCompactionActivityViewModel;
+    }>
+  | Readonly<{
+      type: 'userInput';
+      activity: UserInputActivityViewModel;
     }>;
 
 export type CompactToolActivity = Extract<
@@ -221,6 +226,7 @@ export type ThreadNavigatorViewModel = Readonly<{
   threadIds: readonly string[];
   threadTitles: Readonly<Record<string, string>>;
   runningThreadIds: readonly string[];
+  inputRequiredThreadIds: readonly string[];
   unreadThreadStatuses: Readonly<
     Record<string, ConversationTerminalTurnStatus>
   >;
@@ -243,6 +249,7 @@ export type ThreadNavigationStatus =
   | 'completed'
   | 'failed'
   | 'interrupted'
+  | 'inputRequired'
   | 'approvalRequired';
 
 export type ThreadStore = Readonly<{
@@ -309,7 +316,7 @@ export type ThreadStore = Readonly<{
   respondToUserInput: (
     turnId: string,
     inputRequestId: string,
-    answers: readonly UserInputAnswer[],
+    submission: UserInputSubmission,
   ) => Promise<boolean>;
 }>;
 
@@ -332,7 +339,6 @@ export type TranscriptTurnProps = Readonly<{
   turnNumber: number;
   boundary: 'none' | 'divider' | 'precedingTerminal';
   progress?: ActiveTurnProgressViewModel;
-  onSubmitUserInput: ThreadStore['respondToUserInput'];
   editableMessageId: string | null;
   messageEditor: ThreadStore['messageEditor'];
   onBeginMessageEdit: ThreadStore['beginMessageEdit'];

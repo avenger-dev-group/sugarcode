@@ -70,8 +70,8 @@ import {
   type RuntimeThreadRecord,
   type RuntimeThreadSnapshot,
   type RuntimeUsage,
-  type RuntimeUserInputAnswer,
   type RuntimeUserInputQuestion,
+  type RuntimeUserInputSubmission,
   type RuntimeWorkspaceDocument,
   type RuntimeWorkspaceEntry,
 } from './protocol.ts';
@@ -82,6 +82,7 @@ import {
 } from './tools/workspace.ts';
 import { createTurnSkills } from './skills.ts';
 import {
+  toolFailureRecoveryKey,
   toolResultFailed,
   toolResultRequiresFinalRecovery,
 } from './tool-result.ts';
@@ -180,11 +181,7 @@ type PendingUserInput = Readonly<{
   threadId: string;
   turnId: string;
   questions: readonly RuntimeUserInputQuestion[];
-  resolve: (
-    result:
-      | Readonly<{ answers: readonly RuntimeUserInputAnswer[] }>
-      | Readonly<{ cancelled: true }>,
-  ) => void;
+  resolve: (result: RuntimeUserInputSubmission) => void;
 }>;
 
 type RecoveredApprovalRecord = Readonly<{
@@ -263,6 +260,7 @@ type TurnDriverOptions = Readonly<{
   consumePendingResults?: () => Promise<string | null>;
   completionGate?: () => boolean;
   retryFinalAfterToolFailure?: () => boolean;
+  validateFinalCandidate?: (candidateText: string) => string | undefined;
   settleFinalCandidate?: (
     accepted: boolean,
     textItems: Map<string, TextItemState>,
@@ -284,6 +282,12 @@ type InvalidArgumentGuard = {
   finalRecoveryUsed: boolean;
 };
 
+type UserInputFinalGuard = {
+  questions: RuntimeUserInputQuestion[];
+  resolvedRequests: number;
+  instructionDeliveredFor: number;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -301,6 +305,56 @@ export const isFutureActionOnlyFinal = (value: string): boolean => {
     FUTURE_ACTION_PATTERN.test(text) &&
     !COMPLETED_OR_BLOCKED_PATTERN.test(text)
   );
+};
+
+const chineseSectionNumber = (value: string): number | undefined => {
+  const digits = new Map([
+    ['一', 1],
+    ['二', 2],
+    ['三', 3],
+    ['四', 4],
+    ['五', 5],
+    ['六', 6],
+    ['七', 7],
+    ['八', 8],
+    ['九', 9],
+  ]);
+  if (value === '十') return 10;
+  const [tens, units] = value.split('十');
+  if (units !== undefined) {
+    return (tens ? (digits.get(tens) ?? 0) : 1) * 10 +
+      (units ? (digits.get(units) ?? 0) : 0);
+  }
+  return digits.get(value);
+};
+
+const firstStructuredSectionNumber = (value: string): number | undefined => {
+  for (const line of value.split(/\r?\n/u)) {
+    const heading = line.match(
+      /^\s*#{1,6}\s*(?:第\s*)?([0-9]{1,3}|[一二三四五六七八九十]{1,3})(?:\s*[、.．:：]|\s+)/u,
+    );
+    const list = line.match(/^\s*([0-9]{1,3})[.、．)]\s+/u);
+    const token = heading?.[1] ?? list?.[1];
+    if (!token) continue;
+    return /^\d+$/u.test(token)
+      ? Number.parseInt(token, 10)
+      : chineseSectionNumber(token);
+  }
+  return undefined;
+};
+
+const userInputFinalCandidateIssue = (
+  value: string,
+  questions: readonly RuntimeUserInputQuestion[],
+): string | undefined => {
+  if (questions.some((question) => value.includes(question.question))) {
+    return 'The candidate repeated a structured user-input question in the final answer.';
+  }
+  const firstSection = firstStructuredSectionNumber(value);
+  if (firstSection !== undefined && firstSection > 1) {
+    return `The candidate began at section ${firstSection}, so it continued an earlier draft instead of providing a complete answer.`;
+  }
+  return undefined;
 };
 
 const boundedUserInputText = (
@@ -660,16 +714,33 @@ export class RuntimeHost {
         const expectedQuestionIds = pending?.questions.map(
           (question) => question.id,
         );
-        const submittedAnswers = new Map(
-          command.answers.map((answer) => [answer.questionId, answer.answer]),
+        const submittedDecisions = new Map(
+          command.submission.decisions.map((decision) => [
+            decision.questionId,
+            decision,
+          ]),
         );
+        const questions = new Map(
+          pending?.questions.map((question) => [question.id, question]),
+        );
+        const decisionsValid = command.submission.decisions.every((decision) => {
+          const question = questions.get(decision.questionId);
+          return Boolean(
+            question &&
+              (decision.kind !== 'answered' ||
+                decision.source !== 'option' ||
+                question.options.some((option) => option.label === decision.answer)),
+          );
+        });
         if (
           !pending ||
           pending.workspaceId !== command.workspaceId ||
           pending.threadId !== command.threadId ||
           pending.turnId !== command.turnId ||
-          expectedQuestionIds?.length !== command.answers.length ||
-          !expectedQuestionIds.every((id) => submittedAnswers.has(id))
+          !decisionsValid ||
+          (command.submission.kind === 'submitted' &&
+            (expectedQuestionIds?.length !== command.submission.decisions.length ||
+              !expectedQuestionIds.every((id) => submittedDecisions.has(id))))
         ) {
           this.emit({
             type: 'runtime.log',
@@ -680,10 +751,14 @@ export class RuntimeHost {
           });
           break;
         }
-        const answers = expectedQuestionIds.map((questionId) => ({
-          questionId,
-          answer: submittedAnswers.get(questionId) as string,
-        }));
+        const decisions = expectedQuestionIds.flatMap((questionId) => {
+          const decision = submittedDecisions.get(questionId);
+          return decision ? [decision] : [];
+        });
+        const submission: RuntimeUserInputSubmission = {
+          kind: command.submission.kind,
+          decisions,
+        };
         this.pendingUserInputs.delete(command.inputRequestId);
         this.emit({
           type: 'turn.userInputResolved',
@@ -692,9 +767,9 @@ export class RuntimeHost {
           threadId: command.threadId,
           turnId: command.turnId,
           inputRequestId: command.inputRequestId,
-          answers,
+          submission,
         });
-        pending.resolve({ answers });
+        pending.resolve(submission);
         break;
       }
       case 'terminal.create':
@@ -1936,11 +2011,12 @@ export class RuntimeHost {
 
   private requestUserInputTool = (
     command: TurnExecutionCommand,
+    finalGuard: UserInputFinalGuard,
   ): FunctionTool<Schema> =>
     new FunctionTool({
       name: 'request_user_input',
       description:
-        'Pause this Turn and ask the user 1 to 3 concise questions. Each question must provide 2 to 3 mutually exclusive choices. The interface also lets the user enter a custom answer, so do not add an Other option.',
+        'Pause this Turn and ask the user 1 to 3 concise questions. Each question must provide 2 to 3 mutually exclusive choices. The interface also lets the user enter a custom answer, so do not add an Other option. Do not draft the final answer before this call; after the result, produce a complete standalone final answer rather than continuing earlier text.',
       parameters: REQUEST_USER_INPUT_SCHEMA,
       execute: async (input) => {
         const questions = parseUserInputQuestions(input);
@@ -1969,10 +2045,8 @@ export class RuntimeHost {
           };
         }
         const inputRequestId = randomUUID();
-        return await new Promise<
-          | Readonly<{ answers: readonly RuntimeUserInputAnswer[] }>
-          | Readonly<{ cancelled: true }>
-        >((resolve) => {
+        finalGuard.questions.push(...questions);
+        const submission = await new Promise<RuntimeUserInputSubmission>((resolve) => {
           this.pendingUserInputs.set(inputRequestId, {
             requestId: command.requestId,
             workspaceId: command.workspaceId,
@@ -1991,6 +2065,8 @@ export class RuntimeHost {
             questions,
           });
         });
+        finalGuard.resolvedRequests += 1;
+        return submission;
       },
     });
 
@@ -2070,11 +2146,12 @@ export class RuntimeHost {
           typeof parsedArguments?.toolName === 'string'
           ? parsedArguments.toolName
           : part.functionResponse.name;
+      const recoveryKey = toolFailureRecoveryKey(
+        failureName,
+        parsedArguments,
+      );
       if (!failed) {
-        guard.unresolvedToolFailures.delete(part.functionResponse.name);
-        if (part.functionResponse.name === 'workspace_apply_patch') {
-          guard.unresolvedToolFailures.delete('workspace_apply_patch');
-        }
+        guard.unresolvedToolFailures.delete(recoveryKey);
         guard.repeatedToolFailure = undefined;
         if (guard.unresolvedToolFailures.size === 0) {
           guard.finalRecoveryUsed = false;
@@ -2082,7 +2159,7 @@ export class RuntimeHost {
         continue;
       }
       if (toolResultRequiresFinalRecovery(part.functionResponse.name, result)) {
-        guard.unresolvedToolFailures.add(failureName);
+        guard.unresolvedToolFailures.add(recoveryKey);
         guard.finalRecoveryUsed = false;
       }
       const key = JSON.stringify({ call, error: stableJsonValue(result) });
@@ -2160,6 +2237,7 @@ export class RuntimeHost {
     let commentaryOnlyCount = 0;
     let truncationCount = 0;
     let futureActionFinalCount = 0;
+    let userInputFinalRecoveryCount = 0;
     const textItems = new Map<string, TextItemState>();
     while (!options.signal.aborted) {
       invocation += 1;
@@ -2242,6 +2320,35 @@ export class RuntimeHost {
           .filter((state) => state.pendingFinal)
           .map((state) => state.text)
           .join('\n\n');
+        const userInputCandidateIssue =
+          options.validateFinalCandidate?.(candidateText);
+        if (userInputCandidateIssue) {
+          options.settleFinalCandidate?.(false, textItems);
+          userInputFinalRecoveryCount += 1;
+          if (userInputFinalRecoveryCount >= 2) {
+            throw new ProviderAdapterError({
+              kind: 'protocol',
+              retryable: false,
+              message:
+                'The model repeatedly continued a pre-question draft instead of submitting a complete final answer.',
+            });
+          }
+          message = {
+            role: 'user',
+            parts: [{
+              text:
+                '# Internal continuation after incomplete post-question final\n\n' +
+                `${userInputCandidateIssue} ` +
+                'Rewrite the final answer as one complete, self-contained response from the beginning. ' +
+                'Include every necessary section instead of continuing prior numbering. ' +
+                'Do not repeat the structured question prompts; incorporate only the resulting decisions where relevant. ' +
+                'Keep all visible text in the language of the original user request.',
+            }],
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
         if (isFutureActionOnlyFinal(candidateText)) {
           options.settleFinalCandidate?.(false, textItems);
           futureActionFinalCount += 1;
@@ -2465,6 +2572,11 @@ export class RuntimeHost {
         unresolvedToolFailures: new Set<string>(),
         finalRecoveryUsed: false,
       };
+      const userInputFinalGuard: UserInputFinalGuard = {
+        questions: [],
+        resolvedRequests: 0,
+        instructionDeliveredFor: 0,
+      };
       const turnSkills = this.nativeRuntime
         ? createTurnSkills(
             this.nativeRuntime,
@@ -2502,6 +2614,23 @@ export class RuntimeHost {
             request.contents.push({
               role: 'user',
               parts: [{ text: repeatedFailureRecovery }],
+            });
+          }
+          if (
+            userInputFinalGuard.instructionDeliveredFor <
+              userInputFinalGuard.resolvedRequests
+          ) {
+            userInputFinalGuard.instructionDeliveredFor =
+              userInputFinalGuard.resolvedRequests;
+            request.contents.push({
+              role: 'user',
+              parts: [{
+                text:
+                  '# Internal post-question response boundary\n\n' +
+                  'The structured user-input request has been resolved. Do not continue or append to any draft emitted before request_user_input. ' +
+                  'After any remaining tool work, produce one complete and self-contained final answer from the beginning. ' +
+                  'Do not repeat the question prompts in ordinary final-answer text; incorporate the decisions directly where relevant.',
+              }],
             });
           }
           try {
@@ -2573,7 +2702,7 @@ export class RuntimeHost {
         },
         tools: [
           this.invalidArgumentsTool(invalidArgumentGuard),
-          this.requestUserInputTool(command),
+          this.requestUserInputTool(command, userInputFinalGuard),
           ...(this.nativeRuntime
             ? [
               ...createWorkspaceTools(
@@ -2645,6 +2774,13 @@ export class RuntimeHost {
               !(this.activeOperations.get(command.turnId)?.size),
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
+            validateFinalCandidate: (candidateText) =>
+              userInputFinalGuard.resolvedRequests > 0
+                ? userInputFinalCandidateIssue(
+                    candidateText,
+                    userInputFinalGuard.questions,
+                  )
+                : undefined,
             settleFinalCandidate: (accepted, textItems) =>
               this.settleFinalCandidate(command, textItems, accepted),
             takeProviderError: providerErrorCapture.takeCapturedError,
@@ -4135,7 +4271,20 @@ export class RuntimeHost {
         continue;
       }
       this.pendingUserInputs.delete(inputRequestId);
-      pending.resolve({ cancelled: true });
+      const submission: RuntimeUserInputSubmission = {
+        kind: 'cancelled',
+        decisions: [],
+      };
+      this.emit({
+        type: 'turn.userInputResolved',
+        requestId: pending.requestId,
+        workspaceId: pending.workspaceId,
+        threadId: pending.threadId,
+        turnId: pending.turnId,
+        inputRequestId,
+        submission,
+      });
+      pending.resolve(submission);
     }
   };
 

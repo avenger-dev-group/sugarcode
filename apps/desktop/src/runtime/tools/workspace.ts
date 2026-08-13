@@ -1,6 +1,6 @@
 import { FunctionTool } from '@google/adk';
 import { Type, type Schema } from '@google/genai';
-import { isAbsolute } from 'node:path';
+import { basename, isAbsolute } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../native.ts';
 
@@ -513,6 +513,13 @@ const shellExecArgumentError = (
   if (mode === 'sandboxed' && !isAbsolute(command)) {
     return 'Sandboxed shell_exec requires command to be one absolute executable path and accepts its arguments only through the arguments array. Use fullAccess for pipes, redirects, command chaining, or other shell syntax.';
   }
+  if (
+    mode === 'sandboxed' &&
+    basename(command) === 'find' &&
+    (commandArguments.length === 0 || commandArguments[0]?.startsWith('-'))
+  ) {
+    return 'Sandboxed find requires an explicit search path as its first argument (usually ".") before predicates such as -name. Prefer workspace_search for workspace file discovery.';
+  }
   if (mode === 'fullAccess' && commandArguments.length > 0) {
     return 'Full Access shell_exec requires the complete shell expression in command and does not accept an arguments array.';
   }
@@ -752,7 +759,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'shell_exec',
     description:
-      'Run a bounded command in the workspace. Prefer sandboxed for a single absolute executable plus a separate arguments array; it is filesystem-read-only, network-denied, and executes automatically. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval unless the current conversation or project is trusted.',
+      'Run a bounded command in the workspace. Prefer workspace_list, workspace_read, and workspace_search for file inspection. Sandboxed mode accepts a single verified absolute executable plus a separate arguments array; do not guess executable paths, and pass an explicit search root such as "." as the first argument to find. It is filesystem-read-only, network-denied, and executes automatically. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval unless the current conversation or project is trusted.',
     parameters: commandSchema,
     execute: async (input) => {
       if (

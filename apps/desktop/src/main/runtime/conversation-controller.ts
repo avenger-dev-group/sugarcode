@@ -29,8 +29,10 @@ import {
   type RuntimeThreadRecord,
 } from '../../runtime/protocol.ts';
 import {
+  appendUserInputActivity,
   appendToolCallActivity,
   applyToolResultActivity,
+  resolveUserInputActivity,
 } from './conversation-tool-activities.ts';
 import {
   attachmentFromPart,
@@ -98,6 +100,7 @@ const emptyNavigator = (): ConversationThreadNavigatorSnapshot => ({
   activeThreadTitles: {},
   activeTruncated: false,
   runningThreadIds: [],
+  inputRequiredThreadIds: [],
   search: {
     query: '',
     status: 'idle',
@@ -575,13 +578,30 @@ export class RuntimeConversationController {
     ) {
       return rejected('noActiveTurn');
     }
-    const questionIds = turn.userInputRequest.questions.map(
+    const questions = turn.userInputRequest.questions;
+    const questionIds = questions.map(
       (question) => question.id,
     );
-    const answerIds = new Set(input.answers.map((answer) => answer.questionId));
+    const decisionIds = new Set(
+      input.submission.decisions.map((decision) => decision.questionId),
+    );
+    const questionById = new Map(
+      questions.map((question) => [question.id, question]),
+    );
+    const decisionsValid = input.submission.decisions.every((decision) => {
+      const question = questionById.get(decision.questionId);
+      return Boolean(
+        question &&
+          (decision.kind !== 'answered' ||
+            decision.source !== 'option' ||
+            question.options.some((option) => option.label === decision.answer)),
+      );
+    });
     if (
-      questionIds.length !== input.answers.length ||
-      !questionIds.every((id) => answerIds.has(id))
+      !decisionsValid ||
+      (input.submission.kind === 'submitted' &&
+        (questionIds.length !== input.submission.decisions.length ||
+          !questionIds.every((id) => decisionIds.has(id))))
     ) {
       return rejected('invalidInput');
     }
@@ -593,7 +613,7 @@ export class RuntimeConversationController {
       threadId: response.threadId,
       turnId: response.turnId,
       inputRequestId: response.inputRequestId,
-      answers: response.answers,
+      submission: response.submission,
     });
     return accepted();
   };
@@ -1119,20 +1139,40 @@ export class RuntimeConversationController {
         turns[index] = { ...turn, activities };
         break;
       }
-      case 'turn.userInputRequested':
+      case 'turn.userInputRequested': {
+        const activities = [...(turn.activities ?? [])];
+        appendUserInputActivity(
+          activities,
+          event.inputRequestId,
+          event.questions,
+        );
         turns[index] = {
           ...turn,
+          activities,
           userInputRequest: {
             id: event.inputRequestId,
             questions: event.questions,
           },
         };
         break;
-      case 'turn.userInputResolved':
+      }
+      case 'turn.userInputResolved': {
+        const activities = [...(turn.activities ?? [])];
+        resolveUserInputActivity(
+          activities,
+          event.inputRequestId,
+          event.submission,
+        );
         if (turn.userInputRequest?.id === event.inputRequestId) {
-          turns[index] = withoutUserInputRequest(turn);
+          turns[index] = {
+            ...withoutUserInputRequest(turn),
+            activities,
+          };
+        } else {
+          turns[index] = { ...turn, activities };
         }
         break;
+      }
       case 'turn.usage': {
         const previous = turn.usage;
         const turnTotal = addTokenUsage(previous?.turnTotal, event.usage);
@@ -1419,8 +1459,18 @@ export class RuntimeConversationController {
         return;
     }
     this.turnsByThread.set(event.threadId, turns);
+    if (
+      event.type === 'turn.userInputRequested' ||
+      event.type === 'turn.userInputResolved'
+    ) {
+      this.refreshNavigator();
+    }
     this.publishThreadDelta(event.threadId, event.turnId);
-    if (event.type === 'turn.completed') {
+    if (
+      event.type === 'turn.completed' ||
+      event.type === 'turn.userInputRequested' ||
+      event.type === 'turn.userInputResolved'
+    ) {
       this.publish();
     }
   };
@@ -1464,6 +1514,15 @@ export class RuntimeConversationController {
       ),
       activeTruncated: threads.length === 200,
       runningThreadIds: [...this.activeTurnsByThread.keys()],
+      inputRequiredThreadIds: [...this.activeTurnsByThread.entries()].flatMap(
+        ([threadId, activeTurn]) =>
+          this.turnsByThread
+            .get(threadId)
+            ?.find((turn) => turn.id === activeTurn.turnId)
+            ?.userInputRequest
+            ? [threadId]
+            : [],
+      ),
       ...(this.unreadThreadStatuses.size > 0
         ? {
             unreadThreadStatuses: Object.fromEntries(

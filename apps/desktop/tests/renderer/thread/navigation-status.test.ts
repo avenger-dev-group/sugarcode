@@ -11,6 +11,7 @@ const status = (
   overrides: Partial<Parameters<typeof toThreadNavigationStatus>[0]> = {},
 ) =>
   toThreadNavigationStatus({
+    inputRequired: false,
     approvalRequired: false,
     pending: false,
     running: false,
@@ -33,6 +34,17 @@ test('approval takes precedence over running and completed state', () => {
       terminalStatus: 'completed',
     }),
     'approvalRequired',
+  );
+});
+
+test('user input takes precedence over approval and running state', () => {
+  assert.equal(
+    status({
+      inputRequired: true,
+      approvalRequired: true,
+      running: true,
+    }),
+    'inputRequired',
   );
 });
 

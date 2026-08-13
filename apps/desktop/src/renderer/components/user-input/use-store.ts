@@ -2,54 +2,103 @@ import { useEffect, useState } from 'react';
 
 import { MAX_USER_INPUT_ANSWER_BYTES } from '@/shared/conversation';
 
-import type { UserInputDraftState, UserInputSurfaceProps } from './types';
+import type {
+  UserInputAnswer,
+  UserInputDraftState,
+  UserInputSubmission,
+  UserInputSurfaceProps,
+} from './types';
+import {
+  initialUserInputDraftState,
+  nextUserInputQuestionIndex,
+  orderedUserInputDecisions,
+} from './state';
 
 export const useStore = ({
   turnId,
   request,
   onSubmit,
 }: UserInputSurfaceProps) => {
-  const [state, setState] = useState<UserInputDraftState>({
-    questionIndex: 0,
-    answers: {},
-    selectedOptions: {},
-    submitting: false,
-    error: null,
-  });
+  const [state, setState] = useState<UserInputDraftState>(
+    initialUserInputDraftState,
+  );
 
   useEffect(() => {
-    setState({
-      questionIndex: 0,
-      answers: {},
-      selectedOptions: {},
-      submitting: false,
-      error: null,
-    });
+    setState(initialUserInputDraftState());
   }, [request.id]);
 
   const question = request.questions[state.questionIndex];
-  const currentAnswer = question ? state.answers[question.id] ?? '' : '';
-  const currentSelection = question
-    ? state.selectedOptions[question.id]
+  const currentDecision = question
+    ? state.decisions[question.id]
     : undefined;
+  const currentSelection = currentDecision?.kind === 'answered' &&
+      currentDecision.source === 'option'
+    ? currentDecision.answer
+    : undefined;
+  const customAnswer = question
+    ? state.customAnswers[question.id] ??
+      (currentDecision?.kind === 'answered' &&
+        currentDecision.source === 'custom'
+        ? currentDecision.answer
+        : '')
+    : '';
   const answerTooLong =
-    new TextEncoder().encode(currentAnswer).byteLength >
+    new TextEncoder().encode(customAnswer).byteLength >
     MAX_USER_INPUT_ANSWER_BYTES;
-  const canContinue =
-    currentAnswer.trim().length > 0 && !answerTooLong && !state.submitting;
-  const isLastQuestion =
-    state.questionIndex === request.questions.length - 1;
+  const canConfirmCustom =
+    customAnswer.trim().length > 0 && !answerTooLong && !state.submitting;
+
+  const submit = async (
+    submission: UserInputSubmission,
+  ): Promise<void> => {
+    setState((current) => ({ ...current, submitting: true, error: null }));
+    const accepted = await onSubmit(turnId, request.id, submission);
+    if (!accepted) {
+      setState((current) => ({
+        ...current,
+        submitting: false,
+        error: '回答未能提交，请重试。',
+      }));
+    }
+  };
+
+  const settle = async (decision: UserInputAnswer): Promise<void> => {
+    if (!question || state.submitting) {
+      return;
+    }
+    const decisions = { ...state.decisions, [question.id]: decision };
+    const questionIds = request.questions.map((candidate) => candidate.id);
+    const nextIndex = nextUserInputQuestionIndex(
+      state.questionIndex,
+      questionIds,
+      decisions,
+    );
+    if (nextIndex === null) {
+      setState((current) => ({ ...current, decisions, error: null }));
+      await submit({
+        kind: 'submitted',
+        decisions: orderedUserInputDecisions(questionIds, decisions),
+      });
+      return;
+    }
+    setState((current) => ({
+      ...current,
+      decisions,
+      questionIndex: nextIndex,
+      error: null,
+    }));
+  };
 
   const selectOption = (answer: string): void => {
     if (!question) {
       return;
     }
-    setState((current) => ({
-      ...current,
-      answers: { ...current.answers, [question.id]: answer },
-      selectedOptions: { ...current.selectedOptions, [question.id]: answer },
-      error: null,
-    }));
+    void settle({
+      questionId: question.id,
+      kind: 'answered',
+      source: 'option',
+      answer,
+    });
   };
 
   const setCustomAnswer = (answer: string): void => {
@@ -57,14 +106,49 @@ export const useStore = ({
       return;
     }
     setState((current) => {
-      const selectedOptions = { ...current.selectedOptions };
-      delete selectedOptions[question.id];
+      const decisions = { ...current.decisions };
+      delete decisions[question.id];
       return {
         ...current,
-        answers: { ...current.answers, [question.id]: answer },
-        selectedOptions,
+        decisions,
+        customAnswers: {
+          ...current.customAnswers,
+          [question.id]: answer,
+        },
         error: null,
       };
+    });
+  };
+
+  const confirmCustomAnswer = (): void => {
+    if (!question || !canConfirmCustom) {
+      return;
+    }
+    void settle({
+      questionId: question.id,
+      kind: 'answered',
+      source: 'custom',
+      answer: customAnswer.trim(),
+    });
+  };
+
+  const skip = (): void => {
+    if (!question || state.submitting) {
+      return;
+    }
+    void settle({ questionId: question.id, kind: 'skipped' });
+  };
+
+  const cancel = (): void => {
+    if (state.submitting) {
+      return;
+    }
+    void submit({
+      kind: 'cancelled',
+      decisions: orderedUserInputDecisions(
+        request.questions.map((candidate) => candidate.id),
+        state.decisions,
+      ),
     });
   };
 
@@ -76,53 +160,32 @@ export const useStore = ({
     }));
   };
 
-  const next = async (): Promise<void> => {
-    if (!question || !canContinue) {
-      return;
-    }
-    if (!isLastQuestion) {
-      setState((current) => ({
-        ...current,
-        questionIndex: current.questionIndex + 1,
-        error: null,
-      }));
-      return;
-    }
-    const answers = request.questions.map((candidate) => ({
-      questionId: candidate.id,
-      answer: state.answers[candidate.id]?.trim() ?? '',
+  const next = (): void => {
+    setState((current) => ({
+      ...current,
+      questionIndex: Math.min(
+        request.questions.length - 1,
+        current.questionIndex + 1,
+      ),
+      error: null,
     }));
-    if (answers.some((answer) => answer.answer.length === 0)) {
-      setState((current) => ({
-        ...current,
-        error: '请先完成每一个问题。',
-      }));
-      return;
-    }
-    setState((current) => ({ ...current, submitting: true, error: null }));
-    const accepted = await onSubmit(turnId, request.id, answers);
-    if (!accepted) {
-      setState((current) => ({
-        ...current,
-        submitting: false,
-        error: '回答未能提交，请重试。',
-      }));
-    }
   };
 
   return {
     question,
     questionIndex: state.questionIndex,
     questionCount: request.questions.length,
-    currentAnswer,
     currentSelection,
-    canContinue,
-    isLastQuestion,
+    customAnswer,
+    canConfirmCustom,
     submitting: state.submitting,
     error: state.error,
     answerTooLong,
     selectOption,
     setCustomAnswer,
+    confirmCustomAnswer,
+    skip,
+    cancel,
     previous,
     next,
   };

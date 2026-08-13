@@ -406,6 +406,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'contextCompaction';
       activity: ConversationContextCompactionActivity;
+    }>
+  | Readonly<{
+      type: 'userInput';
+      activity: ConversationUserInputActivity;
     }>;
 
 export type ConversationTurnError = Readonly<{
@@ -507,15 +511,38 @@ export type ConversationUserInputRequest = Readonly<{
   questions: readonly ConversationUserInputQuestion[];
 }>;
 
-export type ConversationUserInputAnswer = Readonly<{
-  questionId: string;
-  answer: string;
+export type ConversationUserInputDecision =
+  | Readonly<{
+      questionId: string;
+      kind: 'answered';
+      source: 'option' | 'custom';
+      answer: string;
+    }>
+  | Readonly<{
+      questionId: string;
+      kind: 'skipped';
+    }>;
+
+export type ConversationUserInputSubmission =
+  | Readonly<{
+      kind: 'submitted';
+      decisions: readonly ConversationUserInputDecision[];
+    }>
+  | Readonly<{
+      kind: 'cancelled';
+      decisions: readonly ConversationUserInputDecision[];
+    }>;
+
+export type ConversationUserInputActivity = Readonly<{
+  id: string;
+  questions: readonly ConversationUserInputQuestion[];
+  state: 'awaiting' | 'submitted' | 'cancelled' | 'interrupted';
+  decisions: readonly ConversationUserInputDecision[];
 }>;
 
 export type ConversationUserInputResponse = Readonly<{
   threadId: string;
   turnId: string;
   inputRequestId: string;
-  answers: readonly ConversationUserInputAnswer[];
+  submission: ConversationUserInputSubmission;
 }>;
-

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  toolFailureRecoveryKey,
   toolResultFailed,
   toolResultRequiresFinalRecovery,
 } from '../../src/runtime/tool-result.ts';
@@ -70,5 +71,36 @@ test('a missing workspace_read path is evidence rather than a final-recovery fai
       error: 'notFound',
     }),
     true,
+  );
+});
+
+test('read-only shell discovery and workspace inspection share one recovery key', () => {
+  assert.equal(
+    toolFailureRecoveryKey('shell_exec', {
+      mode: 'sandboxed',
+      command: '/usr/bin/find',
+      arguments: ['-name', 'AGENTS.md'],
+    }),
+    'workspaceInspection',
+  );
+  assert.equal(
+    toolFailureRecoveryKey('workspace_list', { path: '.' }),
+    'workspaceInspection',
+  );
+  assert.equal(
+    toolFailureRecoveryKey('workspace_read', { path: 'AGENTS.md' }),
+    'workspaceInspection',
+  );
+  assert.equal(
+    toolFailureRecoveryKey('shell_exec', {
+      mode: 'sandboxed',
+      command: '/usr/bin/php',
+      arguments: ['artisan', 'test'],
+    }),
+    'shell_exec',
+  );
+  assert.equal(
+    toolFailureRecoveryKey('workspace_apply_patch', { patch: 'fixture' }),
+    'workspace_apply_patch',
   );
 });

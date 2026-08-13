@@ -48,6 +48,7 @@ import {
 } from '@/renderer/components/orchestration/orchestration-activity';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
+import { UserInputActivity } from '@/renderer/components/user-input/user-input-activity';
 
 import type {
   CompactToolActivity,
@@ -142,6 +143,10 @@ const TurnActivity = ({
       );
     case 'contextCompaction':
       return <ContextCompactionActivity activity={entry.activity} />;
+    case 'userInput':
+      return (
+        <UserInputActivity activity={entry.activity} language={language} />
+      );
   }
 };
 
@@ -163,7 +168,8 @@ const TurnActivityTimeline = ({
       (entry.type === 'commandApproval' &&
         (entry.activity.state === 'awaiting' ||
           entry.activity.state === 'stopping')) ||
-      (entry.type === 'mcp' && entry.activity.state === 'awaiting'),
+      (entry.type === 'mcp' && entry.activity.state === 'awaiting') ||
+      (entry.type === 'userInput' && entry.activity.state === 'awaiting'),
   );
 
   return (
@@ -217,7 +223,6 @@ const TranscriptTurnView = ({
   turnNumber,
   boundary,
   progress,
-  onSubmitUserInput,
   editableMessageId,
   messageEditor,
   onBeginMessageEdit,
@@ -288,13 +293,6 @@ const TranscriptTurnView = ({
         <McpActivityTimeline
           activities={turn.mcpActivities}
           turnStatus={turn.status}
-        />
-      ) : null}
-      {turn.userInputRequest ? (
-        <UserInputSurface
-          turnId={turn.id}
-          request={turn.userInputRequest}
-          onSubmit={onSubmitUserInput}
         />
       ) : null}
       {turn.pendingAgentOutputs?.map((output) => (
@@ -456,6 +454,9 @@ export const ThreadWorkbenchView = ({
     workspace.state,
   );
   const pendingThreadId = store.navigator.pendingThreadId;
+  const userInputTurn = store.thread.turns.findLast(
+    (turn) => turn.userInputRequest !== undefined,
+  );
   const selectionError = pendingThreadId
     ? store.navigator.selectionNotice
     : undefined;
@@ -616,7 +617,6 @@ export const ThreadWorkbenchView = ({
                         ? store.activeTurnProgress
                         : undefined
                     }
-                    onSubmitUserInput={store.respondToUserInput}
                     editableMessageId={
                       store.editableMessageTarget?.turnId === turn.id
                         ? store.editableMessageTarget.messageId
@@ -661,22 +661,29 @@ export const ThreadWorkbenchView = ({
                 {store.actionError ?? store.thread.notice ?? workspace.error}
               </p>
             )}
-            <div
-              className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
-              onDragOver={(event) => {
-                if (event.dataTransfer.types.includes('Files')) {
-                  event.preventDefault();
-                }
-              }}
-              onDrop={(event) => {
-                if (event.dataTransfer.files.length > 0) {
-                  event.preventDefault();
-                  void store.addAttachments(
-                    Array.from(event.dataTransfer.files),
-                  );
-                }
-              }}
-            >
+            {userInputTurn?.userInputRequest ? (
+              <UserInputSurface
+                turnId={userInputTurn.id}
+                request={userInputTurn.userInputRequest}
+                onSubmit={store.respondToUserInput}
+              />
+            ) : (
+              <div
+                className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
+                onDragOver={(event) => {
+                  if (event.dataTransfer.types.includes('Files')) {
+                    event.preventDefault();
+                  }
+                }}
+                onDrop={(event) => {
+                  if (event.dataTransfer.files.length > 0) {
+                    event.preventDefault();
+                    void store.addAttachments(
+                      Array.from(event.dataTransfer.files),
+                    );
+                  }
+                }}
+              >
               <input
                 ref={fileInputRef}
                 type="file"
@@ -866,7 +873,8 @@ export const ThreadWorkbenchView = ({
                   </Button>
                 )}
               </div>
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </section>

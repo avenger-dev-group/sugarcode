@@ -193,8 +193,31 @@ test('conversation snapshots and responses preserve bounded user questions', () 
     threadId: THREAD_WEB,
     turnId: TURN_REVIEW,
     inputRequestId: userInputRequest.id,
-    answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+    submission: {
+      kind: 'submitted',
+      decisions: [{
+        questionId: 'scope',
+        kind: 'answered',
+        source: 'option',
+        answer: '完整链路（推荐）',
+      }],
+    },
   }), true);
+  assert.equal(isConversationUserInputResponse({
+    threadId: THREAD_WEB,
+    turnId: TURN_REVIEW,
+    inputRequestId: userInputRequest.id,
+    submission: {
+      kind: 'cancelled',
+      decisions: [{ questionId: 'scope', kind: 'skipped' }],
+    },
+  }), true);
+  assert.equal(isConversationUserInputResponse({
+    threadId: THREAD_WEB,
+    turnId: TURN_REVIEW,
+    inputRequestId: userInputRequest.id,
+    submission: { kind: 'submitted', decisions: [] },
+  }), false);
   assert.equal(isConversationStateSnapshot({
     ...snapshot('completed'),
     phase: 'ready',

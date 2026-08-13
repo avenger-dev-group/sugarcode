@@ -1,5 +1,14 @@
-import type { ConversationActivity } from '../../shared/conversation.ts';
-import type { RuntimeTurnItemRecord } from '../../runtime/protocol.ts';
+import type {
+  ConversationActivity,
+  ConversationUserInputDecision,
+  ConversationUserInputQuestion,
+  ConversationUserInputSubmission,
+} from '../../shared/conversation.ts';
+import type {
+  RuntimeTurnItemRecord,
+  RuntimeUserInputQuestion,
+  RuntimeUserInputSubmission,
+} from '../../runtime/protocol.ts';
 
 type ProjectedToolActivity = Extract<
   ConversationActivity,
@@ -11,6 +20,168 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const nonEmptyString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.length > 0 ? value : undefined;
+
+const userInputQuestions = (
+  value: unknown,
+): readonly ConversationUserInputQuestion[] | undefined => {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 3) {
+    return undefined;
+  }
+  const questions = value.flatMap((candidate) => {
+    if (
+      !isRecord(candidate) ||
+      typeof candidate.id !== 'string' ||
+      typeof candidate.header !== 'string' ||
+      typeof candidate.question !== 'string' ||
+      !Array.isArray(candidate.options)
+    ) {
+      return [];
+    }
+    const options = candidate.options.flatMap((option) =>
+      isRecord(option) &&
+        typeof option.label === 'string' &&
+        typeof option.description === 'string'
+        ? [{ label: option.label, description: option.description }]
+        : [],
+    );
+    return options.length === candidate.options.length
+      ? [{
+          id: candidate.id,
+          header: candidate.header,
+          question: candidate.question,
+          options,
+        }]
+      : [];
+  });
+  return questions.length === value.length ? questions : undefined;
+};
+
+const userInputDecision = (
+  value: unknown,
+  question: ConversationUserInputQuestion | undefined,
+): ConversationUserInputDecision | undefined => {
+  if (!isRecord(value) || typeof value.questionId !== 'string' || !question) {
+    return undefined;
+  }
+  if (value.kind === 'skipped') {
+    return { questionId: value.questionId, kind: 'skipped' };
+  }
+  if (
+    value.kind === 'answered' &&
+    (value.source === 'option' || value.source === 'custom') &&
+    typeof value.answer === 'string'
+  ) {
+    return {
+      questionId: value.questionId,
+      kind: 'answered',
+      source: value.source,
+      answer: value.answer,
+    };
+  }
+  if (typeof value.answer === 'string') {
+    return {
+      questionId: value.questionId,
+      kind: 'answered',
+      source: question.options.some((option) => option.label === value.answer)
+        ? 'option'
+        : 'custom',
+      answer: value.answer,
+    };
+  }
+  return undefined;
+};
+
+const userInputSubmission = (
+  payload: Readonly<Record<string, unknown>>,
+  questions: readonly ConversationUserInputQuestion[],
+): ConversationUserInputSubmission | undefined => {
+  const rawSubmission = isRecord(payload.submission)
+    ? payload.submission
+    : undefined;
+  const kind = rawSubmission?.kind === 'cancelled'
+    ? 'cancelled' as const
+    : rawSubmission?.kind === 'submitted' || Array.isArray(payload.answers)
+      ? 'submitted' as const
+      : undefined;
+  const rawDecisions = rawSubmission && Array.isArray(rawSubmission.decisions)
+    ? rawSubmission.decisions
+    : Array.isArray(payload.answers)
+      ? payload.answers
+      : undefined;
+  if (!kind || !rawDecisions) {
+    return undefined;
+  }
+  const questionById = new Map(questions.map((question) => [question.id, question]));
+  const decisions = rawDecisions.flatMap((candidate) => {
+    const questionId = isRecord(candidate) && typeof candidate.questionId === 'string'
+      ? candidate.questionId
+      : undefined;
+    const decision = questionId
+      ? userInputDecision(candidate, questionById.get(questionId))
+      : undefined;
+    return decision ? [decision] : [];
+  });
+  return decisions.length === rawDecisions.length ? { kind, decisions } : undefined;
+};
+
+export const appendUserInputActivity = (
+  activities: ConversationActivity[],
+  inputRequestId: string,
+  questions: readonly RuntimeUserInputQuestion[],
+): void => {
+  if (
+    activities.some(
+      (entry) =>
+        entry.type === 'userInput' && entry.activity.id === inputRequestId,
+    )
+  ) {
+    return;
+  }
+  activities.push({
+    type: 'userInput',
+    activity: {
+      id: inputRequestId,
+      questions,
+      state: 'awaiting',
+      decisions: [],
+    },
+  });
+};
+
+export const resolveUserInputActivity = (
+  activities: ConversationActivity[],
+  inputRequestId: string,
+  submission: RuntimeUserInputSubmission,
+): void => {
+  const index = activities.findIndex(
+    (entry) =>
+      entry.type === 'userInput' && entry.activity.id === inputRequestId,
+  );
+  const entry = activities[index];
+  if (index < 0 || entry?.type !== 'userInput') {
+    return;
+  }
+  activities[index] = {
+    type: 'userInput',
+    activity: {
+      ...entry.activity,
+      state: submission.kind,
+      decisions: submission.decisions,
+    },
+  };
+};
+
+export const interruptPendingUserInputActivities = (
+  activities: readonly ConversationActivity[],
+): ConversationActivity[] =>
+  activities.map((entry) =>
+    entry.type === 'userInput' && entry.activity.state === 'awaiting'
+      ? {
+          type: 'userInput' as const,
+          activity: { ...entry.activity, state: 'interrupted' as const },
+        }
+      : entry,
+  );
 
 const skillName = (value: unknown): string | undefined => {
   if (typeof value !== 'string') {
@@ -351,6 +522,44 @@ export const projectTurnActivities = (
             status: 'completed',
           },
         });
+      }
+      continue;
+    }
+    if (
+      item.kind === 'turn.userInputRequested' &&
+      typeof item.payload.inputRequestId === 'string'
+    ) {
+      const questions = userInputQuestions(item.payload.questions);
+      if (questions) {
+        appendUserInputActivity(
+          activities,
+          item.payload.inputRequestId,
+          questions,
+        );
+      }
+      continue;
+    }
+    if (
+      item.kind === 'turn.userInputResolved' &&
+      typeof item.payload.inputRequestId === 'string'
+    ) {
+      const entry = activities.find(
+        (activity) =>
+          activity.type === 'userInput' &&
+          activity.activity.id === item.payload.inputRequestId,
+      );
+      if (entry?.type === 'userInput') {
+        const submission = userInputSubmission(
+          item.payload,
+          entry.activity.questions,
+        );
+        if (submission) {
+          resolveUserInputActivity(
+            activities,
+            item.payload.inputRequestId,
+            submission,
+          );
+        }
       }
       continue;
     }

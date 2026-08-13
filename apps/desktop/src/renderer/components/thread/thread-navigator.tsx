@@ -1,6 +1,7 @@
 import {
   CircleAlert,
   CircleCheck,
+  CircleHelp,
   CircleStop,
   Folder,
   FolderOpen,
@@ -370,6 +371,8 @@ export const ThreadNavigator = ({
             }
             current={threadId === displayedThreadId}
             status={toThreadNavigationStatus({
+              inputRequired:
+                store.navigator.inputRequiredThreadIds.includes(threadId),
               approvalRequired: approvalThreadIds.includes(threadId),
               pending: threadId === store.navigator.pendingThreadId,
               running: store.navigator.runningThreadIds.includes(threadId),
@@ -933,6 +936,17 @@ const ThreadStatusIndicator = ({
   status,
 }: Readonly<{ status: ThreadNavigationStatus }>) => {
   switch (status) {
+    case 'inputRequired':
+      return (
+        <span
+          className="mr-2 inline-flex h-5 shrink-0 self-center items-center gap-1 rounded-full border border-process/30 bg-background px-1.5 text-[11px] font-medium text-process"
+          role="status"
+          title="等待你的回答"
+        >
+          <CircleHelp className="size-3" aria-hidden="true" />
+          待回答
+        </span>
+      );
     case 'approvalRequired':
       return (
         <span

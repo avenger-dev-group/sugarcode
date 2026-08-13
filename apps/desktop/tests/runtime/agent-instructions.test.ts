@@ -71,10 +71,23 @@ test('base Agent instructions localize visible output and reject repetitive proc
     SUGARCODE_BASE_AGENT_PROMPT_V1,
     /Split large writes into small, independently valid workspace_apply_patch operations/u,
   );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /A later discovery may justify another request in the same Turn/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /never ask again for a decision the user already confirmed/u,
+  );
 });
 
 test('host platform instructions prevent Unix-only commands on Windows', () => {
   assert.match(hostPlatformInstruction('win32'), /operating system is Windows/u);
   assert.match(hostPlatformInstruction('win32'), /cat, wc, grep, sed, or touch/u);
   assert.match(hostPlatformInstruction('darwin'), /operating system is macOS/u);
+  assert.match(
+    hostPlatformInstruction('darwin'),
+    /BSD find requires an explicit search path/u,
+  );
+  assert.match(hostPlatformInstruction('darwin'), /ls is \/bin\/ls/u);
 });

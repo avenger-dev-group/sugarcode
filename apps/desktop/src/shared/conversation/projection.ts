@@ -46,6 +46,7 @@ export type ConversationThreadNavigatorSnapshot = Readonly<{
   activeThreadTitles: Readonly<Record<string, string>>;
   activeTruncated: boolean;
   runningThreadIds?: readonly string[];
+  inputRequiredThreadIds?: readonly string[];
   unreadThreadStatuses?: Readonly<
     Record<string, ConversationTerminalTurnStatus>
   >;

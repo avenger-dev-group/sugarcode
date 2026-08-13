@@ -339,6 +339,206 @@ class UserInputLlm extends BaseLlm {
   }
 }
 
+class SplitPlanAfterUserInputLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const hasUserInputResult = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'request_user_input',
+      ),
+    );
+    if (!hasUserInputResult) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [
+            {
+              text:
+                '## 一、现状\n\n已完成分析。\n\n' +
+                '## 八、待确认事项\n\n以下决策会影响计划。',
+              partMetadata: modelItemMetadata('pre-question-plan', {
+                phase: 'provisional',
+                outcome: { kind: 'toolCalls' },
+              }),
+            },
+            {
+              functionCall: {
+                id: 'call-split-plan-input',
+                name: 'request_user_input',
+                args: {
+                  questions: [{
+                    id: 'cache_strategy',
+                    header: '缓存策略',
+                    question: '号码识别结果缓存多久？',
+                    options: [
+                      { label: '30 天（推荐）', description: '平衡成本和时效。' },
+                      { label: '7 天', description: '提高数据时效。' },
+                    ],
+                  }],
+                },
+              },
+            },
+          ],
+        },
+        partial: false,
+      };
+      return;
+    }
+    const ignoredRecovery = this.requests.length === 2;
+    const text = ignoredRecovery
+      ? '感谢确认。\n\n## 九、最终确认\n\n缓存时间为 30 天。'
+      : '# 完整计划\n\n## 一、现状\n\n已完成分析。\n\n## 二、实施\n\n缓存时间为 30 天。';
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          text,
+          partMetadata: modelItemMetadata(
+            ignoredRecovery ? 'continued-plan' : 'complete-plan',
+            { phase: 'final', outcome: { kind: 'final' } },
+          ),
+        }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class MultiRoundUserInputLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const results = request.contents.flatMap((content) => content.parts ?? [])
+      .filter((part) => part.functionResponse?.name === 'request_user_input');
+    if (results.length < 2) {
+      const second = results.length === 1;
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: second ? 'call-user-input-rollout' : 'call-user-input-scope',
+              name: 'request_user_input',
+              args: {
+                questions: [{
+                  id: second ? 'rollout' : 'scope',
+                  header: second ? '发布方式' : '实现范围',
+                  question: second
+                    ? '需要如何发布？'
+                    : '本次需要覆盖到哪一层？',
+                  options: [
+                    {
+                      label: second ? '分阶段（推荐）' : '完整链路（推荐）',
+                      description: '采用推荐方案。',
+                    },
+                    {
+                      label: second ? '一次发布' : '仅界面',
+                      description: '采用备选方案。',
+                    },
+                  ],
+                }],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: '两轮决策均已处理。' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class PartialCancellationUserInputLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const hasResult = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'request_user_input',
+      ),
+    );
+    if (!hasResult) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-user-input-cancel',
+              name: 'request_user_input',
+              args: {
+                questions: [
+                  {
+                    id: 'scope',
+                    header: '实现范围',
+                    question: '本次需要覆盖到哪一层？',
+                    options: [
+                      { label: '完整链路（推荐）', description: '覆盖全部层。' },
+                      { label: '仅界面', description: '只处理界面。' },
+                    ],
+                  },
+                  {
+                    id: 'rollout',
+                    header: '发布方式',
+                    question: '需要如何发布？',
+                    options: [
+                      { label: '分阶段（推荐）', description: '逐步发布。' },
+                      { label: '一次发布', description: '立即发布。' },
+                    ],
+                  },
+                ],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: '已使用部分回答继续。' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class RepeatingToolErrorLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -852,6 +1052,55 @@ class StickyWriteFailureLlm extends BaseLlm {
   }
 }
 
+class InspectionFallbackLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const parts = this.requests.length === 1
+      ? [{
+        functionCall: {
+          id: 'call-find-without-root',
+          name: 'shell_exec',
+          args: {
+            mode: 'sandboxed',
+            command: '/usr/bin/find',
+            arguments: ['-name', 'AGENTS.md'],
+          },
+        },
+      }]
+      : this.requests.length === 2
+        ? [{
+          functionCall: {
+            id: 'call-workspace-list-fallback',
+            name: 'workspace_list',
+            args: { path: '.' },
+          },
+        }]
+        : [{
+          text: '# 完整计划\n\n## 一、实施范围\n\n按已确认需求执行。',
+          partMetadata: modelItemMetadata('complete-plan-after-fallback', {
+            phase: 'final',
+            outcome: { kind: 'final' },
+          }),
+        }];
+    yield {
+      content: { role: 'model', parts },
+      partial: false,
+      turnComplete: this.requests.length >= 3,
+      finishReason: this.requests.length >= 3 ? FinishReason.STOP : undefined,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 test('future-action-only final detection distinguishes promises from outcomes', () => {
   assert.equal(DEFAULT_MODEL_REQUEST_TIMEOUT_MS, 600_000);
   assert.equal(
@@ -882,7 +1131,7 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-fixture',
   });
   host.handle({
@@ -972,7 +1221,7 @@ test('RuntimeHost durably seeds a revised user message without appending it twic
   host.handle({
     type: 'initialize',
     requestId: 'request-revise-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-revise-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1025,7 +1274,7 @@ test('RuntimeHost retries a future-action-only final and uses the global output 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-future-final',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-future-final-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1096,7 +1345,7 @@ test('RuntimeHost keeps a failed write unresolved across a successful read', asy
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-sticky-write',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-sticky-write-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1134,6 +1383,78 @@ test('RuntimeHost keeps a failed write unresolved across a successful read', asy
   );
 });
 
+test('RuntimeHost accepts a complete plan after workspace tools recover a failed read-only shell inspection', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new InspectionFallbackLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    ...turnNativeFixture(),
+    workspaceList: async () => JSON.stringify({
+      ok: true,
+      entries: [{ kind: 'file', name: 'README.md' }],
+    }),
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-inspection-fallback',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v4-inspection-fallback-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-inspection-fallback',
+    workspaceId: 'workspace-inspection-fallback',
+    threadId: 'thread-inspection-fallback',
+    turnId: 'turn-inspection-fallback',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '/plan 制定实施计划' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for Turn.')), 2_000),
+    ),
+  ]);
+
+  assert.equal(model.requests.length, 3);
+  assert.equal(
+    model.requests.some((request) =>
+      request.contents.some((content) =>
+        content.parts?.some((part) =>
+          part.text?.includes('Internal continuation after tool failure')
+        )
+      )
+    ),
+    false,
+  );
+  assert.ok(events.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.phase === 'final' &&
+      event.itemId === 'complete-plan-after-fallback',
+  ));
+});
+
 test('RuntimeHost pauses for structured user input and resumes the same Turn', async () => {
   const events: RuntimeEvent[] = [];
   const model = new UserInputLlm({ model: 'fixture-model' });
@@ -1153,10 +1474,15 @@ test('RuntimeHost pauses for structured user input and resumes the same Turn', a
           threadId: event.threadId,
           turnId: event.turnId,
           inputRequestId: event.inputRequestId,
-          answers: [{
-            questionId: 'scope',
-            answer: '完整链路（推荐）',
-          }],
+          submission: {
+            kind: 'submitted',
+            decisions: [{
+              questionId: 'scope',
+              kind: 'answered',
+              source: 'option',
+              answer: '完整链路（推荐）',
+            }],
+          },
         });
       }
       if (event.type === 'turn.completed') {
@@ -1168,7 +1494,7 @@ test('RuntimeHost pauses for structured user input and resumes the same Turn', a
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-input',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-user-input-fixture',
   });
   host.handle({
@@ -1203,6 +1529,342 @@ test('RuntimeHost pauses for structured user input and resumes the same Turn', a
   assert.equal(
     events.findLast((event) => event.type === 'turn.completed')?.status,
     'completed',
+  );
+});
+
+test('RuntimeHost replaces a post-question plan continuation with a complete final answer', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new SplitPlanAfterUserInputLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.userInputRequested') {
+        host.handle({
+          type: 'turn.userInputResponse',
+          requestId: 'request-answer-split-plan',
+          workspaceId: event.workspaceId,
+          threadId: event.threadId,
+          turnId: event.turnId,
+          inputRequestId: event.inputRequestId,
+          submission: {
+            kind: 'submitted',
+            decisions: [{
+              questionId: 'cache_strategy',
+              kind: 'answered',
+              source: 'option',
+              answer: '30 天（推荐）',
+            }],
+          },
+        });
+      }
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-split-plan',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v4-split-plan-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-split-plan',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-split-plan-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '/plan 设计号码识别 API' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for Turn.')), 2_000),
+    ),
+  ]);
+
+  assert.equal(model.requests.length, 3);
+  assert.match(
+    JSON.stringify(model.requests[1]?.contents),
+    /Internal post-question response boundary/u,
+  );
+  assert.match(
+    JSON.stringify(model.requests[2]?.contents),
+    /Internal continuation after incomplete post-question final/u,
+  );
+  assert.ok(events.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.phase === 'commentary' &&
+      event.itemId === 'pre-question-plan',
+  ));
+  assert.equal(events.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.phase === 'final' &&
+      event.itemId === 'continued-plan',
+  ), false);
+  assert.ok(events.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.phase === 'final' &&
+      event.itemId === 'complete-plan' &&
+      event.text.startsWith('# 完整计划'),
+  ));
+});
+
+test('RuntimeHost supports two sequential user-input requests in one Turn', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new MultiRoundUserInputLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.userInputRequested') {
+        const questionId = event.questions[0]?.id;
+        if (!questionId) return;
+        host.handle({
+          type: 'turn.userInputResponse',
+          requestId: `request-answer-${questionId}`,
+          workspaceId: event.workspaceId,
+          threadId: event.threadId,
+          turnId: event.turnId,
+          inputRequestId: event.inputRequestId,
+          submission: {
+            kind: 'submitted',
+            decisions: questionId === 'scope'
+              ? [{
+                  questionId,
+                  kind: 'answered',
+                  source: 'option',
+                  answer: '完整链路（推荐）',
+                }]
+              : [{ questionId, kind: 'skipped' }],
+          },
+        });
+      }
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-multi-input',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v4-multi-input-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-multi-input',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-multi-input-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '实现并确认发布方式' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for Turn.')), 2_000),
+    ),
+  ]);
+
+  const requested = events.filter(
+    (event) => event.type === 'turn.userInputRequested',
+  );
+  const resolved = events.filter(
+    (event) => event.type === 'turn.userInputResolved',
+  );
+  assert.equal(requested.length, 2);
+  assert.equal(new Set(requested.map((event) => event.inputRequestId)).size, 2);
+  assert.deepEqual(
+    resolved.map((event) => event.submission),
+    [
+      {
+        kind: 'submitted',
+        decisions: [{
+          questionId: 'scope',
+          kind: 'answered',
+          source: 'option',
+          answer: '完整链路（推荐）',
+        }],
+      },
+      {
+        kind: 'submitted',
+        decisions: [{ questionId: 'rollout', kind: 'skipped' }],
+      },
+    ],
+  );
+  assert.equal(model.requests.length, 3);
+});
+
+test('RuntimeHost returns partial decisions when the user cancels a request', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new PartialCancellationUserInputLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.userInputRequested') {
+        host.handle({
+          type: 'turn.userInputResponse',
+          requestId: 'request-cancel-input',
+          workspaceId: event.workspaceId,
+          threadId: event.threadId,
+          turnId: event.turnId,
+          inputRequestId: event.inputRequestId,
+          submission: {
+            kind: 'cancelled',
+            decisions: [{
+              questionId: 'scope',
+              kind: 'answered',
+              source: 'option',
+              answer: '完整链路（推荐）',
+            }],
+          },
+        });
+      }
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-cancel-input',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v4-cancel-input-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-cancel-input',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-cancel-input-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '实现需求' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for Turn.')), 2_000),
+    ),
+  ]);
+
+  const resolved = events.find(
+    (event) => event.type === 'turn.userInputResolved',
+  );
+  assert.equal(resolved?.type, 'turn.userInputResolved');
+  assert.equal(resolved?.submission.kind, 'cancelled');
+  assert.equal(resolved?.submission.decisions.length, 1);
+  assert.match(
+    JSON.stringify(model.requests[1]?.contents),
+    /"kind":"cancelled"/u,
+  );
+  assert.match(
+    JSON.stringify(model.requests[1]?.contents),
+    /完整链路（推荐）/u,
+  );
+});
+
+test('RuntimeHost resolves a pending user-input request when the Turn stops', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new UserInputLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.userInputRequested') {
+        host.handle({
+          type: 'turn.cancel',
+          requestId: 'request-stop-input',
+          workspaceId: event.workspaceId,
+          threadId: event.threadId,
+          turnId: event.turnId,
+          source: 'stopButton',
+        });
+      }
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-stop-input',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v4-stop-input-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-stop-input',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-stop-input-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '实现需求' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for stop.')), 2_000),
+    ),
+  ]);
+
+  const resolved = events.find(
+    (event) => event.type === 'turn.userInputResolved',
+  );
+  assert.equal(resolved?.type, 'turn.userInputResolved');
+  assert.deepEqual(resolved?.submission, {
+    kind: 'cancelled',
+    decisions: [],
+  });
+  assert.equal(
+    events.findLast((event) => event.type === 'turn.completed')?.status,
+    'interrupted',
   );
 });
 
@@ -1254,7 +1916,7 @@ test('RuntimeHost generates and conditionally persists an untitled Thread title'
   host.handle({
     type: 'initialize',
     requestId: 'request-title-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-title-fixture',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -1327,7 +1989,7 @@ test('RuntimeHost scopes durable Item IDs to each Turn across worker restarts', 
     host.handle({
       type: 'initialize',
       requestId: `request-initialize-${suffix}`,
-    protocolVersion: 3,
+    protocolVersion: 4,
       dataDirectory: `/tmp/sugarcode-v3-restart-${suffix}`,
       nativeModulePath: '/fixture/sugarcode-desktop-native.node',
     });
@@ -1405,7 +2067,7 @@ test('RuntimeHost classifies durable Item write failures as local state failures
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-state-failure',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-state-failure',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -1455,7 +2117,7 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-commentary',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-commentary-fixture',
   });
   host.handle({
@@ -1511,7 +2173,7 @@ test('RuntimeHost preserves typed provider failures caught by ADK', async () => 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-provider-timeout',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-provider-timeout-fixture',
   });
   host.handle({
@@ -1562,7 +2224,7 @@ test('RuntimeHost publishes provider summaries but keeps internal reasoning priv
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-reasoning-boundary',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-reasoning-boundary-fixture',
   });
   host.handle({
@@ -1629,7 +2291,7 @@ test('RuntimeHost fails after two output truncations without publishing success'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-truncated',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-truncated-fixture',
   });
   host.handle({
@@ -1703,7 +2365,7 @@ test('RuntimeHost gives repeated execution failures one guided recovery attempt'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-tool-error',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-tool-error-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1776,7 +2438,7 @@ test('RuntimeHost stops a third identical execution failure without progress', a
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-persistent-tool-error',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-persistent-tool-error-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1851,7 +2513,7 @@ test('RuntimeHost retries one premature final after a failed tool result', async
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-final-recovery',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-final-recovery-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1948,7 +2610,7 @@ test('RuntimeHost keeps a summary final after workspace_read confirms a missing 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-informative-read-miss',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-informative-read-miss-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2051,7 +2713,7 @@ test('RuntimeHost streams and controls native PTY sessions without a CLI bridge'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2154,7 +2816,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-collaboration',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/tmp/sugarcode-v3-collaboration',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2304,7 +2966,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -2478,7 +3140,7 @@ test('RuntimeHost automatically resumes a recovered workspace patch', async () =
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -2548,7 +3210,7 @@ test('RuntimeHost publishes concurrent approvals and resolves either one indepen
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -2676,7 +3338,7 @@ test('RuntimeHost automatically authorizes a workspace patch', async () => {
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -2798,7 +3460,7 @@ test('RuntimeHost automatically authorizes a sandboxed command', async () => {
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -3030,7 +3692,7 @@ test('RuntimeHost rebuilds completed history and interrupted task intent into AD
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 3,
+    protocolVersion: 4,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });

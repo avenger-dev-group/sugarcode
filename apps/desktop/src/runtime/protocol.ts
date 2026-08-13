@@ -39,7 +39,7 @@ import {
   type SkillsInspection,
 } from '../shared/skills.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 3 as const;
+export const RUNTIME_PROTOCOL_VERSION = 4 as const;
 
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
@@ -57,10 +57,27 @@ export type RuntimeUserInputQuestion = Readonly<{
   options: readonly RuntimeUserInputOption[];
 }>;
 
-export type RuntimeUserInputAnswer = Readonly<{
-  questionId: string;
-  answer: string;
-}>;
+export type RuntimeUserInputDecision =
+  | Readonly<{
+      questionId: string;
+      kind: 'answered';
+      source: 'option' | 'custom';
+      answer: string;
+    }>
+  | Readonly<{
+      questionId: string;
+      kind: 'skipped';
+    }>;
+
+export type RuntimeUserInputSubmission =
+  | Readonly<{
+      kind: 'submitted';
+      decisions: readonly RuntimeUserInputDecision[];
+    }>
+  | Readonly<{
+      kind: 'cancelled';
+      decisions: readonly RuntimeUserInputDecision[];
+    }>;
 
 export type RuntimeProviderConfig = Readonly<{
   wireApi: ModelWireApi;
@@ -327,7 +344,7 @@ export type RuntimeCommand =
       threadId: string;
       turnId: string;
       inputRequestId: string;
-      answers: readonly RuntimeUserInputAnswer[];
+      submission: RuntimeUserInputSubmission;
     }>
   | Readonly<{
       type: 'terminal.create';
@@ -750,7 +767,7 @@ export type RuntimeEvent =
         threadId: string;
         turnId: string;
         inputRequestId: string;
-        answers: readonly RuntimeUserInputAnswer[];
+        submission: RuntimeUserInputSubmission;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1018,13 +1035,33 @@ const isRuntimeUserInputQuestion = (
     ),
   ).size === value.options.length;
 
-const isRuntimeUserInputAnswer = (
+const isRuntimeUserInputDecision = (
   value: unknown,
-): value is RuntimeUserInputAnswer =>
+): value is RuntimeUserInputDecision =>
   isRecord(value) &&
   typeof value.questionId === 'string' &&
   /^[a-z][a-z0-9_]{0,63}$/u.test(value.questionId) &&
-  hasBoundedRuntimeText(value.answer, MAX_RUNTIME_USER_INPUT_ANSWER_BYTES);
+  (value.kind === 'skipped'
+    ? Object.keys(value).every((key) => ['questionId', 'kind'].includes(key))
+    : value.kind === 'answered' &&
+      (value.source === 'option' || value.source === 'custom') &&
+      hasBoundedRuntimeText(value.answer, MAX_RUNTIME_USER_INPUT_ANSWER_BYTES) &&
+      Object.keys(value).every((key) =>
+        ['questionId', 'kind', 'source', 'answer'].includes(key),
+      ));
+
+const isRuntimeUserInputSubmission = (
+  value: unknown,
+): value is RuntimeUserInputSubmission =>
+  isRecord(value) &&
+  (value.kind === 'submitted' || value.kind === 'cancelled') &&
+  Object.keys(value).every((key) => ['kind', 'decisions'].includes(key)) &&
+  Array.isArray(value.decisions) &&
+  value.decisions.length <= MAX_RUNTIME_USER_INPUT_QUESTIONS &&
+  (value.kind === 'cancelled' || value.decisions.length >= 1) &&
+  value.decisions.every(isRuntimeUserInputDecision) &&
+  new Set(value.decisions.map((decision) => decision.questionId)).size ===
+    value.decisions.length;
 
 const isSafeWorkspacePath = (
   value: unknown,
@@ -1225,12 +1262,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.turnId === 'string' &&
         typeof value.inputRequestId === 'string' &&
         value.inputRequestId.length > 0 &&
-        Array.isArray(value.answers) &&
-        value.answers.length >= 1 &&
-        value.answers.length <= MAX_RUNTIME_USER_INPUT_QUESTIONS &&
-        value.answers.every(isRuntimeUserInputAnswer) &&
-        new Set(value.answers.map((answer) => answer.questionId)).size ===
-          value.answers.length
+        isRuntimeUserInputSubmission(value.submission)
       );
     case 'terminal.create':
     case 'terminal.resize':
@@ -1658,12 +1690,7 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         hasTurnCoordinates(value) &&
         typeof value.inputRequestId === 'string' &&
         value.inputRequestId.length > 0 &&
-        Array.isArray(value.answers) &&
-        value.answers.length >= 1 &&
-        value.answers.length <= MAX_RUNTIME_USER_INPUT_QUESTIONS &&
-        value.answers.every(isRuntimeUserInputAnswer) &&
-        new Set(value.answers.map((answer) => answer.questionId)).size ===
-          value.answers.length
+        isRuntimeUserInputSubmission(value.submission)
       );
     case 'approval.requested':
       return (

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { projectTurnActivities } from '../../../src/main/runtime/conversation-tool-activities.ts';
+import {
+  interruptPendingUserInputActivities,
+  projectTurnActivities,
+} from '../../../src/main/runtime/conversation-tool-activities.ts';
 import type { RuntimeTurnItemRecord } from '../../../src/runtime/protocol.ts';
 
 test('workspace_read projection preserves every requested path', () => {
@@ -158,4 +161,125 @@ test('load_skill replaces a recovered transient failure for the same Skill', () 
       },
     },
   ]);
+});
+
+test('user-input projection pairs durable requests and structured decisions', () => {
+  const questions = [{
+    id: 'scope',
+    header: '实现范围',
+    question: '本次需要覆盖到哪一层？',
+    options: [
+      { label: '完整链路（推荐）', description: '包含全部层。' },
+      { label: '仅界面', description: '只处理界面。' },
+    ],
+  }, {
+    id: 'rollout',
+    header: '发布方式',
+    question: '需要如何发布？',
+    options: [
+      { label: '分阶段（推荐）', description: '逐步发布。' },
+      { label: '一次发布', description: '立即发布。' },
+    ],
+  }];
+  const items: readonly RuntimeTurnItemRecord[] = [
+    {
+      id: 'item-input-request',
+      turnId: 'turn-fixture',
+      sequence: 1,
+      kind: 'turn.userInputRequested',
+      payload: { inputRequestId: 'input-fixture', questions },
+    },
+    {
+      id: 'item-input-result',
+      turnId: 'turn-fixture',
+      sequence: 2,
+      kind: 'turn.userInputResolved',
+      payload: {
+        inputRequestId: 'input-fixture',
+        submission: {
+          kind: 'submitted',
+          decisions: [
+            {
+              questionId: 'scope',
+              kind: 'answered',
+              source: 'option',
+              answer: '完整链路（推荐）',
+            },
+            { questionId: 'rollout', kind: 'skipped' },
+          ],
+        },
+      },
+    },
+  ];
+
+  assert.deepEqual(projectTurnActivities(items), [{
+    type: 'userInput',
+    activity: {
+      id: 'input-fixture',
+      questions,
+      state: 'submitted',
+      decisions: [
+        {
+          questionId: 'scope',
+          kind: 'answered',
+          source: 'option',
+          answer: '完整链路（推荐）',
+        },
+        { questionId: 'rollout', kind: 'skipped' },
+      ],
+    },
+  }]);
+});
+
+test('user-input projection restores legacy answers and interrupts orphaned requests', () => {
+  const request: RuntimeTurnItemRecord = {
+    id: 'item-input-request',
+    turnId: 'turn-fixture',
+    sequence: 1,
+    kind: 'turn.userInputRequested',
+    payload: {
+      inputRequestId: 'input-fixture',
+      questions: [{
+        id: 'scope',
+        header: '实现范围',
+        question: '本次需要覆盖到哪一层？',
+        options: [
+          { label: '完整链路（推荐）', description: '包含全部层。' },
+          { label: '仅界面', description: '只处理界面。' },
+        ],
+      }],
+    },
+  };
+  const legacyResolution: RuntimeTurnItemRecord = {
+    id: 'item-input-result',
+    turnId: 'turn-fixture',
+    sequence: 2,
+    kind: 'turn.userInputResolved',
+    payload: {
+      inputRequestId: 'input-fixture',
+      answers: [{ questionId: 'scope', answer: '完整链路（推荐）' }],
+    },
+  };
+
+  const restored = projectTurnActivities([request, legacyResolution]);
+  const restoredActivity = restored[0];
+  assert.equal(restoredActivity?.type, 'userInput');
+  if (restoredActivity?.type === 'userInput') {
+    assert.deepEqual(restoredActivity.activity.decisions, [{
+      questionId: 'scope',
+      kind: 'answered',
+      source: 'option',
+      answer: '完整链路（推荐）',
+    }]);
+  }
+
+  const interrupted = interruptPendingUserInputActivities(
+    projectTurnActivities([request]),
+  );
+  assert.equal(
+    interrupted[0]?.type === 'userInput'
+      ? interrupted[0].activity.state
+      : undefined,
+    'interrupted',
+  );
 });

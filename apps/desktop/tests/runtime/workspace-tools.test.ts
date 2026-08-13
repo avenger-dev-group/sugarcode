@@ -404,6 +404,37 @@ test('shell_exec rejects sandboxed shell syntax with repair guidance before appr
   assert.equal(approvalRequests, 0);
 });
 
+test('shell_exec rejects find predicates without an explicit search root', async () => {
+  let approvalRequests = 0;
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async () => {
+      approvalRequests += 1;
+      return { ok: true };
+    },
+  );
+  const shellTool = tools.find((tool) => tool.name === 'shell_exec');
+  assert.ok(shellTool);
+
+  const result = await shellTool.runAsync({
+    args: {
+      mode: 'sandboxed',
+      command: '/usr/bin/find',
+      arguments: ['-name', 'AGENTS.md'],
+    },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(result, {
+    ok: false,
+    error: 'invalidArguments',
+    message:
+      'Sandboxed find requires an explicit search path as its first argument (usually ".") before predicates such as -name. Prefer workspace_search for workspace file discovery.',
+  });
+  assert.equal(approvalRequests, 0);
+});
+
 test('shell_exec rejects a leading absolute cd before approval', async () => {
   let approvalRequests = 0;
   const tools = createWorkspaceTools(

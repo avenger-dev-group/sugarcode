@@ -290,6 +290,9 @@ const isThreadNavigator = (
     (Object.hasOwn(value, 'runningThreadIds') &&
       (!Array.isArray(value.runningThreadIds) ||
         !value.runningThreadIds.every(isId))) ||
+    (Object.hasOwn(value, 'inputRequiredThreadIds') &&
+      (!Array.isArray(value.inputRequiredThreadIds) ||
+        !value.inputRequiredThreadIds.every(isId))) ||
     (Object.hasOwn(value, 'unreadThreadStatuses') &&
       (!isRecord(value.unreadThreadStatuses) ||
         !Object.entries(value.unreadThreadStatuses).every(
