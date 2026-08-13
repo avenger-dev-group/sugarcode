@@ -191,6 +191,7 @@ import {
 import {
   isUpdateActionResult,
   isUpdateStateSnapshot,
+  UPDATE_CHECK_CHANNEL,
   UPDATE_DOWNLOAD_PAGE_CHANNEL,
   UPDATE_INSTALL_CHANNEL,
   UPDATE_STATE_CHANGED_CHANNEL,
@@ -249,6 +250,13 @@ export const createDesktopApi = (
     ipcRenderer.on(UPDATE_STATE_CHANGED_CHANNEL, handler);
     return () =>
       ipcRenderer.removeListener(UPDATE_STATE_CHANGED_CHANNEL, handler);
+  },
+  checkUpdate: async (): Promise<UpdateActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(UPDATE_CHECK_CHANNEL);
+    if (!isUpdateActionResult(result)) {
+      throw new Error('Main returned an invalid update check result.');
+    }
+    return result;
   },
   installUpdate: async (): Promise<UpdateActionResult> => {
     const result: unknown = await ipcRenderer.invoke(UPDATE_INSTALL_CHANNEL);

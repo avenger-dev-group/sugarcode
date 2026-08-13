@@ -19,6 +19,10 @@ test('accepts strict update state snapshots', () => {
     isUpdateStateSnapshot({ revision: 2, status: 'fallback', version: '3.1.0' }),
     false,
   );
+  assert.equal(
+    isUpdateStateSnapshot({ revision: 3, status: 'upToDate' }),
+    true,
+  );
 });
 
 test('requires action acceptance to match its reason', () => {

@@ -1,6 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 
 import {
+  UPDATE_CHECK_CHANNEL,
   UPDATE_DOWNLOAD_PAGE_CHANNEL,
   UPDATE_INSTALL_CHANNEL,
   UPDATE_STATE_CHANGED_CHANNEL,
@@ -31,6 +32,12 @@ export const registerUpdateIpc = (
     }
     return options.controller.getSnapshot();
   });
+  ipcMain.handle(UPDATE_CHECK_CHANNEL, (event) => {
+    if (!trusted(event)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    return options.controller.requestCheck();
+  });
   ipcMain.handle(UPDATE_INSTALL_CHANNEL, (event) => {
     if (!trusted(event)) {
       return { accepted: false, reason: 'invalid' };
@@ -53,6 +60,7 @@ export const registerUpdateIpc = (
   return () => {
     unsubscribe();
     ipcMain.removeHandler(UPDATE_STATE_GET_CHANNEL);
+    ipcMain.removeHandler(UPDATE_CHECK_CHANNEL);
     ipcMain.removeHandler(UPDATE_INSTALL_CHANNEL);
     ipcMain.removeHandler(UPDATE_DOWNLOAD_PAGE_CHANNEL);
   };

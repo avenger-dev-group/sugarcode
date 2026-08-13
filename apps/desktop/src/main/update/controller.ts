@@ -419,6 +419,21 @@ export class UpdateController {
     }
   };
 
+  requestCheck = (): UpdateActionResult => {
+    if (
+      this.stopped ||
+      !this.options.platform ||
+      this.options.sources.length === 0
+    ) {
+      return rejected('unavailable');
+    }
+    if (this.checkPromise) {
+      return rejected('busy');
+    }
+    void this.checkNow();
+    return accepted();
+  };
+
   install = async (): Promise<UpdateActionResult> => {
     const pending = this.pending;
     if (this.snapshot.status !== 'ready' || !pending) {
@@ -487,7 +502,7 @@ export class UpdateController {
         : new Error('All update sources are unavailable.');
     }
     if (!this.pending) {
-      this.publish({ status: 'idle' });
+      this.publish({ status: 'upToDate' });
     }
   };
 

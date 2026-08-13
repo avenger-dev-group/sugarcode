@@ -1,4 +1,5 @@
 import {
+  CircleHelp,
   Cpu,
   Monitor,
   Moon,
@@ -26,6 +27,7 @@ import type {
   SettingsDialogProps,
   SettingsSection,
 } from './types';
+import { AboutSettings } from './about-settings';
 import { useStore } from './use-store';
 
 const SETTINGS_SECTIONS: readonly Readonly<{
@@ -45,6 +47,7 @@ const SETTINGS_SECTIONS: readonly Readonly<{
     disabled: true,
     notice: '即将推出',
   },
+  { id: 'about', label: 'About', icon: CircleHelp },
 ];
 
 const SettingsPageHeader = ({
@@ -157,7 +160,7 @@ export const SettingsDialog = ({
           </DialogTitle>
           <DialogDescription className="sr-only">
             Configure SugarCode Desktop, the model connection, workspace
-            Skills, and MCP servers.
+            Skills, MCP servers, updates, and application information.
           </DialogDescription>
           <DialogClose asChild>
             <Button
@@ -177,7 +180,7 @@ export const SettingsDialog = ({
             className="border-b bg-surface/45 p-2 sm:border-r sm:border-b-0"
             aria-label="Settings sections"
           >
-            <div className="grid grid-cols-4 gap-1 sm:block sm:space-y-1">
+            <div className="grid grid-cols-5 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const Icon = section.icon;
                 const current =
@@ -235,6 +238,7 @@ export const SettingsDialog = ({
             {store.section === 'skills' ? (
               <SkillsSettingsPanel active={store.open} />
             ) : null}
+            {store.section === 'about' ? <AboutSettings /> : null}
           </section>
         </div>
       </DialogContent>

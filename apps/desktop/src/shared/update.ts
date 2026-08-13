@@ -1,11 +1,18 @@
 export const UPDATE_STATE_GET_CHANNEL = 'update-state:get';
 export const UPDATE_STATE_CHANGED_CHANNEL = 'update-state:changed';
+export const UPDATE_CHECK_CHANNEL = 'update:check';
 export const UPDATE_INSTALL_CHANNEL = 'update:install';
 export const UPDATE_DOWNLOAD_PAGE_CHANNEL = 'update:download-page';
 
 export type UpdateStateSnapshot = Readonly<{
   revision: number;
-  status: 'idle' | 'checking' | 'downloading' | 'ready' | 'fallback';
+  status:
+    | 'idle'
+    | 'checking'
+    | 'downloading'
+    | 'upToDate'
+    | 'ready'
+    | 'fallback';
   version?: string;
 }>;
 
@@ -26,6 +33,7 @@ export type UpdateApi = Readonly<{
   onUpdateStateChanged: (
     listener: (snapshot: UpdateStateSnapshot) => void,
   ) => () => void;
+  checkUpdate: () => Promise<UpdateActionResult>;
   installUpdate: () => Promise<UpdateActionResult>;
   openUpdateDownloadPage: () => Promise<UpdateActionResult>;
 }>;
@@ -40,6 +48,7 @@ const UPDATE_STATUSES = new Set<UpdateStateSnapshot['status']>([
   'idle',
   'checking',
   'downloading',
+  'upToDate',
   'ready',
   'fallback',
 ]);

@@ -195,6 +195,44 @@ test('silently downloads a verified installer and only then becomes ready', asyn
   }
 });
 
+test('manual checks reuse the updater and report when the app is current', async () => {
+  const fixture = await createFixture();
+  const controller = new UpdateController({
+    currentVersion: '3.1.0',
+    platform: 'darwin-arm64',
+    downloadsDirectory: fixture.downloadsDirectory,
+    pendingStatePath: fixture.pendingStatePath,
+    sources: UPDATE_SOURCES,
+    getInstallBlock: () => false,
+    launchInstaller: async () => true,
+    openDownloadPage: async () => true,
+    quitApplication: () => undefined,
+    fetch: fixture.fetch,
+    retryDelaysMs: [],
+  });
+  const completed = new Promise<void>((resolve) => {
+    controller.subscribe((snapshot) => {
+      if (snapshot.status === 'upToDate') resolve();
+    });
+  });
+  try {
+    assert.deepEqual(controller.requestCheck(), {
+      accepted: true,
+      reason: 'accepted',
+    });
+    assert.equal(controller.getSnapshot().status, 'checking');
+    assert.deepEqual(controller.requestCheck(), {
+      accepted: false,
+      reason: 'busy',
+    });
+    await completed;
+    assert.equal(controller.getSnapshot().status, 'upToDate');
+  } finally {
+    controller.stop();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('blocks installation while work is active', async () => {
   const fixture = await createFixture();
   const controller = new UpdateController({

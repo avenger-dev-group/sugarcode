@@ -3,6 +3,9 @@ import type {
   UpdateStateSnapshot,
 } from '@/shared/update';
 
+export const checkUpdate = (): Promise<UpdateActionResult> =>
+  window.sugarcode.checkUpdate();
+
 export const getUpdateState = (): Promise<UpdateStateSnapshot> =>
   window.sugarcode.getUpdateState();
 

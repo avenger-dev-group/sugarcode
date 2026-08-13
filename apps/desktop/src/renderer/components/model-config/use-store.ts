@@ -24,12 +24,6 @@ import type {
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
     providerFamily: 'openai',
-    label: 'OpenAI-compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    wireApi: 'openaiChatCompletions',
-  },
-  {
-    providerFamily: 'openai',
     label: 'OpenAI Responses',
     baseUrl: 'https://api.openai.com/v1',
     wireApi: 'openaiResponses',
@@ -39,6 +33,12 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     label: 'Anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
     wireApi: 'anthropicMessages',
+  },
+  {
+    providerFamily: 'openai',
+    label: 'OpenAI-compatible',
+    baseUrl: 'https://api.openai.com/v1',
+    wireApi: 'openaiChatCompletions',
   },
 ];
 

@@ -1,4 +1,4 @@
-export type SettingsSection = 'general' | 'model' | 'skills';
+export type SettingsSection = 'general' | 'model' | 'skills' | 'about';
 
 export type SettingsStore = Readonly<{
   open: boolean;
