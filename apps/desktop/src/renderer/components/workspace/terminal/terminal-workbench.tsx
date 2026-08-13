@@ -1,6 +1,6 @@
-import { FitAddon } from '@xterm/addon-fit';
-import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
+import type { FitAddon } from '@xterm/addon-fit';
+import type { Terminal } from '@xterm/xterm';
 import {
   CirclePause,
   LoaderCircle,
@@ -79,6 +79,11 @@ export const TerminalWorkbench = ({
   const fitRef = useRef<FitAddon | null>(null);
   const renderedThroughRef = useRef<number>(0);
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const initializationRef = useRef<Promise<void> | null>(null);
+  const terminalCleanupRef = useRef<(() => void) | null>(null);
+  const inputActionRef = useRef(store.input);
+  const resizeActionRef = useRef(store.resize);
+  const refreshActionRef = useRef(store.refresh);
   const openRef = useRef<boolean>(store.open);
   const autoStartGenerationRef = useRef<number | null>(null);
   const state = store.state;
@@ -89,94 +94,131 @@ export const TerminalWorkbench = ({
     state.status === 'paused';
   const workspaceReady = store.workspace.status === 'ready';
   openRef.current = store.open;
+  inputActionRef.current = store.input;
+  resizeActionRef.current = store.resize;
+  refreshActionRef.current = store.refresh;
 
   const enqueueInput = useCallback(
     (data: string): void => {
       for (const chunk of splitBoundedInput(data)) {
         inputQueueRef.current = inputQueueRef.current.then(() =>
-          store.input(chunk),
+          inputActionRef.current(chunk),
         );
       }
     },
-    [store.input],
+    [],
   );
 
   useEffect(() => {
+    if (
+      !store.open ||
+      terminalRef.current ||
+      initializationRef.current
+    ) {
+      return;
+    }
     const host = hostRef.current;
     if (!host) {
       return;
     }
-    const reducedMotion = window.matchMedia(
-      '(prefers-reduced-motion: reduce)',
-    ).matches;
-    const terminal = new Terminal({
-      allowProposedApi: false,
-      convertEol: false,
-      cursorBlink: !reducedMotion,
-      cursorStyle: 'bar',
-      disableStdin: true,
-      drawBoldTextInBrightColors: false,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: 13,
-      lineHeight: 1.22,
-      scrollback: 5_000,
-      smoothScrollDuration: reducedMotion ? 0 : 80,
-      theme: readTheme(),
-    });
-    const fit = new FitAddon();
-    terminal.loadAddon(fit);
-    terminal.open(host);
-    terminalRef.current = terminal;
-    fitRef.current = fit;
-    const dataSubscription = terminal.onData(enqueueInput);
-    const resizeSubscription = terminal.onResize(({ cols, rows }) => {
-      void store.resize(cols, rows);
-    });
-    terminal.attachCustomKeyEventHandler((event) => {
-      const copy =
-        (event.metaKey || (event.ctrlKey && event.shiftKey)) &&
-        event.code === 'KeyC';
-      if (copy && terminal.hasSelection()) {
-        void navigator.clipboard.writeText(terminal.getSelection());
-        return false;
+    let active = true;
+    initializationRef.current = Promise.all([
+      import('@xterm/xterm'),
+      import('@xterm/addon-fit'),
+    ]).then(([{ Terminal }, { FitAddon }]) => {
+      if (!active || terminalRef.current) {
+        return;
       }
-      const paste =
-        (event.metaKey || (event.ctrlKey && event.shiftKey)) &&
-        event.code === 'KeyV';
-      if (paste) {
-        void navigator.clipboard
-          .readText()
-          .then(enqueueInput)
-          .catch((): undefined => undefined);
-        return false;
-      }
-      return true;
-    });
-    const resizeObserver = new ResizeObserver(() => {
-      if (openRef.current && host.clientWidth > 0 && host.clientHeight > 0) {
+      const reducedMotion = window.matchMedia(
+        '(prefers-reduced-motion: reduce)',
+      ).matches;
+      const terminal = new Terminal({
+        allowProposedApi: false,
+        convertEol: false,
+        cursorBlink: !reducedMotion,
+        cursorStyle: 'bar',
+        disableStdin: true,
+        drawBoldTextInBrightColors: false,
+        fontFamily:
+          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        fontSize: 13,
+        lineHeight: 1.22,
+        scrollback: 5_000,
+        smoothScrollDuration: reducedMotion ? 0 : 80,
+        theme: readTheme(),
+      });
+      const fit = new FitAddon();
+      terminal.loadAddon(fit);
+      terminal.open(host);
+      terminalRef.current = terminal;
+      fitRef.current = fit;
+      const dataSubscription = terminal.onData(enqueueInput);
+      const resizeSubscription = terminal.onResize(({ cols, rows }) => {
+        void resizeActionRef.current(cols, rows);
+      });
+      terminal.attachCustomKeyEventHandler((event) => {
+        const copy =
+          (event.metaKey || (event.ctrlKey && event.shiftKey)) &&
+          event.code === 'KeyC';
+        if (copy && terminal.hasSelection()) {
+          void navigator.clipboard.writeText(terminal.getSelection());
+          return false;
+        }
+        const paste =
+          (event.metaKey || (event.ctrlKey && event.shiftKey)) &&
+          event.code === 'KeyV';
+        if (paste) {
+          void navigator.clipboard
+            .readText()
+            .then(enqueueInput)
+            .catch((): undefined => undefined);
+          return false;
+        }
+        return true;
+      });
+      const resizeObserver = new ResizeObserver(() => {
+        if (openRef.current && host.clientWidth > 0 && host.clientHeight > 0) {
+          fit.fit();
+        }
+      });
+      resizeObserver.observe(host);
+      const themeObserver = new MutationObserver(() => {
+        terminal.options.theme = readTheme();
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+      void refreshActionRef.current();
+
+      terminalCleanupRef.current = (): void => {
+        themeObserver.disconnect();
+        resizeObserver.disconnect();
+        resizeSubscription.dispose();
+        dataSubscription.dispose();
+        terminal.dispose();
+        terminalRef.current = null;
+        fitRef.current = null;
+        terminalCleanupRef.current = null;
+      };
+      if (openRef.current) {
         fit.fit();
+        terminal.focus();
       }
+    }).finally(() => {
+      initializationRef.current = null;
     });
-    resizeObserver.observe(host);
-    const themeObserver = new MutationObserver(() => {
-      terminal.options.theme = readTheme();
-    });
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class'],
-    });
-    void store.refresh();
     return () => {
-      themeObserver.disconnect();
-      resizeObserver.disconnect();
-      resizeSubscription.dispose();
-      dataSubscription.dispose();
-      terminal.dispose();
-      terminalRef.current = null;
-      fitRef.current = null;
+      active = false;
     };
-  }, []);
+  }, [enqueueInput, store.open]);
+
+  useEffect(
+    () => () => {
+      terminalCleanupRef.current?.();
+    },
+    [],
+  );
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -204,7 +246,10 @@ export const TerminalWorkbench = ({
       return;
     }
     terminal.options.disableStdin = state.status !== 'running';
-  }, [state.status]);
+    terminal.options.cursorBlink =
+      store.open &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }, [state.status, store.open]);
 
   useEffect(() => {
     if (!store.open) {

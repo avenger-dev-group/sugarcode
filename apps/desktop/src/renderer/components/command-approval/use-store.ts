@@ -88,7 +88,7 @@ export const useStore = (): CommandApprovalStore => {
     }
     const interval = window.setInterval(() => {
       setNowMs(Date.now());
-    }, 250);
+    }, 1_000);
     return () => window.clearInterval(interval);
   }, [snapshot]);
 

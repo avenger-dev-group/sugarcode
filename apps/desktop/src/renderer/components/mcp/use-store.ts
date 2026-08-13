@@ -115,7 +115,7 @@ export const useStore = (): McpStore => {
     ) {
       return;
     }
-    const timer = window.setInterval(() => setNowMs(Date.now()), 250);
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [approval]);
 
