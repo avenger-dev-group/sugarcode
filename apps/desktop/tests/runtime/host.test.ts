@@ -15,6 +15,7 @@ import {
   isFutureActionOnlyFinal,
   RuntimeHost,
 } from '../../src/runtime/host.ts';
+import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-input-boundary.ts';
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
@@ -431,38 +432,58 @@ class MultiRoundUserInputLlm extends BaseLlm {
       yield {
         content: {
           role: 'model',
-          parts: [{
-            functionCall: {
-              id: second ? 'call-user-input-rollout' : 'call-user-input-scope',
-              name: 'request_user_input',
-              args: {
-                questions: [{
-                  id: second ? 'rollout' : 'scope',
-                  header: second ? '发布方式' : '实现范围',
-                  question: second
-                    ? '需要如何发布？'
-                    : '本次需要覆盖到哪一层？',
-                  options: [
-                    {
-                      label: second ? '分阶段（推荐）' : '完整链路（推荐）',
-                      description: '采用推荐方案。',
-                    },
-                    {
-                      label: second ? '一次发布' : '仅界面',
-                      description: '采用备选方案。',
-                    },
-                  ],
-                }],
+          parts: [
+            {
+              text: second
+                ? '# 发布计划\n\n## 一、发布策略\n\n先完成全部实现。'
+                : '第一阶段分析完成，需要先确认实现范围。',
+              partMetadata: modelItemMetadata(
+                second ? 'pre-rollout-draft' : 'pre-scope-summary',
+                { phase: 'provisional', outcome: { kind: 'toolCalls' } },
+              ),
+            },
+            {
+              functionCall: {
+                id: second ? 'call-user-input-rollout' : 'call-user-input-scope',
+                name: 'request_user_input',
+                args: {
+                  questions: [{
+                    id: second ? 'rollout' : 'scope',
+                    header: second ? '发布方式' : '实现范围',
+                    question: second
+                      ? '需要如何发布？'
+                      : '本次需要覆盖到哪一层？',
+                    options: [
+                      {
+                        label: second ? '分阶段（推荐）' : '完整链路（推荐）',
+                        description: '采用推荐方案。',
+                      },
+                      {
+                        label: second ? '一次发布' : '仅界面',
+                        description: '采用备选方案。',
+                      },
+                    ],
+                  }],
+                },
               },
             },
-          }],
+          ],
         },
         partial: false,
       };
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: '两轮决策均已处理。' }] },
+      content: {
+        role: 'model',
+        parts: [{
+          text: '两轮决策均已处理。',
+          partMetadata: modelItemMetadata('multi-round-final', {
+            phase: 'final',
+            outcome: { kind: 'final' },
+          }),
+        }],
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -1112,6 +1133,33 @@ test('future-action-only final detection distinguishes promises from outcomes', 
   assert.equal(isFutureActionOnlyFinal('无法继续：缺少写入权限。'), false);
 });
 
+test('user-input boundary keeps brief progress and collapses a pre-question draft', () => {
+  assert.equal(
+    userInputBoundaryCommentary(
+      '现状已经厘清，还有一个架构决策需要确认。',
+      '/plan 设计号码识别 API',
+      ['缓存命中时是否收费？'],
+    ),
+    '现状已经厘清，还有一个架构决策需要确认。',
+  );
+  assert.equal(
+    userInputBoundaryCommentary(
+      '# 完整计划\n\n## 一、现状\n\n已经分析完成。\n\n## 二、实施方案',
+      '/plan 设计号码识别 API',
+      ['缓存命中时是否收费？'],
+    ),
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  );
+  assert.equal(
+    userInputBoundaryCommentary(
+      '缓存命中时是否收费？',
+      '/plan 设计号码识别 API',
+      ['缓存命中时是否收费？'],
+    ),
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  );
+});
+
 test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events', async () => {
   const events: RuntimeEvent[] = [];
   let resolveCompleted: (() => void) | undefined;
@@ -1604,12 +1652,27 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
     JSON.stringify(model.requests[2]?.contents),
     /Internal continuation after incomplete post-question final/u,
   );
-  assert.ok(events.some(
+  const preQuestionCommentary = events.find(
     (event) =>
       event.type === 'turn.textCompleted' &&
       event.phase === 'commentary' &&
       event.itemId === 'pre-question-plan',
-  ));
+  );
+  assert.equal(preQuestionCommentary?.type, 'turn.textCompleted');
+  assert.equal(
+    preQuestionCommentary?.type === 'turn.textCompleted'
+      ? preQuestionCommentary.text
+      : undefined,
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.text.includes('## 八、待确认事项'),
+    ),
+    false,
+  );
   assert.equal(events.some(
     (event) =>
       event.type === 'turn.textCompleted' &&
@@ -1719,6 +1782,25 @@ test('RuntimeHost supports two sequential user-input requests in one Turn', asyn
     ],
   );
   assert.equal(model.requests.length, 3);
+  assert.ok(events.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.itemId === 'pre-scope-summary' &&
+      event.text === '第一阶段分析完成，需要先确认实现范围。',
+  ));
+  assert.ok(events.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.itemId === 'pre-rollout-draft' &&
+      event.text === '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  ));
+  assert.equal(
+    events.filter(
+      (event) =>
+        event.type === 'turn.textCompleted' && event.phase === 'final',
+    ).length,
+    1,
+  );
 });
 
 test('RuntimeHost returns partial decisions when the user cancels a request', async () => {

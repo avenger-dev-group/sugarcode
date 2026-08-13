@@ -77,6 +77,14 @@ test('base Agent instructions localize visible output and reject repetitive proc
   );
   assert.match(
     SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /Treat the tool call as an analysis checkpoint/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
+    /without headings, tables, numbered plan sections, or question prompts/u,
+  );
+  assert.match(
+    SUGARCODE_BASE_AGENT_PROMPT_V1,
     /never ask again for a decision the user already confirmed/u,
   );
 });

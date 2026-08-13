@@ -231,6 +231,70 @@ test('user-input projection pairs durable requests and structured decisions', ()
   }]);
 });
 
+test('user-input projection collapses a persisted plan emitted before a question', () => {
+  const questions = [{
+    id: 'scope',
+    header: '实现范围',
+    question: '本次需要覆盖到哪一层？',
+    options: [
+      { label: '完整链路（推荐）', description: '包含全部层。' },
+      { label: '仅界面', description: '只处理界面。' },
+    ],
+  }];
+  const items: readonly RuntimeTurnItemRecord[] = [
+    {
+      id: 'item-plan-draft',
+      turnId: 'turn-fixture',
+      sequence: 1,
+      kind: 'turn.textCompleted',
+      payload: {
+        itemId: 'pre-question-plan',
+        phase: 'commentary',
+        text: '# 完整计划\n\n## 一、现状分析\n\n这里是不应公开的草稿。',
+      },
+    },
+    {
+      id: 'item-question-call',
+      turnId: 'turn-fixture',
+      sequence: 2,
+      kind: 'turn.toolCall',
+      payload: {
+        itemId: 'question-call',
+        callId: 'call-question',
+        name: 'request_user_input',
+        arguments: { questions },
+      },
+    },
+    {
+      id: 'item-input-request',
+      turnId: 'turn-fixture',
+      sequence: 3,
+      kind: 'turn.userInputRequested',
+      payload: { inputRequestId: 'input-fixture', questions },
+    },
+  ];
+
+  const activities = projectTurnActivities(items);
+
+  assert.deepEqual(activities[0], {
+    type: 'commentary',
+    activity: {
+      id: 'pre-question-plan',
+      text: '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+      status: 'completed',
+    },
+  });
+  assert.equal(
+    activities.some(
+      (activity) =>
+        activity.type === 'commentary' &&
+        activity.activity.text.includes('完整计划'),
+    ),
+    false,
+  );
+  assert.equal(activities[1]?.type, 'userInput');
+});
+
 test('user-input projection restores legacy answers and interrupts orphaned requests', () => {
   const request: RuntimeTurnItemRecord = {
     id: 'item-input-request',

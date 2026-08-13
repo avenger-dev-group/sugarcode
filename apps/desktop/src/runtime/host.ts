@@ -11,6 +11,7 @@ import {
 import { Type, type Content, type Part, type Schema } from '@google/genai';
 import { createHash, randomUUID } from 'node:crypto';
 
+import { userInputBoundaryCommentary } from '../shared/conversation/user-input-boundary.ts';
 import {
   ContextManager,
   type RuntimeContextCheckpoint,
@@ -3314,6 +3315,13 @@ export class RuntimeHost {
     const parts = event.content?.parts ?? [];
     this.publishNativeCompaction(command, selection, event, parts);
     const hasVisibleModelText = parts.some(isVisibleModelTextPart);
+    const hasUserInputCall = parts.some(
+      (part) => part.functionCall?.name === 'request_user_input',
+    );
+    const userInputQuestions = parts.flatMap((part) => {
+      if (part.functionCall?.name !== 'request_user_input') return [];
+      return parseUserInputQuestions(part.functionCall.args) ?? [];
+    });
     const userText = command.content
       .filter((part) => part.type === 'text')
       .map((part) => part.text)
@@ -3350,20 +3358,28 @@ export class RuntimeHost {
         if (event.partial === false) {
           const outcome = metadata?.outcome ??
             readModelStepOutcome(event.content?.parts ?? []);
-          const completedPhase = part.thought ||
+          const completedPhase = hasUserInputCall ||
+              part.thought ||
               initialPhase === 'commentary' ||
               outcome?.kind !== 'final'
             ? 'commentary' as const
             : 'final' as const;
+          const completedText = hasUserInputCall
+            ? userInputBoundaryCommentary(
+                part.text,
+                userText,
+                userInputQuestions.map((question) => question.question),
+              )
+            : part.text;
           if (
             state.completed &&
             state.phase === completedPhase &&
-            state.text === part.text
+            state.text === completedText
           ) {
             continue;
           }
           state.phase = completedPhase;
-          state.text = part.text;
+          state.text = completedText;
           if (completedPhase === 'final') {
             state.pendingFinal = true;
           } else {
@@ -3376,7 +3392,7 @@ export class RuntimeHost {
               turnId: command.turnId,
               itemId,
               phase: completedPhase,
-              text: part.text,
+              text: completedText,
             });
           }
         } else {
