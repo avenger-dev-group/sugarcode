@@ -291,9 +291,7 @@ export const UserMessage = ({
 
   return (
     <div
-      className={`group/user-message ml-auto max-w-[82%] ${
-        editing ? 'w-full' : 'w-fit'
-      }`}
+      className={`ml-auto max-w-[82%] ${editing ? 'w-full' : 'w-fit'}`}
     >
       {editing && editor && onSetEditDraft && onCancelEdit && onSubmitEdit ? (
         <UserMessageEditor
@@ -320,7 +318,7 @@ export const UserMessage = ({
               <MessageReferences message={entry.message} />
             </div>
           ) : null}
-          <div className="flex h-7 items-center justify-end gap-0.5 opacity-0 transition-opacity group-focus-within/user-message:opacity-100 group-hover/user-message:opacity-100 motion-reduce:transition-none">
+          <div className="flex h-7 items-center justify-end gap-0.5">
             {hasCopyableUserText(entry.message.text) ? (
               <MessageCopyButton
                 text={entry.message.text}
