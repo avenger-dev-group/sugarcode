@@ -19,6 +19,11 @@ export type ConversationMessage = Readonly<{
   status: ConversationMessageStatus;
 }>;
 
+export type ConversationPlanProposal = Readonly<{
+  id: string;
+  content: string;
+}>;
+
 export type ConversationAttachment = Readonly<{
   assetId: string;
   sha256: string;

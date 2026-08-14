@@ -6,6 +6,7 @@ import type {
   ConversationMcpActivity,
   ConversationMessage,
   ConversationModelSelection,
+  ConversationPlanProposal,
   ConversationPhase,
   ConversationTokenUsage,
   ConversationTurnError,
@@ -22,6 +23,7 @@ export type ConversationTurn = Readonly<{
   status: ConversationTurnStatus;
   model?: ConversationModelSelection;
   messages: readonly ConversationMessage[];
+  planProposal?: ConversationPlanProposal;
   pendingAgentOutputs?: readonly ConversationAgentOutput[];
   activities?: readonly ConversationActivity[];
   workspaceRead?: ConversationWorkspaceReadActivity;

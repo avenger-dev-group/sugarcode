@@ -101,6 +101,50 @@ fn native_asset_store_persists_metadata_and_verifies_content() {
     assert_eq!(loaded["data"], "Zml4dHVyZQ==");
 }
 
+#[test]
+fn native_workspace_instruction_contract_uses_priority_and_nearest_parent() {
+    let directory = tempfile::tempdir().expect("data directory");
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::create_dir(workspace.path().join("src")).expect("src");
+    std::fs::write(workspace.path().join("AGENTS.md"), "root\n").expect("root rules");
+    std::fs::write(workspace.path().join("CLAUDE.md"), "ignored\n").expect("fallback rules");
+    std::fs::write(workspace.path().join("src/AGENTS.override.md"), "nested\n")
+        .expect("nested rules");
+    let runtime = NativeRuntime::open(directory.path().to_string_lossy().into_owned())
+        .expect("native runtime");
+    runtime
+        .ensure_workspace(
+            "workspace-1".to_owned(),
+            workspace.path().to_string_lossy().into_owned(),
+        )
+        .expect("register workspace");
+
+    let contract: Value = serde_json::from_str(
+        &runtime
+            .workspace_instructions_json(
+                "workspace-1".to_owned(),
+                r#"["src/new/directory"]"#.to_owned(),
+            )
+            .expect("instruction contract"),
+    )
+    .expect("contract JSON");
+
+    assert_eq!(contract["contractVersion"], 1);
+    assert_eq!(contract["errors"].as_array().map(Vec::len), Some(0));
+    assert_eq!(contract["chains"][0]["scope"], "src/new/directory");
+    assert_eq!(
+        contract["chains"][0]["paths"],
+        serde_json::json!(["AGENTS.md", "src/AGENTS.override.md"])
+    );
+    assert_eq!(contract["documents"][0]["scope"], ".");
+    assert_eq!(contract["documents"][1]["scope"], "src");
+    assert_eq!(contract["documents"][1]["content"], "nested\n");
+    assert_eq!(
+        contract["documents"][1]["sha256"].as_str().map(str::len),
+        Some(64)
+    );
+}
+
 #[tokio::test]
 async fn native_workspace_patch_receipt_retains_reviewable_diff_metadata() {
     let directory = tempfile::tempdir().expect("data directory");

@@ -145,6 +145,13 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         !value.mcpActivities.every(isMcpActivity))) ||
     (Object.hasOwn(value, 'userInputRequest') &&
       !isUserInputRequest(value.userInputRequest)) ||
+    (Object.hasOwn(value, 'planProposal') &&
+      (!isRecord(value.planProposal) ||
+        !isId(value.planProposal.id) ||
+        typeof value.planProposal.content !== 'string' ||
+        value.planProposal.content.trim().length === 0 ||
+        new TextEncoder().encode(value.planProposal.content).byteLength >
+          64 * 1024)) ||
     (Object.hasOwn(value, 'usage') && !isTokenUsage(value.usage))
   ) {
     return false;

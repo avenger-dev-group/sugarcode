@@ -231,7 +231,7 @@ test('user-input projection pairs durable requests and structured decisions', ()
   }]);
 });
 
-test('user-input projection collapses a persisted plan emitted before a question', () => {
+test('user-input projection collapses a persisted plan draft emitted before a question', () => {
   const questions = [{
     id: 'scope',
     header: '实现范围',

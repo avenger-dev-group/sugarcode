@@ -33,6 +33,7 @@ fn root_workspace_instructions_are_bounded_and_capability_relative() {
         .load_root_instructions()
         .expect("instructions snapshot");
     let WorkspaceInstructionsSnapshot::Present {
+        path,
         content,
         bytes,
         sha256,
@@ -40,6 +41,7 @@ fn root_workspace_instructions_are_bounded_and_capability_relative() {
     else {
         panic!("instructions must be present");
     };
+    assert_eq!(path, "AGENTS.md");
     assert_eq!(content, "Use repository rules.\n");
     assert_eq!(bytes, content.len());
     assert_eq!(sha256.len(), 64);
@@ -69,7 +71,7 @@ fn opened_workspace_capability_blocks_root_replacement() {
 }
 
 #[test]
-fn missing_and_empty_instructions_are_distinct() {
+fn missing_and_empty_instructions_are_ignored() {
     let workspace = tempfile::tempdir().expect("workspace");
     let tool = WorkspaceTool::open(workspace.path()).expect("workspace capability");
     assert_eq!(
@@ -79,19 +81,50 @@ fn missing_and_empty_instructions_are_distinct() {
 
     std::fs::write(workspace.path().join(WORKSPACE_INSTRUCTIONS_FILE_NAME), "")
         .expect("empty instructions");
-    let WorkspaceInstructionsSnapshot::Present {
-        content,
-        bytes,
-        sha256,
-    } = tool.load_root_instructions().expect("empty snapshot")
-    else {
-        panic!("empty file remains present");
-    };
-    assert!(content.is_empty());
-    assert_eq!(bytes, 0);
     assert_eq!(
-        sha256,
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        tool.load_root_instructions().expect("empty snapshot"),
+        WorkspaceInstructionsSnapshot::Absent
+    );
+}
+
+#[test]
+fn instruction_file_priority_uses_first_non_empty_candidate() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("CLAUDE.md"), "claude\n").expect("claude");
+    std::fs::write(workspace.path().join("AGENTS.md"), "agents\n").expect("agents");
+    std::fs::write(workspace.path().join("AGENTS.override.md"), "override\n").expect("override");
+    let tool = WorkspaceTool::open(workspace.path()).expect("workspace capability");
+
+    assert!(matches!(
+        tool.load_root_instructions().expect("priority"),
+        WorkspaceInstructionsSnapshot::Present { path, content, .. }
+            if path == "AGENTS.override.md" && content == "override\n"
+    ));
+    std::fs::write(workspace.path().join("AGENTS.override.md"), "\n").expect("empty override");
+    assert!(matches!(
+        tool.load_root_instructions().expect("empty priority"),
+        WorkspaceInstructionsSnapshot::Present { path, content, .. }
+            if path == "AGENTS.md" && content == "agents\n"
+    ));
+    std::fs::write(workspace.path().join("AGENTS.md"), "\t\n").expect("empty agents");
+    assert!(matches!(
+        tool.load_root_instructions().expect("claude fallback"),
+        WorkspaceInstructionsSnapshot::Present { path, content, .. }
+            if path == "CLAUDE.md" && content == "claude\n"
+    ));
+}
+
+#[test]
+fn invalid_higher_priority_instruction_does_not_fall_back() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("AGENTS.override.md"), b"bad\0content")
+        .expect("invalid override");
+    std::fs::write(workspace.path().join("AGENTS.md"), "valid fallback\n").expect("fallback");
+    let tool = WorkspaceTool::open(workspace.path()).expect("workspace capability");
+
+    assert_eq!(
+        tool.load_root_instructions(),
+        Err(WorkspaceInstructionsErrorKind::InvalidEncoding)
     );
 }
 
@@ -175,11 +208,7 @@ fn nested_instructions_follow_root_to_scope_order_with_one_aggregate_budget() {
             .iter()
             .map(|entry| (entry.path.as_str(), entry.content.as_str()))
             .collect::<Vec<_>>(),
-        vec![
-            ("AGENTS.md", "root\n"),
-            ("projects/AGENTS.md", "project\n"),
-            ("projects/active/AGENTS.md", ""),
-        ]
+        vec![("AGENTS.md", "root\n"), ("projects/AGENTS.md", "project\n"),]
     );
 
     let half = MAX_WORKSPACE_INSTRUCTIONS_BYTES / 2;

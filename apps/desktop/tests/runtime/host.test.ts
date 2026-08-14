@@ -13,6 +13,7 @@ import { FinishReason } from '@google/genai';
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../../src/shared/model-metadata.ts';
 import {
   isFutureActionOnlyFinal,
+  planSubmissionIssue,
   RuntimeHost,
 } from '../../src/runtime/host.ts';
 import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-input-boundary.ts';
@@ -390,17 +391,36 @@ class SplitPlanAfterUserInputLlm extends BaseLlm {
       };
       return;
     }
+    if (this.requests.length === 3) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-submit-complete-plan',
+              name: 'submit_plan',
+              args: {
+                content:
+                  '# 完整计划\n\n## 一、现状\n\n已完成分析。\n\n## 二、实施\n\n缓存时间为 30 天。',
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
     const ignoredRecovery = this.requests.length === 2;
     const text = ignoredRecovery
       ? '感谢确认。\n\n## 九、最终确认\n\n缓存时间为 30 天。'
-      : '# 完整计划\n\n## 一、现状\n\n已完成分析。\n\n## 二、实施\n\n缓存时间为 30 天。';
+      : '正式计划已提交。';
     yield {
       content: {
         role: 'model',
         parts: [{
           text,
           partMetadata: modelItemMetadata(
-            ignoredRecovery ? 'continued-plan' : 'complete-plan',
+            ignoredRecovery ? 'continued-plan' : 'plan-submitted',
             { phase: 'final', outcome: { kind: 'final' } },
           ),
         }],
@@ -635,6 +655,40 @@ class PersistentToolErrorLlm extends BaseLlm {
   }
 }
 
+class PersistentUnavailableInstructionsLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    const failures = request.contents
+      .flatMap((content) => content.parts ?? [])
+      .filter((part) => part.functionResponse?.name === 'workspace_apply_patch')
+      .length;
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          functionCall: {
+            id: `call-unavailable-instructions-${failures}`,
+            name: 'workspace_apply_patch',
+            args: {
+              patch:
+                '*** Begin Patch\n*** Update File: src/value.ts\n@@\n-old\n+new\n*** End Patch',
+            },
+          },
+        }],
+      },
+      partial: false,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class RecoverAfterPrematureFinalLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
@@ -777,6 +831,15 @@ class FinalAfterInformativeMissingReadLlm extends BaseLlm {
 
 class CollaborationLoopLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
+  private readonly childTools?: Map<string, readonly string[]>;
+
+  constructor(
+    options: ConstructorParameters<typeof BaseLlm>[0],
+    childTools?: Map<string, readonly string[]>,
+  ) {
+    super(options);
+    this.childTools = childTools;
+  }
 
   async *generateContentAsync(request: LlmRequest): AsyncGenerator<LlmResponse, void> {
     const parent = Object.hasOwn(request.toolsDict, 'collaboration_dispatch');
@@ -788,6 +851,10 @@ class CollaborationLoopLlm extends BaseLlm {
       const summary = taskText.includes('Audit')
         ? 'Audit passed.'
         : 'Implementation completed.';
+      this.childTools?.set(
+        taskText.includes('Audit') ? 'auditor' : 'worker',
+        Object.keys(request.toolsDict),
+      );
       yield {
         content: { role: 'model', parts: [{ text: summary }] },
         partial: false,
@@ -815,7 +882,6 @@ class CollaborationLoopLlm extends BaseLlm {
                     clientTaskKey: 'implementation',
                     title: 'Implement fixture',
                     role: 'worker',
-                    access: 'workspaceWrite',
                     dependsOn: [],
                     taskMarkdown: 'Implement the fixture.',
                   },
@@ -823,7 +889,6 @@ class CollaborationLoopLlm extends BaseLlm {
                     clientTaskKey: 'audit',
                     title: 'Audit fixture',
                     role: 'auditor',
-                    access: 'readOnly',
                     dependsOn: ['implementation'],
                     taskMarkdown: 'Audit the fixture.',
                   },
@@ -1101,18 +1166,28 @@ class InspectionFallbackLlm extends BaseLlm {
             args: { path: '.' },
           },
         }]
-        : [{
-          text: '# 完整计划\n\n## 一、实施范围\n\n按已确认需求执行。',
-          partMetadata: modelItemMetadata('complete-plan-after-fallback', {
-            phase: 'final',
-            outcome: { kind: 'final' },
-          }),
-        }];
+        : this.requests.length === 3
+          ? [{
+            functionCall: {
+              id: 'call-submit-plan-after-fallback',
+              name: 'submit_plan',
+              args: {
+                content: '# 完整计划\n\n## 一、实施范围\n\n按已确认需求执行。',
+              },
+            },
+          }]
+          : [{
+            text: '正式计划已提交。',
+            partMetadata: modelItemMetadata('plan-submitted-after-fallback', {
+              phase: 'final',
+              outcome: { kind: 'final' },
+            }),
+          }];
     yield {
       content: { role: 'model', parts },
       partial: false,
-      turnComplete: this.requests.length >= 3,
-      finishReason: this.requests.length >= 3 ? FinishReason.STOP : undefined,
+      turnComplete: this.requests.length >= 4,
+      finishReason: this.requests.length >= 4 ? FinishReason.STOP : undefined,
     };
   }
 
@@ -1133,7 +1208,7 @@ test('future-action-only final detection distinguishes promises from outcomes', 
   assert.equal(isFutureActionOnlyFinal('无法继续：缺少写入权限。'), false);
 });
 
-test('user-input boundary keeps brief progress and collapses a pre-question draft', () => {
+test('user-input boundary keeps brief progress and collapses pre-question deliverables', () => {
   assert.equal(
     userInputBoundaryCommentary(
       '现状已经厘清，还有一个架构决策需要确认。',
@@ -1152,11 +1227,34 @@ test('user-input boundary keeps brief progress and collapses a pre-question draf
   );
   assert.equal(
     userInputBoundaryCommentary(
+      '# 计划\n\n1. 确认：缓存命中时是否收费？',
+      '/plan 设计号码识别 API',
+      ['缓存命中时是否收费？'],
+    ),
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  );
+  assert.equal(
+    userInputBoundaryCommentary(
       '缓存命中时是否收费？',
       '/plan 设计号码识别 API',
       ['缓存命中时是否收费？'],
     ),
     '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  );
+});
+
+test('formal plan validation rejects approval prompts and accepts plan-only content', () => {
+  assert.equal(
+    planSubmissionIssue('# 计划\n\n完成实现与验证。'),
+    undefined,
+  );
+  assert.match(
+    planSubmissionIssue('# 计划\n\n需要我开始实现吗？') ?? '',
+    /question|approval|invitation/u,
+  );
+  assert.match(
+    planSubmissionIssue('# Plan\n\nShould I proceed?') ?? '',
+    /question|approval|invitation/u,
   );
 });
 
@@ -1228,6 +1326,63 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost makes /plan immutable read-only at the tool boundary', async () => {
+  const model = new CaptureLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => turnNativeFixture(),
+    postEvent: (event) => {
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-plan-initialize',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v3-plan-boundary-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-plan-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-plan-fixture',
+    turnId: 'turn-plan-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: '/plan\n\n设计号码识别 API' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for plan Turn.')), 2_000),
+    ),
+  ]);
+
+  const toolNames = Object.keys(model.requests[0]?.toolsDict ?? {});
+  assert.ok(toolNames.includes('request_user_input'));
+  assert.ok(toolNames.includes('submit_plan'));
+  assert.ok(toolNames.includes('workspace_read'));
+  assert.ok(toolNames.includes('workspace_list'));
+  assert.ok(toolNames.includes('workspace_search'));
+  assert.equal(toolNames.includes('workspace_apply_patch'), false);
+  assert.equal(toolNames.includes('shell_exec'), false);
+  assert.equal(toolNames.includes('collaboration_dispatch'), false);
 });
 
 test('RuntimeHost durably seeds a revised user message without appending it twice', async () => {
@@ -1497,9 +1652,8 @@ test('RuntimeHost accepts a complete plan after workspace tools recover a failed
   );
   assert.ok(events.some(
     (event) =>
-      event.type === 'turn.textCompleted' &&
-      event.phase === 'final' &&
-      event.itemId === 'complete-plan-after-fallback',
+      event.type === 'turn.planProposed' &&
+      event.content.startsWith('# 完整计划'),
   ));
 });
 
@@ -1644,6 +1798,12 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
   ]);
 
   assert.equal(model.requests.length, 3);
+  for (const request of model.requests) {
+    const toolNames = Object.keys(request.toolsDict);
+    assert.equal(toolNames.includes('workspace_apply_patch'), false);
+    assert.equal(toolNames.includes('shell_exec'), false);
+    assert.equal(toolNames.includes('collaboration_dispatch'), false);
+  }
   assert.match(
     JSON.stringify(model.requests[1]?.contents),
     /Internal post-question response boundary/u,
@@ -1681,11 +1841,16 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
   ), false);
   assert.ok(events.some(
     (event) =>
-      event.type === 'turn.textCompleted' &&
-      event.phase === 'final' &&
-      event.itemId === 'complete-plan' &&
-      event.text.startsWith('# 完整计划'),
+      event.type === 'turn.planProposed' &&
+      event.content.startsWith('# 完整计划'),
   ));
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' && event.phase === 'final',
+    ),
+    false,
+  );
 });
 
 test('RuntimeHost supports two sequential user-input requests in one Turn', async () => {
@@ -2552,6 +2717,85 @@ test('RuntimeHost stops a third identical execution failure without progress', a
   assert.match(completed?.error?.message ?? '', /three times/u);
 });
 
+test('RuntimeHost stops repeated writes when project instructions are unavailable', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    skillsContextJson: () => '{"skills":[]}',
+    listPendingApprovalsJson: () => '[]',
+    ensureThread: (): void => undefined,
+    loadThreadJson: () => emptyThreadSnapshot('thread-unavailable-instructions'),
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {
+      const scopes = JSON.parse(scopesJson) as string[];
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: [],
+        chains: [],
+        errors: scopes.map((scope) => ({ scope, kind: 'invalidEncoding' })),
+      });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new PersistentUnavailableInstructionsLlm({
+      model: 'fixture-model',
+    }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveTerminal?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-unavailable-instructions',
+    protocolVersion: 4,
+    dataDirectory: '/tmp/sugarcode-v3-unavailable-instructions-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-unavailable-instructions',
+    workspaceId: 'workspace-unavailable-instructions',
+    threadId: 'thread-unavailable-instructions',
+    turnId: 'turn-unavailable-instructions',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '/fix Change src/value.ts.' }],
+  });
+
+  await terminal;
+
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completed?.status, 'failed');
+  assert.equal(completed?.error?.kind, 'protocol');
+  assert.match(completed?.error?.message ?? '', /three times/u);
+  assert.equal(
+    events.filter((event) => event.type === 'approval.requested').length,
+    0,
+  );
+});
+
 test('RuntimeHost retries one premature final after a failed tool result', async () => {
   const events: RuntimeEvent[] = [];
   let readCount = 0;
@@ -2853,17 +3097,27 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   const events: RuntimeEvent[] = [];
   const createdTasks: Array<Record<string, unknown>> = [];
   const updatedStatuses: string[] = [];
+  const childTools = new Map<string, readonly string[]>();
   let resolveCompleted: (() => void) | undefined;
   const completed = new Promise<void>((resolve) => {
     resolveCompleted = resolve;
   });
+  const skillContent = '# Fixture Skill\n\nFollow the fixture review method.';
   const native = {
     inspectMcpConfigJson: () => JSON.stringify({
       contractVersion: 1,
       revision: '0'.repeat(64),
       servers: [],
     }),
-    skillsContextJson: () => '{"skills":[]}',
+    skillsContextJson: () => JSON.stringify({
+      skills: [{
+        name: 'fixture-skill',
+        description: 'Fixture methodology.',
+        content: skillContent,
+        bytes: Buffer.byteLength(skillContent),
+        sha256: createHash('sha256').update(skillContent).digest('hex'),
+      }],
+    }),
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     startTurn: (): void => undefined,
@@ -2886,7 +3140,10 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
     workspaceApplyPatch: async () => '{}',
   } as unknown as NativeRuntimeBinding;
   const host = new RuntimeHost({
-    createModel: () => new CollaborationLoopLlm({ model: 'fixture-model' }),
+    createModel: () => new CollaborationLoopLlm(
+      { model: 'fixture-model' },
+      childTools,
+    ),
     loadNative: () => native,
     postEvent: (event) => {
       events.push(event);
@@ -2943,6 +3200,14 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   );
   assert.ok(implementationCompleted >= 0);
   assert.ok(auditRunning > implementationCompleted);
+  assert.ok(childTools.get('worker')?.includes('workspace_apply_patch'));
+  assert.ok(childTools.get('worker')?.includes('shell_exec'));
+  assert.ok(childTools.get('worker')?.includes('load_skill'));
+  assert.ok(childTools.get('auditor')?.includes('load_skill'));
+  assert.deepEqual(
+    childTools.get('auditor')?.filter((name) => name.startsWith('workspace_')),
+    ['workspace_read', 'workspace_list', 'workspace_search'],
+  );
   assert.equal(events.at(-1)?.type, 'turn.completed');
 });
 
@@ -2982,6 +3247,8 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
+    workspaceInstructionsJson: () =>
+      '{"contractVersion":1,"documents":[],"chains":[{"scope":".","paths":[]}],"errors":[]}',
     ensureThread: () => undefined,
     createThreadJson: () => '{}',
     updateThreadTitleJson: () => '{}',
@@ -3370,6 +3637,8 @@ test('RuntimeHost automatically authorizes a workspace patch', async () => {
     closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
+    workspaceInstructionsJson: () =>
+      '{"contractVersion":1,"documents":[],"chains":[{"scope":".","paths":[]}],"errors":[]}',
     ensureThread: () => undefined,
     createThreadJson: () => '{}',
     updateThreadTitleJson: () => '{}',
@@ -3493,6 +3762,8 @@ test('RuntimeHost automatically authorizes a sandboxed command', async () => {
     closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
+    workspaceInstructionsJson: () =>
+      '{"contractVersion":1,"documents":[],"chains":[{"scope":".","paths":[]}],"errors":[]}',
     ensureThread: () => undefined,
     createThreadJson: () => emptyThreadSnapshot(),
     updateThreadTitleJson: () => emptyThreadSnapshot(),
@@ -3726,6 +3997,8 @@ test('RuntimeHost rebuilds completed history and interrupted task intent into AD
     closeTerminal: () => false,
     cancelOperation: () => false,
     ensureWorkspace: () => undefined,
+    workspaceInstructionsJson: () =>
+      '{"contractVersion":1,"documents":[],"chains":[{"scope":".","paths":[]}],"errors":[]}',
     ensureThread: () => undefined,
     createThreadJson: () => emptyThreadSnapshot(),
     updateThreadTitleJson: () => emptyThreadSnapshot(),

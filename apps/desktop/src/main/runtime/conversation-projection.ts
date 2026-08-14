@@ -364,6 +364,18 @@ export const projectThread = (
           )
           .map((item) => String(item.payload.delta ?? ''))
           .join('');
+    const proposedPlanItem = items.findLast(
+      (item) => item.kind === 'turn.planProposed',
+    );
+    const planProposal =
+      proposedPlanItem &&
+        typeof proposedPlanItem.payload.planId === 'string' &&
+        typeof proposedPlanItem.payload.content === 'string'
+        ? {
+            id: proposedPlanItem.payload.planId,
+            content: proposedPlanItem.payload.content,
+          }
+        : undefined;
     const restoredActivities = interruptPendingUserInputActivities(
       projectTurnActivities(items),
     );
@@ -428,6 +440,7 @@ export const projectThread = (
       status: record.status === 'running' ? 'interrupted' : record.status,
       model,
       messages,
+      ...(planProposal ? { planProposal } : {}),
       ...(activities.length > 0 ? { activities } : {}),
       ...(error ? { error } : {}),
     };

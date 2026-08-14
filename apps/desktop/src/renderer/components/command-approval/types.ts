@@ -27,7 +27,10 @@ export type CommandApprovalStore = Readonly<{
     threadId?: string,
     workspaceId?: string,
   ) => Promise<void>;
-  approve: (request: CommandApprovalRequestViewModel) => Promise<void>;
+  approve: (
+    request: CommandApprovalRequestViewModel,
+    mode?: CommandApprovalMode,
+  ) => Promise<void>;
   deny: (request: CommandApprovalRequestViewModel) => Promise<void>;
 }>;
 

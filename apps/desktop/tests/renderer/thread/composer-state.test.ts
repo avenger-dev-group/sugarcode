@@ -2,12 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canStartConversationTurn,
   canStopTurn,
   canRemoveDraftProject,
+  resolveComposerSurface,
   shouldShowStopControl,
   shouldStartChatOnSend,
   TURN_STOP_SAFETY_DELAY_MS,
 } from '../../../src/renderer/components/thread/composer-state.ts';
+
+test('approval replaces the composer and takes precedence over user questions', () => {
+  assert.equal(resolveComposerSurface(true, false), 'approval');
+  assert.equal(resolveComposerSurface(true, true), 'approval');
+  assert.equal(resolveComposerSurface(false, true), 'userInput');
+  assert.equal(resolveComposerSurface(false, false), 'composer');
+});
 
 test('an unselected workspace starts an independent Chat on first send', () => {
   assert.equal(
@@ -53,6 +62,31 @@ test('an active or selecting workspace keeps its existing destination', () => {
       generation: 3,
       status: 'selecting',
       kind: 'chat',
+    }),
+    false,
+  );
+});
+
+test('a direct plan action can start a Turn without composer content', () => {
+  const readyState = {
+    phase: 'ready' as const,
+    startsChatOnSend: false,
+    hasPendingThreadSelection: false,
+    hasPendingMutation: false,
+    isSending: false,
+    isEditingMessage: false,
+    hasUsableModel: true,
+  };
+
+  assert.equal(canStartConversationTurn(readyState), true);
+  assert.equal(
+    canStartConversationTurn({ ...readyState, isSending: true }),
+    false,
+  );
+  assert.equal(
+    canStartConversationTurn({
+      ...readyState,
+      hasPendingThreadSelection: true,
     }),
     false,
   );

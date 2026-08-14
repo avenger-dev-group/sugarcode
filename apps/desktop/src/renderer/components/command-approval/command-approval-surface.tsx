@@ -1,5 +1,4 @@
 import {
-  Check,
   Clock3,
   FolderCheck,
   FilePenLine,
@@ -8,21 +7,9 @@ import {
   SquareTerminal,
   type LucideIcon,
 } from 'lucide-react';
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/renderer/components/ui/alert-dialog';
 import { Button } from '@/renderer/components/ui/button';
-import { focusWorkspaceTask } from '@/renderer/services/workspace';
-import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
 import {
   Select,
   SelectContent,
@@ -38,6 +25,7 @@ import type {
   CommandApprovalModeControlProps,
   CommandApprovalViewProps,
 } from './types';
+import { commandApprovalDisplayCommand } from './presentation';
 
 const MODE_COPY: Record<
   CommandApprovalMode,
@@ -70,48 +58,11 @@ const MODES: readonly CommandApprovalMode[] = [
   'workspace',
 ];
 
-const PermissionModeOptions = ({
-  selectedMode,
-  onSelect,
-}: Readonly<{
-  selectedMode: CommandApprovalMode;
-  onSelect: (mode: CommandApprovalMode) => void;
-}>) => (
-  <div className="space-y-1.5" role="radiogroup" aria-label="后续授权模式">
-    {MODES.map((mode) => {
-      const copy = MODE_COPY[mode];
-      const Icon = copy.icon;
-      const selected = selectedMode === mode;
-      return (
-        <button
-          key={mode}
-          type="button"
-          role="radio"
-          aria-checked={selected}
-          onClick={() => onSelect(mode)}
-          className={`flex w-full items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-            selected
-              ? 'border-border bg-surface-hover text-foreground'
-              : 'border-transparent text-secondary hover:bg-surface'
-          }`}
-        >
-          <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-full border bg-background">
-            <Icon className="size-3.5" aria-hidden="true" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-medium">{copy.label}</span>
-            <span className="mt-0.5 block text-xs leading-5 text-tertiary">
-              {copy.description}
-            </span>
-          </span>
-          {selected ? (
-            <Check className="mt-1 size-4 shrink-0" aria-hidden="true" />
-          ) : null}
-        </button>
-      );
-    })}
-  </div>
-);
+const APPROVAL_MODE_LABEL: Record<CommandApprovalMode, string> = {
+  ask: '允许一次',
+  thread: '本次会话',
+  workspace: '当前项目',
+};
 
 export const CommandApprovalView = ({
   store,
@@ -136,147 +87,135 @@ export const CommandApprovalView = ({
           ? '正在记录拒绝决定…'
           : `${secondsRemaining} 秒后将默认允许并继续。`;
 
+  useEffect(() => {
+    if (request && canAct) {
+      denyButtonRef.current?.focus();
+    }
+  }, [canAct, request?.presentationId]);
+
+  if (!request) {
+    return null;
+  }
+
   return (
-    <>
-      <AlertDialog
-        open={isApprovalVisibleForThread(
-          request?.threadId,
-          activeThreadId,
-        )}
-      >
-        {request ? (
-          <AlertDialogContent
-            onEscapeKeyDown={(event) => {
-              event.preventDefault();
-              if (canAct) {
-                void store.deny(request);
-              }
-            }}
-            onOpenAutoFocus={(event) => {
-              event.preventDefault();
-              denyButtonRef.current?.focus();
+    <section
+      className="flex max-h-[min(24rem,48vh)] min-h-40 flex-col overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] animate-in fade-in-0 slide-in-from-bottom-1 duration-200 motion-reduce:animate-none"
+      aria-labelledby={`${request.presentationId}:title`}
+      aria-describedby={`${request.presentationId}:description`}
+      aria-busy={isSubmitting}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && canAct) {
+          event.preventDefault();
+          void store.deny(request);
+        }
+      }}
+    >
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2 text-xs text-secondary">
+          {request.operationKind === 'workspacePatch' ? (
+            <FilePenLine className="size-3.5 shrink-0" aria-hidden="true" />
+          ) : (
+            <SquareTerminal className="size-3.5 shrink-0" aria-hidden="true" />
+          )}
+          <span id={`${request.presentationId}:title`} className="truncate">
+            {request.operationKind === 'workspacePatch' ? '文件修改' : '终端'}
+          </span>
+          {request.queueCount > 1 ? (
+            <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] tabular-nums text-tertiary">
+              {request.queueCount} 项待处理
+            </span>
+          ) : null}
+        </div>
+        <span className="inline-flex shrink-0 items-center gap-1 text-[11px] tabular-nums text-tertiary">
+          <Clock3 className="size-3" aria-hidden="true" />
+          {secondsRemaining}s
+        </span>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3">
+        <p
+          id={`${request.presentationId}:description`}
+          className="text-sm font-medium leading-relaxed text-primary"
+        >
+          {request.description}
+        </p>
+        <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface px-3 py-2.5 font-mono text-xs leading-5 text-secondary">
+          {commandApprovalDisplayCommand(request)}
+        </pre>
+      </div>
+
+      <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border-subtle px-3 py-2">
+        <div
+          className="mr-auto min-w-0 flex-1 truncate text-xs text-tertiary"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          {store.actionError ? (
+            <span className="text-destructive" role="alert">
+              {store.actionError}
+            </span>
+          ) : (
+            pendingMessage
+          )}
+        </div>
+        <Button
+          ref={denyButtonRef}
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={!canAct}
+          onClick={() => void store.deny(request)}
+          title="按 Escape 拒绝"
+        >
+          拒绝
+          <kbd className="ml-1 rounded bg-surface px-1 py-0.5 font-sans text-[10px] font-normal text-tertiary">
+            Esc
+          </kbd>
+        </Button>
+        <div className="flex items-center rounded-lg bg-primary text-primary-foreground">
+          <Button
+            type="button"
+            size="sm"
+            className="rounded-r-none border-r border-primary-foreground/20 px-3 hover:bg-primary/80"
+            disabled={!canAct}
+            onClick={() => void store.approve(request)}
+          >
+            {isSubmitting
+              ? '正在授权…'
+              : APPROVAL_MODE_LABEL[store.selectedMode(request)]}
+          </Button>
+          <Select
+            value={store.selectedMode(request)}
+            disabled={!canAct}
+            onValueChange={(value) => {
+              const mode = value as CommandApprovalMode;
+              store.setSelectedMode(request.presentationId, mode);
+              void store.approve(request, mode);
             }}
           >
-            <div className="border-b px-5 py-4 sm:px-6">
-              <AlertDialogHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <AlertDialogTitle>
-                      {request.operationKind === 'workspacePatch'
-                        ? '允许修改项目文件？'
-                        : 'SugarCode 如何执行命令？'}
-                    </AlertDialogTitle>
-                    <AlertDialogDescription className="mt-1">
-                      {request.sourceAgent
-                        ? `由 ${request.sourceAgent.role} Agent ${request.sourceAgent.taskId} 请求。`
-                        : '为当前命令授权，并选择后续授权模式。'}
-                    </AlertDialogDescription>
-                  </div>
-                  <div className="inline-flex shrink-0 items-center gap-1.5 rounded-full border bg-surface px-2.5 py-1 font-mono text-xs font-normal text-secondary">
-                    <Clock3 className="size-3.5" aria-hidden="true" />
-                    {secondsRemaining}s
-                  </div>
-                </div>
-              </AlertDialogHeader>
-            </div>
-
-            <div className="px-5 py-6 sm:px-6">
-              <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border bg-surface px-3 py-2">
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-foreground">
-                    {request.projectTitle} / {request.conversationTitle}
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-tertiary">
-                    {request.queueCount > 1
-                      ? `当前共有 ${request.queueCount} 项待授权，可分别处理`
-                      : '当前任务有 1 项待授权'}
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => void focusWorkspaceTask(request.threadId)}
-                >
-                  查看任务
-                </Button>
-              </div>
-              <div className="rounded-lg border bg-surface px-3 py-2.5">
-                <p className="text-xs leading-5 text-secondary">
-                  {request.description}
-                </p>
-                <div className="mt-2 flex items-center gap-1.5 text-[11px] text-tertiary">
-                  {request.operationKind === 'workspacePatch' ? (
-                    <FilePenLine className="size-3.5" aria-hidden="true" />
-                  ) : (
-                    <SquareTerminal className="size-3.5" aria-hidden="true" />
-                  )}
-                  {request.operationKind === 'workspacePatch'
-                    ? '项目文件修改'
-                    : request.fullAccess
-                      ? 'Full Access Shell'
-                      : '只读禁网沙箱'} · cwd {request.cwd}
-                  {request.platformShell ? ` · ${request.platformShell}` : ''}
-                </div>
-                <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-background px-2.5 py-2 font-mono text-xs leading-5 text-foreground">
-                  {request.command}
-                </pre>
-              </div>
-              <div className="mt-4">
-                <PermissionModeOptions
-                  selectedMode={store.selectedMode(request)}
-                  onSelect={(mode) =>
-                    store.setSelectedMode(request.presentationId, mode)
-                  }
-                />
-              </div>
-              <p className="mt-3 text-xs leading-5 text-tertiary">
-                {request.fullAccess
-                  ? 'Full Access 可访问网络及工作区外文件。完全访问授权仅保存在当前应用会话中，可随时切回请求批准。'
-                  : '项目内原子修改和只读禁网命令会自动执行；高权限操作仍会请求批准。'}
-              </p>
-            </div>
-
-            <AlertDialogFooter className="border-t bg-surface px-5 py-4 sm:items-center sm:px-6">
-              <div
-                className="mr-auto min-h-5 text-xs text-secondary"
-                aria-live="polite"
-                aria-atomic="true"
-              >
-                {store.actionError ? (
-                  <span className="text-destructive" role="alert">
-                    {store.actionError}
+            <SelectTrigger
+              className="h-7 w-8 justify-center gap-0 rounded-l-none border-0 border-l border-primary-foreground/20 bg-primary p-0 text-primary-foreground shadow-none hover:bg-primary/80 focus-visible:ring-primary-foreground/40 [&>svg]:m-0 [&>svg]:size-3.5 [&>svg]:text-primary-foreground"
+              aria-label="选择授权范围"
+              title="选择授权范围"
+            />
+            <SelectContent side="top" align="end" className="w-52">
+              {MODES.map((mode) => (
+                <SelectItem key={mode} value={mode}>
+                  <span className="flex flex-col">
+                    <span className="text-sm text-foreground">
+                      {APPROVAL_MODE_LABEL[mode]}
+                    </span>
+                    <span className="text-[11px] leading-4 text-tertiary">
+                      {MODE_COPY[mode].description}
+                    </span>
                   </span>
-                ) : (
-                  pendingMessage
-                )}
-              </div>
-              <AlertDialogCancel asChild>
-                <Button
-                  ref={denyButtonRef}
-                  type="button"
-                  variant="outline"
-                  disabled={!canAct}
-                  onClick={() => void store.deny(request)}
-                >
-                  拒绝
-                </Button>
-              </AlertDialogCancel>
-              <AlertDialogAction asChild>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  disabled={!canAct}
-                  onClick={() => void store.approve(request)}
-                >
-                  {isSubmitting ? '正在记录授权…' : '允许并继续'}
-                </Button>
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        ) : null}
-      </AlertDialog>
-    </>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </footer>
+    </section>
   );
 };
 

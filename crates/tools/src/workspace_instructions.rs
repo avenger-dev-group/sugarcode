@@ -17,6 +17,8 @@ use std::path::Path;
 use std::path::PathBuf;
 
 pub const WORKSPACE_INSTRUCTIONS_FILE_NAME: &str = "AGENTS.md";
+pub const WORKSPACE_INSTRUCTIONS_FILE_NAMES: [&str; 3] =
+    ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
 pub const MAX_WORKSPACE_INSTRUCTIONS_BYTES: usize = 32 * 1024;
 const WORKSPACE_INSTRUCTIONS_MANIFEST_DOMAIN: &[u8] = b"boundedNestedWorkspaceInstructionsV1\0";
 
@@ -38,6 +40,8 @@ pub enum WorkspaceInstructionsErrorKind {
 pub struct WorkspaceInstructionEntry {
     pub path: String,
     pub content: String,
+    pub bytes: usize,
+    pub sha256: String,
 }
 
 impl std::fmt::Debug for WorkspaceInstructionEntry {
@@ -54,6 +58,7 @@ impl std::fmt::Debug for WorkspaceInstructionEntry {
 pub enum WorkspaceInstructionsSnapshot {
     Absent,
     Present {
+        path: String,
         content: String,
         bytes: usize,
         sha256: String,
@@ -70,8 +75,14 @@ impl std::fmt::Debug for WorkspaceInstructionsSnapshot {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Absent => formatter.write_str("Absent"),
-            Self::Present { bytes, sha256, .. } => formatter
+            Self::Present {
+                path,
+                bytes,
+                sha256,
+                ..
+            } => formatter
                 .debug_struct("Present")
+                .field("path", path)
                 .field("content", &"<redacted>")
                 .field("bytes", bytes)
                 .field("sha256", sha256)
@@ -102,6 +113,7 @@ pub enum WorkspaceScopeInstructionsErrorKind {
 enum CandidateSnapshot {
     Absent,
     Present {
+        file_name: String,
         content: String,
         bytes: usize,
         sha256: String,
@@ -344,34 +356,81 @@ fn load_instruction_candidate<F>(
 where
     F: FnOnce(),
 {
-    let file_name = Path::new(WORKSPACE_INSTRUCTIONS_FILE_NAME);
-    let snapshot = match read_stable_utf8_file_before_reopen(
+    let discovered = discover_instruction_candidate(directory)?;
+    let stable = match &discovered {
+        CandidateSnapshot::Absent => {
+            before_reopen();
+            CandidateSnapshot::Absent
+        }
+        CandidateSnapshot::Present { file_name, .. } => {
+            let snapshot = read_instruction_file(directory, file_name, before_reopen)?;
+            if snapshot.content.trim().is_empty() {
+                CandidateSnapshot::Absent
+            } else {
+                CandidateSnapshot::Present {
+                    file_name: file_name.clone(),
+                    bytes: snapshot.bytes,
+                    content: snapshot.content,
+                    sha256: snapshot.sha256,
+                }
+            }
+        }
+    };
+    if stable != discovered || discover_instruction_candidate(directory)? != stable {
+        return Err(WorkspaceInstructionsErrorKind::ChangedDuringDiscovery);
+    }
+    Ok(stable)
+}
+
+fn discover_instruction_candidate(
+    directory: &Dir,
+) -> Result<CandidateSnapshot, WorkspaceInstructionsErrorKind> {
+    for file_name in WORKSPACE_INSTRUCTIONS_FILE_NAMES {
+        let snapshot = match read_instruction_file(directory, file_name, || {}) {
+            Ok(snapshot) => snapshot,
+            Err(WorkspaceInstructionsErrorKind::Unavailable) => continue,
+            Err(kind) => return Err(kind),
+        };
+        if snapshot.content.trim().is_empty() {
+            continue;
+        }
+        return Ok(CandidateSnapshot::Present {
+            file_name: file_name.to_owned(),
+            bytes: snapshot.bytes,
+            content: snapshot.content,
+            sha256: snapshot.sha256,
+        });
+    }
+    Ok(CandidateSnapshot::Absent)
+}
+
+fn read_instruction_file<F>(
+    directory: &Dir,
+    file_name: &str,
+    before_reopen: F,
+) -> Result<crate::workspace_snapshot::StableUtf8FileSnapshot, WorkspaceInstructionsErrorKind>
+where
+    F: FnOnce(),
+{
+    read_stable_utf8_file_before_reopen(
         directory,
-        file_name,
+        Path::new(file_name),
         MAX_WORKSPACE_INSTRUCTIONS_BYTES,
         before_reopen,
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(StableUtf8FileErrorKind::Read(WorkspaceReadErrorKind::NotFound)) => {
-            return Ok(CandidateSnapshot::Absent);
-        }
-        Err(kind) => return Err(map_stable_file_error(kind)),
-    };
-    Ok(CandidateSnapshot::Present {
-        bytes: snapshot.bytes,
-        content: snapshot.content,
-        sha256: snapshot.sha256,
-    })
+    )
+    .map_err(map_stable_file_error)
 }
 
 fn candidate_into_root_snapshot(candidate: CandidateSnapshot) -> WorkspaceInstructionsSnapshot {
     match candidate {
         CandidateSnapshot::Absent => WorkspaceInstructionsSnapshot::Absent,
         CandidateSnapshot::Present {
+            file_name: path,
             content,
             bytes,
             sha256,
         } => WorkspaceInstructionsSnapshot::Present {
+            path,
             content,
             bytes,
             sha256,
@@ -381,7 +440,7 @@ fn candidate_into_root_snapshot(candidate: CandidateSnapshot) -> WorkspaceInstru
 
 fn instruction_paths(components: &[PathBuf]) -> Vec<String> {
     let mut paths = Vec::with_capacity(components.len() + 1);
-    paths.push(WORKSPACE_INSTRUCTIONS_FILE_NAME.to_string());
+    paths.push(String::new());
     let mut directory = String::new();
     for component in components {
         if !directory.is_empty() {
@@ -392,7 +451,7 @@ fn instruction_paths(components: &[PathBuf]) -> Vec<String> {
                 .to_str()
                 .expect("validated workspace component is UTF-8"),
         );
-        paths.push(format!("{directory}/{WORKSPACE_INSTRUCTIONS_FILE_NAME}"));
+        paths.push(directory.clone());
     }
     paths
 }
@@ -439,17 +498,27 @@ fn hierarchy_snapshot(
         match candidate {
             CandidateSnapshot::Absent => manifest.update([0]),
             CandidateSnapshot::Present {
+                file_name,
                 content,
                 bytes,
                 sha256,
             } => {
+                let path = if path.is_empty() {
+                    file_name
+                } else {
+                    format!("{path}/{file_name}")
+                };
                 present = true;
                 manifest.update([1]);
+                manifest.update((path.len() as u64).to_be_bytes());
+                manifest.update(path.as_bytes());
                 manifest.update((bytes as u64).to_be_bytes());
                 manifest.update(sha256.as_bytes());
                 entries.push(WorkspaceInstructionEntry {
-                    path: path.clone(),
+                    path,
                     content,
+                    bytes,
+                    sha256,
                 });
             }
         }

@@ -218,7 +218,7 @@ export const AboutSettings = () => {
         </section>
 
         <footer className="border-t pt-5 text-xs font-normal leading-relaxed text-tertiary">
-          © {new Date().getFullYear()} Aixvo Link, LLC.
+          © 2026 AixvoLink LLC. All rights reserved.
         </footer>
       </div>
     </>

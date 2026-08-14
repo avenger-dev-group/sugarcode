@@ -17,18 +17,18 @@ import {
   type RuntimeContextCheckpoint,
 } from './context-manager.ts';
 import {
-  hostPlatformInstruction,
-  SUGARCODE_BASE_AGENT_PROMPT_V1,
+  buildAgentInstructions,
 } from './agent-instructions.ts';
 import {
   composerIntentInstruction,
   composerModelText,
+  composerTurnMode,
 } from './composer-intent.ts';
 import {
-  COLLABORATION_AGENT_INSTRUCTION,
   CollaborationCoordinator,
   type AgentTaskExecutionContext,
 } from './collaboration.ts';
+import { WorkspaceInstructionContext } from './workspace-instructions.ts';
 import {
   ProviderAdapterError,
   ProviderErrorCapturePlugin,
@@ -57,6 +57,7 @@ import {
 } from './native.ts';
 import {
   isRuntimeContentPart,
+  MAX_RUNTIME_PLAN_BYTES,
   MAX_RUNTIME_USER_INPUT_OPTIONS,
   MAX_RUNTIME_USER_INPUT_QUESTIONS,
   RUNTIME_PROTOCOL_VERSION,
@@ -114,6 +115,29 @@ const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
 
+const reserveContextTokens = (
+  selection: RuntimeModelSelection,
+  reservedTokens: number,
+): RuntimeModelSelection => {
+  if (reservedTokens <= 0) {
+    return selection;
+  }
+  const safety = Math.max(
+    4_096,
+    Math.ceil(selection.contextWindowTokens * 0.05),
+  );
+  const available = selection.contextWindowTokens -
+    DEFAULT_MAX_OUTPUT_TOKENS - safety;
+  const trigger = selection.compactThresholdTokens ?? Math.min(
+    Math.floor(selection.contextWindowTokens * 0.85),
+    available,
+  );
+  return {
+    ...selection,
+    compactThresholdTokens: Math.max(0, trigger - reservedTokens),
+  };
+};
+
 const INVALID_TOOL_ARGUMENTS_SCHEMA = {
   type: Type.OBJECT,
   properties: {
@@ -155,6 +179,14 @@ const REQUEST_USER_INPUT_SCHEMA = {
     },
   },
   required: ['questions'],
+} satisfies Schema;
+
+const SUBMIT_PLAN_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    content: { type: Type.STRING },
+  },
+  required: ['content'],
 } satisfies Schema;
 
 type RuntimeHostOptions = Readonly<{
@@ -261,6 +293,7 @@ type TurnDriverOptions = Readonly<{
   consumePendingResults?: () => Promise<string | null>;
   completionGate?: () => boolean;
   retryFinalAfterToolFailure?: () => boolean;
+  terminalToolResult?: (event: Event) => boolean;
   validateFinalCandidate?: (candidateText: string) => string | undefined;
   settleFinalCandidate?: (
     accepted: boolean,
@@ -289,6 +322,13 @@ type UserInputFinalGuard = {
   instructionDeliveredFor: number;
 };
 
+type PlanSubmissionGuard = {
+  proposal?: Readonly<{
+    planId: string;
+    content: string;
+  }>;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -297,6 +337,36 @@ const FUTURE_ACTION_PATTERN =
 
 const COMPLETED_OR_BLOCKED_PATTERN =
   /(?:\b(?:completed|finished|implemented|updated|created|wrote|blocked|cannot|failed)\b|(?:已经|已經|成功|完成了|修改了|生成了|创建了|建立了|写入了|寫入了|无法|無法|失败|失敗|阻塞|未能))/iu;
+
+const PLAN_INTERACTIVE_TAIL_PATTERN =
+  /(?:\b(?:should|shall|would|do)\s+i\s+(?:proceed|continue|implement|start|begin)\b|\b(?:let me know|tell me)\s+(?:if|when)\s+(?:you(?:'d| would)?\s+like|i should)\b|(?:是否|要不要|需不需要|需要我|要我|可以开始|可以開始|确认(?:即可)?开始|確認(?:即可)?開始|如需(?:进入|進入|开始|開始|继续|繼續|实施|實施|实现|實現)|请(?:确认|確認|告知|回复|回覆).{0,12}(?:开始|開始|继续|繼續|实施|實施|实现|實現)))[^。.!！\n]{0,48}[?？。.!！]?\s*$/iu;
+
+export const planSubmissionIssue = (value: string): string | undefined => {
+  const text = value.trim();
+  if (text.length === 0) {
+    return 'The submitted plan is empty.';
+  }
+  if (Buffer.byteLength(text, 'utf8') > MAX_RUNTIME_PLAN_BYTES) {
+    return `The submitted plan exceeds ${MAX_RUNTIME_PLAN_BYTES} UTF-8 bytes.`;
+  }
+  if (
+    Array.from(text).some(
+      (character) =>
+        /\p{Cc}/u.test(character) && !['\n', '\r', '\t'].includes(character),
+    )
+  ) {
+    return 'The submitted plan contains unsupported control characters.';
+  }
+  if (PLAN_INTERACTIVE_TAIL_PATTERN.test(text)) {
+    return 'The submitted plan ends with a question, approval request, or invitation to continue.';
+  }
+  return undefined;
+};
+
+const planSubmissionBoundaryCommentary = (languageSource: string): string =>
+  /\p{Script=Han}/u.test(languageSource)
+    ? '计划已经整理完成，正在提交正式计划。'
+    : 'The plan is complete and is being submitted as the formal proposal.';
 
 export const isFutureActionOnlyFinal = (value: string): boolean => {
   const text = value.trim();
@@ -2013,6 +2083,7 @@ export class RuntimeHost {
   private requestUserInputTool = (
     command: TurnExecutionCommand,
     finalGuard: UserInputFinalGuard,
+    planGuard?: PlanSubmissionGuard,
   ): FunctionTool<Schema> =>
     new FunctionTool({
       name: 'request_user_input',
@@ -2020,6 +2091,16 @@ export class RuntimeHost {
         'Pause this Turn and ask the user 1 to 3 concise questions. Each question must provide 2 to 3 mutually exclusive choices. The interface also lets the user enter a custom answer, so do not add an Other option. Do not draft the final answer before this call; after the result, produce a complete standalone final answer rather than continuing earlier text.',
       parameters: REQUEST_USER_INPUT_SCHEMA,
       execute: async (input) => {
+        if (planGuard?.proposal) {
+          return {
+            ok: false,
+            error: {
+              kind: 'planAlreadySubmitted',
+              message:
+                'The formal plan has already been submitted. Do not ask another question in this Turn.',
+            },
+          };
+        }
         const questions = parseUserInputQuestions(input);
         if (!questions) {
           return {
@@ -2068,6 +2149,54 @@ export class RuntimeHost {
         });
         finalGuard.resolvedRequests += 1;
         return submission;
+      },
+    });
+
+  private submitPlanTool = (
+    command: TurnExecutionCommand,
+    guard: PlanSubmissionGuard,
+  ): FunctionTool<Schema> =>
+    new FunctionTool({
+      name: 'submit_plan',
+      description:
+        'Submit the single formal plan for this planning-only Turn. Call only after all blocking questions are resolved. The content must be complete and actionable and must not end with a question, approval request, or invitation to proceed. This records the plan as a dedicated UI item; do not repeat it in the final response.',
+      parameters: SUBMIT_PLAN_SCHEMA,
+      execute: async (input) => {
+        if (guard.proposal) {
+          return {
+            ok: false,
+            error: {
+              kind: 'planAlreadySubmitted',
+              message: 'This Turn already has a submitted formal plan.',
+            },
+          };
+        }
+        const content = isRecord(input) && typeof input.content === 'string'
+          ? input.content.trim()
+          : '';
+        const issue = planSubmissionIssue(content);
+        if (issue) {
+          return {
+            ok: false,
+            error: { kind: 'invalidPlan', message: issue },
+          };
+        }
+        const proposal = { planId: randomUUID(), content };
+        guard.proposal = proposal;
+        this.emit({
+          type: 'turn.planProposed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          ...proposal,
+        });
+        return {
+          ok: true,
+          planId: proposal.planId,
+          message:
+            'The formal plan was recorded. Finish this Turn without repeating it or asking whether to proceed.',
+        };
       },
     });
 
@@ -2258,6 +2387,12 @@ export class RuntimeHost {
           }
           options.onCompletedEvent?.(event);
         }
+        if (options.terminalToolResult?.(event)) {
+          if (event.partial !== false) {
+            options.onCompletedEvent?.(event);
+          }
+          return;
+        }
       }
       if (options.signal.aborted) {
         return;
@@ -2340,7 +2475,8 @@ export class RuntimeHost {
               text:
                 '# Internal continuation after incomplete post-question final\n\n' +
                 `${userInputCandidateIssue} ` +
-                'Rewrite the final answer as one complete, self-contained response from the beginning. ' +
+                'Follow the required structured protocol before finishing; if the issue names a tool, call that tool instead of rewriting the same ordinary final answer. ' +
+                'Otherwise rewrite the final answer as one complete, self-contained response from the beginning. ' +
                 'Include every necessary section instead of continuing prior numbering. ' +
                 'Do not repeat the structured question prompts; incorporate only the resulting decisions where relevant. ' +
                 'Keep all visible text in the language of the original user request.',
@@ -2526,7 +2662,11 @@ export class RuntimeHost {
       if (command.generateTitle) {
         void this.generateTitle(command, resolved, controller.signal);
       }
-      const collaborationTools = this.nativeRuntime
+      const turnMode = composerTurnMode(command.content);
+      const turnAccess = turnMode === 'execute'
+        ? 'workspaceWrite' as const
+        : 'readOnly' as const;
+      const collaborationTools = this.nativeRuntime && turnMode === 'execute'
         ? this.collaboration.toolsForTurn(
             command,
             {
@@ -2578,6 +2718,7 @@ export class RuntimeHost {
         resolvedRequests: 0,
         instructionDeliveredFor: 0,
       };
+      const planSubmissionGuard: PlanSubmissionGuard = {};
       const turnSkills = this.nativeRuntime
         ? createTurnSkills(
             this.nativeRuntime,
@@ -2586,6 +2727,10 @@ export class RuntimeHost {
           )
         : { instruction: '', tools: [] };
       const composerInstruction = composerIntentInstruction(command.content);
+      const workspaceInstructions = this.nativeRuntime
+        ? new WorkspaceInstructionContext(this.nativeRuntime, command.workspaceId)
+        : undefined;
+      workspaceInstructions?.preloadRoot();
       const currentUserContent = this.contentFromParts(
         command.content,
         resolved.selection,
@@ -2596,13 +2741,66 @@ export class RuntimeHost {
         nativeCompaction: false,
       });
       let recoveryCompaction = false;
+      const mainTools = [
+        this.invalidArgumentsTool(invalidArgumentGuard),
+        this.requestUserInputTool(
+          command,
+          userInputFinalGuard,
+          turnMode === 'plan' ? planSubmissionGuard : undefined,
+        ),
+        ...(turnMode === 'plan'
+          ? [this.submitPlanTool(command, planSubmissionGuard)]
+          : []),
+        ...(this.nativeRuntime
+          ? [
+            ...createWorkspaceTools(
+              this.nativeRuntime,
+              command.workspaceId,
+              (toolName, argumentsValue, execute) =>
+                this.runPrivilegedTool(
+                  command,
+                  toolName,
+                  argumentsValue,
+                  execute,
+                ),
+              (operationId, stream, delta) => {
+                this.emit({
+                  type: 'operation.output',
+                  requestId: command.requestId,
+                  workspaceId: command.workspaceId,
+                  threadId: command.threadId,
+                  turnId: command.turnId,
+                  operationId,
+                  stream,
+                  delta,
+                });
+              },
+              turnAccess,
+              workspaceInstructions,
+            ),
+            ...(turnMode === 'execute'
+              ? this.mcp.toolsForTurn((request) =>
+                this.runMcpTool(command, request),
+              )
+              : []),
+            ...turnSkills.tools,
+            ...collaborationTools,
+          ]
+          : []),
+      ];
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
-        instruction:
-          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${hostPlatformInstruction()}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
-          (composerInstruction ? `\n\n${composerInstruction}` : '') +
-          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
+        instruction: buildAgentInstructions({
+          role: 'main',
+          access: turnAccess,
+          turnMode,
+          platform: process.platform,
+          availableTools: mainTools.map((tool) => tool.name),
+          collaborationEnabled: collaborationTools.length > 0,
+          composerInstruction,
+          skillInstruction: turnSkills.instruction,
+        }),
         model: turnModel,
         generateContentConfig: {
           maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
@@ -2630,6 +2828,11 @@ export class RuntimeHost {
                   '# Internal post-question response boundary\n\n' +
                   'The structured user-input request has been resolved. Do not continue or append to any draft emitted before request_user_input. ' +
                   'After any remaining tool work, produce one complete and self-contained final answer from the beginning. ' +
+                  (turnMode === 'plan'
+                    ? 'This Turn remains planning-only: use the answer only to refine the plan and do not implement it. '
+                    : turnMode === 'readOnly'
+                      ? 'This Turn remains read-only and the answer does not authorize workspace changes. '
+                      : '') +
                   'Do not repeat the question prompts in ordinary final-answer text; incorporate the decisions directly where relevant.',
               }],
             });
@@ -2639,8 +2842,9 @@ export class RuntimeHost {
               threadId: command.threadId,
               request,
               currentUserContent,
-              selection: resolved.provider.nativeCompaction && !recoveryCompaction
-                ? {
+              selection: reserveContextTokens(
+                resolved.provider.nativeCompaction && !recoveryCompaction
+                  ? {
                     ...resolved.selection,
                     compactThresholdTokens: Math.min(
                       resolved.selection.contextWindowTokens -
@@ -2656,8 +2860,10 @@ export class RuntimeHost {
                           resolved.selection.contextWindowTokens * 0.05,
                         ),
                     ),
-                  }
-                : resolved.selection,
+                    }
+                  : resolved.selection,
+                workspaceInstructions?.reserveTokens() ?? 0,
+              ),
               summarizer,
               signal: controller.signal,
               ...(recoveryCompaction
@@ -2699,44 +2905,10 @@ export class RuntimeHost {
                 : 'Automatic context compaction failed.',
             });
           }
+          workspaceInstructions?.injectIntoRequest(request, currentUserContent);
           return undefined;
         },
-        tools: [
-          this.invalidArgumentsTool(invalidArgumentGuard),
-          this.requestUserInputTool(command, userInputFinalGuard),
-          ...(this.nativeRuntime
-            ? [
-              ...createWorkspaceTools(
-                this.nativeRuntime,
-                command.workspaceId,
-                (toolName, argumentsValue, execute) =>
-                  this.runPrivilegedTool(
-                    command,
-                    toolName,
-                    argumentsValue,
-                    execute,
-                  ),
-                (operationId, stream, delta) => {
-                  this.emit({
-                    type: 'operation.output',
-                    requestId: command.requestId,
-                    workspaceId: command.workspaceId,
-                    threadId: command.threadId,
-                    turnId: command.turnId,
-                    operationId,
-                    stream,
-                    delta,
-                  });
-                },
-              ),
-              ...this.mcp.toolsForTurn((request) =>
-                this.runMcpTool(command, request),
-              ),
-              ...turnSkills.tools,
-              ...collaborationTools,
-            ]
-            : []),
-        ],
+        tools: mainTools,
       });
       const providerErrorCapture = new ProviderErrorCapturePlugin();
       const runner = new Runner({
@@ -2756,7 +2928,13 @@ export class RuntimeHost {
             signal: controller.signal,
             onEvent: (event, textItems) => {
               this.observeToolProgress(invalidArgumentGuard, event);
-              this.publishAgentEvent(command, resolved.selection, event, textItems);
+              this.publishAgentEvent(
+                command,
+                resolved.selection,
+                event,
+                textItems,
+                turnMode === 'plan',
+              );
             },
             onCompletedEvent: (event) => this.persistModelHistory(command, event),
             consumePendingResults: () =>
@@ -2775,15 +2953,38 @@ export class RuntimeHost {
               !(this.activeOperations.get(command.turnId)?.size),
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
-            validateFinalCandidate: (candidateText) =>
-              userInputFinalGuard.resolvedRequests > 0
+            terminalToolResult: (event) =>
+              turnMode === 'plan' &&
+              (event.content?.parts ?? []).some(
+                (part) =>
+                  part.functionResponse?.name === 'submit_plan' &&
+                  isRecord(part.functionResponse.response) &&
+                  part.functionResponse.response.ok === true,
+              ),
+            validateFinalCandidate: (candidateText) => {
+              if (turnMode === 'plan' && !planSubmissionGuard.proposal) {
+                return 'Planning mode requires the completed plan to be submitted with submit_plan before the Turn can finish.';
+              }
+              const planIssue = turnMode === 'plan'
+                ? planSubmissionIssue(candidateText)
+                : undefined;
+              if (planIssue && candidateText.trim().length > 0) {
+                return planIssue;
+              }
+              return userInputFinalGuard.resolvedRequests > 0
                 ? userInputFinalCandidateIssue(
                     candidateText,
                     userInputFinalGuard.questions,
                   )
-                : undefined,
+                : undefined;
+            },
             settleFinalCandidate: (accepted, textItems) =>
-              this.settleFinalCandidate(command, textItems, accepted),
+              this.settleFinalCandidate(
+                command,
+                textItems,
+                accepted,
+                turnMode === 'plan' && Boolean(planSubmissionGuard.proposal),
+              ),
             takeProviderError: providerErrorCapture.takeCapturedError,
             validateInvocation: () =>
               this.assertInvalidArgumentProgress(invalidArgumentGuard),
@@ -3110,6 +3311,10 @@ export class RuntimeHost {
           }
         }
       };
+      const workspaceInstructions = this.nativeRuntime
+        ? new WorkspaceInstructionContext(this.nativeRuntime, command.workspaceId)
+        : undefined;
+      workspaceInstructions?.preloadRoot();
       const tools = this.nativeRuntime
         ? [
             ...createWorkspaceTools(
@@ -3137,10 +3342,13 @@ export class RuntimeHost {
                 });
               },
               context.task.access,
+              workspaceInstructions,
             ),
-            ...this.mcp.toolsForTurn((request) =>
-              runWithApprovalState(() => this.runMcpTool(command, request)),
-            ),
+            ...(context.task.role === 'worker'
+              ? this.mcp.toolsForTurn((request) =>
+                runWithApprovalState(() => this.runMcpTool(command, request))
+              )
+              : []),
           ]
         : [];
       const invalidArgumentGuard: InvalidArgumentGuard = {
@@ -3156,24 +3364,27 @@ export class RuntimeHost {
             command.content,
           )
         : { instruction: '', tools: [] };
+      const agentTools = [
+        this.invalidArgumentsTool(invalidArgumentGuard),
+        ...tools,
+        ...turnSkills.tools,
+      ];
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
         description: `${context.task.role} subagent for ${context.task.title}`,
-        instruction:
-          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${hostPlatformInstruction()}\n\n` +
-          `# Subagent boundary\n\n` +
-          `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
-          `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.` +
-          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
+        instruction: buildAgentInstructions({
+          role: context.task.role,
+          access: context.task.access,
+          platform: process.platform,
+          availableTools: agentTools.map((tool) => tool.name),
+          collaborationEnabled: false,
+          skillInstruction: turnSkills.instruction,
+        }),
         model: this.createModel(resolved.provider),
         generateContentConfig: {
           maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
         },
-        tools: [
-          this.invalidArgumentsTool(invalidArgumentGuard),
-          ...tools,
-          ...turnSkills.tools,
-        ],
+        tools: agentTools,
         includeContents: 'none',
         beforeModelCallback: ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
@@ -3185,6 +3396,7 @@ export class RuntimeHost {
               parts: [{ text: repeatedFailureRecovery }],
             });
           }
+          workspaceInstructions?.injectIntoRequest(request);
           publishProgress(
             'waitingForModel',
             streamedSummary || completedSummary
@@ -3311,12 +3523,16 @@ export class RuntimeHost {
     selection: RuntimeModelSelection,
     event: Event,
     textItems: Map<string, TextItemState>,
+    bufferProvisional = false,
   ): void => {
     const parts = event.content?.parts ?? [];
     this.publishNativeCompaction(command, selection, event, parts);
     const hasVisibleModelText = parts.some(isVisibleModelTextPart);
     const hasUserInputCall = parts.some(
       (part) => part.functionCall?.name === 'request_user_input',
+    );
+    const hasPlanSubmissionCall = parts.some(
+      (part) => part.functionCall?.name === 'submit_plan',
     );
     const userInputQuestions = parts.flatMap((part) => {
       if (part.functionCall?.name !== 'request_user_input') return [];
@@ -3359,6 +3575,7 @@ export class RuntimeHost {
           const outcome = metadata?.outcome ??
             readModelStepOutcome(event.content?.parts ?? []);
           const completedPhase = hasUserInputCall ||
+              hasPlanSubmissionCall ||
               part.thought ||
               initialPhase === 'commentary' ||
               outcome?.kind !== 'final'
@@ -3370,6 +3587,8 @@ export class RuntimeHost {
                 userText,
                 userInputQuestions.map((question) => question.question),
               )
+            : hasPlanSubmissionCall
+              ? planSubmissionBoundaryCommentary(userText)
             : part.text;
           if (
             state.completed &&
@@ -3397,16 +3616,18 @@ export class RuntimeHost {
           }
         } else {
           state.text += part.text;
-          this.emitTransient({
-            type: 'turn.textDelta',
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            itemId,
-            phase: initialPhase,
-            delta: part.text,
-          });
+          if (!(bufferProvisional && initialPhase === 'provisional')) {
+            this.emitTransient({
+              type: 'turn.textDelta',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              itemId,
+              phase: initialPhase,
+              delta: part.text,
+            });
+          }
         }
         textItems.set(itemId, state);
       }
@@ -3574,12 +3795,13 @@ export class RuntimeHost {
     command: TurnExecutionCommand,
     textItems: Map<string, TextItemState>,
     accepted: boolean,
+    suppressFinal = false,
   ): void => {
     for (const [itemId, state] of textItems) {
       if (!state.pendingFinal) {
         continue;
       }
-      state.phase = accepted ? 'final' : 'commentary';
+      state.phase = accepted && !suppressFinal ? 'final' : 'commentary';
       state.pendingFinal = false;
       state.completed = true;
       this.emit({

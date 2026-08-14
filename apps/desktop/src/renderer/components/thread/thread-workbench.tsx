@@ -14,6 +14,7 @@ import {
 import { memo, useRef } from 'react';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
+import { AgentMarkdown } from '@/renderer/components/agent/agent-markdown';
 import { AgentMessage } from '@/renderer/components/agent/agent-message';
 import { CommandApprovalActivity } from '@/renderer/components/agent/command-approval-activity';
 import { ComposerInput } from '@/renderer/components/composer/composer-input';
@@ -57,8 +58,12 @@ import type {
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
-import { canRemoveDraftProject } from './composer-state';
+import {
+  canRemoveDraftProject,
+  resolveComposerSurface,
+} from './composer-state';
 import { ContextCompactionActivity } from './context-compaction-activity';
+import { ActiveTurnStatus } from './active-turn-status';
 import { resolveConversationTitle } from './conversation-title';
 import { EmptyThreadState } from './empty-thread-state';
 import { ProcessActivityGroup } from './process-activity-group';
@@ -105,6 +110,50 @@ const TranscriptMessage = (props: TranscriptMessageProps) =>
   ) : (
     <UserMessage {...props} entry={props.entry} />
   );
+
+const PlanProposal = ({
+  turnId,
+  content,
+  actionable,
+  onImplement,
+  onRefine,
+}: Readonly<{
+  turnId: string;
+  content: string;
+  actionable: boolean;
+  onImplement: ThreadWorkbenchViewProps['store']['implementPlan'];
+  onRefine: ThreadWorkbenchViewProps['store']['refinePlan'];
+}>) => (
+  <article
+    className="rounded-2xl border border-border/80 bg-card/60 px-5 py-4 shadow-sm"
+    aria-label="正式计划"
+  >
+    <div className="mb-3 flex items-center gap-2">
+      <FileText className="size-4 text-process" aria-hidden="true" />
+      <span className="text-xs font-medium text-secondary">正式计划</span>
+    </div>
+    <AgentMarkdown source={content} isStreaming={false} />
+    {actionable ? (
+      <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-border/70 pt-3">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => onRefine(turnId)}
+        >
+          继续完善
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => void onImplement(turnId)}
+        >
+          实现此计划
+        </Button>
+      </div>
+    ) : null}
+  </article>
+);
 
 const TurnActivity = ({
   entry,
@@ -229,6 +278,9 @@ const TranscriptTurnView = ({
   onSetMessageEditDraft,
   onCancelMessageEdit,
   onSubmitMessageEdit,
+  planActionable,
+  onImplementPlan,
+  onRefinePlan,
 }: TranscriptTurnProps) => (
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
@@ -298,6 +350,15 @@ const TranscriptTurnView = ({
       {turn.pendingAgentOutputs?.map((output) => (
         <AgentMessage key={output.id} message={output} />
       ))}
+      {turn.planProposal ? (
+        <PlanProposal
+          turnId={turn.id}
+          content={turn.planProposal.content}
+          actionable={planActionable}
+          onImplement={onImplementPlan}
+          onRefine={onRefinePlan}
+        />
+      ) : null}
       {turn.messages
         .filter((entry) => entry.role === 'agent')
         .map((entry) => (
@@ -310,35 +371,8 @@ const TranscriptTurnView = ({
           language={turn.processLanguage}
         />
       ) : null}
-      {turn.status === 'inProgress' &&
-      !turn.pendingAgentOutputs?.length &&
-      !turn.activities?.length &&
-      !turn.userInputRequest ? (
-        <div
-          className="flex items-start gap-2 text-sm font-normal text-process"
-          role="status"
-          aria-live="polite"
-        >
-          {progress?.state === 'uncertain' ? (
-            <CircleAlert className="mt-0.5 size-3.5" aria-hidden="true" />
-          ) : null}
-          <div className="min-w-0">
-            <p
-              className={
-                progress?.state === 'uncertain'
-                  ? undefined
-                  : 'agent-status-shimmer'
-              }
-            >
-              {progress?.label ?? '思考中'}
-            </p>
-            {progress?.detail ? (
-              <p className="mt-1 max-w-xl text-xs leading-normal text-secondary">
-                {progress.detail}
-              </p>
-            ) : null}
-          </div>
-        </div>
+      {turn.status === 'inProgress' && progress ? (
+        <ActiveTurnStatus progress={progress} language={turn.processLanguage} />
       ) : null}
       {turn.failure ? (
         <p
@@ -423,6 +457,7 @@ export const ThreadWorkbenchView = ({
   navigationFooter,
   contextRail,
   permissionControl,
+  approvalSurface,
   approvalThreadIds = [],
 }: ThreadWorkbenchViewProps) => {
   const agentTaskActivity = currentOrchestrationActivity(store);
@@ -456,6 +491,10 @@ export const ThreadWorkbenchView = ({
   const pendingThreadId = store.navigator.pendingThreadId;
   const userInputTurn = store.thread.turns.findLast(
     (turn) => turn.userInputRequest !== undefined,
+  );
+  const composerSurface = resolveComposerSurface(
+    Boolean(approvalSurface),
+    Boolean(userInputTurn?.userInputRequest),
   );
   const selectionError = pendingThreadId
     ? store.navigator.selectionNotice
@@ -627,6 +666,14 @@ export const ThreadWorkbenchView = ({
                     onSetMessageEditDraft={store.setMessageEditDraft}
                     onCancelMessageEdit={store.cancelMessageEdit}
                     onSubmitMessageEdit={store.submitMessageEdit}
+                    planActionable={
+                      index === store.thread.turns.length - 1 &&
+                      turn.status === 'completed' &&
+                      store.thread.phase === 'ready' &&
+                      !store.isSending
+                    }
+                    onImplementPlan={store.implementPlan}
+                    onRefinePlan={store.refinePlan}
                   />
                 ))}
               </div>
@@ -661,7 +708,10 @@ export const ThreadWorkbenchView = ({
                 {store.actionError ?? store.thread.notice ?? workspace.error}
               </p>
             )}
-            {userInputTurn?.userInputRequest ? (
+            {composerSurface === 'approval' ? (
+              approvalSurface
+            ) : composerSurface === 'userInput' &&
+              userInputTurn?.userInputRequest ? (
               <UserInputSurface
                 turnId={userInputTurn.id}
                 request={userInputTurn.userInputRequest}

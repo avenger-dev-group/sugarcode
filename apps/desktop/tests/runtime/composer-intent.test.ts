@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   composerIntentInstruction,
   composerModelText,
+  composerTurnMode,
 } from '../../src/runtime/composer-intent.ts';
 
 test('composer selections become explicit command, Skill, and file instructions', () => {
@@ -38,5 +39,24 @@ test('ordinary messages add no Composer control instruction', () => {
   assert.equal(
     composerIntentInstruction([{ type: 'text', text: '解释这段代码' }]),
     '',
+  );
+});
+
+test('Composer commands derive an immutable execution mode with plan taking precedence', () => {
+  assert.equal(
+    composerTurnMode([{ type: 'text', text: '/plan\n\n设计 API' }]),
+    'plan',
+  );
+  assert.equal(
+    composerTurnMode([{ type: 'text', text: '/review\n\n检查改动' }]),
+    'readOnly',
+  );
+  assert.equal(
+    composerTurnMode([{ type: 'text', text: '/fix\n\n修复问题' }]),
+    'execute',
+  );
+  assert.equal(
+    composerTurnMode([{ type: 'text', text: '/fix\n/plan\n\n先制定计划' }]),
+    'plan',
   );
 });

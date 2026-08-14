@@ -1116,6 +1116,16 @@ export class RuntimeConversationController {
         }
         break;
       }
+      case 'turn.planProposed': {
+        turns[index] = {
+          ...turn,
+          planProposal: {
+            id: event.planId,
+            content: event.content,
+          },
+        };
+        break;
+      }
       case 'turn.toolCall': {
         const activities = [...(turn.activities ?? [])];
         appendToolCallActivity(

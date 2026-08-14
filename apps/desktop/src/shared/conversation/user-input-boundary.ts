@@ -12,12 +12,11 @@ export const userInputBoundaryCommentary = (
   const repeatsQuestion = questionPrompts.some(
     (question) => question.length > 0 && text.includes(question),
   );
-  if (
-    text.length <= USER_INPUT_COMMENTARY_MAX_CHARACTERS &&
-    lines.length <= 6 &&
-    !STRUCTURED_DELIVERABLE_PATTERN.test(text) &&
-    !repeatsQuestion
-  ) {
+  const looksLikeDraftDeliverable =
+    STRUCTURED_DELIVERABLE_PATTERN.test(text) ||
+    text.length > USER_INPUT_COMMENTARY_MAX_CHARACTERS ||
+    lines.length > 6;
+  if (!repeatsQuestion && !looksLikeDraftDeliverable) {
     return text;
   }
 

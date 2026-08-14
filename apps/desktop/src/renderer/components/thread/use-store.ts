@@ -89,6 +89,7 @@ import {
 } from './model-selection';
 import { useMessageEditor } from './use-message-editor';
 import {
+  canStartConversationTurn,
   canStopTurn,
   shouldShowStopControl,
   shouldStartChatOnSend,
@@ -495,6 +496,12 @@ export const toThreadViewModel = (
       JSON.stringify(nextUserInputRequest)
         ? previousTurn?.userInputRequest
         : nextUserInputRequest;
+    const planProposal =
+      turn.planProposal &&
+        previousTurn?.planProposal?.id === turn.planProposal.id &&
+        previousTurn.planProposal.content === turn.planProposal.content
+        ? previousTurn.planProposal
+        : turn.planProposal;
     const nextWorkspaceRead = turn.workspaceRead
       ? (() => {
           const state = toWorkspaceReadPresentationState(
@@ -1003,6 +1010,7 @@ export const toThreadViewModel = (
       previousTurn.commandApproval === commandApproval &&
       previousTurn.mcpActivities === mcpActivities &&
       previousTurn.userInputRequest === userInputRequest &&
+      previousTurn.planProposal === planProposal &&
       previousTurn.terminalLabel === terminalLabel &&
       previousTurn.failure === failure &&
       previousTurn.isError === isError
@@ -1028,6 +1036,7 @@ export const toThreadViewModel = (
       ...(userInputRequest
         ? { userInputRequest }
         : {}),
+      ...(planProposal ? { planProposal } : {}),
       ...(terminalLabel ? { terminalLabel } : {}),
       ...(failure ? { failure } : {}),
       isError,
@@ -1361,6 +1370,7 @@ export const useStore = (): ThreadStore => {
     setDraft(saved?.draft ?? '');
     setAttachments(saved ? [...saved.attachments] : []);
     setPendingModelProfileId(null);
+    setActionError(null);
   }, [snapshot.threadId]);
 
   useEffect(() => {
@@ -1418,17 +1428,7 @@ export const useStore = (): ThreadStore => {
     0,
   );
   const startsChatOnSend = shouldStartChatOnSend(workspaceSnapshot);
-  const phaseAllowsSend =
-    snapshot.phase === 'idle' ||
-    snapshot.phase === 'ready' ||
-    startsChatOnSend;
-  const canSend =
-    phaseAllowsSend &&
-    !snapshot.navigator.pendingThreadId &&
-    !snapshot.navigator.pendingMutation &&
-    !isSending &&
-    !messageEditing.active &&
-    (draft.trim().length > 0 || attachments.length > 0) &&
+  const hasUsableSelectedModel =
     selectedModelProfileId.length > 0 &&
     Boolean(
       modelInspection?.config?.profiles.some(
@@ -1441,6 +1441,18 @@ export const useStore = (): ThreadStore => {
           ),
       ),
     );
+  const canStartTurn = canStartConversationTurn({
+    phase: snapshot.phase,
+    startsChatOnSend,
+    hasPendingThreadSelection: Boolean(snapshot.navigator.pendingThreadId),
+    hasPendingMutation: Boolean(snapshot.navigator.pendingMutation),
+    isSending,
+    isEditingMessage: messageEditing.active,
+    hasUsableModel: hasUsableSelectedModel,
+  });
+  const canSend =
+    canStartTurn &&
+    (draft.trim().length > 0 || attachments.length > 0);
   const showStopControl = shouldShowStopControl(snapshot.phase, isSending);
   const canStop = canStopTurn(
     snapshot.phase,
@@ -1594,6 +1606,46 @@ export const useStore = (): ThreadStore => {
       setActionError('回答未能安全提交，请重试。');
       return false;
     }
+  };
+
+  const implementPlan = async (turnId: string): Promise<void> => {
+    const latestTurn = snapshot.turns.at(-1);
+    if (
+      !canStartTurn ||
+      sendInFlight.current ||
+      latestTurn?.id !== turnId ||
+      !latestTurn.planProposal
+    ) {
+      setActionError('该计划当前无法开始实施。');
+      return;
+    }
+    sendInFlight.current = true;
+    setIsSending(true);
+    setActionError(null);
+    try {
+      const result = await sendConversationMessage({
+        input: '实施此计划',
+        modelProfileId: selectedModelProfileId,
+      });
+      if (!result.accepted) {
+        setActionError('无法开始实施该计划，请重试。');
+      }
+    } catch {
+      setActionError('无法开始实施该计划，请重试。');
+    } finally {
+      sendInFlight.current = false;
+      setIsSending(false);
+    }
+  };
+
+  const refinePlan = (turnId: string): void => {
+    const latestTurn = snapshot.turns.at(-1);
+    if (latestTurn?.id !== turnId || !latestTurn.planProposal) {
+      setActionError('只能继续完善最新的计划。');
+      return;
+    }
+    setActionError(null);
+    setDraft('/plan\n\n请继续完善上一轮计划：');
   };
 
   const selectThread = async (threadId: string): Promise<void> => {
@@ -1785,6 +1837,11 @@ export const useStore = (): ThreadStore => {
         activeTurnView.id,
         snapshot.phase,
         activeTurnOperationProgress(activeTurnView),
+        activeTurnView.pendingAgentOutputs?.length
+          ? 'composing'
+          : activeTurnView.activities?.length
+            ? 'continuing'
+            : 'thinking',
       )
     : null;
 
@@ -1844,5 +1901,7 @@ export const useStore = (): ThreadStore => {
     send,
     stop,
     respondToUserInput,
+    implementPlan,
+    refinePlan,
   };
 };

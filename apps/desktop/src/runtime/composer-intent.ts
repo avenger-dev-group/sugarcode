@@ -1,6 +1,8 @@
 import { parseComposerSubmission } from '../shared/composer.ts';
 import type { RuntimeContentPart } from './protocol.ts';
 
+export type ComposerTurnMode = 'plan' | 'readOnly' | 'execute';
+
 const COMMAND_INTENT: Readonly<Record<string, string>> = {
   plan: 'Analyze the request and code, then provide an actionable plan without modifying files.',
   review: 'Review the current workspace changes and prioritize defects, risks, and missing tests.',
@@ -9,6 +11,33 @@ const COMMAND_INTENT: Readonly<Record<string, string>> = {
   explain: 'Explain the specified code, files, or behavior and identify the important locations.',
   init: 'Analyze the repository and create or improve its AGENTS.md guidance.',
   compact: 'Compact the active conversation context while preserving the requested focus.',
+};
+
+const READ_ONLY_COMMANDS = new Set(['review', 'explain', 'compact']);
+const EXECUTE_COMMANDS = new Set(['fix', 'test', 'init']);
+
+export const composerTurnMode = (
+  content: readonly RuntimeContentPart[],
+): ComposerTurnMode => {
+  const commands = content.flatMap((part) =>
+    part.type === 'text'
+      ? parseComposerSubmission(part.text).references
+          .filter((reference) => reference.kind === 'command')
+          .map((reference) => reference.target)
+      : [],
+  );
+  // Planning is the safest interpretation of conflicting Composer commands and
+  // must never be elevated by another selection or a later tool response.
+  if (commands.includes('plan')) {
+    return 'plan';
+  }
+  if (commands.some((command) => READ_ONLY_COMMANDS.has(command))) {
+    return 'readOnly';
+  }
+  if (commands.some((command) => EXECUTE_COMMANDS.has(command))) {
+    return 'execute';
+  }
+  return 'execute';
 };
 
 export const composerModelText = (value: string): string => {

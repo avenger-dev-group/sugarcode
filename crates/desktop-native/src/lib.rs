@@ -2,6 +2,7 @@ mod persistence;
 mod skills;
 
 use base64::Engine;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -26,6 +27,7 @@ use sugarcode_tools::GitDiffSource;
 use sugarcode_tools::GitErrorKind;
 use sugarcode_tools::GitMutationArguments;
 use sugarcode_tools::GitRepositoryState;
+use sugarcode_tools::MAX_WORKSPACE_INSTRUCTIONS_BYTES;
 use sugarcode_tools::ShellCommandArguments;
 use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
@@ -38,12 +40,15 @@ use sugarcode_tools::WorkspaceChangeSetPrepareOutcome;
 use sugarcode_tools::WorkspaceInspectArguments;
 use sugarcode_tools::WorkspaceInspectErrorKind;
 use sugarcode_tools::WorkspaceInspectOutcome;
+use sugarcode_tools::WorkspaceInstructionsErrorKind;
+use sugarcode_tools::WorkspaceInstructionsSnapshot;
 use sugarcode_tools::WorkspaceListArguments;
 use sugarcode_tools::WorkspaceListEntryKind;
 use sugarcode_tools::WorkspaceListOutcome;
 use sugarcode_tools::WorkspaceReadArguments;
 use sugarcode_tools::WorkspaceReadErrorKind;
 use sugarcode_tools::WorkspaceReadOutcome;
+use sugarcode_tools::WorkspaceScopeInstructionsErrorKind;
 use sugarcode_tools::WorkspaceSearchArguments;
 use sugarcode_tools::WorkspaceSearchMode;
 use sugarcode_tools::WorkspaceSearchOutcome;
@@ -466,6 +471,93 @@ impl NativeRuntime {
             .map_err(|_| Error::from_reason("Native workspace lock was poisoned."))?
             .insert(workspace_id, workspace);
         Ok(())
+    }
+
+    #[napi]
+    pub fn workspace_instructions_json(
+        &self,
+        workspace_id: String,
+        scopes_json: String,
+    ) -> Result<String> {
+        let workspace = self.workspace(&workspace_id)?;
+        let scopes: Vec<String> = serde_json::from_str(&scopes_json).map_err(|_| {
+            Error::from_reason("Workspace instruction scopes must be a JSON string array.")
+        })?;
+        if scopes.len() > 64 || scopes.iter().any(|scope| scope.len() > 4_096) {
+            return Err(Error::from_reason(
+                "Workspace instruction scopes exceed the bounded request.",
+            ));
+        }
+        let mut documents = BTreeMap::<String, serde_json::Value>::new();
+        let mut chains = Vec::with_capacity(scopes.len());
+        let mut errors = Vec::new();
+        for requested_scope in scopes {
+            match nearest_instruction_snapshot(&workspace, &requested_scope) {
+                Ok(snapshot) => {
+                    let mut paths = Vec::new();
+                    match snapshot {
+                        WorkspaceInstructionsSnapshot::Absent => {}
+                        WorkspaceInstructionsSnapshot::Present {
+                            path,
+                            content,
+                            bytes,
+                            sha256,
+                        } => {
+                            paths.push(path.clone());
+                            documents.insert(
+                                path.clone(),
+                                json!({
+                                    "path": path,
+                                    "scope": instruction_scope(&paths[0]),
+                                    "content": content,
+                                    "bytes": bytes,
+                                    "sha256": sha256,
+                                }),
+                            );
+                        }
+                        WorkspaceInstructionsSnapshot::Hierarchy { entries, .. } => {
+                            for entry in entries {
+                                paths.push(entry.path.clone());
+                                documents.insert(entry.path.clone(), json!({
+                                    "path": entry.path,
+                                    "scope": instruction_scope(paths.last().expect("path was pushed")),
+                                    "content": entry.content,
+                                    "bytes": entry.bytes,
+                                    "sha256": entry.sha256,
+                                }));
+                            }
+                        }
+                    }
+                    chains.push(json!({ "scope": requested_scope, "paths": paths }));
+                }
+                Err(kind) => errors.push(json!({
+                    "scope": requested_scope,
+                    "kind": instruction_error_code(kind),
+                })),
+            }
+        }
+        let aggregate_bytes = documents
+            .values()
+            .filter_map(|document| document.get("bytes").and_then(serde_json::Value::as_u64))
+            .sum::<u64>();
+        if aggregate_bytes > MAX_WORKSPACE_INSTRUCTIONS_BYTES as u64 {
+            errors.extend(chains.iter().filter_map(|chain| {
+                chain.get("scope").cloned().map(|scope| {
+                    json!({
+                        "scope": scope,
+                        "kind": "aggregateTooLarge",
+                    })
+                })
+            }));
+            documents.clear();
+            chains.clear();
+        }
+        json_string(json!({
+            "contractVersion": 1,
+            "documents": documents.into_values().collect::<Vec<_>>(),
+            "chains": chains,
+            "errors": errors,
+        }))
     }
 
     #[napi]
@@ -1145,6 +1237,80 @@ impl NativeRuntime {
             .lock()
             .map_err(|_| Error::from_reason("Native runtime database lock was poisoned."))?;
         operation(&mut store).map_err(native_error)
+    }
+}
+
+fn nearest_instruction_snapshot(
+    workspace: &WorkspaceTool,
+    requested_scope: &str,
+) -> std::result::Result<WorkspaceInstructionsSnapshot, WorkspaceInstructionsErrorKind> {
+    let mut scope = if requested_scope.is_empty() {
+        ".".to_owned()
+    } else {
+        requested_scope.replace('\\', "/")
+    };
+    loop {
+        match workspace.derive_scope_with_instructions(&scope) {
+            Ok((_, snapshot)) => return Ok(snapshot),
+            Err(WorkspaceScopeInstructionsErrorKind::Instructions(kind)) => return Err(kind),
+            Err(WorkspaceScopeInstructionsErrorKind::Scope(WorkspaceReadErrorKind::NotFound)) => {
+                if scope == "." {
+                    return Err(WorkspaceInstructionsErrorKind::Unavailable);
+                }
+                scope = scope
+                    .rsplit_once('/')
+                    .map(|(parent, _)| if parent.is_empty() { "." } else { parent })
+                    .unwrap_or(".")
+                    .to_owned();
+            }
+            Err(WorkspaceScopeInstructionsErrorKind::Scope(kind)) => {
+                return Err(match kind {
+                    WorkspaceReadErrorKind::AccessDenied => {
+                        WorkspaceInstructionsErrorKind::AccessDenied
+                    }
+                    WorkspaceReadErrorKind::PathNotAllowed => {
+                        WorkspaceInstructionsErrorKind::PathNotAllowed
+                    }
+                    WorkspaceReadErrorKind::NotRegularFile => {
+                        WorkspaceInstructionsErrorKind::NotRegularFile
+                    }
+                    WorkspaceReadErrorKind::FileTooLarge => {
+                        WorkspaceInstructionsErrorKind::FileTooLarge
+                    }
+                    WorkspaceReadErrorKind::BinaryFile => {
+                        WorkspaceInstructionsErrorKind::InvalidEncoding
+                    }
+                    WorkspaceReadErrorKind::ChangedDuringRead => {
+                        WorkspaceInstructionsErrorKind::ChangedDuringRead
+                    }
+                    WorkspaceReadErrorKind::InvalidPath
+                    | WorkspaceReadErrorKind::NotFound
+                    | WorkspaceReadErrorKind::Cancelled
+                    | WorkspaceReadErrorKind::Unavailable => {
+                        WorkspaceInstructionsErrorKind::Unavailable
+                    }
+                });
+            }
+        }
+    }
+}
+
+fn instruction_scope(path: &str) -> &str {
+    path.rsplit_once('/').map(|(scope, _)| scope).unwrap_or(".")
+}
+
+const fn instruction_error_code(kind: WorkspaceInstructionsErrorKind) -> &'static str {
+    match kind {
+        WorkspaceInstructionsErrorKind::AccessDenied => "accessDenied",
+        WorkspaceInstructionsErrorKind::PathNotAllowed => "pathNotAllowed",
+        WorkspaceInstructionsErrorKind::NotRegularFile => "notRegularFile",
+        WorkspaceInstructionsErrorKind::HardLinkNotAllowed => "hardLinkNotAllowed",
+        WorkspaceInstructionsErrorKind::FileTooLarge => "fileTooLarge",
+        WorkspaceInstructionsErrorKind::InvalidEncoding => "invalidEncoding",
+        WorkspaceInstructionsErrorKind::ChangedDuringRead => "changedDuringRead",
+        WorkspaceInstructionsErrorKind::ChangedDuringDiscovery => "changedDuringDiscovery",
+        WorkspaceInstructionsErrorKind::AggregateTooLarge => "aggregateTooLarge",
+        WorkspaceInstructionsErrorKind::Unavailable => "unavailable",
     }
 }
 

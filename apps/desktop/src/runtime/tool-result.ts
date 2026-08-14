@@ -56,6 +56,9 @@ export const toolResultFailed = (value: unknown): boolean => {
   if (!isRecord(value)) {
     return false;
   }
+  if (value.error === 'workspaceInstructionsRequired') {
+    return false;
+  }
   if (
     value.ok === false ||
     value.status === 'error' ||

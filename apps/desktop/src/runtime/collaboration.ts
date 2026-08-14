@@ -13,12 +13,11 @@ const MAX_TASK_MARKDOWN_BYTES = 64 * 1024;
 const MAX_AMENDMENT_BYTES = 16 * 1024;
 const MAX_TOTAL_AMENDMENT_BYTES = 64 * 1024;
 
-export const COLLABORATION_AGENT_INSTRUCTION = `# Multi-Agent coordination
-
-For complex work that materially benefits from independent exploration, implementation, or review, use the collaboration tools to create a bounded task DAG. Dispatch only genuinely independent work. Every task brief must name a concrete responsibility or evidence boundary; never delegate an instruction to read every file or explore an entire repository exhaustively. Every workspace-writing wave is followed by a read-only auditor depending on every writer in that wave; include a tailored auditor when useful, otherwise the runtime adds one automatically. Use collaboration_send or collaboration_amend to deliver new information, collaboration_wait to collect results before answering, and collaboration_interrupt when a task is no longer useful. Subagents cannot create more subagents.`;
-
 type AgentTaskRole = RuntimeAgentTask['role'];
 type AgentTaskAccess = RuntimeAgentTask['access'];
+
+export const agentAccessForRole = (role: AgentTaskRole): AgentTaskAccess =>
+  role === 'worker' ? 'workspaceWrite' : 'readOnly';
 
 type DispatchTask = Readonly<{
   clientTaskKey: string;
@@ -238,17 +237,11 @@ const taskSchema = {
       description:
         'Use explorer for bounded read-only investigation, worker for implementation, and auditor for independent review.',
     },
-    access: {
-      type: Type.STRING,
-      enum: ['readOnly', 'workspaceWrite'],
-      description:
-        'Use workspaceWrite only when this task must modify files or run privileged workspace tools.',
-    },
     dependsOn: {
       type: Type.ARRAY,
       items: { type: Type.STRING },
       description:
-        'Keys that must finish first. A tailored auditor should depend on every workspaceWrite task in the same dispatch.',
+        'Keys that must finish first. A tailored auditor should depend on every worker task in the same dispatch.',
     },
     taskMarkdown: {
       type: Type.STRING,
@@ -259,7 +252,6 @@ const taskSchema = {
     'clientTaskKey',
     'title',
     'role',
-    'access',
     'dependsOn',
     'taskMarkdown',
   ],
@@ -326,7 +318,6 @@ const parseDispatch = (value: unknown): DispatchTask[] => {
       typeof task.clientTaskKey !== 'string' ||
       typeof task.title !== 'string' ||
       !['explorer', 'worker', 'auditor'].includes(String(task.role)) ||
-      !['readOnly', 'workspaceWrite'].includes(String(task.access)) ||
       typeof task.taskMarkdown !== 'string'
     ) {
       throw new Error('A collaboration task has invalid fields.');
@@ -335,7 +326,7 @@ const parseDispatch = (value: unknown): DispatchTask[] => {
       clientTaskKey: task.clientTaskKey,
       title: task.title,
       role: task.role as AgentTaskRole,
-      access: task.access as AgentTaskAccess,
+      access: agentAccessForRole(task.role as AgentTaskRole),
       dependsOn: stringArray(task.dependsOn),
       taskMarkdown: task.taskMarkdown,
     };
@@ -825,14 +816,13 @@ export class CollaborationCoordinator {
     tasks: readonly DispatchTask[],
   ): readonly DispatchTask[] => {
     const writers = tasks
-      .filter((task) => task.access === 'workspaceWrite')
+      .filter((task) => task.role === 'worker')
       .map((task) => task.clientTaskKey);
     if (
       writers.length === 0 ||
       tasks.some(
         (task) =>
           task.role === 'auditor' &&
-          task.access === 'readOnly' &&
           writers.every((writer) => task.dependsOn.includes(writer)),
       )
     ) {
@@ -883,7 +873,7 @@ export class CollaborationCoordinator {
         task.taskMarkdown.length === 0 ||
         utf8Bytes(task.taskMarkdown) > MAX_TASK_MARKDOWN_BYTES ||
         keys.has(task.clientTaskKey) ||
-        (task.role === 'auditor' && task.access !== 'readOnly')
+        task.access !== agentAccessForRole(task.role)
       ) {
         throw new Error('The collaboration task shape is invalid.');
       }
@@ -896,14 +886,13 @@ export class CollaborationCoordinator {
       throw new Error(`A collaboration DAG supports at most ${MAX_AUDITORS} auditors.`);
     }
     const writes = tasks
-      .filter((task) => task.access === 'workspaceWrite')
+      .filter((task) => task.role === 'worker')
       .map((task) => task.clientTaskKey);
     if (
       writes.length > 0 &&
       !tasks.some(
         (task) =>
           task.role === 'auditor' &&
-          task.access === 'readOnly' &&
           writes.every((write) => task.dependsOn.includes(write)),
       )
     ) {

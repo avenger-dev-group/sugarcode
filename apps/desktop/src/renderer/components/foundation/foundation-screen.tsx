@@ -10,6 +10,7 @@ import { ThreadWorkbenchView } from '@/renderer/components/thread/thread-workben
 import { useStore as useThreadStore } from '@/renderer/components/thread/use-store';
 import { OrchestrationStoreProvider } from '@/renderer/components/orchestration/use-store';
 import { UpdateAction } from '@/renderer/components/update/update-action';
+import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
 
 import { ContextRail } from './context-rail';
 import { useStore } from './use-store';
@@ -20,6 +21,10 @@ export const FoundationScreen = () => {
   const commandApprovalStore = useCommandApprovalStore();
   const mcpStore = useMcpStore();
   const activeThreadId = threadStore.thread.threadIdentity;
+  const activeCommandApproval = commandApprovalStore.requests.find(
+    (request) =>
+      isApprovalVisibleForThread(request.threadId, activeThreadId),
+  );
   const approvalThreadIds = Array.from(
     new Set(
       [
@@ -60,6 +65,14 @@ export const FoundationScreen = () => {
                 disabled={turnBusy}
               />
             }
+            approvalSurface={
+              activeCommandApproval ? (
+                <CommandApprovalView
+                  store={commandApprovalStore}
+                  activeThreadId={activeThreadId}
+                />
+              ) : undefined
+            }
             navigationFooter={
               <div className="space-y-1">
                 <UpdateAction />
@@ -75,10 +88,6 @@ export const FoundationScreen = () => {
           />
         </main>
       </OrchestrationStoreProvider>
-      <CommandApprovalView
-        store={commandApprovalStore}
-        activeThreadId={activeThreadId}
-      />
       <McpApprovalSurface
         store={mcpStore}
         activeThreadId={activeThreadId}

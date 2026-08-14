@@ -36,6 +36,22 @@ const collect = async (
   return events;
 };
 
+const pauseAfterTerminalResponse = async (
+  stream: AsyncIterable<LlmResponse>,
+  pauseMs: number,
+): Promise<LlmResponse> => {
+  const iterator = stream[Symbol.asyncIterator]();
+  let next = await iterator.next();
+  while (!next.done && next.value.turnComplete !== true) {
+    next = await iterator.next();
+  }
+  assert.equal(next.done, false);
+  const terminal = next.value;
+  await new Promise<void>((resolve) => setTimeout(resolve, pauseMs));
+  assert.equal((await iterator.next()).done, true);
+  return terminal;
+};
+
 const readBody = async (request: IncomingMessage): Promise<string> => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -242,6 +258,75 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(receivedBody?.max_output_tokens, 32_768);
   assert.equal(events.at(-1)?.turnComplete, true);
+});
+
+test('OpenAI Responses releases its request deadline before a terminal tool call is consumed', async (context) => {
+  const fixture = await serve(async (request, response) => {
+    assert.equal(request.url, '/v1/responses');
+    await readBody(request);
+    writeSse(response, [
+      {
+        event: 'response.output_item.added',
+        data: {
+          type: 'response.output_item.added',
+          sequence_number: 1,
+          output_index: 0,
+          item: {
+            id: 'item_deadline_fixture',
+            type: 'function_call',
+            call_id: 'call_deadline_fixture',
+            name: 'workspace_read',
+            arguments: '',
+            status: 'in_progress',
+          },
+        },
+      },
+      {
+        event: 'response.function_call_arguments.done',
+        data: {
+          type: 'response.function_call_arguments.done',
+          sequence_number: 2,
+          output_index: 0,
+          item_id: 'item_deadline_fixture',
+          name: 'workspace_read',
+          arguments: '{"path":"README.md"}',
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_deadline_fixture',
+            status: 'completed',
+            output: [],
+            usage: { input_tokens: 4, output_tokens: 2, total_tokens: 6 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    timeoutMs: 25,
+    maxRetries: 0,
+  });
+
+  const terminal = await pauseAfterTerminalResponse(
+    model.generateContentAsync(llmRequest(), true),
+    75,
+  );
+
+  assert.equal(terminal.turnComplete, true);
+  assert.equal(
+    readModelStepOutcome(terminal.content?.parts ?? [])?.kind,
+    'toolCalls',
+  );
 });
 
 test('OpenAI Responses preserves commentary phase, Item ID, and phased history', async (context) => {
@@ -872,4 +957,85 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 8);
   assert.equal(events.at(-1)?.turnComplete, true);
+});
+
+test('Anthropic releases its request deadline before a terminal tool call is consumed', async (context) => {
+  const fixture = await serve(async (request, response) => {
+    assert.equal(request.url, '/v1/messages');
+    await readBody(request);
+    writeSse(response, [
+      {
+        event: 'message_start',
+        data: {
+          type: 'message_start',
+          message: {
+            id: 'msg_deadline_fixture',
+            type: 'message',
+            role: 'assistant',
+            model: 'fixture-model',
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 5, output_tokens: 0 },
+          },
+        },
+      },
+      {
+        event: 'content_block_start',
+        data: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_deadline_fixture',
+            name: 'workspace_read',
+            input: {},
+          },
+        },
+      },
+      {
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"path":"README.md"}',
+          },
+        },
+      },
+      {
+        event: 'content_block_stop',
+        data: { type: 'content_block_stop', index: 0 },
+      },
+      {
+        event: 'message_delta',
+        data: {
+          type: 'message_delta',
+          delta: { stop_reason: 'tool_use', stop_sequence: null },
+          usage: { output_tokens: 3 },
+        },
+      },
+      { event: 'message_stop', data: { type: 'message_stop' } },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new AnthropicLlm({
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    timeoutMs: 25,
+    maxRetries: 0,
+  });
+
+  const terminal = await pauseAfterTerminalResponse(
+    model.generateContentAsync(llmRequest(), true),
+    75,
+  );
+
+  assert.equal(terminal.turnComplete, true);
+  assert.equal(
+    readModelStepOutcome(terminal.content?.parts ?? [])?.kind,
+    'toolCalls',
+  );
 });

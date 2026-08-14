@@ -13,6 +13,7 @@
     "lint": "eslint --ext .ts,.tsx .",
     "typecheck": "tsc --noEmit",
     "test:node": "node --test \"tests/**/*.test.ts\"",
+    "replay:agent-v2": "node scripts/agent-v2-replay.mjs",
     "check": "pnpm lint && pnpm typecheck && pnpm test:node"
   },
   "keywords": [],

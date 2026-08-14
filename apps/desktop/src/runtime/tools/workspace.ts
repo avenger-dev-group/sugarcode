@@ -3,6 +3,12 @@ import { Type, type Schema } from '@google/genai';
 import { basename, isAbsolute } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../native.ts';
+import {
+  instructionScopeForFile,
+  instructionScopesForPatch,
+  type WorkspaceInstructionContext,
+  type WorkspaceInstructionError,
+} from '../workspace-instructions.ts';
 
 const MAX_DECLARED_WORKSPACE_READ_PATHS = 8;
 const MAX_COMPATIBLE_WORKSPACE_READ_PATHS = 16;
@@ -153,6 +159,15 @@ const parseNativeResult = (value: string): unknown => JSON.parse(value) as unkno
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const withInstructionWarnings = (
+  result: unknown,
+  warnings: readonly WorkspaceInstructionError[],
+): unknown => warnings.length === 0
+  ? result
+  : isRecord(result)
+    ? { ...result, workspaceInstructionsWarning: warnings }
+    : { result, workspaceInstructionsWarning: warnings };
 
 const workspaceReadResult = (result: unknown, path: string): unknown =>
   isRecord(result) && result.ok === false && result.error === 'notRegularFile'
@@ -364,6 +379,13 @@ const workspacePatchApprovalOperations = (
   }
   return operations;
 };
+
+const workspacePatchInstructionPaths = (patch: string): readonly string[] =>
+  workspacePatchApprovalOperations(patch).flatMap((operation) =>
+    operation.destination
+      ? [operation.path, operation.destination]
+      : [operation.path]
+  );
 
 const safeApprovalPath = (value: string): string => {
   let result = '';
@@ -645,6 +667,7 @@ export const createWorkspaceTools = (
     delta: string,
   ) => void,
   access: 'readOnly' | 'workspaceWrite' = 'workspaceWrite',
+  instructionContext?: WorkspaceInstructionContext,
 ): readonly FunctionTool<Schema>[] => {
   const tools: readonly FunctionTool<Schema>[] = [
   new FunctionTool({
@@ -654,14 +677,17 @@ export const createWorkspaceTools = (
     parameters: readSchema,
     execute: async (input) => {
       const paths = readPathArguments(input);
+      const warnings = instructionContext?.warningsForRead(
+        paths.map(instructionScopeForFile),
+      ) ?? [];
       if (paths.length === 1) {
         const path = paths[0] ?? '';
-        return workspaceReadResult(
+        return withInstructionWarnings(workspaceReadResult(
           parseNativeResult(
             await nativeRuntime.workspaceRead(workspaceId, path),
           ),
           path,
-        );
+        ), warnings);
       }
       const files: Readonly<Record<string, unknown>>[] = [];
       for (
@@ -687,10 +713,10 @@ export const createWorkspaceTools = (
           }),
         ));
       }
-      return {
+      return withInstructionWarnings({
         ok: files.every((file) => file.ok !== false),
         files,
-      };
+      }, warnings);
     },
   }),
   new FunctionTool({
@@ -698,10 +724,14 @@ export const createWorkspaceTools = (
     description:
       'List the direct children of a directory inside the open workspace.',
     parameters: pathSchema,
-    execute: async (input) =>
-      parseNativeResult(
-        await nativeRuntime.workspaceList(workspaceId, pathArgument(input)),
-      ),
+    execute: async (input) => {
+      const path = pathArgument(input);
+      const warnings = instructionContext?.warningsForRead([path]) ?? [];
+      return withInstructionWarnings(
+        parseNativeResult(await nativeRuntime.workspaceList(workspaceId, path)),
+        warnings,
+      );
+    },
   }),
   new FunctionTool({
     name: 'workspace_search',
@@ -710,8 +740,10 @@ export const createWorkspaceTools = (
     parameters: searchSchema,
     execute: async (input) => {
       const { path, query } = searchArguments(input);
-      return parseNativeResult(
-        await nativeRuntime.workspaceSearch(workspaceId, path, query),
+      const warnings = instructionContext?.warningsForRead([path]) ?? [];
+      return withInstructionWarnings(
+        parseNativeResult(await nativeRuntime.workspaceSearch(workspaceId, path, query)),
+        warnings,
       );
     },
   }),
@@ -742,18 +774,32 @@ export const createWorkspaceTools = (
       if (!updateSectionsHaveEffectiveChanges(patch)) {
         return invalidPatchNoop();
       }
-      return runPrivileged(
+      const instructionScopes = instructionScopesForPatch(patch);
+      const instructionCheck = instructionContext?.checkWrite(instructionScopes);
+      if (instructionCheck) {
+        return instructionCheck;
+      }
+      const result = await runPrivileged(
         'workspace_apply_patch',
         { patch },
-        async (operationId) => executePrivilegedWorkspaceTool(
-          nativeRuntime,
-          operationId,
-          workspaceId,
-          'workspace_apply_patch',
-          { patch },
-          onCommandOutput,
-        ),
+        async (operationId) => {
+          const revalidated = instructionContext?.revalidateWrite(instructionScopes);
+          return revalidated ?? executePrivilegedWorkspaceTool(
+            nativeRuntime,
+            operationId,
+            workspaceId,
+            'workspace_apply_patch',
+            { patch },
+            onCommandOutput,
+          );
+        },
       );
+      if (isRecord(result) && result.ok === true) {
+        instructionContext?.invalidateAfterWrite(
+          workspacePatchInstructionPaths(patch),
+        );
+      }
+      return result;
     },
   }),
   new FunctionTool({
@@ -795,18 +841,34 @@ export const createWorkspaceTools = (
       if (!runPrivileged) {
         return { ok: false, error: 'approvalUnavailable' };
       }
-      return runPrivileged(
+      const instructionScopes = [cwd];
+      if (mode === 'fullAccess') {
+        const instructionCheck = instructionContext?.checkWrite(instructionScopes);
+        if (instructionCheck) {
+          return instructionCheck;
+        }
+      }
+      const result = await runPrivileged(
         'shell_exec',
         { mode, command, arguments: commandArguments, cwd, timeoutMs },
-        async (operationId) => executePrivilegedWorkspaceTool(
-          nativeRuntime,
-          operationId,
-          workspaceId,
-          'shell_exec',
-          { mode, command, arguments: commandArguments, cwd, timeoutMs },
-          onCommandOutput,
-        ),
+        async (operationId) => {
+          const revalidated = mode === 'fullAccess'
+            ? instructionContext?.revalidateWrite(instructionScopes)
+            : undefined;
+          return revalidated ?? executePrivilegedWorkspaceTool(
+            nativeRuntime,
+            operationId,
+            workspaceId,
+            'shell_exec',
+            { mode, command, arguments: commandArguments, cwd, timeoutMs },
+            onCommandOutput,
+          );
+        },
       );
+      if (mode === 'fullAccess' && isRecord(result) && result.ok !== false) {
+        instructionContext?.invalidateAfterWrite(['*']);
+      }
+      return result;
     },
   }),
   ];

@@ -711,6 +711,9 @@ export class AnthropicLlm extends BaseLlm {
                 partMetadata: modelItemMetadata(textItemId, { outcome }),
               });
             }
+            // ADK may pause at this terminal yield while it executes tools;
+            // that time is not part of the provider request.
+            deadline.dispose();
             yield {
               content: { role: 'model', parts },
               partial: false,
@@ -736,7 +739,7 @@ export class AnthropicLlm extends BaseLlm {
                     }),
               },
             };
-            break;
+            return;
           }
         }
       }
