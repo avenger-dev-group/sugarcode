@@ -30,6 +30,28 @@ fn replacement_before_final_reopen_is_rejected() {
 }
 
 #[test]
+fn empty_override_does_not_hide_a_selected_candidate_race() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    std::fs::write(workspace.path().join("AGENTS.override.md"), "\n").expect("empty override");
+    std::fs::write(workspace.path().join("AGENTS.md"), "before\n").expect("instructions");
+    let tool = WorkspaceTool::open(workspace.path()).expect("workspace capability");
+
+    let result = tool.load_root_instructions_with_before_reopen(|| {
+        std::fs::rename(
+            workspace.path().join("AGENTS.md"),
+            workspace.path().join("AGENTS.old"),
+        )
+        .expect("rename original");
+        std::fs::write(workspace.path().join("AGENTS.md"), "after\n").expect("replacement");
+    });
+
+    assert_eq!(
+        result,
+        Err(WorkspaceInstructionsErrorKind::ChangedDuringRead)
+    );
+}
+
+#[test]
 fn candidate_creation_before_hierarchy_revalidation_is_rejected() {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::create_dir_all(workspace.path().join("projects/active")).expect("scope");

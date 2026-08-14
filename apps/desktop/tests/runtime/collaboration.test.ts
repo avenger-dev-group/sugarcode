@@ -193,12 +193,13 @@ test('CollaborationCoordinator adds a runtime auditor and still rejects cycles',
       clientTaskKey: 'write',
       title: 'Write',
       role: 'worker',
-      access: 'workspaceWrite',
+      access: 'readOnly',
       dependsOn: [],
       taskMarkdown: 'Write files.',
     }],
   }) as { accepted: string[] };
   assert.deepEqual(dispatched.accepted, ['write', 'runtime-audit']);
+  assert.equal(created[0]?.access, 'workspaceWrite');
   assert.equal(created[1]?.role, 'auditor');
   assert.equal(created[1]?.access, 'readOnly');
   assert.deepEqual(created[1]?.dependsOn, ['write']);

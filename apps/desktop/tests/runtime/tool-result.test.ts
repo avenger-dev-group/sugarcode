@@ -7,6 +7,25 @@ import {
   toolResultRequiresFinalRecovery,
 } from '../../src/runtime/tool-result.ts';
 
+test('workspace instruction discovery is recoverable but unavailable rules are failures', () => {
+  assert.equal(toolResultFailed({
+    ok: false,
+    error: 'workspaceInstructionsRequired',
+  }), false);
+  assert.equal(toolResultRequiresFinalRecovery('workspace_apply_patch', {
+    ok: false,
+    error: 'workspaceInstructionsRequired',
+  }), false);
+  assert.equal(toolResultFailed({
+    ok: false,
+    error: 'workspaceInstructionsUnavailable',
+  }), true);
+  assert.equal(toolResultRequiresFinalRecovery('workspace_apply_patch', {
+    ok: false,
+    error: 'workspaceInstructionsUnavailable',
+  }), true);
+});
+
 test('tool result failure classification includes nested process outcomes', () => {
   assert.equal(
     toolResultFailed({

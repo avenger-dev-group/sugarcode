@@ -17,18 +17,18 @@ import {
   type RuntimeContextCheckpoint,
 } from './context-manager.ts';
 import {
-  hostPlatformInstruction,
-  SUGARCODE_BASE_AGENT_PROMPT_V1,
+  buildAgentInstructions,
 } from './agent-instructions.ts';
 import {
   composerIntentInstruction,
   composerModelText,
+  composerTurnMode,
 } from './composer-intent.ts';
 import {
-  COLLABORATION_AGENT_INSTRUCTION,
   CollaborationCoordinator,
   type AgentTaskExecutionContext,
 } from './collaboration.ts';
+import { WorkspaceInstructionContext } from './workspace-instructions.ts';
 import {
   ProviderAdapterError,
   ProviderErrorCapturePlugin,
@@ -113,6 +113,29 @@ const DEFAULT_PROVIDER_TIMEOUT_MS = DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
 const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
 const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
+
+const reserveContextTokens = (
+  selection: RuntimeModelSelection,
+  reservedTokens: number,
+): RuntimeModelSelection => {
+  if (reservedTokens <= 0) {
+    return selection;
+  }
+  const safety = Math.max(
+    4_096,
+    Math.ceil(selection.contextWindowTokens * 0.05),
+  );
+  const available = selection.contextWindowTokens -
+    DEFAULT_MAX_OUTPUT_TOKENS - safety;
+  const trigger = selection.compactThresholdTokens ?? Math.min(
+    Math.floor(selection.contextWindowTokens * 0.85),
+    available,
+  );
+  return {
+    ...selection,
+    compactThresholdTokens: Math.max(0, trigger - reservedTokens),
+  };
+};
 
 const INVALID_TOOL_ARGUMENTS_SCHEMA = {
   type: Type.OBJECT,
@@ -2526,7 +2549,11 @@ export class RuntimeHost {
       if (command.generateTitle) {
         void this.generateTitle(command, resolved, controller.signal);
       }
-      const collaborationTools = this.nativeRuntime
+      const turnMode = composerTurnMode(command.content);
+      const turnAccess = turnMode === 'execute'
+        ? 'workspaceWrite' as const
+        : 'readOnly' as const;
+      const collaborationTools = this.nativeRuntime && turnMode === 'execute'
         ? this.collaboration.toolsForTurn(
             command,
             {
@@ -2586,6 +2613,10 @@ export class RuntimeHost {
           )
         : { instruction: '', tools: [] };
       const composerInstruction = composerIntentInstruction(command.content);
+      const workspaceInstructions = this.nativeRuntime
+        ? new WorkspaceInstructionContext(this.nativeRuntime, command.workspaceId)
+        : undefined;
+      workspaceInstructions?.preloadRoot();
       const currentUserContent = this.contentFromParts(
         command.content,
         resolved.selection,
@@ -2596,13 +2627,59 @@ export class RuntimeHost {
         nativeCompaction: false,
       });
       let recoveryCompaction = false;
+      const mainTools = [
+        this.invalidArgumentsTool(invalidArgumentGuard),
+        this.requestUserInputTool(command, userInputFinalGuard),
+        ...(this.nativeRuntime
+          ? [
+            ...createWorkspaceTools(
+              this.nativeRuntime,
+              command.workspaceId,
+              (toolName, argumentsValue, execute) =>
+                this.runPrivilegedTool(
+                  command,
+                  toolName,
+                  argumentsValue,
+                  execute,
+                ),
+              (operationId, stream, delta) => {
+                this.emit({
+                  type: 'operation.output',
+                  requestId: command.requestId,
+                  workspaceId: command.workspaceId,
+                  threadId: command.threadId,
+                  turnId: command.turnId,
+                  operationId,
+                  stream,
+                  delta,
+                });
+              },
+              turnAccess,
+              workspaceInstructions,
+            ),
+            ...(turnMode === 'execute'
+              ? this.mcp.toolsForTurn((request) =>
+                this.runMcpTool(command, request),
+              )
+              : []),
+            ...turnSkills.tools,
+            ...collaborationTools,
+          ]
+          : []),
+      ];
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
         description: 'SugarCode local coding agent',
-        instruction:
-          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${hostPlatformInstruction()}\n\n${COLLABORATION_AGENT_INSTRUCTION}` +
-          (composerInstruction ? `\n\n${composerInstruction}` : '') +
-          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
+        instruction: buildAgentInstructions({
+          role: 'main',
+          access: turnAccess,
+          turnMode,
+          platform: process.platform,
+          availableTools: mainTools.map((tool) => tool.name),
+          collaborationEnabled: collaborationTools.length > 0,
+          composerInstruction,
+          skillInstruction: turnSkills.instruction,
+        }),
         model: turnModel,
         generateContentConfig: {
           maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
@@ -2630,6 +2707,11 @@ export class RuntimeHost {
                   '# Internal post-question response boundary\n\n' +
                   'The structured user-input request has been resolved. Do not continue or append to any draft emitted before request_user_input. ' +
                   'After any remaining tool work, produce one complete and self-contained final answer from the beginning. ' +
+                  (turnMode === 'plan'
+                    ? 'This Turn remains planning-only: use the answer only to refine the plan and do not implement it. '
+                    : turnMode === 'readOnly'
+                      ? 'This Turn remains read-only and the answer does not authorize workspace changes. '
+                      : '') +
                   'Do not repeat the question prompts in ordinary final-answer text; incorporate the decisions directly where relevant.',
               }],
             });
@@ -2639,8 +2721,9 @@ export class RuntimeHost {
               threadId: command.threadId,
               request,
               currentUserContent,
-              selection: resolved.provider.nativeCompaction && !recoveryCompaction
-                ? {
+              selection: reserveContextTokens(
+                resolved.provider.nativeCompaction && !recoveryCompaction
+                  ? {
                     ...resolved.selection,
                     compactThresholdTokens: Math.min(
                       resolved.selection.contextWindowTokens -
@@ -2656,8 +2739,10 @@ export class RuntimeHost {
                           resolved.selection.contextWindowTokens * 0.05,
                         ),
                     ),
-                  }
-                : resolved.selection,
+                    }
+                  : resolved.selection,
+                workspaceInstructions?.reserveTokens() ?? 0,
+              ),
               summarizer,
               signal: controller.signal,
               ...(recoveryCompaction
@@ -2699,44 +2784,10 @@ export class RuntimeHost {
                 : 'Automatic context compaction failed.',
             });
           }
+          workspaceInstructions?.injectIntoRequest(request, currentUserContent);
           return undefined;
         },
-        tools: [
-          this.invalidArgumentsTool(invalidArgumentGuard),
-          this.requestUserInputTool(command, userInputFinalGuard),
-          ...(this.nativeRuntime
-            ? [
-              ...createWorkspaceTools(
-                this.nativeRuntime,
-                command.workspaceId,
-                (toolName, argumentsValue, execute) =>
-                  this.runPrivilegedTool(
-                    command,
-                    toolName,
-                    argumentsValue,
-                    execute,
-                  ),
-                (operationId, stream, delta) => {
-                  this.emit({
-                    type: 'operation.output',
-                    requestId: command.requestId,
-                    workspaceId: command.workspaceId,
-                    threadId: command.threadId,
-                    turnId: command.turnId,
-                    operationId,
-                    stream,
-                    delta,
-                  });
-                },
-              ),
-              ...this.mcp.toolsForTurn((request) =>
-                this.runMcpTool(command, request),
-              ),
-              ...turnSkills.tools,
-              ...collaborationTools,
-            ]
-            : []),
-        ],
+        tools: mainTools,
       });
       const providerErrorCapture = new ProviderErrorCapturePlugin();
       const runner = new Runner({
@@ -3110,6 +3161,10 @@ export class RuntimeHost {
           }
         }
       };
+      const workspaceInstructions = this.nativeRuntime
+        ? new WorkspaceInstructionContext(this.nativeRuntime, command.workspaceId)
+        : undefined;
+      workspaceInstructions?.preloadRoot();
       const tools = this.nativeRuntime
         ? [
             ...createWorkspaceTools(
@@ -3137,10 +3192,13 @@ export class RuntimeHost {
                 });
               },
               context.task.access,
+              workspaceInstructions,
             ),
-            ...this.mcp.toolsForTurn((request) =>
-              runWithApprovalState(() => this.runMcpTool(command, request)),
-            ),
+            ...(context.task.role === 'worker'
+              ? this.mcp.toolsForTurn((request) =>
+                runWithApprovalState(() => this.runMcpTool(command, request))
+              )
+              : []),
           ]
         : [];
       const invalidArgumentGuard: InvalidArgumentGuard = {
@@ -3156,24 +3214,27 @@ export class RuntimeHost {
             command.content,
           )
         : { instruction: '', tools: [] };
+      const agentTools = [
+        this.invalidArgumentsTool(invalidArgumentGuard),
+        ...tools,
+        ...turnSkills.tools,
+      ];
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
         description: `${context.task.role} subagent for ${context.task.title}`,
-        instruction:
-          `${SUGARCODE_BASE_AGENT_PROMPT_V1}\n\n${hostPlatformInstruction()}\n\n` +
-          `# Subagent boundary\n\n` +
-          `You are a ${context.task.role} subagent with ${context.task.access} access. ` +
-          `Complete only the assigned task. Use targeted search and representative entry points instead of exhaustive whole-repository reading; if the brief is overly broad, state the bounded coverage you chose. You cannot create subagents. Return a concise Markdown result for the parent Agent.` +
-          (turnSkills.instruction ? `\n\n${turnSkills.instruction}` : ''),
+        instruction: buildAgentInstructions({
+          role: context.task.role,
+          access: context.task.access,
+          platform: process.platform,
+          availableTools: agentTools.map((tool) => tool.name),
+          collaborationEnabled: false,
+          skillInstruction: turnSkills.instruction,
+        }),
         model: this.createModel(resolved.provider),
         generateContentConfig: {
           maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
         },
-        tools: [
-          this.invalidArgumentsTool(invalidArgumentGuard),
-          ...tools,
-          ...turnSkills.tools,
-        ],
+        tools: agentTools,
         includeContents: 'none',
         beforeModelCallback: ({ request }) => {
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
@@ -3185,6 +3246,7 @@ export class RuntimeHost {
               parts: [{ text: repeatedFailureRecovery }],
             });
           }
+          workspaceInstructions?.injectIntoRequest(request);
           publishProgress(
             'waitingForModel',
             streamedSummary || completedSummary

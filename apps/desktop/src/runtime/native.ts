@@ -55,6 +55,10 @@ export type NativeRuntimeBinding = Readonly<{
   closeTerminal: (sessionId: string) => boolean;
   cancelOperation: (operationId: string) => boolean;
   ensureWorkspace: (workspaceId: string, canonicalRoot: string) => void;
+  workspaceInstructionsJson: (
+    workspaceId: string,
+    scopesJson: string,
+  ) => string;
   ensureThread: (
     threadId: string,
     workspaceId: string,

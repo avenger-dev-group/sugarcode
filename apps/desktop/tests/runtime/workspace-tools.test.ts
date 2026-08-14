@@ -7,6 +7,7 @@ import {
   executePrivilegedWorkspaceTool,
   workspacePatchApprovalSummary,
 } from '../../src/runtime/tools/workspace.ts';
+import { WorkspaceInstructionContext } from '../../src/runtime/workspace-instructions.ts';
 
 test('workspace patch approval summary describes file effects without internal tool names', () => {
   assert.equal(
@@ -57,6 +58,118 @@ test('workspace_read accepts a bounded batch and preserves each path', async () 
       { ok: true, content: 'content:package.json', path: 'package.json' },
     ],
   });
+});
+
+test('workspace reads continue with instruction warnings while writes stop before approval', async () => {
+  let approvalRequests = 0;
+  const native = {
+    workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {
+      const scopes = JSON.parse(scopesJson) as string[];
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: [],
+        chains: [],
+        errors: scopes.map((scope) => ({ scope, kind: 'invalidEncoding' })),
+      });
+    },
+    workspaceRead: async () => JSON.stringify({ ok: true, content: 'fixture' }),
+  } as unknown as NativeRuntimeBinding;
+  const context = new WorkspaceInstructionContext(native, 'workspace-fixture');
+  const tools = createWorkspaceTools(
+    native,
+    'workspace-fixture',
+    async () => {
+      approvalRequests += 1;
+      return { ok: true };
+    },
+    undefined,
+    'workspaceWrite',
+    context,
+  );
+  const readTool = tools.find((tool) => tool.name === 'workspace_read');
+  const patchTool = tools.find((tool) => tool.name === 'workspace_apply_patch');
+  assert.ok(readTool);
+  assert.ok(patchTool);
+
+  const read = await readTool.runAsync({
+    args: { path: 'src/example.ts' },
+    toolContext: {} as never,
+  }) as Record<string, unknown>;
+  assert.equal(read.ok, true);
+  assert.deepEqual(read.workspaceInstructionsWarning, [{
+    scope: 'src',
+    kind: 'invalidEncoding',
+  }]);
+
+  const write = await patchTool.runAsync({
+    args: {
+      patch:
+        '*** Begin Patch\n*** Update File: src/example.ts\n@@\n-old\n+new\n*** End Patch',
+    },
+    toolContext: {} as never,
+  }) as Record<string, unknown>;
+  assert.equal(write.error, 'workspaceInstructionsUnavailable');
+  assert.equal(approvalRequests, 0);
+});
+
+test('workspace patch revalidates project instructions after approval before writing', async () => {
+  let version = 1;
+  let nativeWrites = 0;
+  const native = {
+    workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {
+      const scopes = JSON.parse(scopesJson) as string[];
+      const root = {
+        path: 'AGENTS.md',
+        scope: '.',
+        content: `Rules version ${version}.`,
+        bytes: 16,
+        sha256: String(version).repeat(64),
+      };
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: [root],
+        chains: scopes.map((scope) => ({ scope, paths: ['AGENTS.md'] })),
+        errors: [],
+      });
+    },
+    workspaceApplyPatch: async () => {
+      nativeWrites += 1;
+      return JSON.stringify({ ok: true });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const context = new WorkspaceInstructionContext(native, 'workspace-fixture');
+  context.preloadRoot();
+  context.injectIntoRequest({
+    model: 'fixture',
+    contents: [{ role: 'user', parts: [{ text: 'Initial request.' }] }],
+    config: {},
+    liveConnectConfig: {},
+    toolsDict: {},
+  });
+  const tools = createWorkspaceTools(
+    native,
+    'workspace-fixture',
+    async (_toolName, _argumentsValue, execute) => {
+      version = 2;
+      return execute('operation-fixture');
+    },
+    undefined,
+    'workspaceWrite',
+    context,
+  );
+  const patchTool = tools.find((tool) => tool.name === 'workspace_apply_patch');
+  assert.ok(patchTool);
+
+  const result = await patchTool.runAsync({
+    args: {
+      patch:
+        '*** Begin Patch\n*** Update File: src/example.ts\n@@\n-old\n+new\n*** End Patch',
+    },
+    toolContext: {} as never,
+  }) as Record<string, unknown>;
+
+  assert.equal(result.error, 'workspaceInstructionsRequired');
+  assert.equal(nativeWrites, 0);
 });
 
 test('workspace_read explains that directory paths belong to workspace_list', async () => {
