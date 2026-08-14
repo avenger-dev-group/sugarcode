@@ -3,6 +3,17 @@ import type { ConversationPhase } from '@/shared/conversation';
 
 export const TURN_STOP_SAFETY_DELAY_MS = 1_000;
 
+export type ComposerSurface = 'approval' | 'userInput' | 'composer';
+
+export const resolveComposerSurface = (
+  hasApproval: boolean,
+  hasUserInput: boolean,
+): ComposerSurface => {
+  if (hasApproval) return 'approval';
+  if (hasUserInput) return 'userInput';
+  return 'composer';
+};
+
 export const shouldShowStopControl = (
   phase: ConversationPhase,
   isSending: boolean,

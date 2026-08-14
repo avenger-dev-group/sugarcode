@@ -4,10 +4,18 @@ import test from 'node:test';
 import {
   canStopTurn,
   canRemoveDraftProject,
+  resolveComposerSurface,
   shouldShowStopControl,
   shouldStartChatOnSend,
   TURN_STOP_SAFETY_DELAY_MS,
 } from '../../../src/renderer/components/thread/composer-state.ts';
+
+test('approval replaces the composer and takes precedence over user questions', () => {
+  assert.equal(resolveComposerSurface(true, false), 'approval');
+  assert.equal(resolveComposerSurface(true, true), 'approval');
+  assert.equal(resolveComposerSurface(false, true), 'userInput');
+  assert.equal(resolveComposerSurface(false, false), 'composer');
+});
 
 test('an unselected workspace starts an independent Chat on first send', () => {
   assert.equal(

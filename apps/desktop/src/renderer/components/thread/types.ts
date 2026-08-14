@@ -331,6 +331,7 @@ export type ThreadWorkbenchViewProps = Readonly<{
   navigationFooter?: ReactNode;
   contextRail?: ReactNode;
   permissionControl?: ReactNode;
+  approvalSurface?: ReactNode;
   approvalThreadIds?: readonly string[];
 }>;
 

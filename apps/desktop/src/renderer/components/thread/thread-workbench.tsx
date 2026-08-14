@@ -57,7 +57,10 @@ import type {
   TranscriptMessageViewModel,
   TranscriptTurnProps,
 } from './types';
-import { canRemoveDraftProject } from './composer-state';
+import {
+  canRemoveDraftProject,
+  resolveComposerSurface,
+} from './composer-state';
 import { ContextCompactionActivity } from './context-compaction-activity';
 import { resolveConversationTitle } from './conversation-title';
 import { EmptyThreadState } from './empty-thread-state';
@@ -423,6 +426,7 @@ export const ThreadWorkbenchView = ({
   navigationFooter,
   contextRail,
   permissionControl,
+  approvalSurface,
   approvalThreadIds = [],
 }: ThreadWorkbenchViewProps) => {
   const agentTaskActivity = currentOrchestrationActivity(store);
@@ -456,6 +460,10 @@ export const ThreadWorkbenchView = ({
   const pendingThreadId = store.navigator.pendingThreadId;
   const userInputTurn = store.thread.turns.findLast(
     (turn) => turn.userInputRequest !== undefined,
+  );
+  const composerSurface = resolveComposerSurface(
+    Boolean(approvalSurface),
+    Boolean(userInputTurn?.userInputRequest),
   );
   const selectionError = pendingThreadId
     ? store.navigator.selectionNotice
@@ -661,7 +669,10 @@ export const ThreadWorkbenchView = ({
                 {store.actionError ?? store.thread.notice ?? workspace.error}
               </p>
             )}
-            {userInputTurn?.userInputRequest ? (
+            {composerSurface === 'approval' ? (
+              approvalSurface
+            ) : composerSurface === 'userInput' &&
+              userInputTurn?.userInputRequest ? (
               <UserInputSurface
                 turnId={userInputTurn.id}
                 request={userInputTurn.userInputRequest}
