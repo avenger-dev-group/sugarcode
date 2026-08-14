@@ -154,6 +154,10 @@ export class RuntimeConversationController {
     }>
   >();
   private readonly pendingTurnStartWorkspaces = new Set<string>();
+  private readonly outputDeltaTimers = new Map<
+    string,
+    Readonly<{ timer: NodeJS.Timeout; turnId: string }>
+  >();
   private workspaceId: string | null = null;
   private workspaceGeneration = 0;
   private threadSelectionGeneration = 0;
@@ -1475,7 +1479,12 @@ export class RuntimeConversationController {
     ) {
       this.refreshNavigator();
     }
-    this.publishThreadDelta(event.threadId, event.turnId);
+    if (event.type === 'operation.output') {
+      this.scheduleOutputDelta(event.threadId, event.turnId);
+    } else {
+      this.cancelOutputDelta(event.threadId);
+      this.publishThreadDelta(event.threadId, event.turnId);
+    }
     if (
       event.type === 'turn.completed' ||
       event.type === 'turn.userInputRequested' ||
@@ -1483,6 +1492,27 @@ export class RuntimeConversationController {
     ) {
       this.publish();
     }
+  };
+
+  private scheduleOutputDelta = (threadId: string, turnId: string): void => {
+    if (this.outputDeltaTimers.has(threadId)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.outputDeltaTimers.delete(threadId);
+      this.publishThreadDelta(threadId, turnId);
+    }, 50);
+    timer.unref();
+    this.outputDeltaTimers.set(threadId, { timer, turnId });
+  };
+
+  private cancelOutputDelta = (threadId: string): void => {
+    const pending = this.outputDeltaTimers.get(threadId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.outputDeltaTimers.delete(threadId);
   };
 
   private applyThreadList = (

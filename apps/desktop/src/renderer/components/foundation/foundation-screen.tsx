@@ -80,6 +80,8 @@ export const FoundationScreen = () => {
                   isDark={foundation.isDark}
                   themeLabel={foundation.themeLabel}
                   toggleTheme={foundation.toggleTheme}
+                  workspaceId={threadStore.thread.workspaceIdentity}
+                  threadId={threadStore.thread.threadIdentity}
                 />
               </div>
             }

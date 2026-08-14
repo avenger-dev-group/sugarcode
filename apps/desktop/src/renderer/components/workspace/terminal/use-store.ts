@@ -18,6 +18,7 @@ import type {
 } from '@/shared/terminal';
 
 import type { TerminalWorkbenchStore } from './types';
+import { shouldPullTerminalSnapshot } from './presentation';
 
 const INITIAL_TERMINAL_STATE: TerminalStateSnapshot = {
   revision: 0,
@@ -65,7 +66,7 @@ const failureMessage = (
 };
 
 export const useStore = (): TerminalWorkbenchStore => {
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(false);
   const [state, setState] = useState<TerminalStateSnapshot>(
     INITIAL_TERMINAL_STATE,
   );
@@ -84,6 +85,7 @@ export const useStore = (): TerminalWorkbenchStore => {
   const acknowledgementRef = useRef(0);
   const pullingRef = useRef(false);
   const pendingPullRef = useRef(false);
+  const openRef = useRef(false);
 
   stateRef.current = state;
   workspaceRef.current = workspace;
@@ -122,6 +124,14 @@ export const useStore = (): TerminalWorkbenchStore => {
     }
   };
 
+  const setOpen = (next: boolean): void => {
+    openRef.current = next;
+    setOpenState(next);
+    if (next) {
+      void pull();
+    }
+  };
+
   useEffect(() => {
     let active = true;
     void pull();
@@ -130,13 +140,22 @@ export const useStore = (): TerminalWorkbenchStore => {
         if (!active) {
           return;
         }
-        if (signal.sessionId !== targetRef.current.sessionId) {
+        const sessionChanged = signal.sessionId !== targetRef.current.sessionId;
+        if (sessionChanged) {
           acknowledgementRef.current = 0;
         }
         targetRef.current = {
           generation: signal.generation,
           ...(signal.sessionId ? { sessionId: signal.sessionId } : {}),
         };
+        if (!shouldPullTerminalSnapshot({
+          currentStatus: stateRef.current.status,
+          open: openRef.current,
+          sessionChanged,
+          signalStatus: signal.status,
+        })) {
+          return;
+        }
         void pull();
       },
     );
@@ -164,7 +183,7 @@ export const useStore = (): TerminalWorkbenchStore => {
         event.code === 'Backquote'
       ) {
         event.preventDefault();
-        setOpen((current) => !current);
+        setOpen(!openRef.current);
       }
     };
     document.addEventListener('keydown', onKeyDown);

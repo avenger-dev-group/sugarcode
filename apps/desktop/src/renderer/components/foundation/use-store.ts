@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 
 import { usePanelResize } from '@/renderer/hooks/use-panel-resize';
+import { initializeCommandEnvironmentPreference } from '@/renderer/services/command-environment';
+import { onConnectionStateChanged } from '@/renderer/services/connection';
 
 import {
   CONTEXT_RAIL_WIDTH,
@@ -30,6 +32,25 @@ export const useStore = (): FoundationStore => {
     document.documentElement.classList.toggle('dark', isDark);
     return () => document.documentElement.classList.remove('dark');
   }, [isDark]);
+
+  useEffect(() => {
+    let active = true;
+    const applyPreference = (): void => {
+      void initializeCommandEnvironmentPreference().catch((): void => {
+        // Runtime startup and restart races are retried on the next ready signal.
+      });
+    };
+    applyPreference();
+    const unsubscribe = onConnectionStateChanged((connection) => {
+      if (active && connection.status === 'ready') {
+        applyPreference();
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     try {

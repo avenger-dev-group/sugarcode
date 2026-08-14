@@ -11,4 +11,6 @@ export type SettingsDialogProps = Readonly<{
   isDark: boolean;
   themeLabel: string;
   toggleTheme: () => void;
+  workspaceId?: string;
+  threadId?: string;
 }>;

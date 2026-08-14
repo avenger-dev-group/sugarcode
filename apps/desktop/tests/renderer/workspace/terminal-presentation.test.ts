@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   shouldAutoStartTerminal,
+  shouldPullTerminalSnapshot,
   terminalStatusLabel,
 } from '../../../src/renderer/components/workspace/terminal/presentation.ts';
 
@@ -51,6 +52,27 @@ test('terminal autostart waits for an open panel and ready Workspace', () => {
     }),
     false,
   );
+});
+
+test('hidden terminal output stays queued without renderer snapshot pulls', () => {
+  assert.equal(shouldPullTerminalSnapshot({
+    currentStatus: 'running',
+    open: false,
+    sessionChanged: false,
+    signalStatus: 'running',
+  }), false);
+  assert.equal(shouldPullTerminalSnapshot({
+    currentStatus: 'running',
+    open: true,
+    sessionChanged: false,
+    signalStatus: 'running',
+  }), true);
+  assert.equal(shouldPullTerminalSnapshot({
+    currentStatus: 'running',
+    open: false,
+    sessionChanged: false,
+    signalStatus: 'paused',
+  }), true);
 });
 
 test('terminal status labels stay concise and user-facing', () => {

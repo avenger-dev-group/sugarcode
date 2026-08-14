@@ -1,4 +1,3 @@
-import '@xterm/xterm/css/xterm.css';
 import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 import {
@@ -29,6 +28,7 @@ import { useStore } from './use-store';
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
 const INPUT_CHUNK_BYTES = 16_384;
+const OUTPUT_RENDER_BATCH_BYTES = 64 * 1_024;
 const TERMINAL_SHORTCUT = 'Ctrl/⌘+Shift+`';
 
 const readTheme = (): Readonly<{
@@ -81,6 +81,8 @@ export const TerminalWorkbench = ({
   const inputQueueRef = useRef<Promise<void>>(Promise.resolve());
   const initializationRef = useRef<Promise<void> | null>(null);
   const terminalCleanupRef = useRef<(() => void) | null>(null);
+  const outputWritePendingRef = useRef(false);
+  const outputWriteEpochRef = useRef(0);
   const inputActionRef = useRef(store.input);
   const resizeActionRef = useRef(store.resize);
   const refreshActionRef = useRef(store.refresh);
@@ -125,6 +127,7 @@ export const TerminalWorkbench = ({
     initializationRef.current = Promise.all([
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
+      import('@xterm/xterm/css/xterm.css'),
     ]).then(([{ Terminal }, { FitAddon }]) => {
       if (!active || terminalRef.current) {
         return;
@@ -183,7 +186,9 @@ export const TerminalWorkbench = ({
       });
       resizeObserver.observe(host);
       const themeObserver = new MutationObserver(() => {
-        terminal.options.theme = readTheme();
+        if (openRef.current) {
+          terminal.options.theme = readTheme();
+        }
       });
       themeObserver.observe(document.documentElement, {
         attributes: true,
@@ -192,6 +197,8 @@ export const TerminalWorkbench = ({
       void refreshActionRef.current();
 
       terminalCleanupRef.current = (): void => {
+        outputWriteEpochRef.current += 1;
+        outputWritePendingRef.current = false;
         themeObserver.disconnect();
         resizeObserver.disconnect();
         resizeSubscription.dispose();
@@ -222,23 +229,42 @@ export const TerminalWorkbench = ({
 
   useEffect(() => {
     const terminal = terminalRef.current;
-    if (!terminal || state.output.length === 0) {
+    if (
+      !store.open ||
+      !terminal ||
+      outputWritePendingRef.current ||
+      state.output.length === 0
+    ) {
       return;
     }
     const chunks: TerminalOutputChunk[] = [];
+    const encoder = new TextEncoder();
+    let bytes = 0;
     for (const chunk of state.output) {
       if (chunk.sequence > renderedThroughRef.current) {
+        const chunkBytes = encoder.encode(chunk.data).byteLength;
+        if (chunks.length > 0 && bytes + chunkBytes > OUTPUT_RENDER_BATCH_BYTES) {
+          break;
+        }
         chunks.push(chunk);
+        bytes += chunkBytes;
       }
     }
     if (chunks.length === 0) {
       return;
     }
-    terminal.write(chunks.map((chunk) => chunk.data).join(''));
     const sequence = chunks[chunks.length - 1].sequence;
-    renderedThroughRef.current = sequence;
-    void store.acknowledge(sequence);
-  }, [state.output, store.acknowledge]);
+    const epoch = outputWriteEpochRef.current;
+    outputWritePendingRef.current = true;
+    terminal.write(chunks.map((chunk) => chunk.data).join(''), () => {
+      if (epoch !== outputWriteEpochRef.current) {
+        return;
+      }
+      outputWritePendingRef.current = false;
+      renderedThroughRef.current = sequence;
+      void store.acknowledge(sequence);
+    });
+  }, [state.output, store.acknowledge, store.open]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -256,6 +282,9 @@ export const TerminalWorkbench = ({
       return;
     }
     requestAnimationFrame(() => {
+      if (terminalRef.current) {
+        terminalRef.current.options.theme = readTheme();
+      }
       fitRef.current?.fit();
       terminalRef.current?.focus();
     });
@@ -263,12 +292,16 @@ export const TerminalWorkbench = ({
 
   useEffect(() => {
     if (state.status === 'closed') {
+      outputWriteEpochRef.current += 1;
+      outputWritePendingRef.current = false;
       renderedThroughRef.current = 0;
       terminalRef.current?.reset();
     }
   }, [state.status]);
 
   useEffect(() => {
+    outputWriteEpochRef.current += 1;
+    outputWritePendingRef.current = false;
     renderedThroughRef.current = 0;
     terminalRef.current?.reset();
   }, [state.status === 'closed' ? undefined : state.sessionId]);

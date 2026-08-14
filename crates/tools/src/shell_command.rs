@@ -1,9 +1,11 @@
+use crate::CommandEnvironmentSnapshot;
+use crate::CommandShellKind;
 use crate::CommandWorkspaceRoot;
+use crate::command_environment::{sensitive_environment_name, valid_environment_name};
 #[cfg(unix)]
 use crate::workspace_command_root::CommandWorkspaceRootIdentity;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
@@ -39,51 +41,6 @@ const SUPERVISOR_RESULT_BYTES: usize = 2 * MAX_SHELL_OUTPUT_BYTES + 16 * 1_024;
 const SANDBOX_PROBE_SENTINEL: &str = "sugarcode-command-sandbox-probe-ok";
 const MAX_COMMAND_ENVIRONMENT_VARIABLES: usize = 256;
 const MAX_COMMAND_ENVIRONMENT_BYTES: usize = 128 * 1_024;
-const SENSITIVE_ENVIRONMENT_MARKERS: &[&str] = &[
-    "KEY",
-    "TOKEN",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "CREDENTIAL",
-    "AUTH",
-    "COOKIE",
-];
-const PRIORITY_ENVIRONMENT_NAMES: &[&str] = &[
-    "PATH",
-    "PATHEXT",
-    "HOME",
-    "USERPROFILE",
-    "SYSTEMROOT",
-    "WINDIR",
-    "SHELL",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "LOGNAME",
-    "USER",
-    "USERNAME",
-    "JAVA_HOME",
-    "NVM_BIN",
-    "NVM_DIR",
-    "PNPM_HOME",
-    "VOLTA_HOME",
-    "ASDF_DATA_DIR",
-    "MISE_DATA_DIR",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "GOPATH",
-    "GOROOT",
-    "VIRTUAL_ENV",
-    "CONDA_PREFIX",
-    "BUN_INSTALL",
-    "DENO_INSTALL",
-    "SDKMAN_DIR",
-    "HOMEBREW_PREFIX",
-];
 
 pub type ShellCommandFuture = Pin<Box<dyn Future<Output = ShellCommandExecution> + Send + 'static>>;
 
@@ -197,14 +154,14 @@ pub struct NativeShellCommandExecutor {
     supervisor_executable: PathBuf,
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     workspace_root: Arc<CommandWorkspaceRoot>,
-    environment: Arc<CommandEnvironment>,
+    environment: Arc<CommandEnvironmentSnapshot>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EmbeddedShellCommandExecutor {
     sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     workspace_root: Arc<CommandWorkspaceRoot>,
-    environment: Arc<CommandEnvironment>,
+    environment: Arc<CommandEnvironmentSnapshot>,
 }
 
 impl EmbeddedShellCommandExecutor {
@@ -230,20 +187,37 @@ impl EmbeddedShellCommandExecutor {
         Ok(Self {
             sandbox_policy,
             workspace_root: Arc::new(workspace_root),
-            environment: Arc::new(CommandEnvironment(host_command_environment())),
+            environment: Arc::new(CommandEnvironmentSnapshot::process_fallback(true)),
         })
     }
-}
 
-#[derive(Clone)]
-struct CommandEnvironment(Vec<(String, String)>);
+    pub fn new_with_environment(
+        workspace_root: CommandWorkspaceRoot,
+        environment: Arc<CommandEnvironmentSnapshot>,
+    ) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        Self::new_with_policy_and_environment(
+            workspace_root,
+            sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
+            environment,
+        )
+    }
 
-impl fmt::Debug for CommandEnvironment {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("CommandEnvironment")
-            .field("variable_count", &self.0.len())
-            .finish()
+    pub fn new_with_policy_and_environment(
+        workspace_root: CommandWorkspaceRoot,
+        sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+        environment: Arc<CommandEnvironmentSnapshot>,
+    ) -> Result<Self, sugarcode_sandbox::SandboxError> {
+        #[cfg(unix)]
+        sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
+        #[cfg(not(any(unix, windows)))]
+        return Err(sugarcode_sandbox::SandboxError::unavailable(
+            "native command execution is unavailable on this platform",
+        ));
+        Ok(Self {
+            sandbox_policy,
+            workspace_root: Arc::new(workspace_root),
+            environment,
+        })
     }
 }
 
@@ -264,7 +238,7 @@ impl NativeShellCommandExecutor {
         workspace_root: CommandWorkspaceRoot,
         sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
     ) -> Result<Self, sugarcode_sandbox::SandboxError> {
-        let environment = Arc::new(CommandEnvironment(host_command_environment()));
+        let environment = Arc::new(CommandEnvironmentSnapshot::process_fallback(true));
         #[cfg(unix)]
         let sandbox_policy = {
             let adapter = sugarcode_sandbox::CommandSandboxAdapter::probe(sandbox_policy)?;
@@ -272,7 +246,7 @@ impl NativeShellCommandExecutor {
                 &supervisor_executable,
                 adapter.policy(),
                 &workspace_root,
-                &environment.0,
+                environment.variables(),
             )
             .map_err(|error| {
                 sugarcode_sandbox::SandboxError::unavailable(format!(
@@ -420,7 +394,7 @@ impl ShellCommandExecutor for NativeShellCommandExecutor {
             let request = SupervisorRequest {
                 command: arguments.command,
                 arguments: arguments.arguments,
-                environment: environment.0.clone(),
+                environment: environment.variables().to_vec(),
                 sandbox_policy,
                 #[cfg(unix)]
                 workspace_root_fd: -1,
@@ -487,7 +461,7 @@ impl ShellCommandExecutor for EmbeddedShellCommandExecutor {
                 SupervisorRequest {
                     command: arguments.command,
                     arguments: arguments.arguments,
-                    environment: environment.0.clone(),
+                    environment: environment.variables().to_vec(),
                     sandbox_policy,
                     workspace_root_fd: directory.into_raw_fd(),
                     workspace_root_identity: workspace_root.identity(),
@@ -551,7 +525,7 @@ impl ShellCommandExecutor for EmbeddedShellCommandExecutor {
 async fn execute_full_access_shell(
     arguments: FullAccessShellArguments,
     workspace_root: Arc<CommandWorkspaceRoot>,
-    environment: Arc<CommandEnvironment>,
+    environment: Arc<CommandEnvironmentSnapshot>,
     cancellation: CancellationToken,
 ) -> ShellCommandExecution {
     if arguments.command.is_empty()
@@ -581,21 +555,26 @@ async fn execute_full_access_shell(
         }
     };
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     let (shell, shell_arguments) = {
-        let shell = std::env::var("SHELL")
-            .ok()
-            .filter(|shell| Path::new(shell).is_absolute())
-            .unwrap_or_else(|| "/bin/zsh".to_string());
-        (shell, vec!["-lc".to_string(), arguments.command])
-    };
-    #[cfg(windows)]
-    let (shell, shell_arguments) = {
-        let shell = std::env::var("COMSPEC")
-            .ok()
-            .filter(|shell| Path::new(shell).is_absolute())
-            .unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".to_string());
-        (shell, vec!["/C".to_string(), arguments.command])
+        let descriptor = &environment.status().shell;
+        let shell_arguments = match descriptor.kind {
+            CommandShellKind::PowerShell => vec![
+                "-NoLogo".to_owned(),
+                "-NoProfile".to_owned(),
+                "-NonInteractive".to_owned(),
+                "-Command".to_owned(),
+                arguments.command,
+            ],
+            CommandShellKind::Cmd => vec![
+                "/D".to_owned(),
+                "/S".to_owned(),
+                "/C".to_owned(),
+                arguments.command,
+            ],
+            _ => vec!["-c".to_owned(), arguments.command],
+        };
+        (descriptor.executable.clone(), shell_arguments)
     };
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -610,7 +589,7 @@ async fn execute_full_access_shell(
             .args(shell_arguments)
             .current_dir(cwd)
             .env_clear()
-            .envs(environment.0.iter().cloned())
+            .envs(environment.variables().iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1184,60 +1163,6 @@ fn map_sandbox_spawn_error(error: sugarcode_sandbox::SandboxSpawnError) -> Shell
     }
 }
 
-fn host_command_environment() -> Vec<(String, String)> {
-    filtered_command_environment(
-        std::env::vars_os().filter_map(|(name, value)| {
-            Some((name.into_string().ok()?, value.into_string().ok()?))
-        }),
-    )
-}
-
-fn filtered_command_environment(
-    variables: impl IntoIterator<Item = (String, String)>,
-) -> Vec<(String, String)> {
-    let mut candidates = variables
-        .into_iter()
-        .filter(|(name, value)| {
-            valid_environment_name(name)
-                && !value.contains('\0')
-                && !sensitive_environment_name(name)
-        })
-        .collect::<BTreeMap<_, _>>();
-    if !candidates.contains_key("LANG") {
-        candidates.insert("LANG".to_string(), "C".to_string());
-    }
-    if !candidates.contains_key("LC_ALL") {
-        candidates.insert("LC_ALL".to_string(), "C".to_string());
-    }
-
-    let mut ordered = Vec::with_capacity(candidates.len());
-    for priority in PRIORITY_ENVIRONMENT_NAMES {
-        if let Some((name, value)) = candidates.remove_entry(*priority) {
-            ordered.push((name, value));
-        }
-    }
-    ordered.extend(candidates);
-
-    let mut retained = Vec::new();
-    let mut retained_bytes = 0usize;
-    for (name, value) in ordered {
-        let Some(variable_bytes) = name.len().checked_add(value.len()) else {
-            continue;
-        };
-        let Some(next_bytes) = retained_bytes.checked_add(variable_bytes) else {
-            continue;
-        };
-        if retained.len() >= MAX_COMMAND_ENVIRONMENT_VARIABLES
-            || next_bytes > MAX_COMMAND_ENVIRONMENT_BYTES
-        {
-            continue;
-        }
-        retained_bytes = next_bytes;
-        retained.push((name, value));
-    }
-    retained
-}
-
 fn validate_command_environment(
     environment: &[(String, String)],
 ) -> Result<(), ShellCommandErrorKind> {
@@ -1259,20 +1184,6 @@ fn validate_command_environment(
         }
     }
     Ok(())
-}
-
-fn valid_environment_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('=')
-        && !name.contains('\0')
-        && !name.chars().any(char::is_control)
-}
-
-fn sensitive_environment_name(name: &str) -> bool {
-    let uppercase = name.to_ascii_uppercase();
-    SENSITIVE_ENVIRONMENT_MARKERS
-        .iter()
-        .any(|marker| uppercase.contains(marker))
 }
 
 fn exit_outcome(status: std::process::ExitStatus) -> ShellCommandOutcome {

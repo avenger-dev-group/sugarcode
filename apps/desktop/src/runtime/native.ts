@@ -34,12 +34,22 @@ export type NativeRuntimeBinding = Readonly<{
   executeCommandJson: (
     operationId: string,
     workspaceId: string,
+    threadId: string,
     mode: 'sandboxed' | 'fullAccess',
     command: string,
     argumentsJson: string,
     cwd: string,
     timeoutMs: number,
   ) => Promise<string>;
+  inspectCommandEnvironmentJson: (
+    workspaceId: string,
+    threadId?: string,
+  ) => string;
+  refreshCommandEnvironmentJson: (
+    workspaceId: string,
+    threadId: string,
+  ) => Promise<string>;
+  setCommandProfileLoadingEnabledJson: (enabled: boolean) => string;
   drainCommandOutputJson: (operationId: string) => string;
   finishCommandOutput: (operationId: string) => void;
   createTerminalJson: (

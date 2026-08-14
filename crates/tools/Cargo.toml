@@ -17,6 +17,7 @@ sha2.workspace = true
 sugarcode-sandbox = { path = "../sandbox" }
 tokio.workspace = true
 tokio-util.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

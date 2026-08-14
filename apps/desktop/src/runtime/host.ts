@@ -106,6 +106,10 @@ import type {
   SkillsActionResult,
   SkillsInspection,
 } from '../shared/skills.ts';
+import type {
+  CommandEnvironmentActionResult,
+  CommandEnvironmentStatus,
+} from '../shared/command-environment.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
@@ -746,6 +750,53 @@ export class RuntimeHost {
       case 'workspace.resolve':
         this.requireReady(command.requestId);
         void this.resolveWorkspace(command);
+        break;
+      case 'environment.inspect':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'environment.inspection',
+          requestId: command.requestId,
+          status: this.parseNativeJson<CommandEnvironmentStatus>(
+            this.requireNative().inspectCommandEnvironmentJson(
+              command.workspaceId,
+              command.threadId,
+            ),
+          ),
+        });
+        break;
+      case 'environment.refresh':
+        this.requireReady(command.requestId);
+        void this.requireNative()
+          .refreshCommandEnvironmentJson(command.workspaceId, command.threadId)
+          .then((value) => {
+            this.emit({
+              type: 'environment.action',
+              requestId: command.requestId,
+              action: {
+                accepted: true,
+                status: this.parseNativeJson<CommandEnvironmentStatus>(value),
+              },
+            });
+          })
+          .catch(() => {
+            this.emit({
+              type: 'environment.action',
+              requestId: command.requestId,
+              action: { accepted: false },
+            });
+          });
+        break;
+      case 'environment.profileLoadingSet':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'environment.action',
+          requestId: command.requestId,
+          action: this.parseNativeJson<CommandEnvironmentActionResult>(
+            this.requireNative().setCommandProfileLoadingEnabledJson(
+              command.enabled,
+            ),
+          ),
+        });
         break;
       case 'asset.import':
         this.requireReady(command.requestId);
@@ -2777,6 +2828,7 @@ export class RuntimeHost {
               },
               turnAccess,
               workspaceInstructions,
+              command.threadId,
             ),
             ...(turnMode === 'execute'
               ? this.mcp.toolsForTurn((request) =>
@@ -3343,6 +3395,7 @@ export class RuntimeHost {
               },
               context.task.access,
               workspaceInstructions,
+              command.threadId,
             ),
             ...(context.task.role === 'worker'
               ? this.mcp.toolsForTurn((request) =>
@@ -4361,6 +4414,7 @@ export class RuntimeHost {
                 delta,
               });
             },
+            record.threadId,
           )
         : await this.mcp.executeRecovered(
             presentation.serverId,

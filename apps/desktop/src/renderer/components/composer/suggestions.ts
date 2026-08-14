@@ -112,6 +112,9 @@ export const composerDisplaySegments = (
   value: string,
   activeToken: ComposerToken | null,
 ): readonly ComposerDisplaySegment[] => {
+  if (!value.includes('/') && !value.includes('$') && !value.includes('@')) {
+    return [{ kind: 'text', text: value }];
+  }
   const segments: ComposerDisplaySegment[] = [];
   let cursor = 0;
   for (const reference of findComposerReferences(value)) {

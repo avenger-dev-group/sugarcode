@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { registerCommandApprovalIpc } from '@/main/ipc/command-approval';
+import { registerCommandEnvironmentIpc } from '@/main/ipc/command-environment';
 import { registerConnectionIpc } from '@/main/ipc/connection';
 import { registerConversationIpc } from '@/main/ipc/conversation';
 import { registerGitIpc } from '@/main/ipc/git';
@@ -26,6 +27,7 @@ import { RuntimeModelConfigController } from '@/main/runtime/model-config-contro
 import { RuntimeConversationController } from '@/main/runtime/conversation-controller';
 import { RuntimeConnectionController } from '@/main/runtime/connection-controller';
 import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
+import { RuntimeCommandEnvironmentController } from '@/main/runtime/command-environment-controller';
 import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
 import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
 import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
@@ -39,6 +41,7 @@ let isQuitting = false;
 let runtimeConnectionController: RuntimeConnectionController | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
+let disposeCommandEnvironmentIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
@@ -323,6 +326,11 @@ const startApplication = async (): Promise<void> => {
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
+  disposeCommandEnvironmentIpc = registerCommandEnvironmentIpc({
+    controller: new RuntimeCommandEnvironmentController(runtimeSupervisor),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
   disposeWorkspaceIpc = registerWorkspaceIpc({
     controller: workspaceController,
     getMainWindow: () => mainWindow,
@@ -492,6 +500,8 @@ if (started) {
     disposeModelConfigIpc = null;
     disposeSkillsIpc?.();
     disposeSkillsIpc = null;
+    disposeCommandEnvironmentIpc?.();
+    disposeCommandEnvironmentIpc = null;
     disposeWorkspaceIpc?.();
     disposeWorkspaceIpc = null;
     disposeGitIpc?.();

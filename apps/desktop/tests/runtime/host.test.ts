@@ -3237,6 +3237,9 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async () => '{}',
+    inspectCommandEnvironmentJson: () => '{"state":"notCaptured"}',
+    refreshCommandEnvironmentJson: async () => '{"state":"ready"}',
+    setCommandProfileLoadingEnabledJson: () => '{"accepted":true}',
     drainCommandOutputJson: () => '[]',
     finishCommandOutput: () => undefined,
     createTerminalJson: () => '{}',
@@ -3627,6 +3630,9 @@ test('RuntimeHost automatically authorizes a workspace patch', async () => {
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
     executeCommandJson: async () => '{}',
+    inspectCommandEnvironmentJson: () => '{"state":"notCaptured"}',
+    refreshCommandEnvironmentJson: async () => '{"state":"ready"}',
+    setCommandProfileLoadingEnabledJson: () => '{"accepted":true}',
     drainCommandOutputJson: () => '[]',
     finishCommandOutput: () => undefined,
     createTerminalJson: () => '{}',
@@ -3746,8 +3752,18 @@ test('RuntimeHost automatically authorizes a sandboxed command', async () => {
     saveMcpConfigJson: () => '{}',
     importAssetJson: () => '{}',
     readAssetJson: () => '{}',
-    executeCommandJson: async (_operationId, _workspaceId, mode, command) => {
+    inspectCommandEnvironmentJson: () => '{"state":"notCaptured"}',
+    refreshCommandEnvironmentJson: async () => '{"state":"ready"}',
+    setCommandProfileLoadingEnabledJson: () => '{"accepted":true}',
+    executeCommandJson: async (
+      _operationId,
+      _workspaceId,
+      threadId,
+      mode,
+      command,
+    ) => {
       executeCount += 1;
+      assert.equal(threadId, 'thread-fixture');
       assert.equal(mode, 'sandboxed');
       assert.equal(command, '/bin/pwd');
       return JSON.stringify({ status: 'completed', mode, output: { stdout: '/fixture' } });
@@ -3987,6 +4003,9 @@ test('RuntimeHost rebuilds completed history and interrupted task intent into AD
     importAssetJson: () => JSON.stringify(asset),
     readAssetJson: () => JSON.stringify({ asset, data: 'Zml4dHVyZQ==' }),
     executeCommandJson: async () => '{}',
+    inspectCommandEnvironmentJson: () => '{"state":"notCaptured"}',
+    refreshCommandEnvironmentJson: async () => '{"state":"ready"}',
+    setCommandProfileLoadingEnabledJson: () => '{"accepted":true}',
     drainCommandOutputJson: () => '[]',
     finishCommandOutput: () => undefined,
     createTerminalJson: () => '{}',

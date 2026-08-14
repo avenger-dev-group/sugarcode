@@ -323,6 +323,73 @@ test('Stop records the user control as the cancellation source', async () => {
   assert.equal(interrupted?.error, undefined);
 });
 
+test('command output projection updates are batched and completion flushes them', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  const deltas: ConversationThreadProjectionDelta[] = [];
+  controller.subscribeThreadDelta((delta) => deltas.push(delta));
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+  assert.equal(controller.startNewThread().accepted, true);
+  assert.equal((await controller.startTurn({ input: 'Stream output' })).accepted, true);
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      command.type === 'turn.start',
+  );
+  assert.ok(started);
+  fixture.emit({
+    type: 'turn.started',
+    requestId: started.requestId,
+    sequence: 10,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    model: {
+      profileId: 'profile-1',
+      providerFamily: 'openai',
+      wireApi: 'openaiResponses',
+      modelId: 'fixture',
+      displayName: 'Fixture',
+      contextWindowTokens: 128_000,
+      effectiveCapabilities: {
+        toolCalls: true,
+        strictTools: true,
+        parallelTools: true,
+        imageInput: true,
+        pdfInput: false,
+      },
+    },
+  });
+  const beforeOutput = deltas.length;
+  for (let index = 0; index < 8; index += 1) {
+    fixture.emit({
+      type: 'operation.output',
+      requestId: started.requestId,
+      sequence: 11 + index,
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+      turnId: started.turnId,
+      operationId: 'operation-fixture',
+      stream: 'stdout',
+      delta: `chunk-${index}`,
+    });
+  }
+  assert.equal(deltas.length, beforeOutput);
+  fixture.emit({
+    type: 'operation.completed',
+    requestId: started.requestId,
+    sequence: 20,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    operationId: 'operation-fixture',
+    succeeded: true,
+    result: { status: 'completed' },
+  });
+  assert.equal(deltas.length, beforeOutput + 1);
+});
+
 test('/compact starts a maintenance Turn without a user message', async () => {
   const fixture = new FixtureRuntime();
   const controller = new RuntimeConversationController(

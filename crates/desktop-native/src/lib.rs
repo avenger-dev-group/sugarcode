@@ -18,6 +18,8 @@ use sugarcode_state::ContentAsset;
 use sugarcode_state::ContentAssetKind;
 use sugarcode_state::ContentStore;
 use sugarcode_terminal::EmbeddedTerminal;
+use sugarcode_tools::CommandEnvironmentManager;
+use sugarcode_tools::CommandEnvironmentState;
 use sugarcode_tools::EmbeddedShellCommandExecutor;
 use sugarcode_tools::FullAccessShellArguments;
 use sugarcode_tools::GitChangeKind;
@@ -65,6 +67,7 @@ pub struct NativeRuntime {
     workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
     command_cancellations: Mutex<HashMap<String, CancellationToken>>,
     command_output: Arc<Mutex<HashMap<String, VecDeque<ShellOutputChunk>>>>,
+    command_environments: CommandEnvironmentManager,
     terminals: Mutex<HashMap<String, EmbeddedTerminal>>,
     skills_root: PathBuf,
 }
@@ -85,6 +88,7 @@ impl NativeRuntime {
             workspaces: Mutex::new(HashMap::new()),
             command_cancellations: Mutex::new(HashMap::new()),
             command_output: Arc::new(Mutex::new(HashMap::new())),
+            command_environments: CommandEnvironmentManager::new(),
             terminals: Mutex::new(HashMap::new()),
             skills_root,
         })
@@ -268,6 +272,7 @@ impl NativeRuntime {
         &self,
         operation_id: String,
         workspace_id: String,
+        thread_id: String,
         mode: String,
         command: String,
         arguments_json: String,
@@ -280,8 +285,6 @@ impl NativeRuntime {
         let command_root = workspace.command_workspace_root().map_err(|kind| {
             Error::from_reason(format!("Could not bind command workspace root: {kind:?}."))
         })?;
-        let executor = EmbeddedShellCommandExecutor::new(command_root)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
         let cancellation = CancellationToken::new();
         {
             let mut active = self.command_cancellations.lock().map_err(|_| {
@@ -294,64 +297,137 @@ impl NativeRuntime {
             }
             active.insert(operation_id.clone(), cancellation.clone());
         }
-        self.command_output
-            .lock()
-            .map_err(|_| Error::from_reason("Native command output lock was poisoned."))?
-            .insert(operation_id.clone(), VecDeque::new());
-        let execution = match mode.as_str() {
-            "sandboxed" if cwd == "." => {
-                executor
-                    .execute(ShellCommandArguments { command, arguments }, cancellation)
-                    .await
+        match self.command_output.lock() {
+            Ok(mut output) => {
+                output.insert(operation_id.clone(), VecDeque::new());
             }
-            "fullAccess" if arguments.is_empty() => {
-                let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
-                let output_store = Arc::clone(&self.command_output);
-                let output_operation_id = operation_id.clone();
-                let output_task = tokio::spawn(async move {
-                    while let Some(chunk) = output_rx.recv().await {
-                        if let Ok(mut outputs) = output_store.lock()
-                            && let Some(queue) = outputs.get_mut(&output_operation_id)
-                        {
-                            queue.push_back(chunk);
+            Err(_) => {
+                self.command_cancellations
+                    .lock()
+                    .map_err(|_| {
+                        Error::from_reason("Native command cancellation lock was poisoned.")
+                    })?
+                    .remove(&operation_id);
+                return Err(Error::from_reason(
+                    "Native command output lock was poisoned.",
+                ));
+            }
+        }
+        let environment = self
+            .command_environments
+            .environment_for_thread(&thread_id)
+            .await;
+        let environment_status = environment.status().clone();
+        let executor =
+            match EmbeddedShellCommandExecutor::new_with_environment(command_root, environment) {
+                Ok(executor) => executor,
+                Err(error) => {
+                    self.command_cancellations
+                        .lock()
+                        .map_err(|_| {
+                            Error::from_reason("Native command cancellation lock was poisoned.")
+                        })?
+                        .remove(&operation_id);
+                    return Err(Error::from_reason(error.to_string()));
+                }
+            };
+        let execution = if cancellation.is_cancelled() {
+            ShellCommandExecution::Cancelled
+        } else {
+            match mode.as_str() {
+                "sandboxed" if cwd == "." => {
+                    executor
+                        .execute(ShellCommandArguments { command, arguments }, cancellation)
+                        .await
+                }
+                "fullAccess" if arguments.is_empty() => {
+                    let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+                    let output_store = Arc::clone(&self.command_output);
+                    let output_operation_id = operation_id.clone();
+                    let output_task = tokio::spawn(async move {
+                        while let Some(chunk) = output_rx.recv().await {
+                            if let Ok(mut outputs) = output_store.lock()
+                                && let Some(queue) = outputs.get_mut(&output_operation_id)
+                            {
+                                queue.push_back(chunk);
+                            }
                         }
-                    }
-                });
-                let result = executor
-                    .execute_full_access(
-                        FullAccessShellArguments {
-                            command,
-                            cwd,
-                            timeout_ms: u64::from(timeout_ms),
-                            output_tx: Some(output_tx),
-                        },
-                        cancellation,
-                    )
-                    .await;
-                let _ = output_task.await;
-                result
+                    });
+                    let result = executor
+                        .execute_full_access(
+                            FullAccessShellArguments {
+                                command,
+                                cwd,
+                                timeout_ms: u64::from(timeout_ms),
+                                output_tx: Some(output_tx),
+                            },
+                            cancellation,
+                        )
+                        .await;
+                    let _ = output_task.await;
+                    result
+                }
+                _ => ShellCommandExecution::Error(
+                    sugarcode_tools::ShellCommandErrorKind::InvalidArguments,
+                ),
             }
-            _ => ShellCommandExecution::Error(
-                sugarcode_tools::ShellCommandErrorKind::InvalidArguments,
-            ),
         };
         self.command_cancellations
             .lock()
             .map_err(|_| Error::from_reason("Native command cancellation lock was poisoned."))?
             .remove(&operation_id);
+        let environment_metadata = json!({
+            "snapshotId": environment_status.snapshot_id,
+            "shell": environment_status.shell,
+            "source": environment_status.source,
+            "degraded": environment_status.state == CommandEnvironmentState::Degraded,
+        });
         let value = match execution {
             ShellCommandExecution::Completed(output) => {
-                json!({ "status": "completed", "mode": "sandboxed", "output": output })
+                json!({ "status": "completed", "mode": "sandboxed", "output": output, "environment": environment_metadata })
             }
             ShellCommandExecution::FullAccessCompleted(output) => {
-                json!({ "status": "completed", "mode": "fullAccess", "output": output })
+                json!({ "status": "completed", "mode": "fullAccess", "output": output, "environment": environment_metadata })
             }
             ShellCommandExecution::Error(kind) => {
-                json!({ "status": "error", "kind": kind.to_string() })
+                json!({ "status": "error", "kind": kind.to_string(), "environment": environment_metadata })
             }
-            ShellCommandExecution::Cancelled => json!({ "status": "cancelled" }),
+            ShellCommandExecution::Cancelled => {
+                json!({ "status": "cancelled", "environment": environment_metadata })
+            }
         };
         json_string(value)
+    }
+
+    #[napi]
+    pub fn inspect_command_environment_json(
+        &self,
+        workspace_id: String,
+        thread_id: Option<String>,
+    ) -> Result<String> {
+        let _ = self.workspace(&workspace_id)?;
+        json_string(json!(
+            self.command_environments.inspect(thread_id.as_deref())
+        ))
+    }
+
+    #[napi]
+    pub async fn refresh_command_environment_json(
+        &self,
+        workspace_id: String,
+        thread_id: String,
+    ) -> Result<String> {
+        let _ = self.workspace(&workspace_id)?;
+        let snapshot = self.command_environments.refresh_thread(&thread_id).await;
+        json_string(json!(snapshot.status()))
+    }
+
+    #[napi]
+    pub fn set_command_profile_loading_enabled_json(&self, enabled: bool) -> Result<String> {
+        let changed = self
+            .command_environments
+            .set_profile_loading_enabled(enabled);
+        json_string(json!({ "accepted": true, "changed": changed }))
     }
 
     #[napi]
@@ -599,7 +675,11 @@ impl NativeRuntime {
 
     #[napi]
     pub fn delete_thread(&self, thread_id: String, workspace_id: String) -> Result<bool> {
-        self.with_store(|store| store.delete_thread(&thread_id, &workspace_id))
+        let deleted = self.with_store(|store| store.delete_thread(&thread_id, &workspace_id))?;
+        if deleted {
+            self.command_environments.evict_thread(&thread_id);
+        }
+        Ok(deleted)
     }
 
     #[napi]

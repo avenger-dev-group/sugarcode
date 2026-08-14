@@ -570,6 +570,7 @@ export const executePrivilegedWorkspaceTool = async (
     stream: 'stdout' | 'stderr',
     delta: string,
   ) => void,
+  threadId: string = workspaceId,
 ): Promise<unknown> => {
   if (toolName === 'workspace_apply_patch') {
     if (typeof argumentsValue.patch !== 'string') {
@@ -615,6 +616,7 @@ export const executePrivilegedWorkspaceTool = async (
     if (!Array.isArray(chunks)) {
       throw new Error('Native command output was invalid');
     }
+    const combined = { stdout: '', stderr: '' };
     for (const chunk of chunks) {
       if (
         typeof chunk !== 'object' ||
@@ -626,12 +628,19 @@ export const executePrivilegedWorkspaceTool = async (
       ) {
         throw new Error('Native command output was invalid');
       }
-      onCommandOutput?.(operationId, chunk.stream, chunk.delta);
+      const stream = chunk.stream as 'stdout' | 'stderr';
+      combined[stream] += chunk.delta;
+    }
+    for (const stream of ['stdout', 'stderr'] as const) {
+      if (combined[stream]) {
+        onCommandOutput?.(operationId, stream, combined[stream]);
+      }
     }
   };
   const execution = nativeRuntime.executeCommandJson(
     operationId,
     workspaceId,
+    threadId,
     mode,
     command,
     JSON.stringify(commandArguments),
@@ -668,6 +677,7 @@ export const createWorkspaceTools = (
   ) => void,
   access: 'readOnly' | 'workspaceWrite' = 'workspaceWrite',
   instructionContext?: WorkspaceInstructionContext,
+  threadId: string = workspaceId,
 ): readonly FunctionTool<Schema>[] => {
   const tools: readonly FunctionTool<Schema>[] = [
   new FunctionTool({
@@ -791,6 +801,7 @@ export const createWorkspaceTools = (
             'workspace_apply_patch',
             { patch },
             onCommandOutput,
+            threadId,
           );
         },
       );
@@ -805,7 +816,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'shell_exec',
     description:
-      'Run a bounded command in the workspace. Prefer workspace_list, workspace_read, and workspace_search for file inspection. Sandboxed mode accepts a single verified absolute executable plus a separate arguments array; do not guess executable paths, and pass an explicit search root such as "." as the first argument to find. It is filesystem-read-only, network-denied, and executes automatically. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval unless the current conversation or project is trusted.',
+      'Run a bounded command in the workspace. Prefer workspace_list, workspace_read, and workspace_search for file inspection. Sandboxed mode accepts a single verified absolute executable plus a separate arguments array; do not guess executable paths, and pass an explicit search root such as "." as the first argument to find. It is filesystem-read-only, network-denied, and executes automatically. Full Access uses the selected Shell with a lazily captured, task-bound exported environment; check the result environment metadata before concluding that a command is not installed. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval unless the current conversation or project is trusted.',
     parameters: commandSchema,
     execute: async (input) => {
       if (
@@ -862,6 +873,7 @@ export const createWorkspaceTools = (
             'shell_exec',
             { mode, command, arguments: commandArguments, cwd, timeoutMs },
             onCommandOutput,
+            threadId,
           );
         },
       );

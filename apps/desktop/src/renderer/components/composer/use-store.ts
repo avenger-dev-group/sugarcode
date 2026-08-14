@@ -64,6 +64,7 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
 
   useEffect(() => {
     if (!token || token.trigger === '/') {
+      requestId.current += 1;
       if (!token) skillCache.current = null;
       setRemoteSuggestions([]);
       setStatus(token ? 'ready' : 'idle');
@@ -184,8 +185,10 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
   const handleChange: ComposerSuggestionStore['handleChange'] = (event) => {
     const value = event.currentTarget.value;
     props.onValueChange(value);
+    const hasSuggestionTrigger =
+      value.includes('/') || value.includes('$') || value.includes('@');
     setToken(
-      props.disabled
+      props.disabled || !hasSuggestionTrigger
         ? null
         : findComposerToken(value, event.currentTarget.selectionStart),
     );

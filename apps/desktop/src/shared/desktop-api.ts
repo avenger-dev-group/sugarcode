@@ -9,6 +9,7 @@ import type { GitApi } from './git';
 import type { PreviewApi } from './preview';
 import type { TerminalApi } from './terminal';
 import type { UpdateApi } from './update';
+import type { CommandEnvironmentApi } from './command-environment';
 
 export type DesktopApi = Readonly<
   ConnectionApi &
@@ -21,5 +22,6 @@ export type DesktopApi = Readonly<
     GitApi &
     PreviewApi &
     TerminalApi &
+    CommandEnvironmentApi &
     UpdateApi
 >;

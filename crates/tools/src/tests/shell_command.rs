@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::WorkspaceTool;
+use crate::command_environment::filtered_command_environment;
 
 #[test]
 fn rejects_relative_commands_and_oversized_arguments() {
@@ -79,7 +80,10 @@ fn command_environment_preserves_host_toolchains_without_credentials() {
         name.as_str(),
         "OPENAI_API_KEY" | "GITHUB_TOKEN" | "REGISTRY_PASSWORD"
     )));
-    assert!(!format!("{:?}", CommandEnvironment(environment)).contains("model-secret"));
+    assert!(
+        !format!("{:?}", CommandEnvironmentSnapshot::process_fallback(true))
+            .contains("model-secret")
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -89,7 +93,7 @@ async fn full_access_shell_executes_pipeline_redirection_and_streams_output() {
     let workspace = WorkspaceTool::open(directory.path()).expect("workspace tool");
     let workspace_root =
         Arc::new(CommandWorkspaceRoot::from_workspace(&workspace).expect("command workspace root"));
-    let environment = Arc::new(CommandEnvironment(host_command_environment()));
+    let environment = Arc::new(CommandEnvironmentSnapshot::process_fallback(true));
     let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
     let execution = execute_full_access_shell(
         FullAccessShellArguments {
@@ -138,7 +142,7 @@ async fn full_access_shell_rejects_a_non_authoritative_absolute_cwd() {
             output_tx: None,
         },
         workspace_root,
-        Arc::new(CommandEnvironment(host_command_environment())),
+        Arc::new(CommandEnvironmentSnapshot::process_fallback(true)),
         CancellationToken::new(),
     )
     .await;

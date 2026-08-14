@@ -1,3 +1,4 @@
+mod command_environment;
 mod shell_command;
 mod workspace_capability;
 mod workspace_command_root;
@@ -12,6 +13,13 @@ mod workspace_skills;
 mod workspace_snapshot;
 mod workspace_traversal_policy;
 
+pub use command_environment::CommandEnvironmentManager;
+pub use command_environment::CommandEnvironmentSnapshot;
+pub use command_environment::CommandEnvironmentSource;
+pub use command_environment::CommandEnvironmentState;
+pub use command_environment::CommandEnvironmentStatus;
+pub use command_environment::CommandShell;
+pub use command_environment::CommandShellKind;
 pub use shell_command::DEFAULT_FULL_ACCESS_SHELL_TIMEOUT_MS;
 pub use shell_command::EmbeddedShellCommandExecutor;
 pub use shell_command::FullAccessShellArguments;

@@ -28,6 +28,7 @@ import type {
   SettingsSection,
 } from './types';
 import { AboutSettings } from './about-settings';
+import { CommandEnvironmentSettings } from './command-environment-settings';
 import { useStore } from './use-store';
 
 const SETTINGS_SECTIONS: readonly Readonly<{
@@ -74,9 +75,11 @@ const GeneralSettings = ({
   isDark,
   themeLabel,
   toggleTheme,
+  workspaceId,
+  threadId,
 }: Pick<
   SettingsDialogProps,
-  'isDark' | 'themeLabel' | 'toggleTheme'
+  'isDark' | 'themeLabel' | 'toggleTheme' | 'workspaceId' | 'threadId'
 >) => (
   <>
     <SettingsPageHeader
@@ -129,6 +132,10 @@ const GeneralSettings = ({
         </h3>
         <ConnectionStatus />
       </section>
+      <CommandEnvironmentSettings
+        workspaceId={workspaceId}
+        threadId={threadId}
+      />
     </div>
   </>
 );
@@ -137,6 +144,8 @@ export const SettingsDialog = ({
   isDark,
   themeLabel,
   toggleTheme,
+  workspaceId,
+  threadId,
 }: SettingsDialogProps) => {
   const store = useStore();
 
@@ -230,6 +239,8 @@ export const SettingsDialog = ({
                 isDark={isDark}
                 themeLabel={themeLabel}
                 toggleTheme={toggleTheme}
+                workspaceId={workspaceId}
+                threadId={threadId}
               />
             ) : null}
             {store.section === 'model' ? (

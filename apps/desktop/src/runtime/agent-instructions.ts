@@ -92,12 +92,12 @@ export const hostPlatformInstruction = (
   if (platform === 'win32') {
     return `# Host platform
 
-The host is Windows. Full Access commands use Windows semantics. Prefer workspace tools for portable file work; when a shell is necessary, use available cmd.exe or PowerShell commands and verify the exit status.`;
+The host is Windows. Full Access commands prefer PowerShell 7, then Windows PowerShell, and finally cmd.exe. Prefer workspace tools for portable file work; use PowerShell syntax unless a command result reports cmd as the selected Shell, and verify the exit status. If a program is not found, distinguish an uncaptured or degraded command environment from a genuinely missing installation before drawing a conclusion; do not scan the whole drive first.`;
   }
   if (platform === 'darwin') {
     return `# Host platform
 
-The host is macOS. Prefer workspace tools for file discovery. When a shell is necessary, use verified macOS executable paths, remember BSD find needs an explicit search path before predicates, and verify the exit status.`;
+The host is macOS. Full Access commands run in the user's selected Shell with a task-bound exported environment. Prefer workspace tools for file discovery. When a shell is necessary, remember BSD find needs an explicit search path before predicates and verify the exit status. If a program is not found, distinguish an uncaptured or degraded command environment from a genuinely missing installation before drawing a conclusion; do not scan the whole disk first.`;
   }
   return `# Host platform
 

@@ -8,6 +8,55 @@ import {
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
+test('private runtime validates lazy task-bound command environments', () => {
+  const status = {
+    snapshotId: 'environment-7',
+    state: 'ready',
+    shell: { kind: 'zsh', executable: '/bin/zsh' },
+    source: 'shellProfile',
+    createdAt: 1_700_000_000_000,
+    pathEntries: ['/opt/homebrew/bin', '/usr/bin'],
+    variableCount: 24,
+    filteredVariableCount: 3,
+    profileLoadingEnabled: true,
+  } as const;
+  assert.equal(isRuntimeCommand({
+    type: 'environment.inspect',
+    requestId: 'request-environment-inspect',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'environment.refresh',
+    requestId: 'request-environment-refresh',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'environment.profileLoadingSet',
+    requestId: 'request-environment-profile',
+    enabled: false,
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'environment.inspection',
+    sequence: 1,
+    requestId: 'request-environment-inspect',
+    status,
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'environment.action',
+    sequence: 2,
+    requestId: 'request-environment-refresh',
+    action: { accepted: true, status },
+  }), true);
+  assert.equal(isRuntimeEvent({
+    type: 'environment.inspection',
+    sequence: 3,
+    requestId: 'request-environment-invalid',
+    status: { ...status, pathEntries: Array(257).fill('/bin') },
+  }), false);
+});
+
 test('private runtime records an explicit user Stop source', () => {
   const command = {
     type: 'turn.cancel',

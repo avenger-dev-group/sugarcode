@@ -38,6 +38,12 @@ import {
   type SkillsActionResult,
   type SkillsInspection,
 } from '../shared/skills.ts';
+import {
+  isCommandEnvironmentActionResult,
+  isCommandEnvironmentStatus,
+  type CommandEnvironmentActionResult,
+  type CommandEnvironmentStatus,
+} from '../shared/command-environment.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 4 as const;
 
@@ -290,6 +296,23 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId: string;
       name: string;
+    }>
+  | Readonly<{
+      type: 'environment.inspect';
+      requestId: string;
+      workspaceId: string;
+      threadId?: string;
+    }>
+  | Readonly<{
+      type: 'environment.refresh';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+    }>
+  | Readonly<{
+      type: 'environment.profileLoadingSet';
+      requestId: string;
+      enabled: boolean;
     }>
   | Readonly<{
       type: 'asset.import';
@@ -638,6 +661,16 @@ export type RuntimeEvent =
       Readonly<{
         type: 'asset.imported';
         asset: RuntimeAssetDescriptor;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'environment.inspection';
+        status: CommandEnvironmentStatus;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'environment.action';
+        action: CommandEnvironmentActionResult;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1224,6 +1257,18 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         !value.name.includes('/') &&
         !value.name.includes('\\')
       );
+    case 'environment.inspect':
+      return (
+        typeof value.workspaceId === 'string' &&
+        (value.threadId === undefined || typeof value.threadId === 'string')
+      );
+    case 'environment.refresh':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string'
+      );
+    case 'environment.profileLoadingSet':
+      return typeof value.enabled === 'boolean';
     case 'asset.import':
       return (
         typeof value.fileName === 'string' &&
@@ -1836,6 +1881,10 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         (value.signal === undefined || typeof value.signal === 'string') &&
         ['natural', 'requested', 'ownerLost', 'protocolError', 'ioError'].includes(String(value.reason))
       );
+    case 'environment.inspection':
+      return isCommandEnvironmentStatus(value.status);
+    case 'environment.action':
+      return isCommandEnvironmentActionResult(value.action);
     case 'model.configInspection':
       return isModelConfigInspection(value.inspection);
     case 'model.configAction':

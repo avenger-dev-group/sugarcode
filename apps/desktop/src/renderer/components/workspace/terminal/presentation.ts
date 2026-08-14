@@ -39,3 +39,15 @@ export const shouldAutoStartTerminal = ({
   status === 'closed' &&
   !busy &&
   attemptedGeneration !== workspaceGeneration;
+
+export const shouldPullTerminalSnapshot = ({
+  currentStatus,
+  open,
+  sessionChanged,
+  signalStatus,
+}: Readonly<{
+  currentStatus: TerminalStateSnapshot['status'];
+  open: boolean;
+  sessionChanged: boolean;
+  signalStatus: TerminalStateSnapshot['status'];
+}>): boolean => open || sessionChanged || signalStatus !== currentStatus;

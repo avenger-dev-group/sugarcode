@@ -1,7 +1,8 @@
+import { memo } from 'react';
 import type { ComposerToken } from './types';
 import { composerDisplaySegments } from './suggestions';
 
-export const ComposerHighlight = ({
+const ComposerHighlightView = ({
   value,
   activeToken,
 }: Readonly<{
@@ -21,3 +22,5 @@ export const ComposerHighlight = ({
     ))}
   </>
 );
+
+export const ComposerHighlight = memo(ComposerHighlightView);

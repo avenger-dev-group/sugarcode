@@ -20,6 +20,18 @@ import {
 } from '@/shared/connection';
 import type { DesktopApi } from '@/shared/desktop-api';
 import {
+  COMMAND_ENVIRONMENT_GET_CHANNEL,
+  COMMAND_ENVIRONMENT_PROFILE_CHANNEL,
+  COMMAND_ENVIRONMENT_REFRESH_CHANNEL,
+  isCommandEnvironmentActionResult,
+  isCommandEnvironmentStatus,
+  type CommandEnvironmentActionResult,
+  type CommandEnvironmentProfileRequest,
+  type CommandEnvironmentRefreshRequest,
+  type CommandEnvironmentStatus,
+  type CommandEnvironmentTarget,
+} from '@/shared/command-environment';
+import {
   GIT_COMMIT_CHANNEL,
   GIT_DIFF_CHANNEL,
   GIT_REFRESH_CHANNEL,
@@ -320,6 +332,42 @@ export const createDesktopApi = (
     const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_CHANNEL, id);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill export action.');
+    }
+    return result;
+  },
+  getCommandEnvironment: async (
+    target: CommandEnvironmentTarget,
+  ): Promise<CommandEnvironmentStatus> => {
+    const result: unknown = await ipcRenderer.invoke(
+      COMMAND_ENVIRONMENT_GET_CHANNEL,
+      target,
+    );
+    if (!isCommandEnvironmentStatus(result)) {
+      throw new Error('Main returned an invalid command environment status.');
+    }
+    return result;
+  },
+  refreshCommandEnvironment: async (
+    request: CommandEnvironmentRefreshRequest,
+  ): Promise<CommandEnvironmentActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      COMMAND_ENVIRONMENT_REFRESH_CHANNEL,
+      request,
+    );
+    if (!isCommandEnvironmentActionResult(result)) {
+      throw new Error('Main returned an invalid command environment refresh result.');
+    }
+    return result;
+  },
+  setCommandEnvironmentProfileLoading: async (
+    request: CommandEnvironmentProfileRequest,
+  ): Promise<CommandEnvironmentActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      COMMAND_ENVIRONMENT_PROFILE_CHANNEL,
+      request,
+    );
+    if (!isCommandEnvironmentActionResult(result)) {
+      throw new Error('Main returned an invalid command environment profile result.');
     }
     return result;
   },
