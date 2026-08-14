@@ -126,6 +126,12 @@ const config: ForgeConfig = {
       config: {
         format: 'ULFO',
         icon: `${appIconBasePath}.icns`,
+        // appdmg's legacy HFS+ flow runs `bless --openfolder` on Intel Macs.
+        // Recent headless macOS runners can auto-eject the volume there, making
+        // appdmg's following `hdiutil detach` fail even though it is unmounted.
+        additionalDMGOptions: {
+          filesystem: 'APFS',
+        },
       },
       platforms: ['darwin'],
     },
