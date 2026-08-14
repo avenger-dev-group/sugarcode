@@ -8,7 +8,7 @@ const UUID_V7_PATTERN =
 export const processLanguageFromText = (text: string): ProcessLanguage =>
   /\p{Script=Han}/u.test(text) ? 'zh' : 'en';
 
-const uuidV7TimestampMs = (id: string): number | null => {
+export const uuidV7TimestampMs = (id: string): number | null => {
   if (!UUID_V7_PATTERN.test(id)) {
     return null;
   }

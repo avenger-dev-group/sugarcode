@@ -13,6 +13,7 @@ import { FinishReason } from '@google/genai';
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../../src/shared/model-metadata.ts';
 import {
   isFutureActionOnlyFinal,
+  planSubmissionIssue,
   RuntimeHost,
 } from '../../src/runtime/host.ts';
 import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-input-boundary.ts';
@@ -390,17 +391,36 @@ class SplitPlanAfterUserInputLlm extends BaseLlm {
       };
       return;
     }
+    if (this.requests.length === 3) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-submit-complete-plan',
+              name: 'submit_plan',
+              args: {
+                content:
+                  '# 完整计划\n\n## 一、现状\n\n已完成分析。\n\n## 二、实施\n\n缓存时间为 30 天。',
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
     const ignoredRecovery = this.requests.length === 2;
     const text = ignoredRecovery
       ? '感谢确认。\n\n## 九、最终确认\n\n缓存时间为 30 天。'
-      : '# 完整计划\n\n## 一、现状\n\n已完成分析。\n\n## 二、实施\n\n缓存时间为 30 天。';
+      : '正式计划已提交。';
     yield {
       content: {
         role: 'model',
         parts: [{
           text,
           partMetadata: modelItemMetadata(
-            ignoredRecovery ? 'continued-plan' : 'complete-plan',
+            ignoredRecovery ? 'continued-plan' : 'plan-submitted',
             { phase: 'final', outcome: { kind: 'final' } },
           ),
         }],
@@ -1146,18 +1166,28 @@ class InspectionFallbackLlm extends BaseLlm {
             args: { path: '.' },
           },
         }]
-        : [{
-          text: '# 完整计划\n\n## 一、实施范围\n\n按已确认需求执行。',
-          partMetadata: modelItemMetadata('complete-plan-after-fallback', {
-            phase: 'final',
-            outcome: { kind: 'final' },
-          }),
-        }];
+        : this.requests.length === 3
+          ? [{
+            functionCall: {
+              id: 'call-submit-plan-after-fallback',
+              name: 'submit_plan',
+              args: {
+                content: '# 完整计划\n\n## 一、实施范围\n\n按已确认需求执行。',
+              },
+            },
+          }]
+          : [{
+            text: '正式计划已提交。',
+            partMetadata: modelItemMetadata('plan-submitted-after-fallback', {
+              phase: 'final',
+              outcome: { kind: 'final' },
+            }),
+          }];
     yield {
       content: { role: 'model', parts },
       partial: false,
-      turnComplete: this.requests.length >= 3,
-      finishReason: this.requests.length >= 3 ? FinishReason.STOP : undefined,
+      turnComplete: this.requests.length >= 4,
+      finishReason: this.requests.length >= 4 ? FinishReason.STOP : undefined,
     };
   }
 
@@ -1178,7 +1208,7 @@ test('future-action-only final detection distinguishes promises from outcomes', 
   assert.equal(isFutureActionOnlyFinal('无法继续：缺少写入权限。'), false);
 });
 
-test('user-input boundary keeps brief progress and preserves substantive pre-question output', () => {
+test('user-input boundary keeps brief progress and collapses pre-question deliverables', () => {
   assert.equal(
     userInputBoundaryCommentary(
       '现状已经厘清，还有一个架构决策需要确认。',
@@ -1193,7 +1223,7 @@ test('user-input boundary keeps brief progress and preserves substantive pre-que
       '/plan 设计号码识别 API',
       ['缓存命中时是否收费？'],
     ),
-    '# 完整计划\n\n## 一、现状\n\n已经分析完成。\n\n## 二、实施方案',
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
   );
   assert.equal(
     userInputBoundaryCommentary(
@@ -1201,7 +1231,7 @@ test('user-input boundary keeps brief progress and preserves substantive pre-que
       '/plan 设计号码识别 API',
       ['缓存命中时是否收费？'],
     ),
-    '# 计划\n\n1. 确认：缓存命中时是否收费？',
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
   );
   assert.equal(
     userInputBoundaryCommentary(
@@ -1210,6 +1240,21 @@ test('user-input boundary keeps brief progress and preserves substantive pre-que
       ['缓存命中时是否收费？'],
     ),
     '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
+  );
+});
+
+test('formal plan validation rejects approval prompts and accepts plan-only content', () => {
+  assert.equal(
+    planSubmissionIssue('# 计划\n\n完成实现与验证。'),
+    undefined,
+  );
+  assert.match(
+    planSubmissionIssue('# 计划\n\n需要我开始实现吗？') ?? '',
+    /question|approval|invitation/u,
+  );
+  assert.match(
+    planSubmissionIssue('# Plan\n\nShould I proceed?') ?? '',
+    /question|approval|invitation/u,
   );
 });
 
@@ -1331,6 +1376,7 @@ test('RuntimeHost makes /plan immutable read-only at the tool boundary', async (
 
   const toolNames = Object.keys(model.requests[0]?.toolsDict ?? {});
   assert.ok(toolNames.includes('request_user_input'));
+  assert.ok(toolNames.includes('submit_plan'));
   assert.ok(toolNames.includes('workspace_read'));
   assert.ok(toolNames.includes('workspace_list'));
   assert.ok(toolNames.includes('workspace_search'));
@@ -1606,9 +1652,8 @@ test('RuntimeHost accepts a complete plan after workspace tools recover a failed
   );
   assert.ok(events.some(
     (event) =>
-      event.type === 'turn.textCompleted' &&
-      event.phase === 'final' &&
-      event.itemId === 'complete-plan-after-fallback',
+      event.type === 'turn.planProposed' &&
+      event.content.startsWith('# 完整计划'),
   ));
 });
 
@@ -1778,7 +1823,7 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
     preQuestionCommentary?.type === 'turn.textCompleted'
       ? preQuestionCommentary.text
       : undefined,
-    '## 一、现状\n\n已完成分析。\n\n## 八、待确认事项\n\n以下决策会影响计划。',
+    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
   );
   assert.equal(
     events.some(
@@ -1786,7 +1831,7 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
         event.type === 'turn.textCompleted' &&
         event.text.includes('## 八、待确认事项'),
     ),
-    true,
+    false,
   );
   assert.equal(events.some(
     (event) =>
@@ -1796,11 +1841,16 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
   ), false);
   assert.ok(events.some(
     (event) =>
-      event.type === 'turn.textCompleted' &&
-      event.phase === 'final' &&
-      event.itemId === 'complete-plan' &&
-      event.text.startsWith('# 完整计划'),
+      event.type === 'turn.planProposed' &&
+      event.content.startsWith('# 完整计划'),
   ));
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' && event.phase === 'final',
+    ),
+    false,
+  );
 });
 
 test('RuntimeHost supports two sequential user-input requests in one Turn', async () => {
@@ -1907,7 +1957,7 @@ test('RuntimeHost supports two sequential user-input requests in one Turn', asyn
     (event) =>
       event.type === 'turn.textCompleted' &&
       event.itemId === 'pre-rollout-draft' &&
-      event.text === '# 发布计划\n\n## 一、发布策略\n\n先完成全部实现。',
+      event.text === '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
   ));
   assert.equal(
     events.filter(

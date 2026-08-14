@@ -72,7 +72,7 @@ const turnModeInstruction = (
   if (mode === 'plan') {
     return `# Planning-only Turn
 
-This Turn is immutable planning mode. Inspect and reason with read-only tools, ask only decisions needed to complete the plan, and deliver an actionable plan. Do not modify files, run commands with write-capable access, use MCP, or delegate implementation. A response to request_user_input only refines the plan and never authorizes implementation; implementation requires a new user Turn outside planning mode.`;
+This Turn is immutable planning mode. Inspect and reason with read-only tools, and use request_user_input for any decisions needed to complete the plan. Do not draft or present the formal plan before those decisions are resolved. When the plan is decision-complete, submit it exactly once with submit_plan; do not present it as an ordinary final answer. The submitted plan must be self-contained and contain no question, approval request, invitation to continue, or "should I proceed?" call to action. Do not modify files, run commands with write-capable access, use MCP, or delegate implementation. A response to request_user_input only refines the plan and never authorizes implementation; implementation requires a new user Turn outside planning mode.`;
   }
   if (mode === 'readOnly') {
     return `# Read-only Turn
@@ -130,6 +130,11 @@ const toolInstruction = (availableTools: readonly string[]): string => {
   if (names.includes('request_user_input')) {
     guidance.push(
       'Use request_user_input only for genuinely blocking user choices, never for facts available through workspace inspection or for reconfirming an explicit request.',
+    );
+  }
+  if (names.includes('submit_plan')) {
+    guidance.push(
+      'Use submit_plan only after all blocking decisions are resolved. Put the complete actionable plan in its content field; after it succeeds, finish without repeating the plan or asking whether to proceed.',
     );
   }
   return `# Tool use\n\n${guidance.map((line) => `- ${line}`).join('\n')}`;

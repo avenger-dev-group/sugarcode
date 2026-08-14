@@ -198,6 +198,7 @@ export type TurnViewModel = Readonly<{
   durationLabel?: string;
   model?: TurnModelViewModel;
   messages: readonly TranscriptMessageViewModel[];
+  planProposal?: Readonly<{ id: string; content: string }>;
   pendingAgentOutputs?: readonly AgentMessageViewModel[];
   activities?: readonly TurnActivityViewModel[];
   workspaceRead?: WorkspaceReadActivityViewModel;
@@ -318,6 +319,8 @@ export type ThreadStore = Readonly<{
     inputRequestId: string,
     submission: UserInputSubmission,
   ) => Promise<boolean>;
+  implementPlan: (turnId: string) => Promise<void>;
+  refinePlan: (turnId: string) => void;
 }>;
 
 export type ThreadWorkbenchViewProps = Readonly<{
@@ -346,6 +349,9 @@ export type TranscriptTurnProps = Readonly<{
   onSetMessageEditDraft: ThreadStore['setMessageEditDraft'];
   onCancelMessageEdit: ThreadStore['cancelMessageEdit'];
   onSubmitMessageEdit: ThreadStore['submitMessageEdit'];
+  planActionable: boolean;
+  onImplementPlan: ThreadStore['implementPlan'];
+  onRefinePlan: ThreadStore['refinePlan'];
 }>;
 
 export type ActivityDisclosureStore = Readonly<{

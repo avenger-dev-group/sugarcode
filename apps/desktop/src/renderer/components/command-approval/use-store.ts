@@ -119,6 +119,7 @@ export const useStore = (): CommandApprovalStore => {
     async (
       item: CommandApprovalViewModel,
       decision: 'approved' | 'denied',
+      approvalMode?: CommandApprovalMode,
     ): Promise<void> => {
       if (!canAct(item)) {
         return;
@@ -128,7 +129,10 @@ export const useStore = (): CommandApprovalStore => {
       try {
         const result =
           decision === 'approved'
-            ? await approveCommand(item.presentationId, selectedMode(item))
+            ? await approveCommand(
+                item.presentationId,
+                approvalMode ?? selectedMode(item),
+              )
             : await denyCommand(item.presentationId);
         if (!result.accepted) {
           setActionError(
@@ -192,7 +196,7 @@ export const useStore = (): CommandApprovalStore => {
     setSelectedMode: (presentationId, mode) =>
       setSelectedModes((current) => ({ ...current, [presentationId]: mode })),
     changeMode,
-    approve: (item) => submit(item, 'approved'),
+    approve: (item, mode) => submit(item, 'approved', mode),
     deny: (item) => submit(item, 'denied'),
   };
 };

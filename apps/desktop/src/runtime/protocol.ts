@@ -44,6 +44,7 @@ export const RUNTIME_PROTOCOL_VERSION = 4 as const;
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_ANSWER_BYTES = 2 * 1024;
+export const MAX_RUNTIME_PLAN_BYTES = 64 * 1024;
 
 export type RuntimeUserInputOption = Readonly<{
   label: string;
@@ -696,6 +697,15 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'turn.planProposed';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        planId: string;
+        content: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'turn.usage';
         workspaceId: string;
         threadId: string;
@@ -1010,6 +1020,17 @@ const hasBoundedRuntimeText = (
   value.trim().length > 0 &&
   utf8ByteLength(value) <= maxBytes &&
   !Array.from(value).some((character) => /\p{Cc}/u.test(character));
+
+const hasBoundedRuntimeMarkdown = (
+  value: unknown,
+  maxBytes: number,
+): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  utf8ByteLength(value) <= maxBytes &&
+  !Array.from(value).some(
+    (character) => /\p{Cc}/u.test(character) && !['\n', '\r', '\t'].includes(character),
+  );
 
 const isRuntimeUserInputQuestion = (
   value: unknown,
@@ -1620,6 +1641,13 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.itemId === 'string' &&
         ['commentary', 'final'].includes(String(value.phase)) &&
         typeof value.text === 'string'
+      );
+    case 'turn.planProposed':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.planId === 'string' &&
+        /^[A-Za-z0-9_-]{1,128}$/u.test(value.planId) &&
+        hasBoundedRuntimeMarkdown(value.content, MAX_RUNTIME_PLAN_BYTES)
       );
     case 'turn.usage':
       return hasTurnCoordinates(value) && isRuntimeUsage(value.usage);

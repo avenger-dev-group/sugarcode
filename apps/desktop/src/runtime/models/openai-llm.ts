@@ -506,9 +506,17 @@ export class OpenAiLlm extends BaseLlm {
     const deadline = createRequestDeadline(abortSignal, this.timeoutMs);
     try {
       if (this.wireApi === 'openaiResponses') {
-        yield* this.streamResponses(request, deadline.signal);
+        yield* this.streamResponses(
+          request,
+          deadline.dispose,
+          deadline.signal,
+        );
       } else {
-        yield* this.streamChatCompletions(request, deadline.signal);
+        yield* this.streamChatCompletions(
+          request,
+          deadline.dispose,
+          deadline.signal,
+        );
       }
     } catch (error) {
       if (deadline.didTimeout() && !abortSignal?.aborted) {
@@ -552,6 +560,7 @@ export class OpenAiLlm extends BaseLlm {
 
   private async *streamResponses(
     request: NormalizedLlmRequest,
+    settleRequestDeadline: () => void,
     abortSignal?: AbortSignal,
   ): AsyncGenerator<LlmResponse, void> {
     const callIds = new Map<string, string>();
@@ -849,6 +858,9 @@ export class OpenAiLlm extends BaseLlm {
               });
             }
           }
+          // ADK may pause this generator at the terminal yield while it runs
+          // tool calls. Provider timeouts must not include that tool work.
+          settleRequestDeadline();
           yield {
             content: { role: 'model', parts },
             partial: false,
@@ -864,7 +876,7 @@ export class OpenAiLlm extends BaseLlm {
                 : {}),
             },
           };
-          break;
+          return;
         }
         case 'response.incomplete': {
           completed = true;
@@ -927,6 +939,9 @@ export class OpenAiLlm extends BaseLlm {
               ),
             });
           }
+          // The provider is terminal even though ADK may take time to request
+          // the next generator item.
+          settleRequestDeadline();
           yield {
             content: { role: 'model', parts },
             partial: false,
@@ -934,7 +949,7 @@ export class OpenAiLlm extends BaseLlm {
             finishReason: FinishReason.STOP,
             usageMetadata: openAiUsage(event.response.usage),
           };
-          break;
+          return;
         }
         case 'response.failed':
           throw new ProviderAdapterError({
@@ -967,6 +982,7 @@ export class OpenAiLlm extends BaseLlm {
 
   private async *streamChatCompletions(
     request: NormalizedLlmRequest,
+    settleRequestDeadline: () => void,
     abortSignal?: AbortSignal,
   ): AsyncGenerator<LlmResponse, void> {
     const calls = new Map<number, ToolCallAccumulator>();
@@ -1112,6 +1128,8 @@ export class OpenAiLlm extends BaseLlm {
         partMetadata: modelItemMetadata(textItemId, { outcome }),
       });
     }
+    // Tool execution begins after this terminal yield, outside provider time.
+    settleRequestDeadline();
     yield {
       content: { role: 'model', parts },
       partial: false,

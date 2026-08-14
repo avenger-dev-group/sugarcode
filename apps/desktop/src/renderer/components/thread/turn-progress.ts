@@ -114,6 +114,7 @@ export const toActiveTurnProgress = (
   turnId: string,
   phase: ConversationPhase,
   operation?: ActiveTurnOperationProgress,
+  quietState: 'thinking' | 'continuing' | 'composing' = 'thinking',
 ): ActiveTurnProgressViewModel => {
   if (phase === 'stopping') {
     return {
@@ -132,6 +133,20 @@ export const toActiveTurnProgress = (
   }
   if (operation) {
     return { turnId, ...operation };
+  }
+  if (quietState === 'composing') {
+    return {
+      turnId,
+      state: 'thinking',
+      label: '正在整理回复',
+    };
+  }
+  if (quietState === 'continuing') {
+    return {
+      turnId,
+      state: 'thinking',
+      label: '正在继续思考',
+    };
   }
   return {
     turnId,

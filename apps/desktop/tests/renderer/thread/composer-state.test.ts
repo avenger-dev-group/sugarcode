@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  canStartConversationTurn,
   canStopTurn,
   canRemoveDraftProject,
   resolveComposerSurface,
@@ -61,6 +62,31 @@ test('an active or selecting workspace keeps its existing destination', () => {
       generation: 3,
       status: 'selecting',
       kind: 'chat',
+    }),
+    false,
+  );
+});
+
+test('a direct plan action can start a Turn without composer content', () => {
+  const readyState = {
+    phase: 'ready' as const,
+    startsChatOnSend: false,
+    hasPendingThreadSelection: false,
+    hasPendingMutation: false,
+    isSending: false,
+    isEditingMessage: false,
+    hasUsableModel: true,
+  };
+
+  assert.equal(canStartConversationTurn(readyState), true);
+  assert.equal(
+    canStartConversationTurn({ ...readyState, isSending: true }),
+    false,
+  );
+  assert.equal(
+    canStartConversationTurn({
+      ...readyState,
+      hasPendingThreadSelection: true,
     }),
     false,
   );

@@ -5,6 +5,16 @@ export const TURN_STOP_SAFETY_DELAY_MS = 1_000;
 
 export type ComposerSurface = 'approval' | 'userInput' | 'composer';
 
+export type ConversationTurnStartState = Readonly<{
+  phase: ConversationPhase;
+  startsChatOnSend: boolean;
+  hasPendingThreadSelection: boolean;
+  hasPendingMutation: boolean;
+  isSending: boolean;
+  isEditingMessage: boolean;
+  hasUsableModel: boolean;
+}>;
+
 export const resolveComposerSurface = (
   hasApproval: boolean,
   hasUserInput: boolean,
@@ -37,6 +47,22 @@ export const shouldStartChatOnSend = (
 ): boolean =>
   workspace.kind === undefined &&
   (workspace.status === 'unselected' || workspace.status === 'failed');
+
+export const canStartConversationTurn = ({
+  phase,
+  startsChatOnSend,
+  hasPendingThreadSelection,
+  hasPendingMutation,
+  isSending,
+  isEditingMessage,
+  hasUsableModel,
+}: ConversationTurnStartState): boolean =>
+  (phase === 'idle' || phase === 'ready' || startsChatOnSend) &&
+  !hasPendingThreadSelection &&
+  !hasPendingMutation &&
+  !isSending &&
+  !isEditingMessage &&
+  hasUsableModel;
 
 export const canRemoveDraftProject = (
   workspace: WorkspaceStateSnapshot,

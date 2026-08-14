@@ -15,7 +15,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from '@/renderer/components/ui/select';
 import {
   resolveCommandApprovalMode,
@@ -188,20 +187,17 @@ export const CommandApprovalView = ({
           <Select
             value={store.selectedMode(request)}
             disabled={!canAct}
-            onValueChange={(value) =>
-              store.setSelectedMode(
-                request.presentationId,
-                value as CommandApprovalMode,
-              )
-            }
+            onValueChange={(value) => {
+              const mode = value as CommandApprovalMode;
+              store.setSelectedMode(request.presentationId, mode);
+              void store.approve(request, mode);
+            }}
           >
             <SelectTrigger
-              className="h-7 w-8 rounded-l-none border-0 border-l border-primary-foreground/20 bg-primary px-1 text-primary-foreground shadow-none hover:bg-primary/80 focus-visible:ring-primary-foreground/40 [&>svg]:text-primary-foreground"
+              className="h-7 w-8 justify-center gap-0 rounded-l-none border-0 border-l border-primary-foreground/20 bg-primary p-0 text-primary-foreground shadow-none hover:bg-primary/80 focus-visible:ring-primary-foreground/40 [&>svg]:m-0 [&>svg]:size-3.5 [&>svg]:text-primary-foreground"
               aria-label="选择授权范围"
               title="选择授权范围"
-            >
-              <SelectValue className="sr-only" />
-            </SelectTrigger>
+            />
             <SelectContent side="top" align="end" className="w-52">
               {MODES.map((mode) => (
                 <SelectItem key={mode} value={mode}>

@@ -199,6 +199,25 @@ test('private runtime v2 validates stable text Item lifecycle events', () => {
   }), false);
 });
 
+test('private runtime validates a bounded dedicated plan proposal event', () => {
+  const event = {
+    type: 'turn.planProposed',
+    sequence: 1,
+    requestId: 'request-plan',
+    workspaceId: 'workspace-plan',
+    threadId: 'thread-plan',
+    turnId: 'turn-plan',
+    planId: 'plan_01',
+    content: '# 计划\n\n1. 完成实现。\n2. 运行验证。',
+  };
+  assert.equal(isRuntimeEvent(event), true);
+  assert.equal(isRuntimeEvent({ ...event, content: '' }), false);
+  assert.equal(
+    isRuntimeEvent({ ...event, content: 'x'.repeat(64 * 1024 + 1) }),
+    false,
+  );
+});
+
 test('private runtime validates complete non-negative usage samples', () => {
   const coordinates = {
     type: 'turn.usage' as const,

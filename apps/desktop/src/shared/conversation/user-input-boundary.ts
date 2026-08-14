@@ -12,15 +12,11 @@ export const userInputBoundaryCommentary = (
   const repeatsQuestion = questionPrompts.some(
     (question) => question.length > 0 && text.includes(question),
   );
-  // Never replace a substantive streamed deliverable merely because the same
-  // response also asks a structured question. Doing so makes visible content
-  // flash and then disappear when the completed event replaces the stream.
-  if (
-    !repeatsQuestion ||
+  const looksLikeDraftDeliverable =
     STRUCTURED_DELIVERABLE_PATTERN.test(text) ||
     text.length > USER_INPUT_COMMENTARY_MAX_CHARACTERS ||
-    lines.length > 6
-  ) {
+    lines.length > 6;
+  if (!repeatsQuestion && !looksLikeDraftDeliverable) {
     return text;
   }
 

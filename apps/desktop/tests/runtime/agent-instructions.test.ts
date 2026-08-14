@@ -73,6 +73,7 @@ test('planning mode explicitly remains read-only after structured user input', (
     platform: 'darwin',
     availableTools: [
       'request_user_input',
+      'submit_plan',
       'workspace_list',
       'workspace_read',
       'workspace_search',
@@ -82,6 +83,8 @@ test('planning mode explicitly remains read-only after structured user input', (
 
   assert.match(prompt, /immutable planning mode/u);
   assert.match(prompt, /never authorizes implementation/u);
+  assert.match(prompt, /submit it exactly once with submit_plan/u);
+  assert.match(prompt, /should I proceed/u);
   assert.match(prompt, /access level is readOnly/u);
   assert.doesNotMatch(prompt, /Multi-Agent coordination/u);
   assert.doesNotMatch(prompt, /workspace_apply_patch/u);

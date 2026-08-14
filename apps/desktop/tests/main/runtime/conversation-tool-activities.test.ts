@@ -231,7 +231,7 @@ test('user-input projection pairs durable requests and structured decisions', ()
   }]);
 });
 
-test('user-input projection preserves a persisted plan emitted before a question', () => {
+test('user-input projection collapses a persisted plan draft emitted before a question', () => {
   const questions = [{
     id: 'scope',
     header: '实现范围',
@@ -280,7 +280,7 @@ test('user-input projection preserves a persisted plan emitted before a question
     type: 'commentary',
     activity: {
       id: 'pre-question-plan',
-      text: '# 完整计划\n\n## 一、现状分析\n\n这里是不应公开的草稿。',
+      text: '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
       status: 'completed',
     },
   });
@@ -290,7 +290,7 @@ test('user-input projection preserves a persisted plan emitted before a question
         activity.type === 'commentary' &&
         activity.activity.text.includes('完整计划'),
     ),
-    true,
+    false,
   );
   assert.equal(activities[1]?.type, 'userInput');
 });

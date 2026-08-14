@@ -18,6 +18,27 @@ test('quiet active turns stay in a calm thinking state', () => {
   assert.equal(progress.detail, undefined);
 });
 
+test('quiet progress explains whether the agent is continuing or composing', () => {
+  assert.equal(
+    toActiveTurnProgress(
+      '00000000-0001-7000-8000-000000000001',
+      'inProgress',
+      undefined,
+      'continuing',
+    ).label,
+    '正在继续思考',
+  );
+  assert.equal(
+    toActiveTurnProgress(
+      '00000000-0001-7000-8000-000000000001',
+      'inProgress',
+      undefined,
+      'composing',
+    ).label,
+    '正在整理回复',
+  );
+});
+
 test('active operation progress takes precedence over thinking', () => {
   const progress = toActiveTurnProgress(
     'turn_1',
