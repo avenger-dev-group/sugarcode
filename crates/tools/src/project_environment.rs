@@ -91,7 +91,11 @@ pub fn parse_project_environment_config(
     }
     let mut hasher = Sha256::new();
     hasher.update(b"sugarcode-project-environment-v1\0");
-    hasher.update(content.as_bytes());
+    // Git may materialize the same committed file with CRLF in a Windows
+    // worktree even when the trusted source workspace used LF. Treat that
+    // checkout-only transformation as the same configuration while keeping
+    // every other byte significant for trust invalidation.
+    hasher.update(content.replace("\r\n", "\n").as_bytes());
     Ok(ResolvedProjectEnvironmentConfig {
         config_path: PROJECT_ENVIRONMENT_CONFIG_PATH.to_owned(),
         config_hash: format!("{:x}", hasher.finalize()),
@@ -143,7 +147,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_platform_scripts_and_hashes_exact_content() {
+    fn resolves_platform_scripts_and_hashes_content_portably() {
         let content = r#"{
           "schemaVersion": 1,
           "setup": { "default": "npm install", "macos": "pnpm install" },
@@ -157,6 +161,12 @@ mod tests {
         assert_eq!(parsed.setup_script.as_deref(), Some("npm install"));
         assert_eq!(parsed.actions[0].id, "verify");
         assert_eq!(parsed.config_hash.len(), 64);
+        assert_eq!(
+            parsed.config_hash,
+            parse_project_environment_config(&content.replace('\n', "\r\n"))
+                .expect("CRLF config")
+                .config_hash
+        );
         assert_ne!(
             parsed.config_hash,
             parse_project_environment_config(&format!("{content}\n"))
