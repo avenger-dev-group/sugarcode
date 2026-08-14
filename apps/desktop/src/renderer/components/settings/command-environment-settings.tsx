@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
-import { LoaderCircle, RefreshCw, SquareTerminal } from 'lucide-react';
+import { GitBranch, LoaderCircle, RefreshCw, SquareTerminal } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
 import { Checkbox } from '@/renderer/components/ui/checkbox';
 import {
   getCommandEnvironment,
+  getTaskWorkspace,
   refreshCommandEnvironment,
   setCommandEnvironmentProfileLoading,
+  setTaskWorkspaceMode,
 } from '@/renderer/services/command-environment';
-import type { CommandEnvironmentStatus } from '@/shared/command-environment';
+import type {
+  CommandEnvironmentStatus,
+  TaskWorkspaceStatus,
+} from '@/shared/command-environment';
 
 type Props = Readonly<{
   workspaceId?: string;
@@ -38,6 +43,7 @@ export const CommandEnvironmentSettings = ({
   threadId,
 }: Props) => {
   const [status, setStatus] = useState<CommandEnvironmentStatus | null>(null);
+  const [taskWorkspace, setTaskWorkspace] = useState<TaskWorkspaceStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +63,24 @@ export const CommandEnvironmentSettings = ({
       })
       .catch(() => {
         if (active) setError('Command environment status is unavailable.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [threadId, workspaceId]);
+
+  useEffect(() => {
+    if (!workspaceId || !threadId) {
+      setTaskWorkspace(null);
+      return undefined;
+    }
+    let active = true;
+    void getTaskWorkspace({ workspaceId, threadId })
+      .then((next) => {
+        if (active) setTaskWorkspace(next);
+      })
+      .catch(() => {
+        if (active) setError('Task workspace status is unavailable.');
       });
     return () => {
       active = false;
@@ -101,6 +125,30 @@ export const CommandEnvironmentSettings = ({
       }
     } catch {
       setError('The Shell profile preference could not be updated.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeTaskWorkspace = async (
+    mode: TaskWorkspaceStatus['mode'],
+  ): Promise<void> => {
+    if (!workspaceId || !threadId || taskWorkspace?.mode === mode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await setTaskWorkspaceMode({ workspaceId, threadId, mode });
+      if (!result.accepted || !result.workspace) {
+        setError('The task workspace mode could not be changed.');
+      } else {
+        setTaskWorkspace(result.workspace);
+      }
+    } catch {
+      setError(
+        mode === 'worktree'
+          ? 'A Git worktree could not be created. Confirm the project is the repository root and has an initial commit.'
+          : 'The task could not return to the local project.',
+      );
     } finally {
       setBusy(false);
     }
@@ -187,6 +235,42 @@ export const CommandEnvironmentSettings = ({
         </p>
       )}
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+
+      <div className="mt-5 border-t pt-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="flex items-center gap-2 text-sm font-medium">
+              <GitBranch className="size-4" aria-hidden="true" />
+              Task workspace
+            </h3>
+            <p className="mt-1 text-sm text-secondary">
+              Local tasks share the project directory. Worktree tasks use an isolated Git branch and directory.
+            </p>
+          </div>
+          <div className="flex rounded-lg border p-0.5">
+            {(['local', 'worktree'] as const).map((mode) => (
+              <Button
+                key={mode}
+                type="button"
+                size="sm"
+                variant={taskWorkspace?.mode === mode ? 'secondary' : 'ghost'}
+                disabled={busy || !workspaceId || !threadId || !taskWorkspace}
+                onClick={() => void changeTaskWorkspace(mode)}
+              >
+                {mode === 'local' ? 'Local' : 'Worktree'}
+              </Button>
+            ))}
+          </div>
+        </div>
+        {taskWorkspace ? (
+          <div className="mt-3 rounded-lg border bg-surface/35 p-3 text-xs text-tertiary">
+            <p className="break-all font-mono">{taskWorkspace.root}</p>
+            {taskWorkspace.branch ? (
+              <p className="mt-1 break-all">Branch: <code>{taskWorkspace.branch}</code></p>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 };

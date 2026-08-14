@@ -705,7 +705,8 @@ export const isCommandApprovalActivity = (
     !isId(value.approvalId) ||
     (Object.hasOwn(value, 'operationKind') &&
       value.operationKind !== 'workspacePatch' &&
-      value.operationKind !== 'shell') ||
+      value.operationKind !== 'shell' &&
+      value.operationKind !== 'projectEnvironment') ||
     typeof value.command !== 'string' ||
     value.command.length === 0 ||
     new TextEncoder().encode(value.command).byteLength >

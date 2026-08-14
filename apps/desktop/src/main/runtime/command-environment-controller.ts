@@ -7,6 +7,10 @@ import type {
   CommandEnvironmentRefreshRequest,
   CommandEnvironmentStatus,
   CommandEnvironmentTarget,
+  TaskWorkspaceActionResult,
+  TaskWorkspaceRequest,
+  TaskWorkspaceSetRequest,
+  TaskWorkspaceStatus,
 } from '@/shared/command-environment';
 
 export class RuntimeCommandEnvironmentController {
@@ -69,5 +73,37 @@ export class RuntimeCommandEnvironmentController {
       ...refreshed,
       changed: event.action.changed,
     };
+  };
+
+  inspectTaskWorkspace = async (
+    request: TaskWorkspaceRequest,
+  ): Promise<TaskWorkspaceStatus> => {
+    const event = await this.runtime.request(
+      {
+        type: 'taskWorkspace.inspect',
+        requestId: randomUUID(),
+        workspaceId: request.workspaceId,
+        threadId: request.threadId,
+      },
+      'taskWorkspace.inspection',
+    );
+    return event.workspace;
+  };
+
+  setTaskWorkspace = async (
+    request: TaskWorkspaceSetRequest,
+  ): Promise<TaskWorkspaceActionResult> => {
+    const event = await this.runtime.request(
+      {
+        type: 'taskWorkspace.set',
+        requestId: randomUUID(),
+        workspaceId: request.workspaceId,
+        threadId: request.threadId,
+        mode: request.mode,
+      },
+      'taskWorkspace.action',
+      30_000,
+    );
+    return event.action;
   };
 }

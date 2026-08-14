@@ -248,7 +248,7 @@ export type ConversationCommandApprovalActivity = Readonly<{
   id: string;
   callId: string;
   approvalId: string;
-  operationKind?: 'workspacePatch' | 'shell';
+  operationKind?: 'workspacePatch' | 'shell' | 'projectEnvironment';
   command: string;
   argumentCount: number;
   fullAccess?: boolean;

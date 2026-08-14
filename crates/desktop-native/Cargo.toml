@@ -27,4 +27,5 @@ uuid.workspace = true
 napi-build = "2.2.3"
 
 [dev-dependencies]
+git2.workspace = true
 tempfile.workspace = true

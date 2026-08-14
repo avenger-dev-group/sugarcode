@@ -30,6 +30,7 @@ test('runtime Git adapter keeps a transaction bound to its starting Workspace', 
   const runtime = new FixtureRuntime();
   const adapter = new RuntimeGitAdapter(runtime as unknown as RuntimeSupervisor);
   adapter.openWorkspace('workspace-a');
+  adapter.selectThread('workspace-a', 'thread-a');
   const lease = adapter.beginGitTransaction();
   assert.notEqual(typeof lease, 'string');
   if (typeof lease === 'string') {
@@ -44,6 +45,10 @@ test('runtime Git adapter keeps a transaction bound to its starting Workspace', 
     transactionStatus?.type === 'git.status' ? transactionStatus.workspaceId : null,
     'workspace-a',
   );
+  assert.equal(
+    transactionStatus?.type === 'git.status' ? transactionStatus.threadId : null,
+    'thread-a',
+  );
 
   lease.release();
   await adapter.gitStatus();
@@ -52,5 +57,9 @@ test('runtime Git adapter keeps a transaction bound to its starting Workspace', 
   assert.equal(
     foregroundStatus?.type === 'git.status' ? foregroundStatus.workspaceId : null,
     'workspace-b',
+  );
+  assert.equal(
+    foregroundStatus?.type === 'git.status' ? foregroundStatus.threadId : null,
+    undefined,
   );
 });

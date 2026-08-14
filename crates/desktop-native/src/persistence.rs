@@ -14,7 +14,7 @@ use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 10;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -75,6 +75,15 @@ pub(super) struct AssetRow {
     pub(super) pdf_pages: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TaskWorkspaceRow {
+    pub(super) thread_id: String,
+    pub(super) mode: String,
+    pub(super) task_root: Option<String>,
+    pub(super) branch: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AgentTaskCreate {
@@ -119,6 +128,135 @@ impl Store {
             params![workspace_id, root],
         )?;
         Ok(())
+    }
+
+    pub(super) fn project_environment_trusted(
+        &mut self,
+        canonical_root: &str,
+        config_hash: &str,
+    ) -> Result<bool> {
+        validate_project_environment_trust(canonical_root, config_hash)?;
+        self.connection
+            .query_row(
+                "SELECT config_hash = ?2 FROM project_environment_trust WHERE canonical_root = ?1",
+                params![canonical_root, config_hash],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::unwrap_or_default)
+            .map_err(Into::into)
+    }
+
+    pub(super) fn trust_project_environment(
+        &mut self,
+        canonical_root: &str,
+        config_hash: &str,
+    ) -> Result<()> {
+        validate_project_environment_trust(canonical_root, config_hash)?;
+        self.connection.execute(
+            "INSERT INTO project_environment_trust (canonical_root, config_hash, trusted_at) \
+             VALUES (?1, ?2, unixepoch()) ON CONFLICT(canonical_root) DO UPDATE SET \
+             config_hash = excluded.config_hash, trusted_at = unixepoch()",
+            params![canonical_root, config_hash],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn task_workspace(
+        &mut self,
+        thread_id: &str,
+        workspace_id: &str,
+    ) -> Result<TaskWorkspaceRow> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("workspace_id", workspace_id)?;
+        let exists: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND workspace_id = ?2)",
+            params![thread_id, workspace_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(PersistenceError::InvalidInput(
+                "task does not belong to the selected workspace".to_owned(),
+            ));
+        }
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT thread_id, mode, task_root, branch FROM task_workspaces WHERE thread_id = ?1",
+                [thread_id],
+                |row| {
+                    Ok(TaskWorkspaceRow {
+                        thread_id: row.get(0)?,
+                        mode: row.get(1)?,
+                        task_root: row.get(2)?,
+                        branch: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or(TaskWorkspaceRow {
+                thread_id: thread_id.to_owned(),
+                mode: "local".to_owned(),
+                task_root: None,
+                branch: None,
+            }))
+    }
+
+    pub(super) fn task_workspaces(&mut self, workspace_id: &str) -> Result<Vec<TaskWorkspaceRow>> {
+        validate_id("workspace_id", workspace_id)?;
+        let mut statement = self.connection.prepare(
+            "SELECT task_workspaces.thread_id, mode, task_root, branch FROM task_workspaces \
+             JOIN threads ON threads.id = task_workspaces.thread_id \
+             WHERE threads.workspace_id = ?1 AND mode = 'worktree'",
+        )?;
+        statement
+            .query_map([workspace_id], |row| {
+                Ok(TaskWorkspaceRow {
+                    thread_id: row.get(0)?,
+                    mode: row.get(1)?,
+                    task_root: row.get(2)?,
+                    branch: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn set_task_workspace(
+        &mut self,
+        thread_id: &str,
+        workspace_id: &str,
+        mode: &str,
+        task_root: Option<&str>,
+        branch: Option<&str>,
+    ) -> Result<TaskWorkspaceRow> {
+        let _ = self.task_workspace(thread_id, workspace_id)?;
+        match mode {
+            "local" if task_root.is_none() && branch.is_none() => {
+                self.connection.execute(
+                    "DELETE FROM task_workspaces WHERE thread_id = ?1",
+                    [thread_id],
+                )?;
+            }
+            "worktree"
+                if task_root.is_some_and(|value| !value.is_empty() && value.len() <= 16 * 1024)
+                    && branch.is_some_and(|value| !value.is_empty() && value.len() <= 512) =>
+            {
+                self.connection.execute(
+                    "INSERT INTO task_workspaces (thread_id, mode, task_root, branch, updated_at) \
+                     VALUES (?1, 'worktree', ?2, ?3, unixepoch()) ON CONFLICT(thread_id) DO UPDATE SET \
+                     mode = 'worktree', task_root = excluded.task_root, branch = excluded.branch, \
+                     updated_at = unixepoch()",
+                    params![thread_id, task_root, branch],
+                )?;
+            }
+            _ => {
+                return Err(PersistenceError::InvalidInput(
+                    "task workspace binding is invalid".to_owned(),
+                ));
+            }
+        }
+        self.task_workspace(thread_id, workspace_id)
     }
 
     pub(super) fn record_asset(&mut self, asset: &AssetRow) -> Result<()> {
@@ -1609,6 +1747,21 @@ fn validate_id(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_project_environment_trust(canonical_root: &str, config_hash: &str) -> Result<()> {
+    if canonical_root.is_empty()
+        || canonical_root.len() > 16 * 1024
+        || config_hash.len() != 64
+        || !config_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(PersistenceError::InvalidInput(
+            "project environment trust coordinates are invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_json(value: &str) -> Result<()> {
     let _: Value = serde_json::from_str(value)?;
     Ok(())
@@ -1780,6 +1933,32 @@ fn migrate(connection: &mut Connection) -> Result<()> {
                updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
              ) STRICT;\
              PRAGMA user_version = 8;",
+        )?;
+        transaction.commit()?;
+        version = 8;
+    }
+    if version == 8 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE project_environment_trust (\
+               canonical_root TEXT PRIMARY KEY, config_hash TEXT NOT NULL,\
+               trusted_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 9;",
+        )?;
+        transaction.commit()?;
+        version = 9;
+    }
+    if version == 9 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE task_workspaces (\
+               thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,\
+               mode TEXT NOT NULL CHECK(mode IN ('worktree')),\
+               task_root TEXT NOT NULL, branch TEXT NOT NULL,\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 10;",
         )?;
         transaction.commit()?;
     }

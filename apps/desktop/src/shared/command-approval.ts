@@ -24,7 +24,7 @@ export type CommandApprovalActionState =
 
 export type CommandApprovalViewModel = Readonly<{
   presentationId: string;
-  operationKind: 'workspacePatch' | 'shell';
+  operationKind: 'workspacePatch' | 'shell' | 'projectEnvironment';
   description: string;
   command: string;
   cwd: string;
@@ -180,7 +180,9 @@ const isViewModel = (value: unknown): value is CommandApprovalViewModel =>
   ) &&
   typeof value.presentationId === 'string' &&
   value.presentationId.length > 0 &&
-  (value.operationKind === 'workspacePatch' || value.operationKind === 'shell') &&
+  (value.operationKind === 'workspacePatch' ||
+    value.operationKind === 'shell' ||
+    value.operationKind === 'projectEnvironment') &&
   typeof value.description === 'string' &&
   value.description.length > 0 &&
   typeof value.command === 'string' &&

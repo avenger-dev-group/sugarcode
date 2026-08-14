@@ -118,7 +118,11 @@ export const CommandApprovalView = ({
             <SquareTerminal className="size-3.5 shrink-0" aria-hidden="true" />
           )}
           <span id={`${request.presentationId}:title`} className="truncate">
-            {request.operationKind === 'workspacePatch' ? '文件修改' : '终端'}
+            {request.operationKind === 'projectEnvironment'
+              ? '项目环境信任'
+              : request.operationKind === 'workspacePatch'
+                ? '文件修改'
+                : '终端'}
           </span>
           {request.queueCount > 1 ? (
             <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] tabular-nums text-tertiary">
@@ -172,6 +176,16 @@ export const CommandApprovalView = ({
             Esc
           </kbd>
         </Button>
+        {request.operationKind === 'projectEnvironment' ? (
+          <Button
+            type="button"
+            size="sm"
+            disabled={!canAct}
+            onClick={() => void store.approve(request, 'ask')}
+          >
+            {isSubmitting ? '正在信任…' : '信任此配置'}
+          </Button>
+        ) : (
         <div className="flex items-center rounded-lg bg-primary text-primary-foreground">
           <Button
             type="button"
@@ -214,6 +228,7 @@ export const CommandApprovalView = ({
             </SelectContent>
           </Select>
         </div>
+        )}
       </footer>
     </section>
   );

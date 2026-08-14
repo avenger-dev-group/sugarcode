@@ -4,6 +4,10 @@ import type {
   CommandEnvironmentRefreshRequest,
   CommandEnvironmentStatus,
   CommandEnvironmentTarget,
+  TaskWorkspaceActionResult,
+  TaskWorkspaceRequest,
+  TaskWorkspaceSetRequest,
+  TaskWorkspaceStatus,
 } from '@/shared/command-environment';
 
 const PROFILE_LOADING_STORAGE_KEY =
@@ -51,3 +55,12 @@ export const initializeCommandEnvironmentPreference = async (): Promise<void> =>
     });
   }
 };
+
+export const getTaskWorkspace = (
+  request: TaskWorkspaceRequest,
+): Promise<TaskWorkspaceStatus> => window.sugarcode.getTaskWorkspace(request);
+
+export const setTaskWorkspaceMode = (
+  request: TaskWorkspaceSetRequest,
+): Promise<TaskWorkspaceActionResult> =>
+  window.sugarcode.setTaskWorkspaceMode(request);

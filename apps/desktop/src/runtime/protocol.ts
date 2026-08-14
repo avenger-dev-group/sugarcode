@@ -41,8 +41,12 @@ import {
 import {
   isCommandEnvironmentActionResult,
   isCommandEnvironmentStatus,
+  isTaskWorkspaceActionResult,
+  isTaskWorkspaceStatus,
   type CommandEnvironmentActionResult,
   type CommandEnvironmentStatus,
+  type TaskWorkspaceActionResult,
+  type TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 4 as const;
@@ -315,6 +319,19 @@ export type RuntimeCommand =
       enabled: boolean;
     }>
   | Readonly<{
+      type: 'taskWorkspace.inspect';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+    }>
+  | Readonly<{
+      type: 'taskWorkspace.set';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      mode: 'local' | 'worktree';
+    }>
+  | Readonly<{
       type: 'asset.import';
       requestId: string;
       fileName: string;
@@ -374,6 +391,7 @@ export type RuntimeCommand =
       type: 'terminal.create';
       requestId: string;
       workspaceId: string;
+      threadId?: string;
       generation: number;
       sessionId: string;
       columns: number;
@@ -456,11 +474,13 @@ export type RuntimeCommand =
       type: 'git.status';
       requestId: string;
       workspaceId: string;
+      threadId?: string;
     }>
   | Readonly<{
       type: 'git.diff';
       requestId: string;
       workspaceId: string;
+      threadId?: string;
       expectedRevision: string;
       path: string;
       source: 'worktree' | 'index';
@@ -469,6 +489,7 @@ export type RuntimeCommand =
       type: 'git.stage' | 'git.unstage';
       requestId: string;
       workspaceId: string;
+      threadId?: string;
       expectedRevision: string;
       paths: readonly string[];
     }>
@@ -476,6 +497,7 @@ export type RuntimeCommand =
       type: 'git.commit';
       requestId: string;
       workspaceId: string;
+      threadId?: string;
       expectedRevision: string;
       message: string;
       authorName: string;
@@ -674,6 +696,16 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'taskWorkspace.inspection';
+        workspace: TaskWorkspaceStatus;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'taskWorkspace.action';
+        action: TaskWorkspaceActionResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'turn.revised';
         workspaceId: string;
         threadId: string;
@@ -823,6 +855,7 @@ export type RuntimeEvent =
         toolName: string;
         argumentsSummary: string;
         fullAccess: boolean;
+        projectEnvironmentTrust?: true;
         recovered?: true;
       }>)
   | (RuntimeEventBase &
@@ -1269,6 +1302,17 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
       );
     case 'environment.profileLoadingSet':
       return typeof value.enabled === 'boolean';
+    case 'taskWorkspace.inspect':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string'
+      );
+    case 'taskWorkspace.set':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        (value.mode === 'local' || value.mode === 'worktree')
+      );
     case 'asset.import':
       return (
         typeof value.fileName === 'string' &&
@@ -1334,6 +1378,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
     case 'terminal.resize':
       return (
         typeof value.workspaceId === 'string' &&
+        (value.threadId === undefined || typeof value.threadId === 'string') &&
         Number.isSafeInteger(value.generation) &&
         isSessionId(value.sessionId) &&
         Number.isSafeInteger(value.columns) &&
@@ -1773,6 +1818,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.toolName === 'string' &&
         typeof value.argumentsSummary === 'string' &&
         typeof value.fullAccess === 'boolean' &&
+        (value.projectEnvironmentTrust === undefined ||
+          value.projectEnvironmentTrust === true) &&
         (value.recovered === undefined || value.recovered === true)
       );
     case 'approval.resolved':
@@ -1885,6 +1932,10 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       return isCommandEnvironmentStatus(value.status);
     case 'environment.action':
       return isCommandEnvironmentActionResult(value.action);
+    case 'taskWorkspace.inspection':
+      return isTaskWorkspaceStatus(value.workspace);
+    case 'taskWorkspace.action':
+      return isTaskWorkspaceActionResult(value.action);
     case 'model.configInspection':
       return isModelConfigInspection(value.inspection);
     case 'model.configAction':

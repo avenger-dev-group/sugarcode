@@ -60,6 +60,61 @@ test('workspace_read accepts a bounded batch and preserves each path', async () 
   });
 });
 
+test('project_action trusts the exact displayed config before running its named action', async () => {
+  let trustedHash = '';
+  let executedAction = '';
+  let approvalTool = '';
+  const native = {
+    inspectProjectEnvironmentJson: async () => JSON.stringify({
+      state: 'trustRequired',
+      configPath: '.sugarcode/project.json',
+      configHash: 'a'.repeat(64),
+      setupScript: 'pnpm install',
+      environmentScript: 'export FIXTURE=1',
+      actions: [{ id: 'verify', label: 'Verify', command: 'pnpm test' }],
+    }),
+    trustProjectEnvironmentJson: async (
+      _workspaceId: string,
+      expectedHash: string,
+    ) => {
+      trustedHash = expectedHash;
+      return JSON.stringify({ accepted: true });
+    },
+    runProjectEnvironmentActionJson: async (
+      _workspaceId: string,
+      _threadId: string,
+      actionId: string,
+    ) => {
+      executedAction = actionId;
+      return JSON.stringify({ accepted: true, status: 'completed' });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const tools = createWorkspaceTools(
+    native,
+    'workspace-fixture',
+    async (toolName, _arguments, execute) => {
+      approvalTool = toolName;
+      return execute('operation-fixture');
+    },
+    undefined,
+    'workspaceWrite',
+    undefined,
+    'thread-fixture',
+  );
+  const actionTool = tools.find((tool) => tool.name === 'project_action');
+  assert.ok(actionTool);
+
+  const result = await actionTool.runAsync({
+    args: { actionId: 'verify' },
+    toolContext: {} as never,
+  });
+
+  assert.equal(approvalTool, 'project_environment_trust');
+  assert.equal(trustedHash, 'a'.repeat(64));
+  assert.equal(executedAction, 'verify');
+  assert.deepEqual(result, { accepted: true, status: 'completed' });
+});
+
 test('workspace reads continue with instruction warnings while writes stop before approval', async () => {
   let approvalRequests = 0;
   const native = {

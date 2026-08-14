@@ -455,3 +455,48 @@ test('runtime approval timeout allows the operation and does not block shutdown 
   fixture.throwOnSend = true;
   assert.doesNotThrow(() => controller.surfaceUnavailable());
 });
+
+test('project environment trust ignores inherited access and fails closed on timeout', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeApprovalController(
+    fixture as unknown as RuntimeSupervisor,
+    5,
+  );
+  controller.openWorkspace('workspace-trust', '/fixture/trust');
+  controller.markSurfaceReady();
+  assert.equal(
+    controller.setMode('workspace', undefined, 'workspace-trust').accepted,
+    true,
+  );
+  fixture.emit({
+    type: 'approval.requested',
+    sequence: 1,
+    requestId: 'request-trust',
+    workspaceId: 'workspace-trust',
+    threadId: 'thread-trust',
+    turnId: 'turn-trust',
+    approvalId: 'approval-trust',
+    operationId: 'operation-trust',
+    toolName: 'project_environment_trust',
+    argumentsSummary: 'Trust .sugarcode/project.json\n\n# setup\npnpm install',
+    fullAccess: true,
+    projectEnvironmentTrust: true,
+  });
+  assert.equal(fixture.sent.length, 0);
+  assert.equal(
+    controller.getSnapshot().request?.operationKind,
+    'projectEnvironment',
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const decision = fixture.sent.at(-1);
+  assert.equal(decision?.type, 'approval.resolve');
+  assert.equal(
+    decision?.type === 'approval.resolve' ? decision.decision : undefined,
+    'denied',
+  );
+  assert.equal(
+    controller.getSnapshot().workspaceModeIds?.includes('workspace-trust'),
+    true,
+  );
+});

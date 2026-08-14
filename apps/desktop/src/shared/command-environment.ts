@@ -1,6 +1,8 @@
 export const COMMAND_ENVIRONMENT_GET_CHANNEL = 'command-environment:get';
 export const COMMAND_ENVIRONMENT_REFRESH_CHANNEL = 'command-environment:refresh';
 export const COMMAND_ENVIRONMENT_PROFILE_CHANNEL = 'command-environment:profile';
+export const TASK_WORKSPACE_GET_CHANNEL = 'task-workspace:get';
+export const TASK_WORKSPACE_SET_CHANNEL = 'task-workspace:set';
 
 export type CommandEnvironmentState =
   | 'notCaptured'
@@ -47,6 +49,26 @@ export type CommandEnvironmentActionResult = Readonly<{
   status?: CommandEnvironmentStatus;
 }>;
 
+export type TaskWorkspaceStatus = Readonly<{
+  threadId: string;
+  mode: 'local' | 'worktree';
+  root: string;
+  branch?: string;
+}>;
+
+export type TaskWorkspaceRequest = Readonly<{
+  workspaceId: string;
+  threadId: string;
+}>;
+
+export type TaskWorkspaceSetRequest = TaskWorkspaceRequest &
+  Readonly<{ mode: 'local' | 'worktree' }>;
+
+export type TaskWorkspaceActionResult = Readonly<{
+  accepted: boolean;
+  workspace?: TaskWorkspaceStatus;
+}>;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -91,6 +113,26 @@ export const isCommandEnvironmentActionResult = (
   (value.changed === undefined || typeof value.changed === 'boolean') &&
   (value.status === undefined || isCommandEnvironmentStatus(value.status));
 
+export const isTaskWorkspaceStatus = (
+  value: unknown,
+): value is TaskWorkspaceStatus =>
+  isRecord(value) &&
+  typeof value.threadId === 'string' &&
+  value.threadId.length > 0 &&
+  (value.mode === 'local' || value.mode === 'worktree') &&
+  typeof value.root === 'string' &&
+  value.root.length > 0 &&
+  value.root.length <= 16_384 &&
+  (value.branch === undefined ||
+    (typeof value.branch === 'string' && value.branch.length <= 512));
+
+export const isTaskWorkspaceActionResult = (
+  value: unknown,
+): value is TaskWorkspaceActionResult =>
+  isRecord(value) &&
+  typeof value.accepted === 'boolean' &&
+  (value.workspace === undefined || isTaskWorkspaceStatus(value.workspace));
+
 export type CommandEnvironmentApi = Readonly<{
   getCommandEnvironment: (
     target: CommandEnvironmentTarget,
@@ -101,4 +143,10 @@ export type CommandEnvironmentApi = Readonly<{
   setCommandEnvironmentProfileLoading: (
     request: CommandEnvironmentProfileRequest,
   ) => Promise<CommandEnvironmentActionResult>;
+  getTaskWorkspace: (
+    request: TaskWorkspaceRequest,
+  ) => Promise<TaskWorkspaceStatus>;
+  setTaskWorkspaceMode: (
+    request: TaskWorkspaceSetRequest,
+  ) => Promise<TaskWorkspaceActionResult>;
 }>;

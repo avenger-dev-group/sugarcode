@@ -17,6 +17,77 @@ fn seeded_store(directory: &tempfile::TempDir) -> Store {
 }
 
 #[test]
+fn project_environment_trust_is_durable_and_bound_to_the_exact_hash() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let root = "/fixture/workspace";
+    let original_hash = "a".repeat(64);
+    let changed_hash = "b".repeat(64);
+    {
+        let mut store = seeded_store(&directory);
+        assert!(
+            !store
+                .project_environment_trusted(root, &original_hash)
+                .expect("initial trust")
+        );
+        store
+            .trust_project_environment(root, &original_hash)
+            .expect("trust project environment");
+        assert!(
+            store
+                .project_environment_trusted(root, &original_hash)
+                .expect("exact trust")
+        );
+        assert!(
+            !store
+                .project_environment_trusted(root, &changed_hash)
+                .expect("changed hash")
+        );
+    }
+    let mut reopened = Store::open(directory.path()).expect("reopen store");
+    assert!(
+        reopened
+            .project_environment_trusted(root, &original_hash)
+            .expect("durable trust")
+    );
+}
+
+#[test]
+fn task_workspace_defaults_to_local_and_persists_worktree_binding() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    {
+        let mut store = seeded_store(&directory);
+        let local = store
+            .task_workspace("thread-1", "workspace-1")
+            .expect("default task workspace");
+        assert_eq!(local.mode, "local");
+        assert_eq!(local.task_root, None);
+        let worktree = store
+            .set_task_workspace(
+                "thread-1",
+                "workspace-1",
+                "worktree",
+                Some("/fixture/worktrees/thread-1"),
+                Some("sugarcode/thread-1"),
+            )
+            .expect("set task worktree");
+        assert_eq!(worktree.mode, "worktree");
+    }
+    let mut reopened = Store::open(directory.path()).expect("reopen store");
+    let worktree = reopened
+        .task_workspace("thread-1", "workspace-1")
+        .expect("persisted task worktree");
+    assert_eq!(
+        worktree.task_root.as_deref(),
+        Some("/fixture/worktrees/thread-1")
+    );
+    assert_eq!(worktree.branch.as_deref(), Some("sugarcode/thread-1"));
+    let local = reopened
+        .set_task_workspace("thread-1", "workspace-1", "local", None, None)
+        .expect("restore local task workspace");
+    assert_eq!(local.mode, "local");
+}
+
+#[test]
 fn thread_title_generation_is_conditional_and_manual_rename_is_authoritative() {
     let directory = tempfile::tempdir().expect("tempdir");
     let mut store = seeded_store(&directory);
@@ -833,6 +904,8 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
              DROP TABLE content_assets;
              DROP TABLE mcp_config;
              DROP TABLE skill_preferences;
+             DROP TABLE project_environment_trust;
+             DROP TABLE task_workspaces;
              ALTER TABLE approvals DROP COLUMN payload_json;
              DROP INDEX threads_workspace_archive_updated;
              CREATE TABLE threads_v1 (
@@ -862,5 +935,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 8);
+    assert_eq!(version, 10);
 }

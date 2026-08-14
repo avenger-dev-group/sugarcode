@@ -152,6 +152,18 @@ impl CommandEnvironmentSnapshot {
         &self.variables
     }
 
+    pub fn with_variables(&self, variables: Vec<(String, String)>) -> Self {
+        snapshot_from_variables(
+            next_snapshot_id(),
+            self.status.shell.clone(),
+            variables,
+            self.status.state,
+            self.status.source,
+            self.status.profile_loading_enabled,
+            self.status.last_error.clone(),
+        )
+    }
+
     fn with_last_error(&self, last_error: Option<String>) -> Self {
         let mut status = self.status.clone();
         status.last_error = last_error;
@@ -160,6 +172,88 @@ impl CommandEnvironmentSnapshot {
             variables: Arc::clone(&self.variables),
         }
     }
+}
+
+pub async fn capture_project_environment(
+    base: &CommandEnvironmentSnapshot,
+    cwd: &Path,
+    script: &str,
+) -> Result<CommandEnvironmentSnapshot, String> {
+    if script.is_empty() || script.len() > 32 * 1024 || script.contains('\0') {
+        return Err("project environment script is invalid".to_owned());
+    }
+    let shell = &base.status().shell;
+    if matches!(shell.kind, CommandShellKind::Cmd) {
+        return Err("project environment initialization requires PowerShell on Windows".to_owned());
+    }
+    let nonce = Uuid::now_v7().simple().to_string();
+    let begin = format!("__SUGARCODE_PROJECT_ENV_BEGIN_{nonce}__");
+    let end = format!("__SUGARCODE_PROJECT_ENV_END_{nonce}__");
+    let mut command = Command::new(&shell.executable);
+    match shell.kind {
+        CommandShellKind::Zsh | CommandShellKind::Bash | CommandShellKind::Posix => {
+            let command_script = format!(
+                "{{\n{script}\n}} || exit $?\nprintf '%s' '{begin}'\n/usr/bin/env -0\nprintf '%s' '{end}'"
+            );
+            command.args(["-c", &command_script]);
+        }
+        CommandShellKind::Fish => {
+            let command_script = format!(
+                "begin\n{script}\nend; or exit $status\nprintf '%s' '{begin}'\n/usr/bin/env -0\nprintf '%s' '{end}'"
+            );
+            command.args(["-c", &command_script]);
+        }
+        CommandShellKind::PowerShell => {
+            let command_script = format!(
+                "& {{ {script} }}; if (-not $?) {{ exit 1 }}; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::Out.Write('{begin}'); Get-ChildItem Env: | ForEach-Object {{ [Console]::Out.Write($_.Name + '=' + $_.Value + [char]0) }}; [Console]::Out.Write('{end}')"
+            );
+            command.args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &command_script,
+            ]);
+        }
+        CommandShellKind::Cmd => unreachable!("cmd was rejected above"),
+    }
+    command
+        .current_dir(cwd)
+        .env_clear()
+        .envs(base.variables().iter().cloned())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(CAPTURE_TIMEOUT, command.output())
+        .await
+        .map_err(|_| "project environment initialization timed out".to_owned())?
+        .map_err(|error| format!("could not run project environment initialization: {error}"))?;
+    if output.stdout.len() > MAX_CAPTURE_STDOUT_BYTES
+        || output.stderr.len() > MAX_CAPTURE_STDERR_BYTES
+    {
+        return Err("project environment initialization output exceeded its limit".to_owned());
+    }
+    if !output.status.success() {
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "project environment initialization failed with {}: {}",
+            output.status,
+            diagnostic.trim().chars().take(1_024).collect::<String>()
+        ));
+    }
+    let mut variables = parse_environment_output(&output.stdout, begin.as_bytes(), end.as_bytes())?;
+    for name in ["PWD", "OLDPWD", "SHLVL", "_"] {
+        variables.retain(|(candidate, _)| !candidate.eq_ignore_ascii_case(name));
+        if let Some((base_name, base_value)) = base
+            .variables()
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        {
+            variables.push((base_name.clone(), base_value.clone()));
+        }
+    }
+    Ok(base.with_variables(variables))
 }
 
 #[derive(Debug)]
@@ -906,6 +1000,28 @@ mod tests {
         assert_eq!(
             manager.inspect(Some("thread-b")).snapshot_id,
             second.status().snapshot_id
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_environment_exports_overlay_without_preserving_cwd() {
+        let base = CommandEnvironmentSnapshot::process_fallback(false);
+        let temporary = tempfile::tempdir().expect("temporary project");
+        let snapshot = capture_project_environment(
+            &base,
+            temporary.path(),
+            "export SUGARCODE_PROJECT_EXPORT='enabled value'; cd /",
+        )
+        .await
+        .expect("project environment overlay");
+        assert_eq!(
+            environment_value(snapshot.variables(), "SUGARCODE_PROJECT_EXPORT"),
+            Some("enabled value")
+        );
+        assert_eq!(
+            environment_value(snapshot.variables(), "PWD"),
+            environment_value(base.variables(), "PWD")
         );
     }
 }

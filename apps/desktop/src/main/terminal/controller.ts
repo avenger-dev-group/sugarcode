@@ -160,6 +160,7 @@ export class TerminalController {
           type: 'terminal.create',
           requestId: randomUUID(),
           workspaceId: active.workspaceId,
+          ...(confirmed.threadId ? { threadId: confirmed.threadId } : {}),
           generation: active.generation,
           sessionId: active.sessionId,
           columns: request.columns,

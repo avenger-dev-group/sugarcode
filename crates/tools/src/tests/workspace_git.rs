@@ -141,5 +141,8 @@ fn linked_worktree_metadata_is_rejected() {
     let directory = TempDir::new().expect("temporary workspace");
     fs::write(directory.path().join(".git"), "gitdir: elsewhere\n").expect("git file");
     let tool = WorkspaceTool::open(directory.path()).expect("workspace");
-    assert_eq!(tool.git_status(), Err(GitErrorKind::UnsupportedRepository));
+    assert!(matches!(
+        tool.git_status(),
+        Err(GitErrorKind::NotRepository | GitErrorKind::UnsupportedRepository)
+    ));
 }

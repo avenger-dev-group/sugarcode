@@ -22,6 +22,7 @@ type PendingApproval = {
   readonly toolName: string;
   readonly argumentsSummary: string;
   readonly fullAccess: boolean;
+  readonly projectEnvironmentTrust: boolean;
   timer: NodeJS.Timeout | null;
   localExpiresAtMs: number;
   actionState: CommandApprovalViewModel['actionState'];
@@ -134,6 +135,14 @@ export class RuntimeApprovalController {
     if (!['ask', 'thread', 'workspace'].includes(String(mode))) {
       return result(false, 'invalid');
     }
+    if (pending.projectEnvironmentTrust) {
+      if (mode !== 'ask') {
+        return result(false, 'invalid');
+      }
+      const response = this.respond(pending, 'approved', false);
+      this.publish();
+      return response;
+    }
     if (
       !this.assignMode(
         mode as CommandApprovalMode,
@@ -216,6 +225,7 @@ export class RuntimeApprovalController {
         toolName: event.toolName,
         argumentsSummary: event.argumentsSummary,
         fullAccess: event.fullAccess,
+        projectEnvironmentTrust: event.projectEnvironmentTrust === true,
         timer: null,
         localExpiresAtMs: 0,
         actionState: 'awaitingUser',
@@ -223,7 +233,10 @@ export class RuntimeApprovalController {
       };
       this.threadWorkspaces.set(event.threadId, event.workspaceId);
       this.queue.push(pending);
-      if (this.isAutoApproved(pending.workspaceId, pending.threadId)) {
+      if (
+        !pending.projectEnvironmentTrust &&
+        this.isAutoApproved(pending.workspaceId, pending.threadId)
+      ) {
         pending.responseCommitted = true;
         pending.actionState = 'submittingApproval';
         this.resolve(pending, 'approved', 'policy');
@@ -308,7 +321,11 @@ export class RuntimeApprovalController {
       pending.actionState = 'localWindowElapsed';
       pending.timer = null;
       this.publish();
-      this.resolve(pending, 'approved', 'system');
+      this.resolve(
+        pending,
+        pending.projectEnvironmentTrust ? 'denied' : 'approved',
+        'system',
+      );
     }, this.approvalWindowMs);
     pending.timer.unref();
   };
@@ -372,6 +389,7 @@ export class RuntimeApprovalController {
     for (const pending of this.queue) {
       if (
         pending.responseCommitted ||
+        pending.projectEnvironmentTrust ||
         !this.isAutoApproved(pending.workspaceId, pending.threadId)
       ) {
         continue;
@@ -391,9 +409,15 @@ export class RuntimeApprovalController {
     return {
       presentationId: pending.approvalId,
       operationKind:
-        pending.toolName === 'workspace_apply_patch' ? 'workspacePatch' : 'shell',
+        pending.projectEnvironmentTrust
+          ? 'projectEnvironment'
+          : pending.toolName === 'workspace_apply_patch'
+            ? 'workspacePatch'
+            : 'shell',
       description:
-        pending.toolName === 'workspace_apply_patch'
+        pending.projectEnvironmentTrust
+          ? 'This project requests permission to run the complete setup and environment configuration shown below. Trust is bound to this project path and exact configuration hash.'
+          : pending.toolName === 'workspace_apply_patch'
           ? 'Agent 请求修改以下项目文件。批准后，这批更改会原子应用。'
           : pending.fullAccess
             ? 'Allow this command to run with Full Access?'

@@ -103,6 +103,7 @@ export type WorkspaceLaunchContext = Readonly<{
   workspaceId: string;
   path: string;
   name: string;
+  threadId: string | null;
 }>;
 
 type StoredChat = Readonly<{
@@ -214,6 +215,8 @@ export class WorkspaceController {
             this.workspaceKind === 'chat'
               ? '聊天文件'
               : path.basename(this.workspacePath),
+          threadId:
+            this.options.supervisor.conversation.getSnapshot().threadId ?? null,
         }
       : null;
 

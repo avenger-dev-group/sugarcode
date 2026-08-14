@@ -247,6 +247,9 @@ const startApplication = async (): Promise<void> => {
     );
   });
   runtimeGitAdapter = new RuntimeGitAdapter(runtimeSupervisor);
+  runtimeConversationController.subscribe((snapshot) => {
+    runtimeGitAdapter?.selectThread(snapshot.workspaceId, snapshot.threadId);
+  });
   const threadRegistry = new ThreadRegistry();
   const workspaceRuntime = new RuntimeWorkspaceAdapter({
     runtime: runtimeSupervisor,

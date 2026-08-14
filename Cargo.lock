@@ -1102,6 +1102,7 @@ name = "sugarcode-desktop-native"
 version = "3.0.6"
 dependencies = [
  "base64",
+ "git2",
  "napi",
  "napi-build",
  "napi-derive",

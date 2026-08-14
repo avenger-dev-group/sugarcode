@@ -264,6 +264,7 @@ test('cold startup restores navigation without selecting or reordering projects'
     workspaceId: 'a'.repeat(64),
     path: await realpath(projectPath),
     name: 'project-alpha',
+    threadId: PROJECT_THREAD_ID,
   });
   assert.deepEqual(
     controller.getSnapshot().projects?.map((project) => project.id),
@@ -463,5 +464,6 @@ test('chat activation creates a dated managed directory and one atomic launch bi
     workspaceId,
     path: expectedPath,
     name: '聊天文件',
+    threadId: null,
   });
 });

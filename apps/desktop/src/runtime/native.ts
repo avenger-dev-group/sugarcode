@@ -50,11 +50,33 @@ export type NativeRuntimeBinding = Readonly<{
     threadId: string,
   ) => Promise<string>;
   setCommandProfileLoadingEnabledJson: (enabled: boolean) => string;
+  inspectProjectEnvironmentJson: (
+    workspaceId: string,
+    threadId?: string,
+  ) => Promise<string>;
+  trustProjectEnvironmentJson: (
+    workspaceId: string,
+    expectedHash: string,
+    threadId?: string,
+  ) => Promise<string>;
+  runProjectEnvironmentActionJson: (
+    workspaceId: string,
+    threadId: string,
+    actionId: string,
+  ) => Promise<string>;
+  inspectTaskWorkspaceJson: (workspaceId: string, threadId: string) => string;
+  taskWorkspaceBindingId: (workspaceId: string, threadId: string) => string;
+  setTaskWorkspaceModeJson: (
+    workspaceId: string,
+    threadId: string,
+    mode: 'local' | 'worktree',
+  ) => string;
   drainCommandOutputJson: (operationId: string) => string;
   finishCommandOutput: (operationId: string) => void;
   createTerminalJson: (
     sessionId: string,
     workspaceId: string,
+    threadId: string | undefined,
     columns: number,
     rows: number,
   ) => string;

@@ -383,7 +383,9 @@ impl WorkspaceTool {
         };
         let git_metadata = std::fs::symlink_metadata(root.join(".git"))
             .map_err(|_| GitErrorKind::NotRepository)?;
-        if !git_metadata.is_dir() || git_metadata.file_type().is_symlink() {
+        if git_metadata.file_type().is_symlink()
+            || (!git_metadata.is_dir() && !git_metadata.is_file())
+        {
             return Err(GitErrorKind::UnsupportedRepository);
         }
         let repository = Repository::open(root).map_err(|error| {
@@ -393,7 +395,7 @@ impl WorkspaceTool {
                 map_git_error(error)
             }
         })?;
-        if repository.is_bare() || repository.is_worktree() {
+        if repository.is_bare() {
             return Err(GitErrorKind::UnsupportedRepository);
         }
         let root_canonical = std::fs::canonicalize(root).map_err(|_| GitErrorKind::Unavailable)?;
@@ -404,10 +406,39 @@ impl WorkspaceTool {
             std::fs::canonicalize(workdir).map_err(|_| GitErrorKind::Unavailable)?;
         let gitdir_canonical =
             std::fs::canonicalize(repository.path()).map_err(|_| GitErrorKind::Unavailable)?;
-        let expected_gitdir =
-            std::fs::canonicalize(root.join(".git")).map_err(|_| GitErrorKind::Unavailable)?;
-        if workdir_canonical != root_canonical || gitdir_canonical != expected_gitdir {
+        if workdir_canonical != root_canonical {
             return Err(GitErrorKind::UnsupportedRepository);
+        }
+        if repository.is_worktree() {
+            if !git_metadata.is_file() {
+                return Err(GitErrorKind::UnsupportedRepository);
+            }
+            let pointer = std::fs::read_to_string(root.join(".git"))
+                .map_err(|_| GitErrorKind::Unavailable)?;
+            let path = pointer
+                .strip_prefix("gitdir:")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or(GitErrorKind::UnsupportedRepository)?;
+            let pointed_gitdir = std::fs::canonicalize(if Path::new(path).is_absolute() {
+                PathBuf::from(path)
+            } else {
+                root.join(path)
+            })
+            .map_err(|_| GitErrorKind::Unavailable)?;
+            let common = std::fs::canonicalize(repository.commondir())
+                .map_err(|_| GitErrorKind::Unavailable)?;
+            if pointed_gitdir != gitdir_canonical
+                || !gitdir_canonical.starts_with(common.join("worktrees"))
+            {
+                return Err(GitErrorKind::UnsupportedRepository);
+            }
+        } else {
+            let expected_gitdir =
+                std::fs::canonicalize(root.join(".git")).map_err(|_| GitErrorKind::Unavailable)?;
+            if !git_metadata.is_dir() || gitdir_canonical != expected_gitdir {
+                return Err(GitErrorKind::UnsupportedRepository);
+            }
         }
         Ok(repository)
     }

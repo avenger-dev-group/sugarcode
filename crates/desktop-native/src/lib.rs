@@ -14,11 +14,13 @@ use napi::Error;
 use napi::bindgen_prelude::Result;
 use napi_derive::napi;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sugarcode_state::ContentAsset;
 use sugarcode_state::ContentAssetKind;
 use sugarcode_state::ContentStore;
 use sugarcode_terminal::EmbeddedTerminal;
 use sugarcode_tools::CommandEnvironmentManager;
+use sugarcode_tools::CommandEnvironmentSnapshot;
 use sugarcode_tools::CommandEnvironmentState;
 use sugarcode_tools::EmbeddedShellCommandExecutor;
 use sugarcode_tools::FullAccessShellArguments;
@@ -30,9 +32,12 @@ use sugarcode_tools::GitErrorKind;
 use sugarcode_tools::GitMutationArguments;
 use sugarcode_tools::GitRepositoryState;
 use sugarcode_tools::MAX_WORKSPACE_INSTRUCTIONS_BYTES;
+use sugarcode_tools::PROJECT_ENVIRONMENT_CONFIG_PATH;
+use sugarcode_tools::ResolvedProjectEnvironmentConfig;
 use sugarcode_tools::ShellCommandArguments;
 use sugarcode_tools::ShellCommandExecution;
 use sugarcode_tools::ShellCommandExecutor;
+use sugarcode_tools::ShellCommandOutcome;
 use sugarcode_tools::ShellOutputChunk;
 use sugarcode_tools::ShellOutputStream;
 use sugarcode_tools::WorkspaceAdvancedSearchArguments;
@@ -55,6 +60,10 @@ use sugarcode_tools::WorkspaceSearchArguments;
 use sugarcode_tools::WorkspaceSearchMode;
 use sugarcode_tools::WorkspaceSearchOutcome;
 use sugarcode_tools::WorkspaceTool;
+use sugarcode_tools::capture_project_environment;
+use sugarcode_tools::create_task_worktree;
+use sugarcode_tools::parse_project_environment_config;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use persistence::AssetRow;
@@ -65,11 +74,20 @@ pub struct NativeRuntime {
     store: Mutex<Store>,
     content_store: ContentStore,
     workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
+    task_workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
     command_cancellations: Mutex<HashMap<String, CancellationToken>>,
     command_output: Arc<Mutex<HashMap<String, VecDeque<ShellOutputChunk>>>>,
     command_environments: CommandEnvironmentManager,
+    project_environment_gates:
+        Mutex<HashMap<String, Arc<AsyncMutex<Option<ProjectTaskEnvironment>>>>>,
     terminals: Mutex<HashMap<String, EmbeddedTerminal>>,
     skills_root: PathBuf,
+    task_worktrees_root: PathBuf,
+}
+
+struct ProjectTaskEnvironment {
+    config_hash: String,
+    snapshot: Arc<CommandEnvironmentSnapshot>,
 }
 
 #[napi]
@@ -80,17 +98,21 @@ impl NativeRuntime {
         let content_store = ContentStore::open_at(Path::new(&data_directory))
             .map_err(|error| Error::from_reason(error.to_string()))?;
         let skills_root = Path::new(&data_directory).join("skills");
+        let task_worktrees_root = Path::new(&data_directory).join("worktrees");
         std::fs::create_dir_all(&skills_root)
             .map_err(|error| Error::from_reason(error.to_string()))?;
         Ok(Self {
             store: Mutex::new(store),
             content_store,
             workspaces: Mutex::new(HashMap::new()),
+            task_workspaces: Mutex::new(HashMap::new()),
             command_cancellations: Mutex::new(HashMap::new()),
             command_output: Arc::new(Mutex::new(HashMap::new())),
             command_environments: CommandEnvironmentManager::new(),
+            project_environment_gates: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
             skills_root,
+            task_worktrees_root,
         })
     }
 
@@ -281,7 +303,8 @@ impl NativeRuntime {
     ) -> Result<String> {
         let arguments: Vec<String> = serde_json::from_str(&arguments_json)
             .map_err(|_| Error::from_reason("Command arguments must be a JSON string array."))?;
-        let workspace = self.workspace(&workspace_id)?;
+        let base_workspace = self.workspace(&workspace_id)?;
+        let workspace = self.workspace_for_thread(&workspace_id, &thread_id)?;
         let command_root = workspace.command_workspace_root().map_err(|kind| {
             Error::from_reason(format!("Could not bind command workspace root: {kind:?}."))
         })?;
@@ -313,10 +336,35 @@ impl NativeRuntime {
                 ));
             }
         }
-        let environment = self
+        let host_environment = self
             .command_environments
             .environment_for_thread(&thread_id)
             .await;
+        let (environment, project_config_hash) = match self
+            .project_environment_for_thread(
+                &workspace,
+                base_workspace.canonical_root(),
+                &thread_id,
+                host_environment,
+                &cancellation,
+            )
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.command_cancellations
+                    .lock()
+                    .map_err(|_| {
+                        Error::from_reason("Native command cancellation lock was poisoned.")
+                    })?
+                    .remove(&operation_id);
+                return json_string(json!({
+                    "status": "error",
+                    "kind": "projectEnvironmentUnavailable",
+                    "message": error,
+                }));
+            }
+        };
         let environment_status = environment.status().clone();
         let executor =
             match EmbeddedShellCommandExecutor::new_with_environment(command_root, environment) {
@@ -381,6 +429,7 @@ impl NativeRuntime {
             "shell": environment_status.shell,
             "source": environment_status.source,
             "degraded": environment_status.state == CommandEnvironmentState::Degraded,
+            "projectConfigHash": project_config_hash,
         });
         let value = match execution {
             ShellCommandExecution::Completed(output) => {
@@ -418,6 +467,10 @@ impl NativeRuntime {
         thread_id: String,
     ) -> Result<String> {
         let _ = self.workspace(&workspace_id)?;
+        self.project_environment_gates
+            .lock()
+            .map_err(|_| Error::from_reason("Project environment gate lock was poisoned."))?
+            .remove(&thread_id);
         let snapshot = self.command_environments.refresh_thread(&thread_id).await;
         json_string(json!(snapshot.status()))
     }
@@ -428,6 +481,273 @@ impl NativeRuntime {
             .command_environments
             .set_profile_loading_enabled(enabled);
         json_string(json!({ "accepted": true, "changed": changed }))
+    }
+
+    #[napi]
+    pub fn inspect_task_workspace_json(
+        &self,
+        workspace_id: String,
+        thread_id: String,
+    ) -> Result<String> {
+        let base = self.workspace(&workspace_id)?;
+        let binding = self.with_store(|store| store.task_workspace(&thread_id, &workspace_id))?;
+        json_string(json!({
+            "threadId": thread_id,
+            "mode": binding.mode,
+            "root": binding.task_root.unwrap_or_else(|| base.canonical_root().to_string_lossy().into_owned()),
+            "branch": binding.branch,
+        }))
+    }
+
+    #[napi]
+    pub fn task_workspace_binding_id(
+        &self,
+        workspace_id: String,
+        thread_id: String,
+    ) -> Result<String> {
+        let workspace = self.workspace_for_thread(&workspace_id, &thread_id)?;
+        let base = self.workspace(&workspace_id)?;
+        if Arc::ptr_eq(&workspace, &base) {
+            return Ok(workspace_id);
+        }
+        let binding_id = format!("task-workspace:{thread_id}");
+        self.workspaces
+            .lock()
+            .map_err(|_| Error::from_reason("Native workspace lock was poisoned."))?
+            .insert(binding_id.clone(), workspace);
+        Ok(binding_id)
+    }
+
+    #[napi]
+    pub fn set_task_workspace_mode_json(
+        &self,
+        workspace_id: String,
+        thread_id: String,
+        mode: String,
+    ) -> Result<String> {
+        let base = self.workspace(&workspace_id)?;
+        let binding = match mode.as_str() {
+            "local" => {
+                self.task_workspaces
+                    .lock()
+                    .map_err(|_| Error::from_reason("Task workspace lock was poisoned."))?
+                    .remove(&thread_id);
+                self.workspaces
+                    .lock()
+                    .map_err(|_| Error::from_reason("Native workspace lock was poisoned."))?
+                    .remove(&format!("task-workspace:{thread_id}"));
+                self.with_store(|store| {
+                    store.set_task_workspace(&thread_id, &workspace_id, "local", None, None)
+                })?
+            }
+            "worktree" => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"sugarcode-workspace-root-v1\0");
+                hasher.update(workspace_id.as_bytes());
+                let workspace_hash = format!("{:x}", hasher.finalize());
+                let parent = self.task_worktrees_root.join(&workspace_hash[..24]);
+                let worktree = create_task_worktree(base.canonical_root(), &parent, &thread_id)
+                    .map_err(Error::from_reason)?;
+                let task_workspace =
+                    Arc::new(WorkspaceTool::open(&worktree.root).map_err(|kind| {
+                        Error::from_reason(format!("Could not open task worktree: {kind:?}."))
+                    })?);
+                let root = worktree.root.to_string_lossy().into_owned();
+                let binding = self.with_store(|store| {
+                    store.set_task_workspace(
+                        &thread_id,
+                        &workspace_id,
+                        "worktree",
+                        Some(&root),
+                        Some(&worktree.branch),
+                    )
+                })?;
+                self.task_workspaces
+                    .lock()
+                    .map_err(|_| Error::from_reason("Task workspace lock was poisoned."))?
+                    .insert(thread_id.clone(), task_workspace);
+                binding
+            }
+            _ => return Err(Error::from_reason("Task workspace mode is invalid.")),
+        };
+        self.command_environments.evict_thread(&thread_id);
+        self.project_environment_gates
+            .lock()
+            .map_err(|_| Error::from_reason("Project environment gate lock was poisoned."))?
+            .remove(&thread_id);
+        json_string(json!({
+            "accepted": true,
+            "workspace": {
+                "threadId": thread_id,
+                "mode": binding.mode,
+                "root": binding.task_root.unwrap_or_else(|| base.canonical_root().to_string_lossy().into_owned()),
+                "branch": binding.branch,
+            }
+        }))
+    }
+
+    #[napi]
+    pub async fn inspect_project_environment_json(
+        &self,
+        workspace_id: String,
+        thread_id: Option<String>,
+    ) -> Result<String> {
+        let base = self.workspace(&workspace_id)?;
+        let workspace = match thread_id.as_deref() {
+            Some(thread_id) => self.workspace_for_thread(&workspace_id, thread_id)?,
+            None => Arc::clone(&base),
+        };
+        json_string(
+            self.project_environment_inspection(&workspace, base.canonical_root())
+                .await?,
+        )
+    }
+
+    #[napi]
+    pub async fn trust_project_environment_json(
+        &self,
+        workspace_id: String,
+        expected_hash: String,
+        thread_id: Option<String>,
+    ) -> Result<String> {
+        let base = self.workspace(&workspace_id)?;
+        let workspace = match thread_id.as_deref() {
+            Some(thread_id) => self.workspace_for_thread(&workspace_id, thread_id)?,
+            None => Arc::clone(&base),
+        };
+        let Some(config) = read_project_environment_config(&workspace).await? else {
+            return json_string(json!({ "accepted": false, "reason": "missing" }));
+        };
+        if config.config_hash != expected_hash {
+            return json_string(json!({ "accepted": false, "reason": "changed" }));
+        }
+        let canonical_root = base.canonical_root().to_string_lossy().into_owned();
+        self.with_store(|store| {
+            store.trust_project_environment(&canonical_root, &config.config_hash)
+        })?;
+        json_string(json!({
+            "accepted": true,
+            "inspection": project_environment_inspection_value(config, true),
+        }))
+    }
+
+    #[napi]
+    pub async fn run_project_environment_action_json(
+        &self,
+        workspace_id: String,
+        thread_id: String,
+        action_id: String,
+    ) -> Result<String> {
+        let base = self.workspace(&workspace_id)?;
+        let workspace = self.workspace_for_thread(&workspace_id, &thread_id)?;
+        let Some(config) = read_project_environment_config(&workspace).await? else {
+            return json_string(json!({ "accepted": false, "reason": "absent" }));
+        };
+        let Some(action) = config
+            .actions
+            .iter()
+            .find(|action| action.id == action_id)
+            .cloned()
+        else {
+            return json_string(json!({ "accepted": false, "reason": "actionNotFound" }));
+        };
+        let canonical_root = base.canonical_root().to_string_lossy().into_owned();
+        if !self.with_store(|store| {
+            store.project_environment_trusted(&canonical_root, &config.config_hash)
+        })? {
+            return json_string(json!({ "accepted": false, "reason": "trustRequired" }));
+        }
+        let cancellation = CancellationToken::new();
+        let host_environment = self
+            .command_environments
+            .environment_for_thread(&thread_id)
+            .await;
+        let (environment, project_config_hash) = match self
+            .project_environment_for_thread(
+                &workspace,
+                base.canonical_root(),
+                &thread_id,
+                host_environment,
+                &cancellation,
+            )
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(message) => {
+                return json_string(json!({
+                    "accepted": false,
+                    "reason": "initializationFailed",
+                    "message": message,
+                }));
+            }
+        };
+        let Some(current) = read_project_environment_config(&workspace).await? else {
+            return json_string(json!({ "accepted": false, "reason": "configChanged" }));
+        };
+        if current.config_hash != config.config_hash
+            || !current
+                .actions
+                .iter()
+                .any(|current_action| current_action == &action)
+        {
+            return json_string(json!({ "accepted": false, "reason": "configChanged" }));
+        }
+        let command_root = workspace.command_workspace_root().map_err(|kind| {
+            Error::from_reason(format!("Could not bind project action root: {kind:?}."))
+        })?;
+        let executor = EmbeddedShellCommandExecutor::new_with_environment(
+            command_root,
+            Arc::clone(&environment),
+        )
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+        let execution = executor
+            .execute_full_access(
+                FullAccessShellArguments {
+                    command: action.command,
+                    cwd: ".".to_owned(),
+                    timeout_ms: 600_000,
+                    output_tx: None,
+                },
+                cancellation,
+            )
+            .await;
+        let status = environment.status();
+        let metadata = json!({
+            "snapshotId": status.snapshot_id,
+            "projectConfigHash": project_config_hash,
+            "shell": status.shell,
+            "source": status.source,
+            "degraded": status.state == CommandEnvironmentState::Degraded,
+        });
+        match execution {
+            ShellCommandExecution::FullAccessCompleted(output) => json_string(json!({
+                "accepted": true,
+                "actionId": action_id,
+                "status": "completed",
+                "output": output,
+                "environment": metadata,
+            })),
+            ShellCommandExecution::Cancelled => json_string(json!({
+                "accepted": true,
+                "actionId": action_id,
+                "status": "cancelled",
+                "environment": metadata,
+            })),
+            ShellCommandExecution::Error(kind) => json_string(json!({
+                "accepted": true,
+                "actionId": action_id,
+                "status": "error",
+                "kind": kind.to_string(),
+                "environment": metadata,
+            })),
+            ShellCommandExecution::Completed(_) => json_string(json!({
+                "accepted": true,
+                "actionId": action_id,
+                "status": "error",
+                "kind": "invalidExecutionMode",
+                "environment": metadata,
+            })),
+        }
     }
 
     #[napi]
@@ -468,10 +788,14 @@ impl NativeRuntime {
         &self,
         session_id: String,
         workspace_id: String,
+        thread_id: Option<String>,
         columns: u16,
         rows: u16,
     ) -> Result<String> {
-        let workspace = self.workspace(&workspace_id)?;
+        let workspace = match thread_id.as_deref() {
+            Some(thread_id) => self.workspace_for_thread(&workspace_id, thread_id)?,
+            None => self.workspace(&workspace_id)?,
+        };
         let mut terminals = self
             .terminals
             .lock()
@@ -545,7 +869,20 @@ impl NativeRuntime {
         self.workspaces
             .lock()
             .map_err(|_| Error::from_reason("Native workspace lock was poisoned."))?
-            .insert(workspace_id, workspace);
+            .insert(workspace_id.clone(), workspace);
+        let persisted = self.with_store(|store| store.task_workspaces(&workspace_id))?;
+        let mut task_workspaces = self
+            .task_workspaces
+            .lock()
+            .map_err(|_| Error::from_reason("Task workspace lock was poisoned."))?;
+        for binding in persisted {
+            let Some(root) = binding.task_root else {
+                continue;
+            };
+            if let Ok(workspace) = WorkspaceTool::open(Path::new(&root)) {
+                task_workspaces.insert(binding.thread_id, Arc::new(workspace));
+            }
+        }
         Ok(())
     }
 
@@ -678,6 +1015,18 @@ impl NativeRuntime {
         let deleted = self.with_store(|store| store.delete_thread(&thread_id, &workspace_id))?;
         if deleted {
             self.command_environments.evict_thread(&thread_id);
+            self.task_workspaces
+                .lock()
+                .map_err(|_| Error::from_reason("Task workspace lock was poisoned."))?
+                .remove(&thread_id);
+            self.workspaces
+                .lock()
+                .map_err(|_| Error::from_reason("Native workspace lock was poisoned."))?
+                .remove(&format!("task-workspace:{thread_id}"));
+            self.project_environment_gates
+                .lock()
+                .map_err(|_| Error::from_reason("Project environment gate lock was poisoned."))?
+                .remove(&thread_id);
         }
         Ok(deleted)
     }
@@ -1282,6 +1631,145 @@ impl NativeRuntime {
 }
 
 impl NativeRuntime {
+    async fn project_environment_for_thread(
+        &self,
+        workspace: &Arc<WorkspaceTool>,
+        trust_root: &Path,
+        thread_id: &str,
+        host_environment: Arc<CommandEnvironmentSnapshot>,
+        cancellation: &CancellationToken,
+    ) -> std::result::Result<(Arc<CommandEnvironmentSnapshot>, Option<String>), String> {
+        let Some(config) = read_project_environment_config(workspace)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok((host_environment, None));
+        };
+        let canonical_root = trust_root.to_string_lossy().into_owned();
+        let trusted = self
+            .with_store(|store| {
+                store.project_environment_trusted(&canonical_root, &config.config_hash)
+            })
+            .map_err(|error| error.to_string())?;
+        if !trusted {
+            return Err(format!(
+                "{} changed or has not been trusted",
+                PROJECT_ENVIRONMENT_CONFIG_PATH
+            ));
+        }
+        let gate = {
+            let mut gates = self
+                .project_environment_gates
+                .lock()
+                .map_err(|_| "project environment gate lock was poisoned".to_owned())?;
+            Arc::clone(
+                gates
+                    .entry(thread_id.to_owned())
+                    .or_insert_with(|| Arc::new(AsyncMutex::new(None))),
+            )
+        };
+        let mut cached = gate.lock().await;
+        if let Some(cached) = cached.as_ref()
+            && cached.config_hash == config.config_hash
+        {
+            return Ok((
+                Arc::clone(&cached.snapshot),
+                Some(cached.config_hash.clone()),
+            ));
+        }
+        if cancellation.is_cancelled() {
+            return Err("project environment initialization was cancelled".to_owned());
+        }
+        if let Some(setup_script) = config.setup_script.as_ref() {
+            let command_root = workspace
+                .command_workspace_root()
+                .map_err(|kind| format!("could not bind project setup root: {kind:?}"))?;
+            let executor = EmbeddedShellCommandExecutor::new_with_environment(
+                command_root,
+                Arc::clone(&host_environment),
+            )
+            .map_err(|error| error.to_string())?;
+            match executor
+                .execute_full_access(
+                    FullAccessShellArguments {
+                        command: setup_script.clone(),
+                        cwd: ".".to_owned(),
+                        timeout_ms: 600_000,
+                        output_tx: None,
+                    },
+                    cancellation.clone(),
+                )
+                .await
+            {
+                ShellCommandExecution::FullAccessCompleted(output)
+                    if output.outcome == (ShellCommandOutcome::ExitCode { code: 0 }) => {}
+                ShellCommandExecution::FullAccessCompleted(output) => {
+                    return Err(format!(
+                        "project setup failed ({:?}): {}",
+                        output.outcome,
+                        output.stderr.trim().chars().take(2_048).collect::<String>()
+                    ));
+                }
+                ShellCommandExecution::Cancelled => {
+                    return Err("project setup was cancelled".to_owned());
+                }
+                ShellCommandExecution::Error(kind) => {
+                    return Err(format!("project setup could not start: {kind}"));
+                }
+                ShellCommandExecution::Completed(_) => {
+                    return Err("project setup returned an invalid execution mode".to_owned());
+                }
+            }
+        }
+        let current = read_project_environment_config(workspace)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "project environment configuration disappeared".to_owned())?;
+        if current.config_hash != config.config_hash {
+            return Err("project environment configuration changed during setup".to_owned());
+        }
+        let snapshot = match config.environment_script.as_ref() {
+            Some(script) => Arc::new(
+                capture_project_environment(&host_environment, workspace.canonical_root(), script)
+                    .await?,
+            ),
+            None => host_environment,
+        };
+        *cached = Some(ProjectTaskEnvironment {
+            config_hash: config.config_hash.clone(),
+            snapshot: Arc::clone(&snapshot),
+        });
+        Ok((snapshot, Some(config.config_hash)))
+    }
+
+    async fn project_environment_inspection(
+        &self,
+        workspace: &WorkspaceTool,
+        trust_root: &Path,
+    ) -> Result<serde_json::Value> {
+        let Some(content) = read_project_environment_content(workspace).await? else {
+            return Ok(json!({
+                "state": "absent",
+                "configPath": PROJECT_ENVIRONMENT_CONFIG_PATH,
+            }));
+        };
+        let config = match parse_project_environment_config(&content) {
+            Ok(config) => config,
+            Err(error) => {
+                return Ok(json!({
+                    "state": "invalid",
+                    "configPath": PROJECT_ENVIRONMENT_CONFIG_PATH,
+                    "lastError": error,
+                }));
+            }
+        };
+        let canonical_root = trust_root.to_string_lossy().into_owned();
+        let trusted = self.with_store(|store| {
+            store.project_environment_trusted(&canonical_root, &config.config_hash)
+        })?;
+        Ok(project_environment_inspection_value(config, trusted))
+    }
+
     fn workspace(&self, workspace_id: &str) -> Result<Arc<WorkspaceTool>> {
         self.workspaces
             .lock()
@@ -1289,6 +1777,24 @@ impl NativeRuntime {
             .get(workspace_id)
             .cloned()
             .ok_or_else(|| Error::from_reason(format!("Workspace {workspace_id} is not open.")))
+    }
+
+    fn workspace_for_thread(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+    ) -> Result<Arc<WorkspaceTool>> {
+        if let Some(workspace) = self
+            .task_workspaces
+            .lock()
+            .map_err(|_| Error::from_reason("Task workspace lock was poisoned."))?
+            .get(thread_id)
+            .cloned()
+        {
+            let _ = self.with_store(|store| store.task_workspace(thread_id, workspace_id))?;
+            return Ok(workspace);
+        }
+        self.workspace(workspace_id)
     }
 
     fn with_terminal<T>(
@@ -1318,6 +1824,50 @@ impl NativeRuntime {
             .map_err(|_| Error::from_reason("Native runtime database lock was poisoned."))?;
         operation(&mut store).map_err(native_error)
     }
+}
+
+async fn read_project_environment_content(workspace: &WorkspaceTool) -> Result<Option<String>> {
+    match workspace
+        .read(
+            &WorkspaceReadArguments {
+                path: PROJECT_ENVIRONMENT_CONFIG_PATH.to_owned(),
+            },
+            &CancellationToken::new(),
+        )
+        .await
+    {
+        WorkspaceReadOutcome::Content { content, .. } => Ok(Some(content)),
+        WorkspaceReadOutcome::Error {
+            kind: WorkspaceReadErrorKind::NotFound,
+        } => Ok(None),
+        WorkspaceReadOutcome::Error { kind } => Err(Error::from_reason(format!(
+            "Could not read {PROJECT_ENVIRONMENT_CONFIG_PATH}: {}.",
+            read_error_code(kind)
+        ))),
+    }
+}
+
+async fn read_project_environment_config(
+    workspace: &WorkspaceTool,
+) -> Result<Option<ResolvedProjectEnvironmentConfig>> {
+    read_project_environment_content(workspace)
+        .await?
+        .map(|content| parse_project_environment_config(&content).map_err(Error::from_reason))
+        .transpose()
+}
+
+fn project_environment_inspection_value(
+    config: ResolvedProjectEnvironmentConfig,
+    trusted: bool,
+) -> serde_json::Value {
+    json!({
+        "state": if trusted { "trusted" } else { "trustRequired" },
+        "configPath": config.config_path,
+        "configHash": config.config_hash,
+        "setupScript": config.setup_script,
+        "environmentScript": config.environment_script,
+        "actions": config.actions,
+    })
 }
 
 fn nearest_instruction_snapshot(
@@ -1519,6 +2069,10 @@ fn git_error(kind: GitErrorKind) -> serde_json::Value {
 #[cfg(test)]
 #[path = "tests/persistence.rs"]
 mod persistence_tests;
+
+#[cfg(test)]
+#[path = "tests/project_environment.rs"]
+mod project_environment_tests;
 
 #[cfg(test)]
 #[path = "tests/skills.rs"]

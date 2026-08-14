@@ -30,6 +30,49 @@ pnpm dev
 pnpm check
 ```
 
+## Trusted project environments
+
+Repositories can declare task setup, exported environment variables, and named
+actions in `.sugarcode/project.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "setup": {
+    "default": "pnpm install",
+    "windows": "pnpm install"
+  },
+  "environment": {
+    "default": "export APP_ENV=development",
+    "windows": "$env:APP_ENV = 'development'"
+  },
+  "actions": [
+    {
+      "id": "verify",
+      "label": "Verify",
+      "command": {
+        "default": "pnpm check"
+      }
+    }
+  ]
+}
+```
+
+Each script supports `default`, `macos`, and `windows`; the platform-specific
+entry wins over `default`. SugarCode displays every resolved script before the
+first execution and binds trust to the canonical repository path plus the exact
+configuration SHA-256. Any content change requires trust again. Only exported
+variables are captured; aliases, functions, Shell options, and `cwd` are not
+retained. SugarCode never reads `.env` or automatically invokes direnv, Nix, or
+devbox.
+
+Tasks use the shared project directory by default. A task can opt into Worktree
+mode in General Settings to receive a deterministic `sugarcode/*` branch and an
+isolated directory. Agent tools, commands, project setup/actions, Git, and newly
+created integrated terminals then use that task root. Existing Worktree files
+and branches are intentionally retained when switching back to Local mode so
+that user work is never deleted implicitly.
+
 ## Packaging
 
 ```bash

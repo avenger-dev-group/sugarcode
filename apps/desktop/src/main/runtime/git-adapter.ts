@@ -27,7 +27,9 @@ type GitCommitParams = Readonly<{
 export class RuntimeGitAdapter {
   private readonly runtime: RuntimeSupervisor;
   private workspaceId: string | null = null;
+  private threadId: string | null = null;
   private transactionWorkspaceId: string | null = null;
+  private transactionThreadId: string | null = null;
 
   constructor(runtime: RuntimeSupervisor) {
     this.runtime = runtime;
@@ -35,6 +37,11 @@ export class RuntimeGitAdapter {
 
   openWorkspace = (workspaceId: string): void => {
     this.workspaceId = workspaceId;
+    this.threadId = null;
+  };
+
+  selectThread = (workspaceId: string | undefined, threadId: string | undefined): void => {
+    this.threadId = workspaceId === this.workspaceId ? threadId ?? null : null;
   };
 
   beginGitTransaction = (): { release: () => void } | 'busy' | 'unavailable' => {
@@ -45,12 +52,14 @@ export class RuntimeGitAdapter {
       return 'busy';
     }
     this.transactionWorkspaceId = this.workspaceId;
+    this.transactionThreadId = this.threadId;
     let released = false;
     return {
       release: () => {
         if (!released) {
           released = true;
           this.transactionWorkspaceId = null;
+          this.transactionThreadId = null;
         }
       },
     };
@@ -61,6 +70,7 @@ export class RuntimeGitAdapter {
       type: 'git.status',
       requestId: randomUUID(),
       workspaceId: this.requireWorkspace(),
+      ...this.threadCoordinates(),
     }) as Promise<WorkspaceGitStatusResponse>;
 
   gitDiff = async (
@@ -70,6 +80,7 @@ export class RuntimeGitAdapter {
       type: 'git.diff',
       requestId: randomUUID(),
       workspaceId: this.requireWorkspace(),
+      ...this.threadCoordinates(),
       expectedRevision: params.expectedRevision,
       path: params.path,
       source: params.source,
@@ -92,6 +103,7 @@ export class RuntimeGitAdapter {
       type: 'git.commit',
       requestId: randomUUID(),
       workspaceId: this.requireWorkspace(),
+      ...this.threadCoordinates(),
       expectedRevision: params.expectedRevision,
       message: params.message,
       authorName: params.authorName,
@@ -106,6 +118,7 @@ export class RuntimeGitAdapter {
       type: `git.${operation}`,
       requestId: randomUUID(),
       workspaceId: this.requireWorkspace(),
+      ...this.threadCoordinates(),
       expectedRevision: params.expectedRevision,
       paths: params.paths,
     }) as Promise<WorkspaceGitMutationResponse>;
@@ -129,5 +142,13 @@ export class RuntimeGitAdapter {
       throw new Error('No workspace is open for Git.');
     }
     return this.workspaceId;
+  };
+
+  private currentThreadId = (): string | null =>
+    this.transactionWorkspaceId ? this.transactionThreadId : this.threadId;
+
+  private threadCoordinates = (): Readonly<{ threadId?: string }> => {
+    const threadId = this.currentThreadId();
+    return threadId ? { threadId } : {};
   };
 }

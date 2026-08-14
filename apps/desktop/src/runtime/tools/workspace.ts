@@ -155,6 +155,17 @@ const commandSchema = {
   required: ['mode', 'command'],
 } satisfies Schema;
 
+const projectActionSchema = {
+  type: Type.OBJECT,
+  properties: {
+    actionId: {
+      type: Type.STRING,
+      description: 'The exact action id declared in .sugarcode/project.json.',
+    },
+  },
+  required: ['actionId'],
+} satisfies Schema;
+
 const parseNativeResult = (value: string): unknown => JSON.parse(value) as unknown;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -572,6 +583,51 @@ export const executePrivilegedWorkspaceTool = async (
   ) => void,
   threadId: string = workspaceId,
 ): Promise<unknown> => {
+  if (toolName === 'project_environment_trust') {
+    if (
+      typeof argumentsValue.expectedHash !== 'string' ||
+      argumentsValue.expectedHash.length !== 64
+    ) {
+      throw new Error('Project environment trust arguments are invalid');
+    }
+    const trust = parseNativeResult(
+      await nativeRuntime.trustProjectEnvironmentJson(
+        workspaceId,
+        argumentsValue.expectedHash,
+        threadId,
+      ),
+    );
+    if (!isRecord(trust) || trust.accepted !== true) {
+      return {
+        ok: false,
+        error:
+          isRecord(trust) && typeof trust.reason === 'string'
+            ? `projectEnvironment${trust.reason}`
+            : 'projectEnvironmentTrustFailed',
+      };
+    }
+    if (
+      typeof argumentsValue.projectActionId === 'string' &&
+      argumentsValue.projectActionId.length > 0
+    ) {
+      return parseNativeResult(
+        await nativeRuntime.runProjectEnvironmentActionJson(
+          workspaceId,
+          threadId,
+          argumentsValue.projectActionId,
+        ),
+      );
+    }
+    return executePrivilegedWorkspaceTool(
+      nativeRuntime,
+      operationId,
+      workspaceId,
+      'shell_exec',
+      argumentsValue,
+      onCommandOutput,
+      threadId,
+    );
+  }
   if (toolName === 'workspace_apply_patch') {
     if (typeof argumentsValue.patch !== 'string') {
       throw new Error('workspace_apply_patch arguments are invalid');
@@ -678,6 +734,7 @@ export const createWorkspaceTools = (
   access: 'readOnly' | 'workspaceWrite' = 'workspaceWrite',
   instructionContext?: WorkspaceInstructionContext,
   threadId: string = workspaceId,
+  nativeWorkspaceId: string = workspaceId,
 ): readonly FunctionTool<Schema>[] => {
   const tools: readonly FunctionTool<Schema>[] = [
   new FunctionTool({
@@ -694,7 +751,7 @@ export const createWorkspaceTools = (
         const path = paths[0] ?? '';
         return withInstructionWarnings(workspaceReadResult(
           parseNativeResult(
-            await nativeRuntime.workspaceRead(workspaceId, path),
+            await nativeRuntime.workspaceRead(nativeWorkspaceId, path),
           ),
           path,
         ), warnings);
@@ -713,7 +770,7 @@ export const createWorkspaceTools = (
           batch.map(async (path) => {
             const result = workspaceReadResult(
               parseNativeResult(
-                await nativeRuntime.workspaceRead(workspaceId, path),
+                await nativeRuntime.workspaceRead(nativeWorkspaceId, path),
               ),
               path,
             );
@@ -738,7 +795,7 @@ export const createWorkspaceTools = (
       const path = pathArgument(input);
       const warnings = instructionContext?.warningsForRead([path]) ?? [];
       return withInstructionWarnings(
-        parseNativeResult(await nativeRuntime.workspaceList(workspaceId, path)),
+        parseNativeResult(await nativeRuntime.workspaceList(nativeWorkspaceId, path)),
         warnings,
       );
     },
@@ -752,7 +809,7 @@ export const createWorkspaceTools = (
       const { path, query } = searchArguments(input);
       const warnings = instructionContext?.warningsForRead([path]) ?? [];
       return withInstructionWarnings(
-        parseNativeResult(await nativeRuntime.workspaceSearch(workspaceId, path, query)),
+        parseNativeResult(await nativeRuntime.workspaceSearch(nativeWorkspaceId, path, query)),
         warnings,
       );
     },
@@ -797,7 +854,7 @@ export const createWorkspaceTools = (
           return revalidated ?? executePrivilegedWorkspaceTool(
             nativeRuntime,
             operationId,
-            workspaceId,
+            nativeWorkspaceId,
             'workspace_apply_patch',
             { patch },
             onCommandOutput,
@@ -809,6 +866,96 @@ export const createWorkspaceTools = (
         instructionContext?.invalidateAfterWrite(
           workspacePatchInstructionPaths(patch),
         );
+      }
+      return result;
+    },
+  }),
+  new FunctionTool({
+    name: 'project_action',
+    description:
+      'Run one named action declared by the repository in .sugarcode/project.json. Read that file first and use an exact action id. SugarCode shows the complete hash-bound project setup, environment, and actions for explicit trust before the first execution.',
+    parameters: projectActionSchema,
+    execute: async (input) => {
+      if (
+        typeof input !== 'object' ||
+        input === null ||
+        !('actionId' in input) ||
+        typeof input.actionId !== 'string' ||
+        input.actionId.length === 0 ||
+        input.actionId.length > 64
+      ) {
+        throw new Error('project_action arguments are invalid');
+      }
+      if (!runPrivileged) {
+        return { ok: false, error: 'approvalUnavailable' };
+      }
+      const actionId = input.actionId;
+      const instructionCheck = instructionContext?.checkWrite(['.']);
+      if (instructionCheck) {
+        return instructionCheck;
+      }
+      const inspection = parseNativeResult(
+        await nativeRuntime.inspectProjectEnvironmentJson(workspaceId, threadId),
+      );
+      if (!isRecord(inspection)) {
+        return { ok: false, error: 'projectEnvironmentUnavailable' };
+      }
+      const matchingAction = Array.isArray(inspection.actions) &&
+        inspection.actions.some(
+          (action) => isRecord(action) && action.id === actionId,
+        );
+      if (!matchingAction) {
+        return {
+          ok: false,
+          error: inspection.state === 'invalid'
+            ? 'projectEnvironmentInvalid'
+            : 'projectActionNotFound',
+          ...(typeof inspection.lastError === 'string'
+            ? { message: inspection.lastError }
+            : {}),
+        };
+      }
+      const execute = async (): Promise<unknown> => {
+        const revalidated = instructionContext?.revalidateWrite(['.']);
+        return revalidated ?? parseNativeResult(
+          await nativeRuntime.runProjectEnvironmentActionJson(
+            workspaceId,
+            threadId,
+            actionId,
+          ),
+        );
+      };
+      const result = inspection.state === 'trustRequired' &&
+          typeof inspection.configHash === 'string'
+        ? await runPrivileged(
+            'project_environment_trust',
+            {
+              expectedHash: inspection.configHash,
+              projectEnvironment: inspection,
+              projectActionId: actionId,
+            },
+            async (operationId) => {
+              const revalidated = instructionContext?.revalidateWrite(['.']);
+              return revalidated ?? executePrivilegedWorkspaceTool(
+                nativeRuntime,
+                operationId,
+                workspaceId,
+                'project_environment_trust',
+                {
+                  expectedHash: inspection.configHash,
+                  projectEnvironment: inspection,
+                  projectActionId: actionId,
+                },
+                onCommandOutput,
+                threadId,
+              );
+            },
+          )
+        : inspection.state === 'trusted'
+          ? await execute()
+          : { ok: false, error: 'projectEnvironmentUnavailable' };
+      if (isRecord(result) && result.accepted === true) {
+        instructionContext?.invalidateAfterWrite(['*']);
       }
       return result;
     },
@@ -859,9 +1006,34 @@ export const createWorkspaceTools = (
           return instructionCheck;
         }
       }
+      const operationInspection = parseNativeResult(
+        await nativeRuntime.inspectProjectEnvironmentJson(workspaceId, threadId),
+      );
+      const projectConfigHash =
+        isRecord(operationInspection) &&
+        operationInspection.state === 'trustRequired' &&
+        typeof operationInspection.configHash === 'string'
+          ? operationInspection.configHash
+          : undefined;
+      const operationToolName = projectConfigHash
+        ? 'project_environment_trust'
+        : 'shell_exec';
+      const operationArguments: Readonly<Record<string, unknown>> = {
+        mode,
+        command,
+        arguments: commandArguments,
+        cwd,
+        timeoutMs,
+        ...(operationToolName === 'project_environment_trust'
+          ? {
+              expectedHash: projectConfigHash,
+              projectEnvironment: operationInspection,
+            }
+          : {}),
+      };
       const result = await runPrivileged(
-        'shell_exec',
-        { mode, command, arguments: commandArguments, cwd, timeoutMs },
+        operationToolName,
+        operationArguments,
         async (operationId) => {
           const revalidated = mode === 'fullAccess'
             ? instructionContext?.revalidateWrite(instructionScopes)
@@ -870,8 +1042,8 @@ export const createWorkspaceTools = (
             nativeRuntime,
             operationId,
             workspaceId,
-            'shell_exec',
-            { mode, command, arguments: commandArguments, cwd, timeoutMs },
+            operationToolName,
+            operationArguments,
             onCommandOutput,
             threadId,
           );

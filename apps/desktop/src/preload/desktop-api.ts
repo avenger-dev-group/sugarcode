@@ -23,13 +23,21 @@ import {
   COMMAND_ENVIRONMENT_GET_CHANNEL,
   COMMAND_ENVIRONMENT_PROFILE_CHANNEL,
   COMMAND_ENVIRONMENT_REFRESH_CHANNEL,
+  TASK_WORKSPACE_GET_CHANNEL,
+  TASK_WORKSPACE_SET_CHANNEL,
   isCommandEnvironmentActionResult,
   isCommandEnvironmentStatus,
+  isTaskWorkspaceActionResult,
+  isTaskWorkspaceStatus,
   type CommandEnvironmentActionResult,
   type CommandEnvironmentProfileRequest,
   type CommandEnvironmentRefreshRequest,
   type CommandEnvironmentStatus,
   type CommandEnvironmentTarget,
+  type TaskWorkspaceActionResult,
+  type TaskWorkspaceRequest,
+  type TaskWorkspaceSetRequest,
+  type TaskWorkspaceStatus,
 } from '@/shared/command-environment';
 import {
   GIT_COMMIT_CHANNEL,
@@ -368,6 +376,30 @@ export const createDesktopApi = (
     );
     if (!isCommandEnvironmentActionResult(result)) {
       throw new Error('Main returned an invalid command environment profile result.');
+    }
+    return result;
+  },
+  getTaskWorkspace: async (
+    request: TaskWorkspaceRequest,
+  ): Promise<TaskWorkspaceStatus> => {
+    const result: unknown = await ipcRenderer.invoke(
+      TASK_WORKSPACE_GET_CHANNEL,
+      request,
+    );
+    if (!isTaskWorkspaceStatus(result)) {
+      throw new Error('Main returned an invalid task workspace status.');
+    }
+    return result;
+  },
+  setTaskWorkspaceMode: async (
+    request: TaskWorkspaceSetRequest,
+  ): Promise<TaskWorkspaceActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      TASK_WORKSPACE_SET_CHANNEL,
+      request,
+    );
+    if (!isTaskWorkspaceActionResult(result)) {
+      throw new Error('Main returned an invalid task workspace action.');
     }
     return result;
   },

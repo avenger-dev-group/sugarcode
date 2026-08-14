@@ -109,6 +109,8 @@ import type {
 import type {
   CommandEnvironmentActionResult,
   CommandEnvironmentStatus,
+  TaskWorkspaceActionResult,
+  TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
@@ -239,6 +241,7 @@ type RecoveredApprovalPresentation =
       kind: 'command';
       argumentsSummary: string;
       fullAccess: boolean;
+      projectEnvironmentTrust?: true;
     }>
   | Readonly<{
       kind: 'mcp';
@@ -643,6 +646,7 @@ type StoredModelHistory = Readonly<{
 type ActiveTerminal = {
   requestId: string;
   workspaceId: string;
+  threadId?: string;
   generation: number;
   sessionId: string;
   nextOutputSequence: number;
@@ -666,6 +670,7 @@ export class RuntimeHost {
   private readonly loadNative: NonNullable<RuntimeHostOptions['loadNative']>;
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
+  private readonly activeTurnThreads = new Map<string, string>();
   private readonly cancellationSources = new Map<string, 'stopButton'>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingUserInputs = new Map<string, PendingUserInput>();
@@ -798,6 +803,43 @@ export class RuntimeHost {
           ),
         });
         break;
+      case 'taskWorkspace.inspect':
+        this.requireReady(command.requestId);
+        this.emit({
+          type: 'taskWorkspace.inspection',
+          requestId: command.requestId,
+          workspace: this.parseNativeJson<TaskWorkspaceStatus>(
+            this.requireNative().inspectTaskWorkspaceJson(
+              command.workspaceId,
+              command.threadId,
+            ),
+          ),
+        });
+        break;
+      case 'taskWorkspace.set': {
+        this.requireReady(command.requestId);
+        const taskIsActive = [...this.activeTurnThreads.values()].includes(
+          command.threadId,
+        );
+        const taskHasTerminal = [...this.terminals.values()].some(
+          (terminal) => terminal.workspaceId === command.workspaceId &&
+            terminal.threadId === command.threadId,
+        );
+        this.emit({
+          type: 'taskWorkspace.action',
+          requestId: command.requestId,
+          action: taskIsActive || taskHasTerminal
+            ? { accepted: false }
+            : this.parseNativeJson<TaskWorkspaceActionResult>(
+                this.requireNative().setTaskWorkspaceModeJson(
+                  command.workspaceId,
+                  command.threadId,
+                  command.mode,
+                ),
+              ),
+        });
+        break;
+      }
       case 'asset.import':
         this.requireReady(command.requestId);
         this.emit({
@@ -1183,7 +1225,11 @@ export class RuntimeHost {
           workspaceId: command.workspaceId,
           operation: 'status',
           result: this.parseNativeJson(
-            this.requireNative().gitStatusJson(command.workspaceId),
+            this.requireNative().gitStatusJson(
+              command.threadId
+                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                : command.workspaceId,
+            ),
           ),
         });
         break;
@@ -1195,7 +1241,9 @@ export class RuntimeHost {
           operation: 'diff',
           result: this.parseNativeJson(
             this.requireNative().gitDiffJson(
-              command.workspaceId,
+              command.threadId
+                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                : command.workspaceId,
               command.expectedRevision,
               command.path,
               command.source,
@@ -1213,7 +1261,9 @@ export class RuntimeHost {
           operation,
           result: this.parseNativeJson(
             this.requireNative().gitMutateJson(
-              command.workspaceId,
+              command.threadId
+                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                : command.workspaceId,
               command.expectedRevision,
               command.paths,
               operation === 'stage',
@@ -1230,7 +1280,9 @@ export class RuntimeHost {
           operation: 'commit',
           result: this.parseNativeJson(
             this.requireNative().gitCommitJson(
-              command.workspaceId,
+              command.threadId
+                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                : command.workspaceId,
               command.expectedRevision,
               command.message,
               command.authorName,
@@ -1291,6 +1343,7 @@ export class RuntimeHost {
           this.cancelTurnOperations(turnId);
         }
         this.activeTurns.clear();
+        this.activeTurnThreads.clear();
         for (const sessionId of [...this.terminals.keys()]) {
           this.closeTerminal(sessionId);
         }
@@ -1427,6 +1480,13 @@ export class RuntimeHost {
     return this.nativeRuntime;
   };
 
+  private taskWorkspaceBindingId = (workspaceId: string, threadId: string): string => {
+    const native = this.requireNative();
+    return typeof native.taskWorkspaceBindingId === 'function'
+      ? native.taskWorkspaceBindingId(workspaceId, threadId)
+      : workspaceId;
+  };
+
   private parseNativeJson = <T>(value: string): T => JSON.parse(value) as T;
 
   private createTerminal = (
@@ -1441,6 +1501,7 @@ export class RuntimeHost {
         this.requireNative().createTerminalJson(
           command.sessionId,
           command.workspaceId,
+          command.threadId,
           command.columns,
           command.rows,
         ),
@@ -1451,6 +1512,7 @@ export class RuntimeHost {
       const terminal: ActiveTerminal = {
         requestId: command.requestId,
         workspaceId: command.workspaceId,
+        ...(command.threadId ? { threadId: command.threadId } : {}),
         generation: command.generation,
         sessionId: command.sessionId,
         nextOutputSequence: 1,
@@ -2632,6 +2694,7 @@ export class RuntimeHost {
     const controller = new AbortController();
     let revisionCommitted = false;
     this.activeTurns.set(command.turnId, controller);
+    this.activeTurnThreads.set(command.turnId, command.threadId);
     try {
       const resolved = this.resolveProfile(command);
       if (command.type === 'turn.revise') {
@@ -2770,16 +2833,19 @@ export class RuntimeHost {
         instructionDeliveredFor: 0,
       };
       const planSubmissionGuard: PlanSubmissionGuard = {};
+      const nativeWorkspaceId = this.nativeRuntime
+        ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+        : command.workspaceId;
       const turnSkills = this.nativeRuntime
         ? createTurnSkills(
             this.nativeRuntime,
-            command.workspaceId,
+            nativeWorkspaceId,
             command.content,
           )
         : { instruction: '', tools: [] };
       const composerInstruction = composerIntentInstruction(command.content);
       const workspaceInstructions = this.nativeRuntime
-        ? new WorkspaceInstructionContext(this.nativeRuntime, command.workspaceId)
+        ? new WorkspaceInstructionContext(this.nativeRuntime, nativeWorkspaceId)
         : undefined;
       workspaceInstructions?.preloadRoot();
       const currentUserContent = this.contentFromParts(
@@ -2829,6 +2895,7 @@ export class RuntimeHost {
               turnAccess,
               workspaceInstructions,
               command.threadId,
+              nativeWorkspaceId,
             ),
             ...(turnMode === 'execute'
               ? this.mcp.toolsForTurn((request) =>
@@ -3086,6 +3153,7 @@ export class RuntimeHost {
       this.collaboration.releaseTurn(command.turnId);
       this.cancelTurnUserInputs(command.turnId);
       this.activeTurns.delete(command.turnId);
+      this.activeTurnThreads.delete(command.turnId);
       this.cancellationSources.delete(command.turnId);
     }
   };
@@ -3115,6 +3183,7 @@ export class RuntimeHost {
     }
     const controller = new AbortController();
     this.activeTurns.set(command.turnId, controller);
+    this.activeTurnThreads.set(command.turnId, command.threadId);
     try {
       const resolved = this.resolveProfile(command);
       withDurableStateWrite(() =>
@@ -3232,6 +3301,7 @@ export class RuntimeHost {
       );
     } finally {
       this.activeTurns.delete(command.turnId);
+      this.activeTurnThreads.delete(command.turnId);
       this.cancellationSources.delete(command.turnId);
     }
   };
@@ -3363,8 +3433,11 @@ export class RuntimeHost {
           }
         }
       };
+      const nativeWorkspaceId = this.nativeRuntime
+        ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+        : command.workspaceId;
       const workspaceInstructions = this.nativeRuntime
-        ? new WorkspaceInstructionContext(this.nativeRuntime, command.workspaceId)
+        ? new WorkspaceInstructionContext(this.nativeRuntime, nativeWorkspaceId)
         : undefined;
       workspaceInstructions?.preloadRoot();
       const tools = this.nativeRuntime
@@ -3396,6 +3469,7 @@ export class RuntimeHost {
               context.task.access,
               workspaceInstructions,
               command.threadId,
+              nativeWorkspaceId,
             ),
             ...(context.task.role === 'worker'
               ? this.mcp.toolsForTurn((request) =>
@@ -3413,7 +3487,7 @@ export class RuntimeHost {
       const turnSkills = this.nativeRuntime
         ? createTurnSkills(
             this.nativeRuntime,
-            command.workspaceId,
+            nativeWorkspaceId,
             command.content,
           )
         : { instruction: '', tools: [] };
@@ -3888,7 +3962,11 @@ export class RuntimeHost {
         argumentsJson,
       ),
       fullAccess:
-        toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess',
+        toolName === 'project_environment_trust' ||
+        (toolName === 'shell_exec' && argumentsValue.mode === 'fullAccess'),
+      ...(toolName === 'project_environment_trust'
+        ? { projectEnvironmentTrust: true as const }
+        : {}),
     };
     this.requireNative().proposeOperation(
       operationId,
@@ -3933,6 +4011,9 @@ export class RuntimeHost {
             toolName,
             argumentsSummary: approvalPresentation.argumentsSummary,
             fullAccess: approvalPresentation.fullAccess,
+            ...(approvalPresentation.projectEnvironmentTrust
+              ? { projectEnvironmentTrust: true }
+              : {}),
           });
         },
         resolve,
@@ -4214,6 +4295,9 @@ export class RuntimeHost {
               toolName: record.toolName,
               argumentsSummary: presentation.argumentsSummary,
               fullAccess: presentation.fullAccess,
+              ...(presentation.projectEnvironmentTrust
+                ? { projectEnvironmentTrust: true }
+                : {}),
               recovered: true,
             });
           } else {
@@ -4303,8 +4387,9 @@ export class RuntimeHost {
     const payload = record.approval;
     if (!record.toolName.startsWith('mcp__')) {
       const fullAccess =
-        record.toolName === 'shell_exec' &&
-        argumentsValue.mode === 'fullAccess';
+        record.toolName === 'project_environment_trust' ||
+        (record.toolName === 'shell_exec' &&
+          argumentsValue.mode === 'fullAccess');
       const computed: RecoveredApprovalPresentation = {
         kind: 'command',
         argumentsSummary: this.approvalArgumentsSummary(
@@ -4313,6 +4398,9 @@ export class RuntimeHost {
           record.argumentsJson,
         ),
         fullAccess,
+        ...(record.toolName === 'project_environment_trust'
+          ? { projectEnvironmentTrust: true }
+          : {}),
       };
       if (payload === null || payload === undefined) {
         return computed;
@@ -4324,7 +4412,8 @@ export class RuntimeHost {
         (payload.argumentsSummary === computed.argumentsSummary ||
           (record.toolName === 'workspace_apply_patch' &&
             payload.argumentsSummary === legacyArgumentsSummary)) &&
-        payload.fullAccess === computed.fullAccess
+        payload.fullAccess === computed.fullAccess &&
+        payload.projectEnvironmentTrust === computed.projectEnvironmentTrust
         ? computed
         : null;
     }
@@ -4399,7 +4488,9 @@ export class RuntimeHost {
         ? await executePrivilegedWorkspaceTool(
             this.requireNative(),
             record.operationId,
-            record.workspaceId,
+            record.toolName === 'workspace_apply_patch'
+              ? this.taskWorkspaceBindingId(record.workspaceId, record.threadId)
+              : record.workspaceId,
             record.toolName,
             argumentsValue,
             (operationId, stream, delta) => {
@@ -4599,6 +4690,39 @@ export class RuntimeHost {
     argumentsValue: Readonly<Record<string, unknown>>,
     argumentsJson: string,
   ): string => {
+    if (toolName === 'project_environment_trust') {
+      const project = argumentsValue.projectEnvironment;
+      if (!isRecord(project)) {
+        return 'Trust project environment configuration';
+      }
+      const scripts = [
+        typeof project.setupScript === 'string'
+          ? `# setup\n${project.setupScript}`
+          : '',
+        typeof project.environmentScript === 'string'
+          ? `# environment\n${project.environmentScript}`
+          : '',
+        ...(Array.isArray(project.actions)
+          ? project.actions.flatMap((action) =>
+              isRecord(action) &&
+              typeof action.label === 'string' &&
+              typeof action.command === 'string'
+                ? [`# action: ${action.label}\n${action.command}`]
+                : [],
+            )
+          : []),
+      ].filter(Boolean);
+      const header =
+        `Trust ${String(project.configPath ?? '.sugarcode/project.json')}\n` +
+        `Hash: ${String(project.configHash ?? '')}` +
+        (typeof argumentsValue.projectActionId === 'string'
+          ? `\nRun after trust: ${argumentsValue.projectActionId}`
+          : '');
+      const summary = `${header}\n\n${scripts.join('\n\n')}`;
+      return summary.length <= 32_768
+        ? summary
+        : `${summary.slice(0, 32_765)}...`;
+    }
     if (
       toolName === 'workspace_apply_patch' &&
       typeof argumentsValue.patch === 'string'

@@ -5,6 +5,8 @@ import {
   COMMAND_ENVIRONMENT_GET_CHANNEL,
   COMMAND_ENVIRONMENT_PROFILE_CHANNEL,
   COMMAND_ENVIRONMENT_REFRESH_CHANNEL,
+  TASK_WORKSPACE_GET_CHANNEL,
+  TASK_WORKSPACE_SET_CHANNEL,
 } from '@/shared/command-environment';
 import {
   isTrustedIpcSender,
@@ -88,9 +90,48 @@ export const registerCommandEnvironmentIpc = (
         : {}),
     });
   });
+  ipcMain.handle(TASK_WORKSPACE_GET_CHANNEL, (event, value: unknown) => {
+    trusted(event);
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('workspaceId' in value) ||
+      !('threadId' in value) ||
+      !isIdentifier(value.workspaceId) ||
+      !isIdentifier(value.threadId)
+    ) {
+      throw new Error('Task workspace request was invalid.');
+    }
+    return options.controller.inspectTaskWorkspace({
+      workspaceId: value.workspaceId,
+      threadId: value.threadId,
+    });
+  });
+  ipcMain.handle(TASK_WORKSPACE_SET_CHANNEL, (event, value: unknown) => {
+    trusted(event);
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('workspaceId' in value) ||
+      !('threadId' in value) ||
+      !('mode' in value) ||
+      !isIdentifier(value.workspaceId) ||
+      !isIdentifier(value.threadId) ||
+      (value.mode !== 'local' && value.mode !== 'worktree')
+    ) {
+      throw new Error('Task workspace mode request was invalid.');
+    }
+    return options.controller.setTaskWorkspace({
+      workspaceId: value.workspaceId,
+      threadId: value.threadId,
+      mode: value.mode,
+    });
+  });
   return () => {
     ipcMain.removeHandler(COMMAND_ENVIRONMENT_GET_CHANNEL);
     ipcMain.removeHandler(COMMAND_ENVIRONMENT_REFRESH_CHANNEL);
     ipcMain.removeHandler(COMMAND_ENVIRONMENT_PROFILE_CHANNEL);
+    ipcMain.removeHandler(TASK_WORKSPACE_GET_CHANNEL);
+    ipcMain.removeHandler(TASK_WORKSPACE_SET_CHANNEL);
   };
 };

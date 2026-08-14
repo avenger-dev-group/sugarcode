@@ -1306,7 +1306,9 @@ export class RuntimeConversationController {
             callId: event.operationId,
             approvalId: event.approvalId,
             operationKind:
-              event.toolName === 'workspace_apply_patch'
+              event.projectEnvironmentTrust
+                ? 'projectEnvironment'
+                : event.toolName === 'workspace_apply_patch'
                 ? 'workspacePatch'
                 : 'shell',
             command: event.argumentsSummary,

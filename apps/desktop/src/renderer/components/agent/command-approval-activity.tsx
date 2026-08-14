@@ -183,12 +183,18 @@ export const CommandApprovalActivity = ({
                 ? 'Timeout default'
               : activity.operationKind === 'workspacePatch'
                 ? 'Workspace files'
+                : activity.operationKind === 'projectEnvironment'
+                  ? 'Project environment'
                 : activity.fullAccess
                 ? 'Full Access Shell'
                 : 'shell/exec'}
           </span>
         </div>
-        <code className="mt-1 block min-w-0 break-all font-mono text-xs font-normal leading-normal text-secondary">
+        <code className={`mt-1 block min-w-0 break-all font-mono text-xs font-normal leading-normal text-secondary ${
+          activity.operationKind === 'projectEnvironment'
+            ? 'max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border bg-background p-2.5'
+            : ''
+        }`}>
           {activity.command}
         </code>
         <p className="mt-1 font-mono text-[10px] tracking-[0.08em] text-tertiary">

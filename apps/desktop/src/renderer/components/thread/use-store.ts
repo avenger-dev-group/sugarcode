@@ -162,7 +162,9 @@ const toAgentMessagePresentationState = (
 const commandOperationKind = (
   activity: ConversationCommandApprovalActivity,
 ): CommandApprovalActivityViewModel['operationKind'] =>
-  activity.operationKind === 'workspacePatch' ||
+  activity.operationKind === 'projectEnvironment'
+    ? 'projectEnvironment'
+    : activity.operationKind === 'workspacePatch' ||
   activity.command.startsWith('workspace_apply_patch') ||
   activity.executionResult?.outcome.type === 'workspacePatch'
     ? 'workspacePatch'
