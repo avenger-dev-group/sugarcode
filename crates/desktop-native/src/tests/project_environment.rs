@@ -23,15 +23,35 @@ fn project_config(value: &str) -> String {
     format!(
         r#"{{
           "schemaVersion": 1,
-          "setup": {{ "default": "printf setup > setup-marker.txt" }},
-          "environment": {{ "default": "export SUGARCODE_PROJECT_VALUE={value}" }},
+          "setup": {{
+            "default": "printf setup > setup-marker.txt",
+            "windows": "[System.IO.File]::WriteAllText('setup-marker.txt', 'setup')"
+          }},
+          "environment": {{
+            "default": "export SUGARCODE_PROJECT_VALUE={value}",
+            "windows": "$env:SUGARCODE_PROJECT_VALUE='{value}'"
+          }},
           "actions": [{{
             "id": "verify",
             "label": "Verify",
-            "command": {{ "default": "printf 'verified:%s:%s' \"$SUGARCODE_PROJECT_VALUE\" \"$PWD\"" }}
+            "command": {{
+              "default": "printf 'verified:%s|%s' \"$SUGARCODE_PROJECT_VALUE\" \"$PWD\"",
+              "windows": "[Console]::Write('verified:' + $env:SUGARCODE_PROJECT_VALUE + '|' + (Get-Location).Path)"
+            }}
           }}]
         }}"#,
     )
+}
+
+fn assert_environment_output(output: &str, expected_value: &str, expected_root: &str) {
+    let (value, root) = output
+        .split_once('|')
+        .expect("environment output contains its workspace root");
+    assert_eq!(value, expected_value);
+    assert_eq!(
+        fs::canonicalize(root).expect("canonical output root"),
+        fs::canonicalize(expected_root).expect("canonical expected root")
+    );
 }
 
 #[tokio::test]
@@ -102,6 +122,11 @@ async fn trusted_project_environment_and_worktrees_stay_task_isolated() {
         .to_owned();
     assert_ne!(Path::new(&worktree_root), repository_root.path());
 
+    #[cfg(windows)]
+    let verification_command =
+        "[Console]::Write($env:SUGARCODE_PROJECT_VALUE + '|' + (Get-Location).Path)";
+    #[cfg(not(windows))]
+    let verification_command = "printf '%s|%s' \"$SUGARCODE_PROJECT_VALUE\" \"$PWD\"";
     let result: Value = serde_json::from_str(
         &runtime
             .execute_command_json(
@@ -109,7 +134,7 @@ async fn trusted_project_environment_and_worktrees_stay_task_isolated() {
                 "workspace-1".to_owned(),
                 "thread-worktree".to_owned(),
                 "fullAccess".to_owned(),
-                "printf '%s|%s' \"$SUGARCODE_PROJECT_VALUE\" \"$PWD\"".to_owned(),
+                verification_command.to_owned(),
                 "[]".to_owned(),
                 ".".to_owned(),
                 15_000,
@@ -120,7 +145,7 @@ async fn trusted_project_environment_and_worktrees_stay_task_isolated() {
     .expect("command JSON");
     assert_eq!(result["status"], "completed", "command failed: {result}");
     let output = result["output"]["stdout"].as_str().expect("stdout");
-    assert_eq!(output, format!("one|{worktree_root}"));
+    assert_environment_output(output, "one", &worktree_root);
     assert!(Path::new(&worktree_root).join("setup-marker.txt").is_file());
     assert!(!repository_root.path().join("setup-marker.txt").exists());
 
@@ -137,9 +162,10 @@ async fn trusted_project_environment_and_worktrees_stay_task_isolated() {
     .expect("action JSON");
     assert_eq!(action["accepted"], true, "action rejected: {action}");
     assert_eq!(action["status"], "completed");
-    assert_eq!(
-        action["output"]["stdout"],
-        format!("verified:one:{worktree_root}")
+    assert_environment_output(
+        action["output"]["stdout"].as_str().expect("action stdout"),
+        "verified:one",
+        &worktree_root,
     );
 
     fs::write(
