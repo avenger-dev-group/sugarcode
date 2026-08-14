@@ -11,23 +11,27 @@ import {
 
 import type {
   AgentTaskViewModel,
+  ContextRailPlan,
   ContextRailResource,
 } from './types';
 
-type ContextRailTab = 'workspace' | 'resource' | 'agent';
+type ContextRailTab = 'workspace' | 'resource' | 'plan' | 'agent';
 
 type OrchestrationStore = Readonly<{
   activeTab: ContextRailTab;
+  selectedPlan: ContextRailPlan | null;
   selectedResource: ContextRailResource | null;
   selectedTask: AgentTaskViewModel | null;
   taskDockOpen: boolean;
   closeAgentTab: () => void;
+  closePlanTab: () => void;
   closeResourceTab: () => void;
   openDiff: (
     path: string,
     changes: readonly import('../workspace/types').FileChangeReviewFile[],
   ) => void;
   openFile: (path: string) => void;
+  openPlan: (plan: ContextRailPlan) => void;
   openSkill: (
     skill: Extract<ContextRailResource, { kind: 'skill' }>,
   ) => void;
@@ -53,6 +57,8 @@ export const OrchestrationStoreProvider = ({
     useState<AgentTaskViewModel | null>(null);
   const [selectedResource, setSelectedResource] =
     useState<ContextRailResource | null>(null);
+  const [selectedPlan, setSelectedPlan] =
+    useState<ContextRailPlan | null>(null);
   const [taskDockOpen, setTaskDockOpen] = useState(false);
 
   const selectTask = useCallback(
@@ -67,13 +73,22 @@ export const OrchestrationStoreProvider = ({
 
   const closeAgentTab = useCallback(() => {
     setSelectedTask(null);
-    setActiveTab(selectedResource ? 'resource' : 'workspace');
-  }, [selectedResource]);
+    setActiveTab(
+      selectedPlan ? 'plan' : selectedResource ? 'resource' : 'workspace',
+    );
+  }, [selectedPlan, selectedResource]);
 
   const closeResourceTab = useCallback(() => {
     setSelectedResource(null);
-    setActiveTab(selectedTask ? 'agent' : 'workspace');
-  }, [selectedTask]);
+    setActiveTab(selectedPlan ? 'plan' : selectedTask ? 'agent' : 'workspace');
+  }, [selectedPlan, selectedTask]);
+
+  const closePlanTab = useCallback(() => {
+    setSelectedPlan(null);
+    setActiveTab(
+      selectedResource ? 'resource' : selectedTask ? 'agent' : 'workspace',
+    );
+  }, [selectedResource, selectedTask]);
 
   const openFile = useCallback(
     (path: string) => {
@@ -96,6 +111,15 @@ export const OrchestrationStoreProvider = ({
     [onRequestOpen],
   );
 
+  const openPlan = useCallback(
+    (plan: ContextRailPlan) => {
+      setSelectedPlan(plan);
+      setActiveTab('plan');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
+
   const openSkill = useCallback(
     (skill: Extract<ContextRailResource, { kind: 'skill' }>) => {
       setSelectedResource(skill);
@@ -108,6 +132,7 @@ export const OrchestrationStoreProvider = ({
   useEffect(() => {
     setSelectedTask(null);
     setSelectedResource(null);
+    setSelectedPlan(null);
     setTaskDockOpen(false);
     setActiveTab('workspace');
   }, [scopeKey]);
@@ -122,10 +147,13 @@ export const OrchestrationStoreProvider = ({
     () => ({
       activeTab,
       closeAgentTab,
+      closePlanTab,
       closeResourceTab,
       openDiff,
       openFile,
+      openPlan,
       openSkill,
+      selectedPlan,
       selectedResource,
       selectedTask,
       selectTask,
@@ -137,12 +165,15 @@ export const OrchestrationStoreProvider = ({
     [
       activeTab,
       closeAgentTab,
+      closePlanTab,
       closeResourceTab,
       openDiff,
       openFile,
+      openPlan,
       openSkill,
       refreshTask,
       selectTask,
+      selectedPlan,
       selectedResource,
       selectedTask,
       taskDockOpen,

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import {
   BookOpenText,
+  ClipboardList,
   FileCode2,
   FileDiff,
   FolderTree,
@@ -12,6 +13,7 @@ import { AgentDetail } from '@/renderer/components/orchestration/agent-detail';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { SkillDocument } from '@/renderer/components/skills/skill-document';
+import { PlanDocument } from '@/renderer/components/thread/plan-document';
 import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
 import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
@@ -37,9 +39,11 @@ export const ContextRail = () => {
   const {
     activeTab,
     closeAgentTab,
+    closePlanTab,
     closeResourceTab,
     openFile,
     selectedResource,
+    selectedPlan,
     selectedTask,
     setActiveTab,
   } = useOrchestrationStore();
@@ -110,6 +114,34 @@ export const ContextRail = () => {
                 aria-label={`关闭 ${resourceTitle}`}
                 className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={closeResourceTab}
+              >
+                <X className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
+          {selectedPlan ? (
+            <div
+              className={`flex h-8 min-w-24 max-w-48 shrink-0 items-center border-b-2 transition-colors ${
+                activeTab === 'plan'
+                  ? 'border-link text-link'
+                  : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
+              }`}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'plan'}
+                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => setActiveTab('plan')}
+              >
+                <ClipboardList className="size-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate">计划</span>
+              </button>
+              <button
+                type="button"
+                aria-label="关闭计划标签页"
+                className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={closePlanTab}
               >
                 <X className="size-3" aria-hidden="true" />
               </button>
@@ -191,6 +223,14 @@ export const ContextRail = () => {
           ) : (
             <WorkspaceDocument path={selectedResource.path} />
           )}
+        </div>
+      ) : null}
+      {selectedPlan ? (
+        <div
+          className={`${activeTab === 'plan' ? 'block' : 'hidden'} min-h-0 flex-1`}
+          aria-hidden={activeTab !== 'plan'}
+        >
+          <PlanDocument plan={selectedPlan} />
         </div>
       ) : null}
       {selectedTask ? (

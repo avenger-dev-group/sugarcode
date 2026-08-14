@@ -59,3 +59,9 @@ export type ContextRailResource =
       description?: string;
       content: string;
     }>;
+
+export type ContextRailPlan = Readonly<{
+  id: string;
+  turnId: string;
+  content: string;
+}>;

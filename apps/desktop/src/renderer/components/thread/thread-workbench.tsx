@@ -1,4 +1,5 @@
 import {
+  ArrowRight,
   ArrowUp,
   CircleAlert,
   FileText,
@@ -11,7 +12,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import { memo, useRef } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMarkdown } from '@/renderer/components/agent/agent-markdown';
@@ -47,6 +48,7 @@ import {
   AgentTaskDock,
   OrchestrationActivity,
 } from '@/renderer/components/orchestration/orchestration-activity';
+import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 import { UserInputActivity } from '@/renderer/components/user-input/user-input-activity';
@@ -112,48 +114,105 @@ const TranscriptMessage = (props: TranscriptMessageProps) =>
   );
 
 const PlanProposal = ({
+  planId,
   turnId,
   content,
   actionable,
   onImplement,
   onRefine,
 }: Readonly<{
+  planId: string;
   turnId: string;
   content: string;
   actionable: boolean;
   onImplement: ThreadWorkbenchViewProps['store']['implementPlan'];
   onRefine: ThreadWorkbenchViewProps['store']['refinePlan'];
-}>) => (
-  <article
-    className="rounded-2xl border border-border/80 bg-card/60 px-5 py-4 shadow-sm"
-    aria-label="正式计划"
-  >
-    <div className="mb-3 flex items-center gap-2">
-      <FileText className="size-4 text-process" aria-hidden="true" />
-      <span className="text-xs font-medium text-secondary">正式计划</span>
-    </div>
-    <AgentMarkdown source={content} isStreaming={false} />
-    {actionable ? (
-      <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-border/70 pt-3">
-        <Button
+}>) => {
+  const { openPlan } = useOrchestrationStore();
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const [isTruncated, setIsTruncated] = useState(false);
+  const showFullPlan = (): void => {
+    openPlan({ id: planId, turnId, content });
+  };
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) {
+      return;
+    }
+    const update = (): void => {
+      setIsTruncated(preview.scrollHeight > preview.clientHeight + 1);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(preview);
+    return () => observer.disconnect();
+  }, [content]);
+
+  return (
+    <article
+      className="overflow-hidden rounded-2xl border border-border/80 bg-card/60 shadow-sm"
+      aria-label="正式计划"
+    >
+      <div className="flex items-center gap-2 px-5 pb-3 pt-4">
+        <FileText className="size-4 text-process" aria-hidden="true" />
+        <span className="text-xs font-medium text-secondary">正式计划</span>
+        <button
           type="button"
-          size="sm"
-          variant="outline"
-          onClick={() => onRefine(turnId)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-tertiary transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          onClick={showFullPlan}
+          aria-label="在右侧打开完整计划"
         >
-          继续完善
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => void onImplement(turnId)}
-        >
-          实现此计划
-        </Button>
+          右侧打开
+          <ArrowRight className="size-3" aria-hidden="true" />
+        </button>
       </div>
-    ) : null}
-  </article>
-);
+      <div className="relative px-5">
+        <div
+          ref={previewRef}
+          className="max-h-[200px] overflow-hidden [&_a]:pointer-events-none [&_button]:pointer-events-none"
+          aria-hidden={isTruncated}
+          inert={isTruncated ? true : undefined}
+        >
+          <AgentMarkdown source={content} isStreaming={false} />
+        </div>
+        {isTruncated ? (
+          <div className="plan-preview-frost pointer-events-none absolute inset-x-0 bottom-0 flex h-28 items-end justify-center pb-3">
+            <button
+              type="button"
+              className="pointer-events-auto relative z-10 inline-flex h-9 items-center gap-2 rounded-full bg-white/88 px-4 text-xs font-medium text-[#24272b] shadow-[0_10px_30px_rgba(20,24,32,0.16)] backdrop-blur-xl transition-[transform,box-shadow,background-color] hover:-translate-y-0.5 hover:bg-white hover:shadow-[0_14px_34px_rgba(20,24,32,0.2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-[#f5f5f5]/92"
+              onClick={showFullPlan}
+            >
+              查看完整计划
+              <ArrowRight className="size-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {actionable ? (
+        <div className="mx-5 mt-4 flex flex-wrap justify-end gap-2 border-t border-border/70 pb-4 pt-3">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => onRefine(turnId)}
+          >
+            继续完善
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void onImplement(turnId)}
+          >
+            实现此计划
+          </Button>
+        </div>
+      ) : (
+        <div className="h-4" aria-hidden="true" />
+      )}
+    </article>
+  );
+};
 
 const TurnActivity = ({
   entry,
@@ -352,6 +411,7 @@ const TranscriptTurnView = ({
       ))}
       {turn.planProposal ? (
         <PlanProposal
+          planId={turn.planProposal.id}
           turnId={turn.id}
           content={turn.planProposal.content}
           actionable={planActionable}
