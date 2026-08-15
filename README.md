@@ -85,10 +85,10 @@ version, platform artifact names, file sizes, and SHA-256 checksums.
 
 ## Desktop releases and updates
 
-The desktop application checks GitCode first and GitHub second. A release is
-downloaded silently to the user's Downloads directory and verified against the
-manifest before the update button appears. If GitCode is unavailable or its
-release is incomplete, the application automatically retries against GitHub.
+The desktop application checks GitCode and GitHub together and selects the
+highest available stable version, preferring GitCode when both sources publish
+the same version. A release is downloaded silently to the user's Downloads
+directory and verified against the manifest before the update button appears.
 After repeated failures, the same button opens the GitCode releases page.
 
 The release workflow builds these installers from one source revision:

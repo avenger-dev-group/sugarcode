@@ -25,7 +25,6 @@ const MANIFEST_NAME = 'update-manifest.json';
 const MANIFEST_SCHEMA_VERSION = 1;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024;
-const DEFAULT_INITIAL_DELAY_MS = 15_000;
 const DEFAULT_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
 const METADATA_TIMEOUT_MS = 30_000;
@@ -73,6 +72,13 @@ type PendingUpdate = Readonly<{
   size: number;
 }>;
 
+type UpdateCandidate = Readonly<{
+  source: UpdateSource;
+  manifest: UpdateManifest;
+  platformUpdate: ManifestPlatform;
+  installerAsset: ReleaseAsset;
+}>;
+
 export type UpdateControllerOptions = Readonly<{
   currentVersion: string;
   platform: UpdatePlatform | null;
@@ -84,7 +90,6 @@ export type UpdateControllerOptions = Readonly<{
   openDownloadPage: (url: string) => Promise<boolean>;
   quitApplication: () => void;
   fetch?: typeof fetch;
-  initialDelayMs?: number;
   checkIntervalMs?: number;
   retryDelaysMs?: readonly number[];
 }>;
@@ -350,7 +355,6 @@ export class UpdateController {
   private pending: PendingUpdate | null = null;
   private checkPromise: Promise<void> | null = null;
   private failureCount = 0;
-  private initialTimer: ReturnType<typeof setTimeout> | null = null;
   private intervalTimer: ReturnType<typeof setInterval> | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
@@ -375,9 +379,10 @@ export class UpdateController {
     if (this.stopped) {
       return;
     }
-    this.initialTimer = setTimeout(() => {
-      void this.checkNow();
-    }, this.options.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS);
+    await this.checkNow();
+    if (this.stopped) {
+      return;
+    }
     this.intervalTimer = setInterval(() => {
       void this.checkNow();
     }, this.options.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS);
@@ -385,10 +390,8 @@ export class UpdateController {
 
   stop = (): void => {
     this.stopped = true;
-    if (this.initialTimer) clearTimeout(this.initialTimer);
     if (this.intervalTimer) clearInterval(this.intervalTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
-    this.initialTimer = null;
     this.intervalTimer = null;
     this.retryTimer = null;
     this.listeners.clear();
@@ -435,6 +438,9 @@ export class UpdateController {
   };
 
   install = async (): Promise<UpdateActionResult> => {
+    if (this.checkPromise) {
+      return rejected('busy');
+    }
     const pending = this.pending;
     if (this.snapshot.status !== 'ready' || !pending) {
       return rejected('unavailable');
@@ -481,19 +487,30 @@ export class UpdateController {
     if (this.options.sources.length === 0) {
       throw new Error('No update source is configured.');
     }
-    if (!this.pending) {
-      this.publish({ status: 'checking' });
-    }
+    this.publish({ status: 'checking' });
     let checkedSource = false;
     let lastError: unknown;
-    for (const source of this.options.sources) {
-      try {
-        if (await this.performSourceCheck(source, platform)) {
-          return;
-        }
+    let candidate: UpdateCandidate | null = null;
+    const results = await Promise.allSettled(
+      this.options.sources.map((source) =>
+        this.findSourceUpdate(source, platform),
+      ),
+    );
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
         checkedSource = true;
-      } catch (error) {
-        lastError = error;
+        if (
+          result.value &&
+          (!candidate ||
+            compareUpdateVersions(
+              result.value.manifest.version,
+              candidate.manifest.version,
+            ) > 0)
+        ) {
+          candidate = result.value;
+        }
+      } else {
+        lastError = result.reason;
       }
     }
     if (!checkedSource) {
@@ -501,15 +518,48 @@ export class UpdateController {
         ? lastError
         : new Error('All update sources are unavailable.');
     }
-    if (!this.pending) {
-      this.publish({ status: 'upToDate' });
+    if (!candidate) {
+      this.publish(
+        this.pending
+          ? { status: 'ready', version: this.pending.version }
+          : { status: 'upToDate' },
+      );
+      return;
     }
+    if (
+      this.pending &&
+      compareUpdateVersions(this.pending.version, candidate.manifest.version) >= 0
+    ) {
+      this.publish({ status: 'ready', version: this.pending.version });
+      return;
+    }
+
+    this.publish({ status: 'downloading' });
+    const installerPath = path.join(
+      this.options.downloadsDirectory,
+      candidate.platformUpdate.file,
+    );
+    await this.ensureInstaller(
+      candidate.installerAsset,
+      candidate.platformUpdate,
+      installerPath,
+      candidate.source,
+    );
+    const pending: PendingUpdate = {
+      version: candidate.manifest.version,
+      installerPath,
+      sha256: candidate.platformUpdate.sha256.toLowerCase(),
+      size: candidate.platformUpdate.size,
+    };
+    await this.writePending(pending);
+    this.pending = pending;
+    this.publish({ status: 'ready', version: pending.version });
   };
 
-  private performSourceCheck = async (
+  private findSourceUpdate = async (
     source: UpdateSource,
     platform: UpdatePlatform,
-  ): Promise<boolean> => {
+  ): Promise<UpdateCandidate | null> => {
     const releaseResponse = await this.fetch(source.latestReleaseApiUrl, {
       headers: {
         Accept:
@@ -539,7 +589,7 @@ export class UpdateController {
       throw new Error('Release version does not match its manifest.');
     }
     if (compareUpdateVersions(manifest.version, this.options.currentVersion) <= 0) {
-      return false;
+      return null;
     }
 
     const platformUpdate = manifest.platforms[platform];
@@ -550,27 +600,7 @@ export class UpdateController {
     ) {
       throw new Error('Installer size does not match its manifest.');
     }
-    this.publish({ status: 'downloading' });
-    const installerPath = path.join(
-      this.options.downloadsDirectory,
-      platformUpdate.file,
-    );
-    await this.ensureInstaller(
-      installerAsset,
-      platformUpdate,
-      installerPath,
-      source,
-    );
-    const pending: PendingUpdate = {
-      version: manifest.version,
-      installerPath,
-      sha256: platformUpdate.sha256.toLowerCase(),
-      size: platformUpdate.size,
-    };
-    await this.writePending(pending);
-    this.pending = pending;
-    this.publish({ status: 'ready', version: pending.version });
-    return true;
+    return { source, manifest, platformUpdate, installerAsset };
   };
 
   private downloadSmallAsset = async (

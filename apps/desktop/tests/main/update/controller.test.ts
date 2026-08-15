@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -175,7 +175,7 @@ test('silently downloads a verified installer and only then becomes ready', asyn
       version: '3.1.0',
     });
     assert.equal(fixture.requestedUrls[0], GITCODE_RELEASE_API);
-    assert.equal(fixture.requestedUrls.includes(GITHUB_RELEASE_API), false);
+    assert.equal(fixture.requestedUrls.includes(GITHUB_RELEASE_API), true);
     assert.deepEqual(
       await readFile(path.join(fixture.downloadsDirectory, fixture.installerName)),
       fixture.installer,
@@ -299,53 +299,53 @@ test('falls back to GitHub when the GitCode release is unavailable', async () =>
   }
 });
 
-test('checks GitHub when GitCode is reachable but has no newer release', async () => {
+test('selects the highest version when both update sources have newer releases', async () => {
   const fixture = await createFixture();
-  const oldInstallerName = 'SugarCode-3.0.1-macos-arm64.dmg';
-  const oldInstaller = Buffer.from('old SugarCode installer');
-  const oldSha256 = (await import('node:crypto'))
+  const gitcodeInstallerName = 'SugarCode-3.0.9-macos-arm64.dmg';
+  const gitcodeInstaller = Buffer.from('older SugarCode installer');
+  const gitcodeSha256 = (await import('node:crypto'))
     .createHash('sha256')
-    .update(oldInstaller)
+    .update(gitcodeInstaller)
     .digest('hex');
-  const oldManifest = Buffer.from(
+  const gitcodeManifest = Buffer.from(
     JSON.stringify({
       schemaVersion: 1,
-      version: '3.0.1',
+      version: '3.0.9',
       publishedAt: '2026-08-11T00:00:00.000Z',
       platforms: {
         'darwin-arm64': {
-          file: oldInstallerName,
-          size: oldInstaller.byteLength,
-          sha256: oldSha256,
+          file: gitcodeInstallerName,
+          size: gitcodeInstaller.byteLength,
+          sha256: gitcodeSha256,
         },
       },
     }),
   );
-  const oldAssets = new Map<string, Buffer>([
-    ['update-manifest.json', oldManifest],
-    [oldInstallerName, oldInstaller],
+  const gitcodeAssets = new Map<string, Buffer>([
+    ['update-manifest.json', gitcodeManifest],
+    [gitcodeInstallerName, gitcodeInstaller],
   ]);
-  const oldRelease = {
-    tag_name: 'v3.0.1',
+  const gitcodeRelease = {
+    tag_name: 'v3.0.9',
     prerelease: false,
     release_status: 'latest',
-    assets: Array.from(oldAssets, ([name]) => ({
+    assets: Array.from(gitcodeAssets, ([name]) => ({
       name,
-      browser_download_url: `https://gitcode.com/Simoonf/SugarCode/releases/download/v3.0.1/${name}`,
+      browser_download_url: `https://gitcode.com/Simoonf/SugarCode/releases/download/v3.0.9/${name}`,
     })),
   };
   const mixedFetch: typeof globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url === GITCODE_RELEASE_API) {
       fixture.requestedUrls.push(url);
-      return response(JSON.stringify(oldRelease), 'application/json');
+      return response(JSON.stringify(gitcodeRelease), 'application/json');
     }
     if (new URL(url).hostname.endsWith('gitcode.com')) {
       fixture.requestedUrls.push(url);
       const name = decodeURIComponent(
         new URL(url).pathname.split('/').at(-1) ?? '',
       );
-      const bytes = oldAssets.get(name);
+      const bytes = gitcodeAssets.get(name);
       return bytes ? response(bytes) : new Response(null, { status: 404 });
     }
     return fixture.fetch(input, init);
@@ -365,9 +365,107 @@ test('checks GitHub when GitCode is reachable but has no newer release', async (
   });
   try {
     await controller.checkNow();
-    assert.equal(controller.getSnapshot().status, 'ready');
+    assert.deepEqual(controller.getSnapshot(), {
+      revision: 3,
+      status: 'ready',
+      version: '3.1.0',
+    });
     assert.equal(fixture.requestedUrls.includes(GITHUB_RELEASE_API), true);
+    assert.equal(
+      fixture.requestedUrls.some((url) => url.endsWith(gitcodeInstallerName)),
+      false,
+    );
   } finally {
+    controller.stop();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('checks for the latest release before allowing a restored update to install', async () => {
+  const fixture = await createFixture();
+  const restoredInstaller = Buffer.from('previous SugarCode installer');
+  const restoredInstallerName = 'SugarCode-3.0.5-macos-arm64.dmg';
+  const restoredInstallerPath = path.join(
+    fixture.downloadsDirectory,
+    restoredInstallerName,
+  );
+  const restoredSha256 = (await import('node:crypto'))
+    .createHash('sha256')
+    .update(restoredInstaller)
+    .digest('hex');
+  await mkdir(fixture.downloadsDirectory, { recursive: true });
+  await mkdir(path.dirname(fixture.pendingStatePath), { recursive: true });
+  await writeFile(restoredInstallerPath, restoredInstaller);
+  await writeFile(
+    fixture.pendingStatePath,
+    JSON.stringify({
+      version: '3.0.5',
+      installerPath: restoredInstallerPath,
+      sha256: restoredSha256,
+      size: restoredInstaller.byteLength,
+    }),
+  );
+
+  let releaseChecks: (() => void) | undefined;
+  const releaseCheckGate = new Promise<void>((resolve) => {
+    releaseChecks = resolve;
+  });
+  let announceCheck: (() => void) | undefined;
+  const checkStarted = new Promise<void>((resolve) => {
+    announceCheck = resolve;
+  });
+  const delayedFetch: typeof globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url === GITCODE_RELEASE_API || url === GITHUB_RELEASE_API) {
+      announceCheck?.();
+      await releaseCheckGate;
+    }
+    return fixture.fetch(input, init);
+  };
+  let launchedPath: string | null = null;
+  const controller = new UpdateController({
+    currentVersion: '3.0.2',
+    platform: 'darwin-arm64',
+    downloadsDirectory: fixture.downloadsDirectory,
+    pendingStatePath: fixture.pendingStatePath,
+    sources: UPDATE_SOURCES,
+    getInstallBlock: () => false,
+    launchInstaller: async (installerPath) => {
+      launchedPath = installerPath;
+      return true;
+    },
+    openDownloadPage: async () => true,
+    quitApplication: () => undefined,
+    fetch: delayedFetch,
+    retryDelaysMs: [],
+  });
+  try {
+    const startup = controller.start();
+    await checkStarted;
+    assert.equal(controller.getSnapshot().status, 'checking');
+    assert.deepEqual(await controller.install(), {
+      accepted: false,
+      reason: 'busy',
+    });
+    assert.equal(launchedPath, null);
+
+    releaseChecks?.();
+    await startup;
+    assert.deepEqual(controller.getSnapshot(), {
+      revision: 4,
+      status: 'ready',
+      version: '3.1.0',
+    });
+    assert.deepEqual(await controller.install(), {
+      accepted: true,
+      reason: 'accepted',
+    });
+    assert.equal(
+      launchedPath,
+      path.join(fixture.downloadsDirectory, fixture.installerName),
+    );
+  } finally {
+    releaseChecks?.();
     controller.stop();
     await rm(fixture.root, { recursive: true, force: true });
   }
