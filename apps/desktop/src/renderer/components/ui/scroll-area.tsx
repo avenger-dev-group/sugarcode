@@ -10,7 +10,7 @@ const ScrollArea = ({
   viewportProps,
   ...props
 }: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & {
-  scrollbars?: 'both' | 'horizontal' | 'vertical';
+  scrollbars?: 'both' | 'horizontal' | 'none' | 'vertical';
   viewportProps?: React.ComponentProps<
     typeof ScrollAreaPrimitive.Viewport
   >;

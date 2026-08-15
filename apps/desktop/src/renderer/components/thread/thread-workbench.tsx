@@ -697,7 +697,10 @@ export const ThreadWorkbenchView = ({
         </header>
         <ScrollArea
           data-layout="conversation-scroll"
-          className="relative min-h-0 min-w-0 flex-1"
+          className={`relative min-h-0 min-w-0 flex-1 ${
+            store.thread.isEmpty ? 'empty-thread-scroll' : ''
+          }`}
+          scrollbars={store.thread.isEmpty ? 'none' : 'vertical'}
           onWheel={recordWheelScrollIntent}
           onKeyDown={recordKeyScrollIntent}
           onPointerDown={beginPointerScroll}
@@ -712,7 +715,9 @@ export const ThreadWorkbenchView = ({
         >
           <div
             ref={transcriptContent}
-            className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-8 sm:px-10"
+            className={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-8 sm:px-10 ${
+              store.thread.isEmpty ? 'empty-thread-transcript' : ''
+            }`}
           >
             {pendingThreadId && selectionError ? (
               <ThreadSelectionError
@@ -722,7 +727,10 @@ export const ThreadWorkbenchView = ({
             ) : pendingThreadId || settlingThreadSelection ? (
               <ThreadSelectionSkeleton />
             ) : store.thread.isEmpty ? (
-              <EmptyThreadState />
+              <EmptyThreadState
+                onSelectPrompt={store.setDraft}
+                projectName={composerProjectName}
+              />
             ) : (
               <div>
                 {store.thread.turns.map((turn, index) => (
