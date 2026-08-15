@@ -54,7 +54,7 @@ import {
   AgentTaskDock,
   OrchestrationActivity,
 } from '@/renderer/components/orchestration/orchestration-activity';
-import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 import { UserInputActivity } from '@/renderer/components/user-input/user-input-activity';
@@ -151,7 +151,7 @@ const PlanProposal = ({
   onImplement: ThreadWorkbenchViewProps['store']['implementPlan'];
   onRefine: ThreadWorkbenchViewProps['store']['refinePlan'];
 }>) => {
-  const { openPlan } = useOrchestrationStore();
+  const { openPlan } = useOrchestrationActions();
   const previewRef = useRef<HTMLDivElement | null>(null);
   const [isTruncated, setIsTruncated] = useState(false);
   const showFullPlan = (): void => {

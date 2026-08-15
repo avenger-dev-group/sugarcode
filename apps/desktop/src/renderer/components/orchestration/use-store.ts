@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
@@ -15,18 +16,37 @@ import type {
   ContextRailResource,
 } from './types';
 
-type ContextRailTab = 'workspace' | 'preview' | 'resource' | 'plan' | 'agent';
+export type BrowserContextTab = Readonly<{
+  id: string;
+  title: string;
+}>;
+
+export type ContextFileRequest = Readonly<{
+  id: number;
+  path: string;
+}>;
+
+type ContextRailTab =
+  | 'launcher'
+  | 'files'
+  | 'resource'
+  | 'plan'
+  | 'agent'
+  | `browser:${string}`;
 
 type OrchestrationStore = Readonly<{
   activeTab: ContextRailTab;
+  browserTabs: readonly BrowserContextTab[];
+  filesTabOpen: boolean;
+  requestedFile: ContextFileRequest | null;
   selectedPlan: ContextRailPlan | null;
   selectedResource: ContextRailResource | null;
   selectedTask: AgentTaskViewModel | null;
-  previewTabOpen: boolean;
   taskDockOpen: boolean;
   closeAgentTab: () => void;
   closePlanTab: () => void;
-  closePreviewTab: () => void;
+  closeFilesTab: () => void;
+  closePreviewTab: (id: string) => void;
   closeResourceTab: () => void;
   openDiff: (
     path: string,
@@ -34,17 +54,40 @@ type OrchestrationStore = Readonly<{
   ) => void;
   openFile: (path: string) => void;
   openPlan: (plan: ContextRailPlan) => void;
-  openPreview: () => void;
+  openFiles: () => void;
+  openPreview: (url?: string) => string;
   openSkill: (
     skill: Extract<ContextRailResource, { kind: 'skill' }>,
   ) => void;
   selectTask: (task: AgentTaskViewModel) => void;
   refreshTask: (task: AgentTaskViewModel) => void;
+  setPreviewTitle: (id: string, title: string) => void;
   setActiveTab: (tab: ContextRailTab) => void;
   setTaskDockOpen: (open: boolean) => void;
 }>;
 
+type OrchestrationActions = Pick<
+  OrchestrationStore,
+  | 'openDiff'
+  | 'openFile'
+  | 'openFiles'
+  | 'openPlan'
+  | 'openPreview'
+  | 'openSkill'
+  | 'refreshTask'
+  | 'selectTask'
+>;
+
+type OrchestrationTaskState = Pick<
+  OrchestrationStore,
+  'selectedTask' | 'setTaskDockOpen' | 'taskDockOpen'
+>;
+
 const OrchestrationContext = createContext<OrchestrationStore | null>(null);
+const OrchestrationActionsContext =
+  createContext<OrchestrationActions | null>(null);
+const OrchestrationTaskStateContext =
+  createContext<OrchestrationTaskState | null>(null);
 
 export const OrchestrationStoreProvider = ({
   children,
@@ -55,14 +98,21 @@ export const OrchestrationStoreProvider = ({
   onRequestOpen: () => void;
   scopeKey: string | null;
 }>) => {
-  const [activeTab, setActiveTab] = useState<ContextRailTab>('workspace');
+  const [activeTab, setActiveTab] = useState<ContextRailTab>('launcher');
   const [selectedTask, setSelectedTask] =
     useState<AgentTaskViewModel | null>(null);
   const [selectedResource, setSelectedResource] =
     useState<ContextRailResource | null>(null);
   const [selectedPlan, setSelectedPlan] =
     useState<ContextRailPlan | null>(null);
-  const [previewTabOpen, setPreviewTabOpen] = useState(false);
+  const [filesTabOpen, setFilesTabOpen] = useState(false);
+  const [browserTabs, setBrowserTabs] = useState<
+    readonly BrowserContextTab[]
+  >([]);
+  const browserTabsRef = useRef(browserTabs);
+  browserTabsRef.current = browserTabs;
+  const [requestedFile, setRequestedFile] =
+    useState<ContextFileRequest | null>(null);
   const [taskDockOpen, setTaskDockOpen] = useState(false);
 
   const selectTask = useCallback(
@@ -77,27 +127,60 @@ export const OrchestrationStoreProvider = ({
 
   const closeAgentTab = useCallback(() => {
     setSelectedTask(null);
-    setActiveTab(
-      selectedPlan ? 'plan' : selectedResource ? 'resource' : 'workspace',
+    setActiveTab((current) =>
+      current === 'agent'
+        ? selectedPlan
+          ? 'plan'
+          : selectedResource
+            ? 'resource'
+            : filesTabOpen
+              ? 'files'
+              : browserTabs.at(-1)
+                ? `browser:${browserTabs.at(-1)?.id}`
+                : 'launcher'
+        : current,
     );
-  }, [selectedPlan, selectedResource]);
+  }, [browserTabs, filesTabOpen, selectedPlan, selectedResource]);
 
   const closeResourceTab = useCallback(() => {
     setSelectedResource(null);
-    setActiveTab(selectedPlan ? 'plan' : selectedTask ? 'agent' : 'workspace');
-  }, [selectedPlan, selectedTask]);
+    setActiveTab((current) =>
+      current === 'resource'
+        ? selectedPlan
+          ? 'plan'
+          : selectedTask
+            ? 'agent'
+            : filesTabOpen
+              ? 'files'
+              : browserTabs.at(-1)
+                ? `browser:${browserTabs.at(-1)?.id}`
+                : 'launcher'
+        : current,
+    );
+  }, [browserTabs, filesTabOpen, selectedPlan, selectedTask]);
 
   const closePlanTab = useCallback(() => {
     setSelectedPlan(null);
-    setActiveTab(
-      selectedResource ? 'resource' : selectedTask ? 'agent' : 'workspace',
+    setActiveTab((current) =>
+      current === 'plan'
+        ? selectedResource
+          ? 'resource'
+          : selectedTask
+            ? 'agent'
+            : filesTabOpen
+              ? 'files'
+              : browserTabs.at(-1)
+                ? `browser:${browserTabs.at(-1)?.id}`
+                : 'launcher'
+        : current,
     );
-  }, [selectedResource, selectedTask]);
+  }, [browserTabs, filesTabOpen, selectedResource, selectedTask]);
 
   const openFile = useCallback(
     (path: string) => {
-      setSelectedResource({ kind: 'file', path });
-      setActiveTab('resource');
+      setRequestedFile((current) => ({ id: (current?.id ?? 0) + 1, path }));
+      setFilesTabOpen(true);
+      setActiveTab('files');
       onRequestOpen();
     },
     [onRequestOpen],
@@ -124,15 +207,74 @@ export const OrchestrationStoreProvider = ({
     [onRequestOpen],
   );
 
-  const openPreview = useCallback(() => {
-    setPreviewTabOpen(true);
-    setActiveTab('preview');
+  const openFiles = useCallback(() => {
+    setFilesTabOpen(true);
+    setActiveTab('files');
     onRequestOpen();
   }, [onRequestOpen]);
 
-  const closePreviewTab = useCallback(() => {
-    setPreviewTabOpen(false);
-    setActiveTab('workspace');
+  const openPreview = useCallback(
+    (url?: string): string => {
+      if (browserTabsRef.current.length >= 12) {
+        const existing = browserTabsRef.current.at(-1);
+        if (existing) {
+          setActiveTab(`browser:${existing.id}`);
+          onRequestOpen();
+          return existing.id;
+        }
+      }
+      const id = crypto.randomUUID();
+      let title = '新标签页';
+      if (url) {
+        try {
+          title = new URL(url).host;
+        } catch {
+          title = '浏览器';
+        }
+      }
+      setBrowserTabs((current) => [...current, { id, title }]);
+      setActiveTab(`browser:${id}`);
+      onRequestOpen();
+      return id;
+    },
+    [onRequestOpen],
+  );
+
+  const closeFilesTab = useCallback(() => {
+    setFilesTabOpen(false);
+    setActiveTab((current) =>
+      current === 'files'
+        ? browserTabs.at(-1)
+          ? `browser:${browserTabs.at(-1)?.id}`
+          : 'launcher'
+        : current,
+    );
+  }, [browserTabs]);
+
+  const closePreviewTab = useCallback((id: string) => {
+    setBrowserTabs((current) => current.filter((tab) => tab.id !== id));
+    setActiveTab((current) => {
+      if (current !== `browser:${id}`) {
+        return current;
+      }
+      const remaining = browserTabs.filter((tab) => tab.id !== id);
+      const next = remaining.at(-1);
+      return next ? `browser:${next.id}` : filesTabOpen ? 'files' : 'launcher';
+    });
+  }, [browserTabs, filesTabOpen]);
+
+  const setPreviewTitle = useCallback((id: string, title: string) => {
+    setBrowserTabs((current) => {
+      let changed = false;
+      const next = current.map((tab) => {
+        if (tab.id !== id || tab.title === title) {
+          return tab;
+        }
+        changed = true;
+        return { ...tab, title };
+      });
+      return changed ? next : current;
+    });
   }, []);
 
   const openSkill = useCallback(
@@ -148,9 +290,11 @@ export const OrchestrationStoreProvider = ({
     setSelectedTask(null);
     setSelectedResource(null);
     setSelectedPlan(null);
-    setPreviewTabOpen(false);
+    setFilesTabOpen(false);
+    setBrowserTabs([]);
+    setRequestedFile(null);
     setTaskDockOpen(false);
-    setActiveTab('workspace');
+    setActiveTab('launcher');
   }, [scopeKey]);
 
   const refreshTask = useCallback((task: AgentTaskViewModel) => {
@@ -162,50 +306,91 @@ export const OrchestrationStoreProvider = ({
   const value = useMemo<OrchestrationStore>(
     () => ({
       activeTab,
+      browserTabs,
       closeAgentTab,
+      closeFilesTab,
       closePlanTab,
       closePreviewTab,
       closeResourceTab,
       openDiff,
       openFile,
+      openFiles,
       openPlan,
       openPreview,
       openSkill,
-      previewTabOpen,
+      filesTabOpen,
+      requestedFile,
       selectedPlan,
       selectedResource,
       selectedTask,
       selectTask,
       refreshTask,
       setActiveTab,
+      setPreviewTitle,
       setTaskDockOpen,
       taskDockOpen,
     }),
     [
       activeTab,
+      browserTabs,
       closeAgentTab,
+      closeFilesTab,
       closePlanTab,
       closePreviewTab,
       closeResourceTab,
       openDiff,
       openFile,
+      openFiles,
       openPlan,
       openPreview,
       openSkill,
-      previewTabOpen,
+      filesTabOpen,
+      requestedFile,
       refreshTask,
       selectTask,
       selectedPlan,
       selectedResource,
       selectedTask,
+      setPreviewTitle,
       taskDockOpen,
     ],
   );
 
+  const actions = useMemo<OrchestrationActions>(
+    () => ({
+      openDiff,
+      openFile,
+      openFiles,
+      openPlan,
+      openPreview,
+      openSkill,
+      refreshTask,
+      selectTask,
+    }),
+    [
+      openDiff,
+      openFile,
+      openFiles,
+      openPlan,
+      openPreview,
+      openSkill,
+      refreshTask,
+      selectTask,
+    ],
+  );
+  const taskState = useMemo<OrchestrationTaskState>(
+    () => ({ selectedTask, setTaskDockOpen, taskDockOpen }),
+    [selectedTask, taskDockOpen],
+  );
+
   return createElement(
-    OrchestrationContext.Provider,
-    { value },
-    children,
+    OrchestrationActionsContext.Provider,
+    { value: actions },
+    createElement(
+      OrchestrationTaskStateContext.Provider,
+      { value: taskState },
+      createElement(OrchestrationContext.Provider, { value }, children),
+    ),
   );
 };
 
@@ -217,4 +402,24 @@ export const useOrchestrationStore = (): OrchestrationStore => {
     );
   }
   return store;
+};
+
+export const useOrchestrationActions = (): OrchestrationActions => {
+  const actions = useContext(OrchestrationActionsContext);
+  if (!actions) {
+    throw new Error(
+      'useOrchestrationActions must be used inside OrchestrationStoreProvider.',
+    );
+  }
+  return actions;
+};
+
+export const useOrchestrationTaskState = (): OrchestrationTaskState => {
+  const state = useContext(OrchestrationTaskStateContext);
+  if (!state) {
+    throw new Error(
+      'useOrchestrationTaskState must be used inside OrchestrationStoreProvider.',
+    );
+  }
+  return state;
 };

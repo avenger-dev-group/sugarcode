@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { codeLanguageForPath } from '@/renderer/utils/code-language';
 import { highlightCode } from '@/renderer/utils/syntax-highlighter';
@@ -8,13 +8,58 @@ export const FileInspector = ({
   document,
 }: Readonly<{ document: WorkspaceInspectDocument | null }>) => {
   const language = codeLanguageForPath(document?.path ?? '');
-  const highlightedCode = useMemo(
-    () =>
-      document && document.status !== 'error'
-        ? highlightCode(document.content, language.highlight)
-        : null,
-    [document, language.highlight],
-  );
+  const [highlight, setHighlight] = useState<Readonly<{
+    source: string;
+    value: string | null;
+  }> | null>(null);
+  useEffect(() => {
+    setHighlight(null);
+    if (!document || document.status === 'error') {
+      return;
+    }
+    let active = true;
+    const renderHighlight = (): void => {
+      const result = highlightCode(document.content, language.highlight);
+      if (active) {
+        setHighlight({ source: document.content, value: result });
+      }
+    };
+    const idleId = window.requestIdleCallback?.(renderHighlight, {
+      timeout: 250,
+    });
+    const timerId = idleId === undefined
+      ? window.setTimeout(renderHighlight, 0)
+      : undefined;
+    return () => {
+      active = false;
+      if (idleId !== undefined) {
+        window.cancelIdleCallback?.(idleId);
+      }
+      if (timerId !== undefined) {
+        window.clearTimeout(timerId);
+      }
+    };
+  }, [document, language.highlight]);
+  const highlightedCode =
+    document &&
+    document.status !== 'error' &&
+    highlight?.source === document.content
+      ? highlight.value
+      : null;
+  const lineNumbers = useMemo(() => {
+    if (!document || document.status === 'error') {
+      return '';
+    }
+    const displayedLines = Math.max(
+      1,
+      (document.content.match(/\n/gu)?.length ?? 0) +
+        (document.content.endsWith('\n') ? 0 : 1),
+    );
+    return Array.from(
+      { length: displayedLines },
+      (_, index) => index + 1,
+    ).join('\n');
+  }, [document]);
   if (!document) {
     return (
       <div className="flex min-h-40 flex-1 items-center justify-center px-6 text-center text-xs text-tertiary">
@@ -32,15 +77,6 @@ export const FileInspector = ({
       </div>
     );
   }
-  const displayedLines = Math.max(
-    1,
-    (document.content.match(/\n/gu)?.length ?? 0) +
-      (document.content.endsWith('\n') ? 0 : 1),
-  );
-  const lineNumbers = Array.from(
-    { length: displayedLines },
-    (_, index) => index + 1,
-  ).join('\n');
   return (
     <section className="flex min-h-0 flex-1 flex-col" aria-label={`File inspector ${document.path}`}>
       <header className="border-b px-4 py-3">

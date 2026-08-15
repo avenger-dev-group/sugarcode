@@ -1,4 +1,9 @@
-import { useEffect, useState } from 'react';
+import {
+  useEffect,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { useStore as useZustandStore } from 'zustand';
 
 import {
@@ -17,15 +22,53 @@ import type {
   PreviewActionResult,
   PreviewBounds,
   PreviewSessionRequest,
-  PreviewStateSnapshot,
 } from '@/shared/preview';
 
-import type { PreviewWorkbenchStore } from './types';
+import type { PreviewWorkbenchState, PreviewWorkbenchStore } from './types';
 
-const INITIAL_PREVIEW_STATE: PreviewStateSnapshot = {
-  revision: 0,
+const INITIAL_PREVIEW_STATE: PreviewWorkbenchState = {
   status: 'closed',
 };
+
+const samePreviewState = (
+  current: PreviewWorkbenchState,
+  next: PreviewWorkbenchState,
+): boolean => {
+  if (current.status !== next.status) {
+    return false;
+  }
+  if (current.status === 'closed' || next.status === 'closed') {
+    return true;
+  }
+  if (
+    current.previewId !== next.previewId ||
+    current.generation !== next.generation ||
+    current.url !== next.url ||
+    current.origin !== next.origin
+  ) {
+    return false;
+  }
+  if (current.status === 'failed' || next.status === 'failed') {
+    return current.status === 'failed' &&
+      next.status === 'failed' &&
+      current.error === next.error;
+  }
+  if (current.sessionId !== next.sessionId) {
+    return false;
+  }
+  return current.status === 'opening' ||
+    next.status === 'opening' ||
+    (current.canGoBack === next.canGoBack &&
+      current.canGoForward === next.canGoForward);
+};
+
+const updatePreviewState = (
+  setState: Dispatch<SetStateAction<PreviewWorkbenchState>>,
+  next: PreviewWorkbenchState,
+): void => {
+  setState((current) => samePreviewState(current, next) ? current : next);
+};
+
 const messageForResult = (result: PreviewActionResult): string | null => {
   if (result.accepted || result.reason === 'cancelled') {
     return null;
@@ -46,9 +89,9 @@ const messageForResult = (result: PreviewActionResult): string | null => {
   }
 };
 
-export const useStore = (): PreviewWorkbenchStore => {
+export const useStore = (previewId: string): PreviewWorkbenchStore => {
   const [url, setUrl] = useState('http://127.0.0.1:3000/');
-  const [state, setState] = useState<PreviewStateSnapshot>(
+  const [state, setState] = useState<PreviewWorkbenchState>(
     INITIAL_PREVIEW_STATE,
   );
   const workspace = useZustandStore(
@@ -63,9 +106,10 @@ export const useStore = (): PreviewWorkbenchStore => {
     void getPreviewState()
       .then((preview) => {
         if (active) {
-          setState(preview);
-          if (preview.status !== 'closed') {
-            setUrl(preview.url);
+          const tab = preview.tabs.find((entry) => entry.previewId === previewId);
+          updatePreviewState(setState, tab ?? INITIAL_PREVIEW_STATE);
+          if (tab) {
+            setUrl(tab.url);
           }
         }
       })
@@ -78,15 +122,16 @@ export const useStore = (): PreviewWorkbenchStore => {
       if (!active) {
         return;
       }
-      setState(snapshot);
-      if (snapshot.status !== 'closed') {
-        setUrl(snapshot.url);
+      const tab = snapshot.tabs.find((entry) => entry.previewId === previewId);
+      updatePreviewState(setState, tab ?? INITIAL_PREVIEW_STATE);
+      if (tab) {
+        setUrl(tab.url);
       }
-      if (snapshot.status === 'failed') {
+      if (tab?.status === 'failed') {
         setError(
-          snapshot.error === 'policyUnavailable'
+          tab.error === 'policyUnavailable'
             ? '无法启用预览浏览器的安全策略。'
-            : snapshot.error === 'renderProcessGone'
+            : tab.error === 'renderProcessGone'
               ? '本地预览进程意外停止。'
               : '本地开发服务未能完成加载。',
         );
@@ -96,7 +141,7 @@ export const useStore = (): PreviewWorkbenchStore => {
       active = false;
       unsubscribePreview();
     };
-  }, []);
+  }, [previewId]);
 
   const run = async (
     action: () => Promise<PreviewActionResult>,
@@ -157,6 +202,7 @@ export const useStore = (): PreviewWorkbenchStore => {
         sameOrigin && request
           ? navigatePreview({ ...request, url: normalizedUrl })
           : openPreview({
+              previewId,
               generation: workspace.generation,
               url: normalizedUrl,
             }),

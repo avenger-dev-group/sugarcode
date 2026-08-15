@@ -2,7 +2,7 @@ import { ExternalLink, Globe2, LoaderCircle, MonitorUp } from 'lucide-react';
 import { useState } from 'react';
 import { useStore as useZustandStore } from 'zustand';
 
-import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 import { Button } from '@/renderer/components/ui/button';
 import {
   openExternalPreview,
@@ -41,7 +41,7 @@ export const AgentPreviewCard = ({
   url: string;
   language: ProcessLanguage;
 }>) => {
-  const { openPreview } = useOrchestrationStore();
+  const { openPreview } = useOrchestrationActions();
   const workspace = useZustandStore(
     workspaceProjectionStore,
     (projection) => projection.snapshot,
@@ -56,14 +56,14 @@ export const AgentPreviewCard = ({
     }
     setPending(target);
     setError(null);
-    if (target === 'embedded') {
-      openPreview();
-    }
     try {
-      const request = { generation: workspace.generation, url };
       const result = target === 'embedded'
-        ? await openEmbeddedPreview(request)
-        : await openExternalPreview(request);
+        ? await openEmbeddedPreview({
+            previewId: openPreview(url),
+            generation: workspace.generation,
+            url,
+          })
+        : await openExternalPreview({ generation: workspace.generation, url });
       setError(resultError(result, language));
     } catch {
       setError(

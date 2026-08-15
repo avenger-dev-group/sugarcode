@@ -1,6 +1,7 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 
 import {
+  isPreviewExternalOpenRequest,
   isPreviewBoundsRequest,
   isPreviewNavigateRequest,
   isPreviewOpenRequest,
@@ -48,7 +49,7 @@ export const registerPreviewIpc = (
     return options.controller.open(request);
   });
   ipcMain.handle(PREVIEW_EXTERNAL_OPEN_CHANNEL, (event, request: unknown) => {
-    if (!trusted(event) || !isPreviewOpenRequest(request)) {
+    if (!trusted(event) || !isPreviewExternalOpenRequest(request)) {
       return { accepted: false, reason: 'invalid' };
     }
     return options.controller.openExternal(request);

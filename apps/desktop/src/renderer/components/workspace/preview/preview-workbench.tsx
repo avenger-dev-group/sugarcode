@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -29,15 +29,38 @@ const previewStatusLabel = (
   }
 };
 
-export const PreviewWorkbench = ({ active }: Readonly<{ active: boolean }>) => {
-  const store = useStore();
+type PreviewWorkbenchProps = Readonly<{
+  active: boolean;
+  onTitleChange?: (title: string) => void;
+  previewId: string;
+}>;
+
+const PreviewWorkbenchView = ({
+  active,
+  onTitleChange,
+  previewId,
+}: PreviewWorkbenchProps) => {
+  const store = useStore(previewId);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const setBoundsRef = useRef(store.setBounds);
+  const onTitleChangeRef = useRef(onTitleChange);
   const ready = store.state.status === 'ready';
   const connected = store.state.status === 'opening' || ready;
   const workspaceReady = store.workspace.status === 'ready';
   const sessionId = connected ? store.state.sessionId : null;
   setBoundsRef.current = store.setBounds;
+  onTitleChangeRef.current = onTitleChange;
+
+  useEffect(() => {
+    if (store.state.status === 'closed') {
+      return;
+    }
+    try {
+      onTitleChangeRef.current?.(new URL(store.state.url).host || '浏览器');
+    } catch {
+      onTitleChangeRef.current?.('浏览器');
+    }
+  }, [store.state]);
 
   useEffect(() => {
     if (!active || !connected) {
@@ -77,7 +100,7 @@ export const PreviewWorkbench = ({ active }: Readonly<{ active: boolean }>) => {
       window.removeEventListener('scroll', syncBounds, true);
       void setBoundsRef.current(null);
     };
-  }, [active, connected, sessionId]);
+  }, [active, connected, ready, sessionId]);
 
   return (
     <section
@@ -242,3 +265,9 @@ export const PreviewWorkbench = ({ active }: Readonly<{ active: boolean }>) => {
     </section>
   );
 };
+
+export const PreviewWorkbench = memo(
+  PreviewWorkbenchView,
+  (previous, next) =>
+    previous.active === next.active && previous.previewId === next.previewId,
+);

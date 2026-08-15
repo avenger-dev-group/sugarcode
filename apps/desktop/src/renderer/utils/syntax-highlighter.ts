@@ -1,6 +1,6 @@
 import highlight from 'highlight.js/lib/common';
 
-const MAX_HIGHLIGHT_CHARACTERS = 256 * 1024;
+const MAX_HIGHLIGHT_CHARACTERS = 128 * 1024;
 
 const LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
   'c#': 'csharp',

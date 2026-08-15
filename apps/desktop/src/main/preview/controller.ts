@@ -13,10 +13,12 @@ import type {
   PreviewBounds,
   PreviewBoundsRequest,
   PreviewFailure,
+  PreviewExternalOpenRequest,
   PreviewNavigateRequest,
   PreviewOpenRequest,
   PreviewSessionRequest,
   PreviewStateSnapshot,
+  PreviewTabState,
 } from '@/shared/preview';
 import type { WorkspaceStateSnapshot } from '@/shared/workspace';
 
@@ -45,14 +47,9 @@ type PreviewControllerOptions = Readonly<{
 }>;
 
 type Listener = (snapshot: PreviewStateSnapshot) => void;
-type PreviewStateWithoutRevision =
-  PreviewStateSnapshot extends infer Snapshot
-    ? Snapshot extends PreviewStateSnapshot
-      ? Omit<Snapshot, 'revision'>
-      : never
-    : never;
 
 type ActivePreview = {
+  previewId: string;
   generation: number;
   sessionId: string;
   location: PreviewLocation;
@@ -105,10 +102,11 @@ export class PreviewController {
   private readonly loadTimeoutMs: number;
   private revision = 0;
   private operationActive = false;
-  private active: ActivePreview | null = null;
+  private readonly actives = new Map<string, ActivePreview>();
+  private readonly tabStates = new Map<string, PreviewTabState>();
   private snapshot: PreviewStateSnapshot = {
     revision: 0,
-    status: 'closed',
+    tabs: [],
   };
 
   constructor(private readonly options: PreviewControllerOptions) {
@@ -184,7 +182,7 @@ export class PreviewController {
         return actionResult('unavailable');
       }
 
-      await this.closeActive(false);
+      await this.closePreviewId(request.previewId, false);
       const sessionId = this.createSessionId();
       const partition = `preview-${sessionId}`;
       let browserSession: Session;
@@ -192,6 +190,7 @@ export class PreviewController {
         browserSession = this.getSession(partition);
       } catch {
         this.publishFailure(
+          request.previewId,
           request.generation,
           location,
           'policyUnavailable',
@@ -203,6 +202,7 @@ export class PreviewController {
       } catch {
         await this.clearSession(browserSession);
         this.publishFailure(
+          request.previewId,
           request.generation,
           location,
           'policyUnavailable',
@@ -210,7 +210,8 @@ export class PreviewController {
         return actionResult('failed');
       }
 
-      this.publish({
+      this.publishTab({
+        previewId: request.previewId,
         status: 'opening',
         generation: request.generation,
         sessionId,
@@ -232,14 +233,17 @@ export class PreviewController {
             navigateOnDragDrop: false,
             partition,
             spellcheck: false,
+            backgroundThrottling: true,
           },
         });
         browserView.setBackgroundColor('#ffffff');
         browserView.setVisible(false);
+        browserView.webContents.setAudioMuted(true);
         mainWindow.contentView.addChildView(browserView);
       } catch {
         await this.clearSession(browserSession);
         this.publishFailure(
+          request.previewId,
           request.generation,
           location,
           'policyUnavailable',
@@ -247,6 +251,7 @@ export class PreviewController {
         return actionResult('failed');
       }
       const active: ActivePreview = {
+        previewId: request.previewId,
         generation: request.generation,
         sessionId,
         location,
@@ -255,7 +260,7 @@ export class PreviewController {
         browserSession,
         bounds: null,
       };
-      this.active = active;
+      this.actives.set(active.previewId, active);
       try {
         this.installViewPolicy(active);
       } catch {
@@ -269,21 +274,21 @@ export class PreviewController {
           this.loadTimeoutMs,
         );
       } catch {
-        if (this.active === active) {
+        if (this.isCurrentActive(active)) {
           await this.failActive(active, 'loadFailed');
         }
         return actionResult('failed');
       }
       if (
-        this.active !== active ||
+        !this.isCurrentActive(active) ||
         this.options.getWorkspaceState().generation !== request.generation ||
         this.options.getWorkspaceState().status !== 'ready'
       ) {
-        await this.closeActive(true);
+        await this.closePreviewId(active.previewId, true);
         return actionResult('stale');
       }
       if (active.bounds) {
-        browserView.setVisible(true);
+        this.setPreviewVisibility(active, true);
       }
       this.publishReady(active, active.bounds !== null);
       return actionResult('accepted');
@@ -293,7 +298,7 @@ export class PreviewController {
   };
 
   openExternal = async (
-    request: PreviewOpenRequest,
+    request: PreviewExternalOpenRequest,
   ): Promise<PreviewActionResult> => {
     if (this.operationActive) {
       return actionResult('busy');
@@ -345,9 +350,10 @@ export class PreviewController {
     if (request.bounds) {
       active.browserView.setBounds(request.bounds);
     }
-    const visible = request.bounds !== null && this.snapshot.status === 'ready';
-    active.browserView.setVisible(visible);
-    if (this.snapshot.status === 'ready') {
+    const ready = this.tabStates.get(active.previewId)?.status === 'ready';
+    const visible = request.bounds !== null && ready;
+    this.setPreviewVisibility(active, visible);
+    if (ready) {
       this.publishReady(active, visible);
     }
     return actionResult('accepted');
@@ -371,7 +377,7 @@ export class PreviewController {
       );
       return actionResult('accepted');
     } catch {
-      if (this.active === active) {
+      if (this.isCurrentActive(active)) {
         await this.failActive(active, 'loadFailed');
       }
       return actionResult('failed');
@@ -422,41 +428,42 @@ export class PreviewController {
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
     }
-    await this.closeActive(true);
+    await this.closePreviewId(active.previewId, true);
     return actionResult('accepted');
   };
 
   hideForApproval = (): void => {
-    const active = this.active;
-    if (!active || active.browserView.webContents.isDestroyed()) {
-      return;
-    }
-    active.browserView.setVisible(false);
-    if (this.snapshot.status === 'ready') {
-      this.publishReady(active, false);
+    for (const active of this.actives.values()) {
+      if (active.browserView.webContents.isDestroyed()) {
+        continue;
+      }
+      this.setPreviewVisibility(active, false);
+      if (this.tabStates.get(active.previewId)?.status === 'ready') {
+        this.publishReady(active, false);
+      }
     }
   };
 
   resumeAfterApproval = (): void => {
-    const active = this.active;
-    if (
-      !active ||
-      active.browserView.webContents.isDestroyed() ||
-      this.snapshot.status !== 'ready'
-    ) {
-      return;
+    for (const active of this.actives.values()) {
+      if (
+        active.browserView.webContents.isDestroyed() ||
+        this.tabStates.get(active.previewId)?.status !== 'ready'
+      ) {
+        continue;
+      }
+      const visible = active.bounds !== null;
+      this.setPreviewVisibility(active, visible);
+      this.publishReady(active, visible);
     }
-    const visible = active.bounds !== null;
-    active.browserView.setVisible(visible);
-    this.publishReady(active, visible);
   };
 
   closeForWorkspaceChange = async (): Promise<void> => {
-    await this.closeActive(true);
+    await this.closeAll(true);
   };
 
   shutdown = (): void => {
-    void this.closeActive(true);
+    void this.closeAll(true);
   };
 
   private installSessionPolicy = async (
@@ -526,7 +533,7 @@ export class PreviewController {
     browserView.webContents.on('will-navigate', guardNavigation);
     browserView.webContents.on('will-redirect', guardNavigation);
     const publishNavigation = (_event: Electron.Event, url: string): void => {
-      if (this.active !== active) {
+      if (!this.isCurrentActive(active)) {
         return;
       }
       const next = parsePreviewLocation(url);
@@ -547,32 +554,34 @@ export class PreviewController {
         if (
           isMainFrame &&
           errorCode !== -3 &&
-          this.active === active &&
-          this.snapshot.status !== 'opening'
+          this.isCurrentActive(active) &&
+          this.tabStates.get(active.previewId)?.status !== 'opening'
         ) {
           void this.failActive(active, 'loadFailed');
         }
       },
     );
     browserView.webContents.once('render-process-gone', () => {
-      if (this.active === active) {
+      if (this.isCurrentActive(active)) {
         void this.failActive(active, 'renderProcessGone');
       }
     });
     browserView.webContents.once('destroyed', () => {
-      if (this.active !== active) {
+      if (!this.isCurrentActive(active)) {
         return;
       }
-      this.active = null;
+      this.actives.delete(active.previewId);
       void this.clearSession(active.browserSession);
-      this.publish({ status: 'closed' });
+      this.removeTabState(active.previewId);
     });
   };
 
   private getMatchingActive = (
     request: PreviewSessionRequest,
   ): ActivePreview | null => {
-    const active = this.active;
+    const active = [...this.actives.values()].find(
+      (candidate) => candidate.sessionId === request.sessionId,
+    );
     return active &&
       active.generation === request.generation &&
       active.sessionId === request.sessionId &&
@@ -583,17 +592,33 @@ export class PreviewController {
 
   private isStale = (request: PreviewSessionRequest): boolean =>
     request.generation !== this.options.getWorkspaceState().generation ||
-    (this.active !== null &&
-      request.sessionId !== this.active.sessionId);
+    ![...this.actives.values()].some(
+      (active) => active.sessionId === request.sessionId,
+    );
+
+  private isCurrentActive = (active: ActivePreview): boolean =>
+    this.actives.get(active.previewId) === active;
+
+  private setPreviewVisibility = (
+    active: ActivePreview,
+    visible: boolean,
+  ): void => {
+    if (active.browserView.webContents.isDestroyed()) {
+      return;
+    }
+    active.browserView.setVisible(visible);
+    active.browserView.webContents.setAudioMuted(!visible);
+  };
 
   private publishReady = (
     active: ActivePreview,
     visible: boolean,
   ): void => {
-    if (this.active !== active || active.browserView.webContents.isDestroyed()) {
+    if (!this.isCurrentActive(active) || active.browserView.webContents.isDestroyed()) {
       return;
     }
-    this.publish({
+    this.publishTab({
+      previewId: active.previewId,
       status: 'ready',
       generation: active.generation,
       sessionId: active.sessionId,
@@ -611,10 +636,10 @@ export class PreviewController {
     active: ActivePreview,
     error: PreviewFailure,
   ): Promise<void> => {
-    if (this.active !== active) {
+    if (!this.isCurrentActive(active)) {
       return;
     }
-    this.active = null;
+    this.actives.delete(active.previewId);
     active.browserView.webContents.stop();
     if (!active.mainWindow.isDestroyed()) {
       active.mainWindow.contentView.removeChildView(active.browserView);
@@ -623,18 +648,26 @@ export class PreviewController {
       active.browserView.webContents.close();
     }
     await this.clearSession(active.browserSession);
-    this.publishFailure(active.generation, active.location, error);
+    this.publishFailure(
+      active.previewId,
+      active.generation,
+      active.location,
+      error,
+    );
   };
 
-  private closeActive = async (publishClosed: boolean): Promise<void> => {
-    const active = this.active;
+  private closePreviewId = async (
+    previewId: string,
+    publishClosed: boolean,
+  ): Promise<void> => {
+    const active = this.actives.get(previewId);
     if (!active) {
-      if (publishClosed && this.snapshot.status !== 'closed') {
-        this.publish({ status: 'closed' });
+      if (publishClosed) {
+        this.removeTabState(previewId);
       }
       return;
     }
-    this.active = null;
+    this.actives.delete(previewId);
     active.browserView.webContents.stop();
     if (!active.mainWindow.isDestroyed()) {
       active.mainWindow.contentView.removeChildView(active.browserView);
@@ -644,7 +677,19 @@ export class PreviewController {
     }
     await this.clearSession(active.browserSession);
     if (publishClosed) {
-      this.publish({ status: 'closed' });
+      this.removeTabState(previewId);
+    }
+  };
+
+  private closeAll = async (publishClosed: boolean): Promise<void> => {
+    await Promise.all(
+      [...this.actives.keys()].map((previewId) =>
+        this.closePreviewId(previewId, publishClosed),
+      ),
+    );
+    if (publishClosed && this.tabStates.size > 0) {
+      this.tabStates.clear();
+      this.publishSnapshot();
     }
   };
 
@@ -661,11 +706,13 @@ export class PreviewController {
   };
 
   private publishFailure = (
+    previewId: string,
     generation: number,
     location: PreviewLocation,
     error: PreviewFailure,
   ): void => {
-    this.publish({
+    this.publishTab({
+      previewId,
       status: 'failed',
       generation,
       url: location.url,
@@ -674,14 +721,24 @@ export class PreviewController {
     });
   };
 
-  private publish = (
-    snapshot: PreviewStateWithoutRevision,
-  ): void => {
+  private publishTab = (tab: PreviewTabState): void => {
+    this.tabStates.set(tab.previewId, tab);
+    this.publishSnapshot();
+  };
+
+  private removeTabState = (previewId: string): void => {
+    if (!this.tabStates.delete(previewId)) {
+      return;
+    }
+    this.publishSnapshot();
+  };
+
+  private publishSnapshot = (): void => {
     this.revision += 1;
     this.snapshot = {
       revision: this.revision,
-      ...snapshot,
-    } as PreviewStateSnapshot;
+      tabs: [...this.tabStates.values()],
+    };
     for (const listener of this.listeners) {
       listener(this.snapshot);
     }

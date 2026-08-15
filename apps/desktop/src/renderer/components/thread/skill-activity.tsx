@@ -5,7 +5,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/renderer/components/ui/tooltip';
-import { useOrchestrationStore } from '../orchestration/use-store';
+import { useOrchestrationActions } from '../orchestration/use-store';
 import type { SkillActivityProps } from './types';
 
 const terminalSentence = (value: string, language: SkillActivityProps['language']): string => {
@@ -38,7 +38,7 @@ const SkillReference = ({
   activity,
   language,
 }: Pick<SkillActivityProps, 'activity' | 'language'>) => {
-  const { openSkill } = useOrchestrationStore();
+  const { openSkill } = useOrchestrationActions();
 
   return (
     <Tooltip>

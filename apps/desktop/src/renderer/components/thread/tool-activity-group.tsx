@@ -14,7 +14,7 @@ import {
 import { useMemo } from 'react';
 
 import { CommandExecutionResult } from '@/renderer/components/agent/command-execution-result';
-import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 import {
   Tooltip,
   TooltipContent,
@@ -196,7 +196,7 @@ const WorkspaceRow = ({
   language: ProcessLanguage;
   pathLabel?: string;
 }>) => {
-  const { openFile } = useOrchestrationStore();
+  const { openFile } = useOrchestrationActions();
   const detail =
     entry.type === 'workspaceSearch'
       ? language === 'zh'

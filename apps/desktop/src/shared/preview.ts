@@ -17,33 +17,28 @@ export type PreviewFailure =
   | 'policyUnavailable';
 
 type PreviewSessionState = Readonly<{
+  previewId: string;
   generation: number;
   sessionId: string;
   url: string;
   origin: string;
 }>;
 
-export type PreviewStateSnapshot =
-  | Readonly<{
-      revision: number;
-      status: 'closed';
-    }>
+export type PreviewTabState =
   | (PreviewSessionState &
       Readonly<{
-        revision: number;
         status: 'opening';
         visible: false;
       }>)
   | (PreviewSessionState &
       Readonly<{
-        revision: number;
         status: 'ready';
         visible: boolean;
         canGoBack: boolean;
         canGoForward: boolean;
       }>)
   | Readonly<{
-      revision: number;
+      previewId: string;
       status: 'failed';
       generation: number;
       url: string;
@@ -51,7 +46,18 @@ export type PreviewStateSnapshot =
       error: PreviewFailure;
     }>;
 
+export type PreviewStateSnapshot = Readonly<{
+  revision: number;
+  tabs: readonly PreviewTabState[];
+}>;
+
 export type PreviewOpenRequest = Readonly<{
+  previewId: string;
+  generation: number;
+  url: string;
+}>;
+
+export type PreviewExternalOpenRequest = Readonly<{
   generation: number;
   url: string;
 }>;
@@ -101,7 +107,7 @@ export type PreviewApi = Readonly<{
     request: PreviewOpenRequest,
   ) => Promise<PreviewActionResult>;
   openExternalPreview: (
-    request: PreviewOpenRequest,
+    request: PreviewExternalOpenRequest,
   ) => Promise<PreviewActionResult>;
   setPreviewBounds: (
     request: PreviewBoundsRequest,
@@ -147,12 +153,23 @@ const isBoundedUrl = (value: unknown): value is string =>
 const isSessionId = (value: unknown): value is string =>
   typeof value === 'string' && SESSION_ID_PATTERN.test(value);
 
+const isPreviewId = isSessionId;
+
 const isRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 
 export const isPreviewOpenRequest = (
   value: unknown,
 ): value is PreviewOpenRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['previewId', 'generation', 'url']) &&
+  isPreviewId(value.previewId) &&
+  isGeneration(value.generation) &&
+  isBoundedUrl(value.url);
+
+export const isPreviewExternalOpenRequest = (
+  value: unknown,
+): value is PreviewExternalOpenRequest =>
   isRecord(value) &&
   hasOnlyKeys(value, ['generation', 'url']) &&
   isGeneration(value.generation) &&
@@ -228,6 +245,7 @@ export const isPreviewActionResult = (
 const hasSessionState = (
   value: Record<string, unknown>,
 ): boolean =>
+  isPreviewId(value.previewId) &&
   isGeneration(value.generation) &&
   isSessionId(value.sessionId) &&
   isBoundedUrl(value.url) &&
@@ -235,23 +253,17 @@ const hasSessionState = (
   value.origin.length > 0 &&
   value.origin.length <= 128;
 
-export const isPreviewStateSnapshot = (
-  value: unknown,
-): value is PreviewStateSnapshot => {
+const isPreviewTabState = (value: unknown): value is PreviewTabState => {
   if (
     !isRecord(value) ||
-    !isRevision(value.revision) ||
     typeof value.status !== 'string'
   ) {
     return false;
   }
-  if (value.status === 'closed') {
-    return hasOnlyKeys(value, ['revision', 'status']);
-  }
   if (value.status === 'opening') {
     return (
       hasOnlyKeys(value, [
-        'revision',
+        'previewId',
         'status',
         'generation',
         'sessionId',
@@ -266,7 +278,7 @@ export const isPreviewStateSnapshot = (
   if (value.status === 'ready') {
     return (
       hasOnlyKeys(value, [
-        'revision',
+        'previewId',
         'status',
         'generation',
         'sessionId',
@@ -285,7 +297,7 @@ export const isPreviewStateSnapshot = (
   return (
     value.status === 'failed' &&
     hasOnlyKeys(value, [
-      'revision',
+      'previewId',
       'status',
       'generation',
       'url',
@@ -301,3 +313,20 @@ export const isPreviewStateSnapshot = (
     )
   );
 };
+
+export const isPreviewStateSnapshot = (
+  value: unknown,
+): value is PreviewStateSnapshot =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['revision', 'tabs']) &&
+  isRevision(value.revision) &&
+  Array.isArray(value.tabs) &&
+  value.tabs.length <= 24 &&
+  value.tabs.every(isPreviewTabState) &&
+  new Set(
+    value.tabs.map((tab) =>
+      isRecord(tab) && typeof tab.previewId === 'string'
+        ? tab.previewId
+        : '',
+    ),
+  ).size === value.tabs.length;

@@ -4,9 +4,85 @@ import test from 'node:test';
 import {
   isPreviewBoundsRequest,
   isPreviewNavigateRequest,
+  isPreviewOpenRequest,
+  isPreviewStateSnapshot,
 } from '../../src/shared/preview.ts';
 
 const sessionId = '12345678-1234-4234-9234-123456789abc';
+const secondSessionId = '22345678-1234-4234-9234-123456789abc';
+
+test('preview open requests bind a local browser tab to its isolated session', () => {
+  assert.equal(
+    isPreviewOpenRequest({
+      previewId: sessionId,
+      generation: 4,
+      url: 'http://localhost:3000/',
+    }),
+    true,
+  );
+  assert.equal(
+    isPreviewOpenRequest({
+      generation: 4,
+      url: 'http://localhost:3000/',
+    }),
+    false,
+  );
+});
+
+test('preview snapshots preserve multiple browser tabs with unique ids', () => {
+  assert.equal(
+    isPreviewStateSnapshot({
+      revision: 7,
+      tabs: [
+        {
+          previewId: sessionId,
+          status: 'ready',
+          generation: 4,
+          sessionId,
+          url: 'http://localhost:3000/',
+          origin: 'http://localhost:3000',
+          visible: true,
+          canGoBack: false,
+          canGoForward: false,
+        },
+        {
+          previewId: secondSessionId,
+          status: 'opening',
+          generation: 4,
+          sessionId: secondSessionId,
+          url: 'http://127.0.0.1:5173/',
+          origin: 'http://127.0.0.1:5173',
+          visible: false,
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    isPreviewStateSnapshot({
+      revision: 8,
+      tabs: [
+        {
+          previewId: sessionId,
+          status: 'failed',
+          generation: 4,
+          url: 'http://localhost:3000/',
+          origin: 'http://localhost:3000',
+          error: 'loadFailed',
+        },
+        {
+          previewId: sessionId,
+          status: 'failed',
+          generation: 4,
+          url: 'http://localhost:5173/',
+          origin: 'http://localhost:5173',
+          error: 'loadFailed',
+        },
+      ],
+    }),
+    false,
+  );
+});
 
 test('preview bounds accept a bounded visible rectangle or an explicit hide', () => {
   assert.equal(

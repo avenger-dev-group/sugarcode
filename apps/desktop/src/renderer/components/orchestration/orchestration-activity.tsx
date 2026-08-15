@@ -34,7 +34,10 @@ import type {
   AgentTaskViewModel,
   OrchestrationActivityViewModel,
 } from './types';
-import { useOrchestrationStore } from './use-store';
+import {
+  useOrchestrationActions,
+  useOrchestrationTaskState,
+} from './use-store';
 
 const STATUS_LABELS: Record<AgentTaskViewModel['status'], string> = {
   queued: 'Queued',
@@ -343,13 +346,9 @@ const AgentTaskDockRow = ({
 export const AgentTaskDock = ({
   activity,
 }: Readonly<{ activity: OrchestrationActivityViewModel }>) => {
-  const {
-    refreshTask,
-    selectedTask,
-    selectTask,
-    setTaskDockOpen,
-    taskDockOpen,
-  } = useOrchestrationStore();
+  const { refreshTask, selectTask } = useOrchestrationActions();
+  const { selectedTask, setTaskDockOpen, taskDockOpen } =
+    useOrchestrationTaskState();
   const dockTasks = activeAgentTaskDockTasks(activity.tasks);
   const primaryTask = dockTasks[0];
   const activeCount = activity.tasks.filter(
@@ -527,7 +526,8 @@ export const AgentTaskDock = ({
 export const OrchestrationActivity = ({
   activity,
 }: Readonly<{ activity: OrchestrationActivityViewModel }>) => {
-  const { selectTask, selectedTask, refreshTask } = useOrchestrationStore();
+  const { refreshTask, selectTask } = useOrchestrationActions();
+  const { selectedTask } = useOrchestrationTaskState();
   const activeTasks = activity.tasks.filter(
     (task) => task.status === 'running',
   );

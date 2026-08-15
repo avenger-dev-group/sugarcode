@@ -1,57 +1,142 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   BookOpenText,
   ClipboardList,
   FileCode2,
   FileDiff,
-  FolderTree,
+  Files,
   GitBranch,
-  MonitorUp,
+  Globe2,
+  Plus,
   X,
 } from 'lucide-react';
 
 import { AgentDetail } from '@/renderer/components/orchestration/agent-detail';
 import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/renderer/components/ui/popover';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import { SkillDocument } from '@/renderer/components/skills/skill-document';
 import { PlanDocument } from '@/renderer/components/thread/plan-document';
-import { GitWorkbench } from '@/renderer/components/workspace/git/git-workbench';
+import { closePreview, getPreviewState } from '@/renderer/services/preview';
 import { PreviewWorkbench } from '@/renderer/components/workspace/preview/preview-workbench';
-import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
 import { FileDiffWorkbench } from '@/renderer/components/workspace/review/file-diff-workbench';
 import { WorkspaceDocument } from '@/renderer/components/workspace/review/workspace-document';
+import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
 
-const RailAction = ({
+const ContextTab = ({
+  active,
+  icon,
   label,
-  children,
+  onActivate,
+  onClose,
 }: Readonly<{
+  active: boolean;
+  icon: ReactNode;
   label: string;
-  children: ReactNode;
+  onActivate: () => void;
+  onClose: () => void;
 }>) => (
   <div
-    className="min-w-0 flex-1 rounded-lg px-0.5 transition-colors hover:bg-surface [&>button]:h-8 [&>button]:w-full [&>button]:max-w-none [&>button]:justify-center [&>button]:border-0 [&>button]:bg-transparent [&>button]:px-1.5 [&>button]:shadow-none"
-    aria-label={label}
+    className={`group flex h-8 min-w-28 max-w-52 shrink-0 items-center rounded-lg transition-colors ${
+      active
+        ? 'bg-background text-foreground shadow-[0_1px_3px_var(--shadow-soft)]'
+        : 'text-secondary hover:bg-background/70 hover:text-foreground'
+    }`}
   >
-    {children}
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      title={label}
+      onClick={onActivate}
+    >
+      <span className="shrink-0" aria-hidden="true">{icon}</span>
+      <span className="truncate">{label}</span>
+    </button>
+    <button
+      type="button"
+      aria-label={`关闭 ${label}`}
+      className="mr-1 grid size-5 shrink-0 place-items-center rounded-md text-tertiary opacity-70 transition hover:bg-surface-hover hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onClick={onClose}
+    >
+      <X className="size-3" aria-hidden="true" />
+    </button>
   </div>
 );
 
+const WorkspaceMenu = ({
+  onOpenFiles,
+  onOpenBrowser,
+  onSelected,
+  compact = false,
+}: Readonly<{
+  onOpenFiles: () => void;
+  onOpenBrowser: () => void;
+  onSelected?: () => void;
+  compact?: boolean;
+}>) => {
+  const choices = [
+    { icon: <Files className="size-4" />, label: '文件', hint: '项目文件', action: onOpenFiles },
+    { icon: <Globe2 className="size-4" />, label: '浏览器', hint: '新标签页', action: onOpenBrowser },
+  ];
+  return (
+    <div className={compact ? 'p-1.5' : 'w-full max-w-sm space-y-1'}>
+      {choices.map((choice) => (
+        <button
+          key={choice.label}
+          type="button"
+          className={`group flex w-full items-center text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+            compact
+              ? 'h-9 gap-2.5 rounded-lg px-2.5 hover:bg-surface'
+              : 'h-11 gap-3 rounded-xl px-3 hover:bg-surface'
+          }`}
+          onClick={() => {
+            choice.action();
+            onSelected?.();
+          }}
+        >
+          <span className="grid size-7 shrink-0 place-items-center rounded-lg border bg-background text-secondary shadow-sm transition group-hover:text-foreground">
+            {choice.icon}
+          </span>
+          <span className="min-w-0 flex-1 text-sm font-medium">{choice.label}</span>
+          <span className="text-[11px] text-tertiary">{choice.hint}</span>
+        </button>
+      ))}
+    </div>
+  );
+};
+
 export const ContextRail = () => {
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const {
     activeTab,
+    browserTabs,
     closeAgentTab,
+    closeFilesTab,
     closePlanTab,
     closePreviewTab,
     closeResourceTab,
-    openFile,
-    previewTabOpen,
-    selectedResource,
+    filesTabOpen,
+    openFiles,
+    openPreview,
+    requestedFile,
     selectedPlan,
+    selectedResource,
     selectedTask,
     setActiveTab,
+    setPreviewTitle,
   } = useOrchestrationStore();
-  const workspaceActive = activeTab === 'workspace';
-  const previewActive = activeTab === 'preview';
+  const hasTabs =
+    filesTabOpen ||
+    browserTabs.length > 0 ||
+    selectedResource !== null ||
+    selectedPlan !== null ||
+    selectedTask !== null;
   const resourceTitle = selectedResource
     ? selectedResource.kind === 'skill'
       ? `${selectedResource.name} Skill`
@@ -60,224 +145,158 @@ export const ContextRail = () => {
   const resourceLabel = selectedResource
     ? selectedResource.kind === 'skill'
       ? `${selectedResource.name} Skill`
-      : selectedResource.path.split('/').at(-1)
+      : selectedResource.path.split('/').at(-1) ?? selectedResource.path
     : '';
+
+  const handleCloseBrowser = (id: string): void => {
+    closePreviewTab(id);
+    void getPreviewState()
+      .then((snapshot) => snapshot.tabs.find((tab) => tab.previewId === id))
+      .then((tab) => {
+        if (tab?.status === 'opening' || tab?.status === 'ready') {
+          return closePreview({
+            generation: tab.generation,
+            sessionId: tab.sessionId,
+          });
+        }
+        return undefined;
+      })
+      .catch((): undefined => undefined);
+  };
+
+  if (!hasTabs) {
+    return (
+      <section className="relative grid h-full min-h-0 place-items-center overflow-hidden bg-background px-8" aria-label="右侧工作区">
+        <div className="pointer-events-none absolute inset-x-10 top-1/2 h-56 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,var(--surface-hover),transparent_70%)] opacity-55" />
+        <div className="relative w-full max-w-sm">
+          <p className="mb-4 px-3 text-[11px] font-medium uppercase tracking-[0.16em] text-tertiary">打开到右侧</p>
+          <WorkspaceMenu
+            onOpenFiles={openFiles}
+            onOpenBrowser={() => openPreview()}
+          />
+        </div>
+      </section>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="window-context-titlebar window-drag-region flex h-11 shrink-0 items-center border-b pl-3">
-        <div
-          className="window-no-drag flex h-8 min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
-          role="tablist"
-          aria-label="Context rail"
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={workspaceActive}
-            className={`flex h-8 shrink-0 items-center gap-1.5 border-b-2 px-2.5 text-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-              workspaceActive
-                ? 'border-link text-link'
-                : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
-            }`}
-            onClick={() => setActiveTab('workspace')}
-          >
-            <FolderTree className="size-3.5" aria-hidden="true" />
-            项目
-          </button>
-          {previewTabOpen ? (
-            <div
-              className={`flex h-8 min-w-24 shrink-0 items-center border-b-2 transition-colors ${
-                previewActive
-                  ? 'border-link text-link'
-                  : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
-              }`}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={previewActive}
-                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => setActiveTab('preview')}
-              >
-                <MonitorUp className="size-3.5" aria-hidden="true" />
-                预览
-              </button>
-              <button
-                type="button"
-                aria-label="关闭预览标签页"
-                className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={closePreviewTab}
-              >
-                <X className="size-3" aria-hidden="true" />
-              </button>
-            </div>
+      <div className="window-context-titlebar window-drag-region flex h-11 shrink-0 items-center border-b bg-surface/65 px-2">
+        <div className="window-no-drag flex h-9 min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="右侧工作区标签">
+          {filesTabOpen ? (
+            <ContextTab
+              active={activeTab === 'files'}
+              icon={<Files className="size-3.5" />}
+              label="文件"
+              onActivate={() => setActiveTab('files')}
+              onClose={closeFilesTab}
+            />
           ) : null}
+          {browserTabs.map((tab) => (
+            <ContextTab
+              key={tab.id}
+              active={activeTab === `browser:${tab.id}`}
+              icon={<Globe2 className="size-3.5" />}
+              label={tab.title}
+              onActivate={() => setActiveTab(`browser:${tab.id}`)}
+              onClose={() => handleCloseBrowser(tab.id)}
+            />
+          ))}
           {selectedResource ? (
-            <div
-              className={`flex h-8 min-w-28 max-w-56 shrink-0 items-center border-b-2 transition-colors ${
-                activeTab === 'resource'
-                  ? 'border-link text-link'
-                  : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
-              }`}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'resource'}
-                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                title={resourceTitle}
-                onClick={() => setActiveTab('resource')}
-              >
-                {selectedResource.kind === 'skill' ? (
-                  <BookOpenText
-                    className="size-3.5 shrink-0"
-                    aria-hidden="true"
-                  />
+            <ContextTab
+              active={activeTab === 'resource'}
+              icon={
+                selectedResource.kind === 'skill' ? (
+                  <BookOpenText className="size-3.5" />
                 ) : selectedResource.kind === 'diff' ? (
-                  <FileDiff className="size-3.5 shrink-0" aria-hidden="true" />
+                  <FileDiff className="size-3.5" />
                 ) : (
-                  <FileCode2 className="size-3.5 shrink-0" aria-hidden="true" />
-                )}
-                <span className="truncate">{resourceLabel}</span>
-              </button>
-              <button
-                type="button"
-                aria-label={`关闭 ${resourceTitle}`}
-                className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={closeResourceTab}
-              >
-                <X className="size-3" aria-hidden="true" />
-              </button>
-            </div>
+                  <FileCode2 className="size-3.5" />
+                )
+              }
+              label={resourceLabel}
+              onActivate={() => setActiveTab('resource')}
+              onClose={closeResourceTab}
+            />
           ) : null}
           {selectedPlan ? (
-            <div
-              className={`flex h-8 min-w-24 max-w-48 shrink-0 items-center border-b-2 transition-colors ${
-                activeTab === 'plan'
-                  ? 'border-link text-link'
-                  : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
-              }`}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'plan'}
-                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => setActiveTab('plan')}
-              >
-                <ClipboardList className="size-3.5 shrink-0" aria-hidden="true" />
-                <span className="truncate">计划</span>
-              </button>
-              <button
-                type="button"
-                aria-label="关闭计划标签页"
-                className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={closePlanTab}
-              >
-                <X className="size-3" aria-hidden="true" />
-              </button>
-            </div>
+            <ContextTab
+              active={activeTab === 'plan'}
+              icon={<ClipboardList className="size-3.5" />}
+              label="计划"
+              onActivate={() => setActiveTab('plan')}
+              onClose={closePlanTab}
+            />
           ) : null}
           {selectedTask ? (
-            <div
-              className={`flex h-8 min-w-24 max-w-48 shrink-0 items-center border-b-2 transition-colors ${
-                activeTab === 'agent'
-                  ? 'border-link text-link'
-                  : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
-              }`}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'agent'}
-                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => setActiveTab('agent')}
-              >
-                <GitBranch className="size-3.5 shrink-0" aria-hidden="true" />
-                <span className="truncate">Agent</span>
-              </button>
-              <button
-                type="button"
-                aria-label="关闭 Agent 标签页"
-                title={`关闭 Agent 标签页：${selectedTask.title}`}
-                className="mr-1 flex size-5 items-center justify-center rounded text-tertiary transition-colors hover:bg-surface hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={closeAgentTab}
-              >
-                <X className="size-3" aria-hidden="true" />
-              </button>
-            </div>
+            <ContextTab
+              active={activeTab === 'agent'}
+              icon={<GitBranch className="size-3.5" />}
+              label="Agent"
+              onActivate={() => setActiveTab('agent')}
+              onClose={closeAgentTab}
+            />
           ) : null}
+          <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label="打开新的右侧标签"
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-tertiary transition-colors hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Plus className="size-4" aria-hidden="true" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="start" sideOffset={5} className="w-60 p-0">
+              <WorkspaceMenu
+                compact
+                onOpenFiles={openFiles}
+                onOpenBrowser={() => openPreview()}
+                onSelected={() => setAddMenuOpen(false)}
+              />
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
-      <div
-        className={`${workspaceActive ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}
-        aria-hidden={!workspaceActive}
-      >
-          <div className="min-h-0 flex-1">
-            <WorkspaceWorkbench
-              activePath={
-                selectedResource && selectedResource.kind !== 'skill'
-                  ? selectedResource.path
-                  : undefined
-              }
-              onOpenFile={openFile}
-            />
-          </div>
-          <section className="shrink-0 border-t p-2" aria-label="项目工具">
-            <div className="flex gap-1">
-              <RailAction label="Git changes">
-                <GitWorkbench />
-              </RailAction>
-            </div>
-          </section>
-      </div>
-      {previewTabOpen ? (
-        <div
-          className={`${previewActive ? 'block' : 'hidden'} min-h-0 flex-1`}
-          aria-hidden={!previewActive}
-        >
-          <PreviewWorkbench active={previewActive} />
+      {filesTabOpen ? (
+        <div className={`${activeTab === 'files' ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={activeTab !== 'files'}>
+          <WorkspaceWorkbench
+            requestedPath={requestedFile?.path}
+            requestKey={requestedFile?.id}
+          />
         </div>
       ) : null}
+      {browserTabs.map((tab) => {
+        const active = activeTab === `browser:${tab.id}`;
+        return (
+          <div key={tab.id} className={`${active ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={!active}>
+            <PreviewWorkbench
+              active={active}
+              previewId={tab.id}
+              onTitleChange={(title) => setPreviewTitle(tab.id, title)}
+            />
+          </div>
+        );
+      })}
       {selectedResource ? (
-        <div
-          className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`}
-          aria-hidden={activeTab !== 'resource'}
-        >
+        <div className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={activeTab !== 'resource'} title={resourceTitle}>
           {selectedResource.kind === 'skill' ? (
-            <SkillDocument
-              name={selectedResource.name}
-              description={selectedResource.description}
-              content={selectedResource.content}
-            />
+            <SkillDocument name={selectedResource.name} description={selectedResource.description} content={selectedResource.content} />
           ) : selectedResource.kind === 'diff' ? (
-            <FileDiffWorkbench
-              path={selectedResource.path}
-              changes={selectedResource.changes}
-            />
+            <FileDiffWorkbench path={selectedResource.path} changes={selectedResource.changes} />
           ) : (
             <WorkspaceDocument path={selectedResource.path} />
           )}
         </div>
       ) : null}
       {selectedPlan ? (
-        <div
-          className={`${activeTab === 'plan' ? 'block' : 'hidden'} min-h-0 flex-1`}
-          aria-hidden={activeTab !== 'plan'}
-        >
+        <div className={`${activeTab === 'plan' ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={activeTab !== 'plan'}>
           <PlanDocument plan={selectedPlan} />
         </div>
       ) : null}
       {selectedTask ? (
-        <ScrollArea
-          className={`${activeTab === 'agent' ? 'block' : 'hidden'} min-h-0 flex-1`}
-          viewportProps={{
-            'aria-label': `Agent details: ${selectedTask.title}`,
-            tabIndex: 0,
-          }}
-        >
+        <ScrollArea className={`${activeTab === 'agent' ? 'block' : 'hidden'} min-h-0 flex-1`} viewportProps={{ 'aria-label': `Agent details: ${selectedTask.title}`, tabIndex: 0 }}>
           <AgentDetail task={selectedTask} />
         </ScrollArea>
       ) : null}

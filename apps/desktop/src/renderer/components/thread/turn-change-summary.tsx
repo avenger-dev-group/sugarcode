@@ -1,6 +1,6 @@
 import { ChevronDown, FileDiff } from 'lucide-react';
 
-import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 
 import { collectTurnChangeSummaryFiles } from './turn-change-summary-data';
 import type { TurnChangeSummaryProps } from './types';
@@ -11,7 +11,7 @@ export const TurnChangeSummary = ({
   activities,
   language,
 }: TurnChangeSummaryProps) => {
-  const { openDiff, openFile } = useOrchestrationStore();
+  const { openDiff, openFile } = useOrchestrationActions();
   const files = collectTurnChangeSummaryFiles(activities);
   const store = useActivityDisclosureStore(`turn-changes:${turnId}`, true);
   if (files.length === 0) {

@@ -8,7 +8,7 @@ import {
   X,
 } from 'lucide-react';
 
-import { useOrchestrationStore } from '@/renderer/components/orchestration/use-store';
+import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 import { Button } from '@/renderer/components/ui/button';
 
 import type {
@@ -104,7 +104,7 @@ export const FileChangeReview = ({
   language = 'en',
 }: FileChangeReviewProps) => {
   const compact = variant === 'compact';
-  const { openDiff, openFile } = useOrchestrationStore();
+  const { openDiff, openFile } = useOrchestrationActions();
   const copy = STATE_COPY[review.state];
   const detail =
     review.state === 'failed' && review.errorKind

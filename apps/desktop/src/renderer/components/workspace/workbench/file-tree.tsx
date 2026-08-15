@@ -12,16 +12,38 @@ import type { WorkspaceWorkbenchStore } from './types';
 
 type TreeProps = Readonly<{
   store: WorkspaceWorkbenchStore;
+  query?: string;
   parent?: string;
   depth?: number;
 }>;
 
+const entryMatchesQuery = (
+  entry: WorkspaceEntry,
+  query: string,
+  store: WorkspaceWorkbenchStore,
+): boolean => {
+  if (!query || entry.name.toLocaleLowerCase().includes(query)) {
+    return true;
+  }
+  if (entry.kind !== 'directory') {
+    return false;
+  }
+  const children = store.entries.get(entry.path);
+  return !children || children.some((child) =>
+    entryMatchesQuery(child, query, store),
+  );
+};
+
 export const FileTree = ({
   store,
+  query = '',
   parent = '',
   depth = 0,
 }: TreeProps) => {
-  const entries = store.entries.get(parent) ?? [];
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const entries = (store.entries.get(parent) ?? []).filter((entry) =>
+    entryMatchesQuery(entry, normalizedQuery, store),
+  );
   if (store.loading.has(parent)) {
     return (
       <p className="px-3 py-2 font-mono text-[10px] text-tertiary">
@@ -42,6 +64,7 @@ export const FileTree = ({
           entry={entry}
           depth={depth}
           store={store}
+          query={query}
         />
       ))}
     </ul>
@@ -52,10 +75,12 @@ const TreeEntry = ({
   entry,
   depth,
   store,
+  query,
 }: Readonly<{
   entry: WorkspaceEntry;
   depth: number;
   store: WorkspaceWorkbenchStore;
+  query: string;
 }>) => {
   const directory = entry.kind === 'directory';
   const isExpanded = directory && store.expanded.has(entry.path);
@@ -112,7 +137,7 @@ const TreeEntry = ({
         <span className="truncate">{entry.name}</span>
       </button>
       {directory && isExpanded ? (
-        <FileTree store={store} parent={entry.path} depth={depth + 1} />
+        <FileTree store={store} query={query} parent={entry.path} depth={depth + 1} />
       ) : null}
     </li>
   );

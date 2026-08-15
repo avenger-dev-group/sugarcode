@@ -13,7 +13,7 @@ import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection
 
 import { AgentCodeBlock } from './code-block/code-block';
 import { FileReferenceLink } from './file-reference-link';
-import { useOrchestrationStore } from '../orchestration/use-store';
+import { useOrchestrationActions } from '../orchestration/use-store';
 import { createVerifiedWorkspaceFileReferenceResolver } from '../workspace/file-reference';
 import {
   createAgentMarkdownFileDisplayLabels,
@@ -360,7 +360,7 @@ const AgentMarkdownView = ({
   isStreaming,
   verifiedFilePaths = [],
 }: AgentMarkdownProps): ReactElement => {
-  const { openFile } = useOrchestrationStore();
+  const { openFile } = useOrchestrationActions();
   const workspaceGeneration = useZustandStore(
     workspaceProjectionStore,
     (projection) => projection.snapshot.generation,

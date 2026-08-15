@@ -189,6 +189,7 @@ import {
   PREVIEW_STATE_GET_CHANNEL,
   type PreviewActionResult,
   type PreviewBoundsRequest,
+  type PreviewExternalOpenRequest,
   type PreviewNavigateRequest,
   type PreviewOpenRequest,
   type PreviewSessionRequest,
@@ -503,7 +504,7 @@ export const createDesktopApi = (
     return result;
   },
   openExternalPreview: async (
-    request: PreviewOpenRequest,
+    request: PreviewExternalOpenRequest,
   ): Promise<PreviewActionResult> => {
     const result: unknown = await ipcRenderer.invoke(
       PREVIEW_EXTERNAL_OPEN_CHANNEL,
