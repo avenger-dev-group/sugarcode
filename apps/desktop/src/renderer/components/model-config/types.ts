@@ -3,7 +3,6 @@ import type {
   ModelConfigValue,
   ModelConnectionValue,
   ModelProfileValue,
-  ModelProviderFamily,
   ModelWireApi,
 } from '@/shared/model-config';
 
@@ -36,11 +35,4 @@ export type ModelConfigStore = Readonly<{
   deleteConfiguration: () => void;
   save: () => void;
   deleteCredential: () => void;
-}>;
-
-export type ProviderPreset = Readonly<{
-  providerFamily: ModelProviderFamily;
-  label: string;
-  baseUrl: string;
-  wireApi: ModelWireApi;
 }>;

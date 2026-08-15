@@ -35,7 +35,8 @@ import {
 } from '@/shared/model-metadata';
 
 import type { ModelConfigSettingsPanelProps } from './types';
-import { PROVIDER_PRESETS, useStore } from './use-store';
+import { PROVIDER_PRESETS } from './provider-presets';
+import { useStore } from './use-store';
 
 export const ModelConfigSettingsPanel = (
   props: ModelConfigSettingsPanelProps,

@@ -6,7 +6,6 @@ import {
   type ModelConfigValue,
   type ModelConnectionValue,
   type ModelProfileValue,
-  type ModelWireApi,
 } from '@/shared/model-config';
 import {
   deleteModelApiKey,
@@ -18,29 +17,11 @@ import type {
   ModelConfigSettingsPanelProps,
   ModelConfigStore,
   Phase,
-  ProviderPreset,
 } from './types';
-
-export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
-  {
-    providerFamily: 'openai',
-    label: 'OpenAI Responses',
-    baseUrl: 'https://api.openai.com/v1',
-    wireApi: 'openaiResponses',
-  },
-  {
-    providerFamily: 'anthropic',
-    label: 'Anthropic',
-    baseUrl: 'https://api.anthropic.com/v1',
-    wireApi: 'anthropicMessages',
-  },
-  {
-    providerFamily: 'openai',
-    label: 'OpenAI-compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    wireApi: 'openaiChatCompletions',
-  },
-];
+import {
+  baseUrlForProviderWireChange,
+  presetForWire,
+} from './provider-presets';
 
 const INITIAL_CONNECTION: ModelConnectionValue = {
   id: 'conn_openai',
@@ -97,11 +78,6 @@ const uniqueId = (prefix: string, existing: readonly string[]): string => {
   }
   return `${prefix}_${existing.length + 2}`;
 };
-
-const presetForWire = (wireApi: ModelWireApi): ProviderPreset =>
-  PROVIDER_PRESETS.find(
-    (preset) => preset.wireApi === wireApi,
-  ) ?? PROVIDER_PRESETS[0];
 
 export const useStore = ({
   active = true,
@@ -366,7 +342,11 @@ export const useStore = ({
                 ...connection,
                 providerFamily: preset.providerFamily,
                 displayName: preset.label,
-                baseUrl: preset.baseUrl,
+                baseUrl: baseUrlForProviderWireChange(
+                  connection.wireApi,
+                  connection.baseUrl,
+                  preset.wireApi,
+                ),
                 wireApi: preset.wireApi,
                 continuationMode: 'localReplay',
               }
