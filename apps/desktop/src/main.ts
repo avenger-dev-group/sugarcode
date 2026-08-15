@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell, Tray } from 'electron';
 import started from 'electron-squirrel-startup';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -37,7 +37,9 @@ import { UpdateController } from '@/main/update/controller';
 import { registerUpdateIpc } from '@/main/update/ipc';
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let isQuitting = false;
+let hasShownTrayHint = false;
 let runtimeConnectionController: RuntimeConnectionController | null = null;
 let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
@@ -154,9 +156,20 @@ const createWindow = (): void => {
     terminalController?.rendererUnavailable();
   });
   window.on('close', (event) => {
-    if (process.platform === 'darwin' && !isQuitting) {
+    const shouldHide =
+      !isQuitting && (process.platform === 'darwin' || tray !== null);
+    if (shouldHide) {
       event.preventDefault();
       window.hide();
+      if (process.platform === 'win32' && tray && !hasShownTrayHint) {
+        hasShownTrayHint = true;
+        tray.displayBalloon({
+          title: 'SugarCode is still running',
+          content:
+            'Agent tasks continue in the background. Use the system tray icon to reopen or quit SugarCode.',
+          iconType: 'info',
+        });
+      }
     }
   });
   window.once('closed', () => {
@@ -173,6 +186,74 @@ const createWindow = (): void => {
     window.webContents.openDevTools();
   } else {
     void window.loadFile(rendererFilePath);
+  }
+};
+
+const showMainWindow = (): void => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+};
+
+const hasActiveWork = (): boolean => {
+  const phase = runtimeConversationController?.getSnapshot().phase;
+  return (
+    phase === 'starting' ||
+    phase === 'inProgress' ||
+    phase === 'stopping' ||
+    runtimeApprovalController?.getSnapshot().status === 'pending' ||
+    runtimeMcpApprovalController?.getSnapshot().status === 'pending' ||
+    gitController?.getSnapshot().pending !== undefined ||
+    terminalController?.hasLiveSession() === true
+  );
+};
+
+const requestQuitApplication = async (): Promise<void> => {
+  if (hasActiveWork()) {
+    const result = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Quit SugarCode?',
+      message: 'SugarCode still has work running.',
+      detail: 'Quitting will stop active Agent tasks and terminal sessions.',
+      buttons: ['Cancel', 'Quit SugarCode'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    if (result.response !== 1) {
+      return;
+    }
+  }
+  app.quit();
+};
+
+const createTray = (): void => {
+  if (process.platform !== 'win32' || tray) {
+    return;
+  }
+  try {
+    tray = new Tray(appIconPath);
+    tray.setToolTip('SugarCode');
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'Open SugarCode', click: showMainWindow },
+        { type: 'separator' },
+        {
+          label: 'Quit SugarCode',
+          click: () => void requestQuitApplication(),
+        },
+      ]),
+    );
+    tray.on('click', showMainWindow);
+  } catch (error) {
+    tray = null;
+    console.error('Failed to create the Windows system tray icon.', error);
   }
 };
 
@@ -446,6 +527,7 @@ const startApplication = async (): Promise<void> => {
     unsubscribeCommandApproval();
     unsubscribeMcpApproval();
   };
+  createTray();
   createWindow();
   if (app.isPackaged) {
     void updateController.start();
@@ -454,8 +536,15 @@ const startApplication = async (): Promise<void> => {
 
 if (started) {
   app.quit();
+} else if (process.platform === 'win32' && !app.requestSingleInstanceLock()) {
+  app.quit();
 } else {
-  void startApplication();
+  const startApplicationPromise = startApplication();
+  void startApplicationPromise;
+
+  app.on('second-instance', () => {
+    void startApplicationPromise.then(showMainWindow);
+  });
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
@@ -464,15 +553,7 @@ if (started) {
   });
 
   app.on('activate', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) {
-      createWindow();
-      return;
-    }
-    if (mainWindow.isMinimized()) {
-      mainWindow.restore();
-    }
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   });
 
   app.on('before-quit', () => {
@@ -483,6 +564,8 @@ if (started) {
   });
 
   app.on('will-quit', () => {
+    tray?.destroy();
+    tray = null;
     updateController?.stop();
     updateController = null;
     runtimeSupervisor?.shutdown();
