@@ -177,15 +177,19 @@ import {
 import {
   isPreviewActionResult,
   isPreviewStateSnapshot,
+  PREVIEW_BOUNDS_SET_CHANNEL,
   PREVIEW_CLOSE_CHANNEL,
+  PREVIEW_EXTERNAL_OPEN_CHANNEL,
   PREVIEW_GO_BACK_CHANNEL,
   PREVIEW_GO_FORWARD_CHANNEL,
+  PREVIEW_NAVIGATE_CHANNEL,
   PREVIEW_OPEN_CHANNEL,
   PREVIEW_RELOAD_CHANNEL,
-  PREVIEW_SHOW_CHANNEL,
   PREVIEW_STATE_CHANGED_CHANNEL,
   PREVIEW_STATE_GET_CHANNEL,
   type PreviewActionResult,
+  type PreviewBoundsRequest,
+  type PreviewNavigateRequest,
   type PreviewOpenRequest,
   type PreviewSessionRequest,
   type PreviewStateSnapshot,
@@ -498,10 +502,36 @@ export const createDesktopApi = (
     }
     return result;
   },
-  showPreview: (
-    request: PreviewSessionRequest,
+  openExternalPreview: async (
+    request: PreviewOpenRequest,
+  ): Promise<PreviewActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      PREVIEW_EXTERNAL_OPEN_CHANNEL,
+      request,
+    );
+    if (!isPreviewActionResult(result)) {
+      throw new Error('Main returned an invalid external preview result.');
+    }
+    return result;
+  },
+  setPreviewBounds: (
+    request: PreviewBoundsRequest,
   ): Promise<PreviewActionResult> =>
-    invokePreviewAction(ipcRenderer, PREVIEW_SHOW_CHANNEL, request, 'show'),
+    invokePreviewAction(
+      ipcRenderer,
+      PREVIEW_BOUNDS_SET_CHANNEL,
+      request,
+      'set bounds',
+    ),
+  navigatePreview: (
+    request: PreviewNavigateRequest,
+  ): Promise<PreviewActionResult> =>
+    invokePreviewAction(
+      ipcRenderer,
+      PREVIEW_NAVIGATE_CHANNEL,
+      request,
+      'navigate',
+    ),
   reloadPreview: (
     request: PreviewSessionRequest,
   ): Promise<PreviewActionResult> =>

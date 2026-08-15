@@ -2,6 +2,7 @@ import { LoaderCircle } from 'lucide-react';
 import { memo, type ReactElement } from 'react';
 
 import { MessageCopyButton } from '@/renderer/components/message-actions/message-copy-button';
+import { parseAgentPreviewResponse } from '@/shared/preview-intent';
 
 import { AgentMarkdown } from './agent-markdown';
 import type { AgentMessageProps } from './types';
@@ -24,7 +25,8 @@ const AgentMessageView = ({
   message,
 }: AgentMessageProps): ReactElement | null => {
   const isStreaming = message.state === 'streaming';
-  if (!isStreaming && message.text.length === 0) {
+  const visibleText = parseAgentPreviewResponse(message.text).text;
+  if (!isStreaming && visibleText.length === 0) {
     return null;
   }
   const stateLabel = STATE_LABELS[message.state];
@@ -50,15 +52,15 @@ const AgentMessageView = ({
         </div>
       ) : null}
       {message.state === 'completed' ||
-      (message.state === 'streaming' && message.text.length > 0) ? (
+      (message.state === 'streaming' && visibleText.length > 0) ? (
         <AgentMarkdown
-          source={message.text}
+          source={visibleText}
           isStreaming={isStreaming}
           verifiedFilePaths={message.verifiedFilePaths}
         />
       ) : (
         <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-foreground">
-          {message.text || (
+          {visibleText || (
             <span>Thinking through the turn…</span>
           )}
         </p>
@@ -66,7 +68,7 @@ const AgentMessageView = ({
       {message.state === 'completed' ? (
         <div className="mt-2 flex h-6 items-center">
           <MessageCopyButton
-            text={message.text}
+            text={visibleText}
             className="text-tertiary hover:text-foreground"
           />
         </div>

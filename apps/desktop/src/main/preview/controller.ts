@@ -3,13 +3,17 @@ import {
   session,
   type Dialog,
   type Session,
+  WebContentsView,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
 
 import type {
   PreviewActionReason,
   PreviewActionResult,
+  PreviewBounds,
+  PreviewBoundsRequest,
   PreviewFailure,
+  PreviewNavigateRequest,
   PreviewOpenRequest,
   PreviewSessionRequest,
   PreviewStateSnapshot,
@@ -23,21 +27,6 @@ import {
 } from './url';
 
 const INITIAL_LOAD_TIMEOUT_MS = 15_000;
-const PREVIEW_TITLE = 'SugarCode Static Preview';
-const PREVIEW_CSP = [
-  "default-src 'none'",
-  "script-src 'none'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob:",
-  "font-src 'self' data:",
-  "media-src 'self' data: blob:",
-  "connect-src 'none'",
-  "frame-src 'none'",
-  "object-src 'none'",
-  "form-action 'none'",
-  "base-uri 'none'",
-  "worker-src 'none'",
-].join('; ');
 
 type DialogBoundary = Pick<Dialog, 'showMessageBox'>;
 
@@ -46,9 +35,10 @@ type PreviewControllerOptions = Readonly<{
   getMainWindow: () => BrowserWindow | null;
   getWorkspaceState: () => WorkspaceStateSnapshot;
   isApprovalPending: () => boolean;
-  createBrowserWindow?: (
-    options: Electron.BrowserWindowConstructorOptions,
-  ) => BrowserWindow;
+  openExternal: (url: string) => Promise<void>;
+  createWebContentsView?: (
+    options: Electron.WebContentsViewConstructorOptions,
+  ) => WebContentsView;
   getSession?: (partition: string) => Session;
   createSessionId?: () => string;
   loadTimeoutMs?: number;
@@ -66,8 +56,10 @@ type ActivePreview = {
   generation: number;
   sessionId: string;
   location: PreviewLocation;
-  browserWindow: BrowserWindow;
+  mainWindow: BrowserWindow;
+  browserView: WebContentsView;
   browserSession: Session;
+  bounds: PreviewBounds | null;
 };
 
 const actionResult = (
@@ -101,8 +93,8 @@ const withTimeout = async <Value>(
 
 export class PreviewController {
   private readonly listeners = new Set<Listener>();
-  private readonly createBrowserWindow: NonNullable<
-    PreviewControllerOptions['createBrowserWindow']
+  private readonly createWebContentsView: NonNullable<
+    PreviewControllerOptions['createWebContentsView']
   >;
   private readonly getSession: NonNullable<
     PreviewControllerOptions['getSession']
@@ -120,9 +112,9 @@ export class PreviewController {
   };
 
   constructor(private readonly options: PreviewControllerOptions) {
-    this.createBrowserWindow =
-      options.createBrowserWindow ??
-      ((windowOptions) => new BrowserWindow(windowOptions));
+    this.createWebContentsView =
+      options.createWebContentsView ??
+      ((viewOptions) => new WebContentsView(viewOptions));
     this.getSession =
       options.getSession ??
       ((partition) => session.fromPartition(partition, { cache: false }));
@@ -168,14 +160,14 @@ export class PreviewController {
         mainWindow,
         {
           type: 'warning',
-          buttons: ['Cancel', 'Open local preview'],
+          buttons: ['取消', '打开本地应用'],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
-          title: 'Open local preview?',
-          message: `Open static content from ${location.origin}?`,
+          title: '在预览浏览器中打开？',
+          message: `打开 ${location.origin}？`,
           detail:
-            'Page scripts are disabled. SugarCode will allow GET and HEAD requests only to this exact local origin. Other hosts, ports, writes, downloads, popups, frames, permissions, and WebSockets stay blocked. GET requests are not guaranteed to be side-effect free by the server.',
+            '该本地应用的脚本和同源请求将可以运行，以便测试真实交互。SugarCode 会使用隔离会话，并阻止跳转到其他主机或端口、下载、弹窗和系统权限。请只打开你信任的开发服务。',
         },
       );
       if (confirmation.response !== 1) {
@@ -226,31 +218,25 @@ export class PreviewController {
         origin: location.origin,
         visible: false,
       });
-      let browserWindow: BrowserWindow;
+      let browserView: WebContentsView;
       try {
-        browserWindow = this.createBrowserWindow({
-          parent: mainWindow,
-          show: false,
-          width: 1_120,
-          height: 760,
-          minWidth: 640,
-          minHeight: 420,
-          autoHideMenuBar: true,
-          backgroundColor: '#111315',
-          title: PREVIEW_TITLE,
+        browserView = this.createWebContentsView({
           webPreferences: {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true,
-            devTools: false,
+            devTools: true,
             webviewTag: false,
-            javascript: false,
+            javascript: true,
             disableDialogs: true,
             navigateOnDragDrop: false,
             partition,
             spellcheck: false,
           },
         });
+        browserView.setBackgroundColor('#ffffff');
+        browserView.setVisible(false);
+        mainWindow.contentView.addChildView(browserView);
       } catch {
         await this.clearSession(browserSession);
         this.publishFailure(
@@ -264,12 +250,14 @@ export class PreviewController {
         generation: request.generation,
         sessionId,
         location,
-        browserWindow,
+        mainWindow,
+        browserView,
         browserSession,
+        bounds: null,
       };
       this.active = active;
       try {
-        this.installWindowPolicy(active);
+        this.installViewPolicy(active);
       } catch {
         await this.failActive(active, 'policyUnavailable');
         return actionResult('failed');
@@ -277,7 +265,7 @@ export class PreviewController {
 
       try {
         await withTimeout(
-          browserWindow.loadURL(location.url),
+          browserView.webContents.loadURL(location.url),
           this.loadTimeoutMs,
         );
       } catch {
@@ -294,15 +282,48 @@ export class PreviewController {
         await this.closeActive(true);
         return actionResult('stale');
       }
-      browserWindow.show();
-      this.publishReady(active, true);
+      if (active.bounds) {
+        browserView.setVisible(true);
+      }
+      this.publishReady(active, active.bounds !== null);
       return actionResult('accepted');
     } finally {
       this.operationActive = false;
     }
   };
 
-  show = (request: PreviewSessionRequest): PreviewActionResult => {
+  openExternal = async (
+    request: PreviewOpenRequest,
+  ): Promise<PreviewActionResult> => {
+    if (this.operationActive) {
+      return actionResult('busy');
+    }
+    const location = parsePreviewLocation(request.url);
+    if (!location) {
+      return actionResult('invalid');
+    }
+    const workspace = this.options.getWorkspaceState();
+    if (request.generation !== workspace.generation) {
+      return actionResult('stale');
+    }
+    if (workspace.status !== 'ready') {
+      return actionResult('unavailable');
+    }
+    if (this.options.isApprovalPending()) {
+      return actionResult('busy');
+    }
+    this.operationActive = true;
+    try {
+      await this.options.openExternal(location.url);
+      return actionResult('accepted');
+    } catch {
+      return actionResult('failed');
+    } finally {
+      this.operationActive = false;
+    }
+  };
+
+  setBounds = (request: PreviewBoundsRequest): PreviewActionResult => {
     const active = this.getMatchingActive(request);
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
@@ -310,10 +331,51 @@ export class PreviewController {
     if (this.options.isApprovalPending()) {
       return actionResult('busy');
     }
-    active.browserWindow.show();
-    active.browserWindow.focus();
-    this.publishReady(active, true);
+    const unchanged = request.bounds === null
+      ? active.bounds === null
+      : active.bounds !== null &&
+        active.bounds.x === request.bounds.x &&
+        active.bounds.y === request.bounds.y &&
+        active.bounds.width === request.bounds.width &&
+        active.bounds.height === request.bounds.height;
+    if (unchanged) {
+      return actionResult('accepted');
+    }
+    active.bounds = request.bounds;
+    if (request.bounds) {
+      active.browserView.setBounds(request.bounds);
+    }
+    const visible = request.bounds !== null && this.snapshot.status === 'ready';
+    active.browserView.setVisible(visible);
+    if (this.snapshot.status === 'ready') {
+      this.publishReady(active, visible);
+    }
     return actionResult('accepted');
+  };
+
+  navigate = async (
+    request: PreviewNavigateRequest,
+  ): Promise<PreviewActionResult> => {
+    const active = this.getMatchingActive(request);
+    if (!active) {
+      return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
+    }
+    const location = parsePreviewLocation(request.url);
+    if (!location || location.origin !== active.location.origin) {
+      return actionResult('invalid');
+    }
+    try {
+      await withTimeout(
+        active.browserView.webContents.loadURL(location.url),
+        this.loadTimeoutMs,
+      );
+      return actionResult('accepted');
+    } catch {
+      if (this.active === active) {
+        await this.failActive(active, 'loadFailed');
+      }
+      return actionResult('failed');
+    }
   };
 
   reload = (request: PreviewSessionRequest): PreviewActionResult => {
@@ -321,7 +383,7 @@ export class PreviewController {
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
     }
-    active.browserWindow.webContents.reload();
+    active.browserView.webContents.reload();
     return actionResult('accepted');
   };
 
@@ -329,13 +391,13 @@ export class PreviewController {
     const active = this.getMatchingActive(request);
     if (
       !active ||
-      !active.browserWindow.webContents.navigationHistory.canGoBack()
+      !active.browserView.webContents.navigationHistory.canGoBack()
     ) {
       return actionResult(
         this.isStale(request) ? 'stale' : 'unavailable',
       );
     }
-    active.browserWindow.webContents.navigationHistory.goBack();
+    active.browserView.webContents.navigationHistory.goBack();
     return actionResult('accepted');
   };
 
@@ -343,13 +405,13 @@ export class PreviewController {
     const active = this.getMatchingActive(request);
     if (
       !active ||
-      !active.browserWindow.webContents.navigationHistory.canGoForward()
+      !active.browserView.webContents.navigationHistory.canGoForward()
     ) {
       return actionResult(
         this.isStale(request) ? 'stale' : 'unavailable',
       );
     }
-    active.browserWindow.webContents.navigationHistory.goForward();
+    active.browserView.webContents.navigationHistory.goForward();
     return actionResult('accepted');
   };
 
@@ -366,11 +428,27 @@ export class PreviewController {
 
   hideForApproval = (): void => {
     const active = this.active;
-    if (!active || active.browserWindow.isDestroyed()) {
+    if (!active || active.browserView.webContents.isDestroyed()) {
       return;
     }
-    active.browserWindow.hide();
-    this.publishReady(active, false);
+    active.browserView.setVisible(false);
+    if (this.snapshot.status === 'ready') {
+      this.publishReady(active, false);
+    }
+  };
+
+  resumeAfterApproval = (): void => {
+    const active = this.active;
+    if (
+      !active ||
+      active.browserView.webContents.isDestroyed() ||
+      this.snapshot.status !== 'ready'
+    ) {
+      return;
+    }
+    const visible = active.bounds !== null;
+    active.browserView.setVisible(visible);
+    this.publishReady(active, visible);
   };
 
   closeForWorkspaceChange = async (): Promise<void> => {
@@ -412,7 +490,6 @@ export class PreviewController {
         callback({
           responseHeaders: {
             ...details.responseHeaders,
-            'Content-Security-Policy': [PREVIEW_CSP],
             'Permissions-Policy': [
               'accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()',
             ],
@@ -423,17 +500,12 @@ export class PreviewController {
     );
   };
 
-  private installWindowPolicy = (active: ActivePreview): void => {
-    const { browserWindow, location } = active;
-    browserWindow.setMenu(null);
-    browserWindow.webContents.setWindowOpenHandler(() => ({
+  private installViewPolicy = (active: ActivePreview): void => {
+    const { browserView, location } = active;
+    browserView.webContents.setWindowOpenHandler(() => ({
       action: 'deny',
     }));
-    browserWindow.webContents.on('page-title-updated', (event) => {
-      event.preventDefault();
-      browserWindow.setTitle(PREVIEW_TITLE);
-    });
-    browserWindow.webContents.on('will-attach-webview', (event) => {
+    browserView.webContents.on('will-attach-webview', (event) => {
       event.preventDefault();
     });
     const guardNavigation = (
@@ -451,8 +523,8 @@ export class PreviewController {
         event.preventDefault();
       }
     };
-    browserWindow.webContents.on('will-navigate', guardNavigation);
-    browserWindow.webContents.on('will-redirect', guardNavigation);
+    browserView.webContents.on('will-navigate', guardNavigation);
+    browserView.webContents.on('will-redirect', guardNavigation);
     const publishNavigation = (_event: Electron.Event, url: string): void => {
       if (this.active !== active) {
         return;
@@ -462,14 +534,14 @@ export class PreviewController {
         return;
       }
       active.location = next;
-      this.publishReady(active, browserWindow.isVisible());
+      this.publishReady(active, browserView.getVisible());
     };
-    browserWindow.webContents.on('did-navigate', publishNavigation);
-    browserWindow.webContents.on(
+    browserView.webContents.on('did-navigate', publishNavigation);
+    browserView.webContents.on(
       'did-navigate-in-page',
       publishNavigation,
     );
-    browserWindow.webContents.on(
+    browserView.webContents.on(
       'did-fail-load',
       (_event, errorCode, _errorDescription, _validatedUrl, isMainFrame) => {
         if (
@@ -482,12 +554,12 @@ export class PreviewController {
         }
       },
     );
-    browserWindow.webContents.once('render-process-gone', () => {
+    browserView.webContents.once('render-process-gone', () => {
       if (this.active === active) {
         void this.failActive(active, 'renderProcessGone');
       }
     });
-    browserWindow.once('closed', () => {
+    browserView.webContents.once('destroyed', () => {
       if (this.active !== active) {
         return;
       }
@@ -504,7 +576,7 @@ export class PreviewController {
     return active &&
       active.generation === request.generation &&
       active.sessionId === request.sessionId &&
-      !active.browserWindow.isDestroyed()
+      !active.browserView.webContents.isDestroyed()
       ? active
       : null;
   };
@@ -518,7 +590,7 @@ export class PreviewController {
     active: ActivePreview,
     visible: boolean,
   ): void => {
-    if (this.active !== active || active.browserWindow.isDestroyed()) {
+    if (this.active !== active || active.browserView.webContents.isDestroyed()) {
       return;
     }
     this.publish({
@@ -529,9 +601,9 @@ export class PreviewController {
       origin: active.location.origin,
       visible,
       canGoBack:
-        active.browserWindow.webContents.navigationHistory.canGoBack(),
+        active.browserView.webContents.navigationHistory.canGoBack(),
       canGoForward:
-        active.browserWindow.webContents.navigationHistory.canGoForward(),
+        active.browserView.webContents.navigationHistory.canGoForward(),
     });
   };
 
@@ -543,9 +615,12 @@ export class PreviewController {
       return;
     }
     this.active = null;
-    active.browserWindow.webContents.stop();
-    if (!active.browserWindow.isDestroyed()) {
-      active.browserWindow.destroy();
+    active.browserView.webContents.stop();
+    if (!active.mainWindow.isDestroyed()) {
+      active.mainWindow.contentView.removeChildView(active.browserView);
+    }
+    if (!active.browserView.webContents.isDestroyed()) {
+      active.browserView.webContents.close();
     }
     await this.clearSession(active.browserSession);
     this.publishFailure(active.generation, active.location, error);
@@ -560,9 +635,12 @@ export class PreviewController {
       return;
     }
     this.active = null;
-    active.browserWindow.webContents.stop();
-    if (!active.browserWindow.isDestroyed()) {
-      active.browserWindow.destroy();
+    active.browserView.webContents.stop();
+    if (!active.mainWindow.isDestroyed()) {
+      active.mainWindow.contentView.removeChildView(active.browserView);
+    }
+    if (!active.browserView.webContents.isDestroyed()) {
+      active.browserView.webContents.close();
     }
     await this.clearSession(active.browserSession);
     if (publishClosed) {

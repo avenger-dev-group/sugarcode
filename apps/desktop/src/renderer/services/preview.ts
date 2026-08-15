@@ -1,5 +1,7 @@
 import type {
   PreviewActionResult,
+  PreviewBoundsRequest,
+  PreviewNavigateRequest,
   PreviewOpenRequest,
   PreviewSessionRequest,
   PreviewStateSnapshot,
@@ -16,9 +18,17 @@ export const openPreview = (
   request: PreviewOpenRequest,
 ): Promise<PreviewActionResult> => window.sugarcode.openPreview(request);
 
-export const showPreview = (
-  request: PreviewSessionRequest,
-): Promise<PreviewActionResult> => window.sugarcode.showPreview(request);
+export const openExternalPreview = (
+  request: PreviewOpenRequest,
+): Promise<PreviewActionResult> => window.sugarcode.openExternalPreview(request);
+
+export const setPreviewBounds = (
+  request: PreviewBoundsRequest,
+): Promise<PreviewActionResult> => window.sugarcode.setPreviewBounds(request);
+
+export const navigatePreview = (
+  request: PreviewNavigateRequest,
+): Promise<PreviewActionResult> => window.sugarcode.navigatePreview(request);
 
 export const reloadPreview = (
   request: PreviewSessionRequest,

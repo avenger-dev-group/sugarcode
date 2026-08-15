@@ -1,7 +1,9 @@
 export const PREVIEW_STATE_GET_CHANNEL = 'preview-state:get';
 export const PREVIEW_STATE_CHANGED_CHANNEL = 'preview-state:changed';
 export const PREVIEW_OPEN_CHANNEL = 'preview:open';
-export const PREVIEW_SHOW_CHANNEL = 'preview:show';
+export const PREVIEW_EXTERNAL_OPEN_CHANNEL = 'preview:open-external';
+export const PREVIEW_BOUNDS_SET_CHANNEL = 'preview-bounds:set';
+export const PREVIEW_NAVIGATE_CHANNEL = 'preview:navigate';
 export const PREVIEW_RELOAD_CHANNEL = 'preview:reload';
 export const PREVIEW_GO_BACK_CHANNEL = 'preview:go-back';
 export const PREVIEW_GO_FORWARD_CHANNEL = 'preview:go-forward';
@@ -59,6 +61,23 @@ export type PreviewSessionRequest = Readonly<{
   sessionId: string;
 }>;
 
+export type PreviewBounds = Readonly<{
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}>;
+
+export type PreviewBoundsRequest = PreviewSessionRequest &
+  Readonly<{
+    bounds: PreviewBounds | null;
+  }>;
+
+export type PreviewNavigateRequest = PreviewSessionRequest &
+  Readonly<{
+    url: string;
+  }>;
+
 export type PreviewActionReason =
   | 'accepted'
   | 'cancelled'
@@ -81,8 +100,14 @@ export type PreviewApi = Readonly<{
   openPreview: (
     request: PreviewOpenRequest,
   ) => Promise<PreviewActionResult>;
-  showPreview: (
-    request: PreviewSessionRequest,
+  openExternalPreview: (
+    request: PreviewOpenRequest,
+  ) => Promise<PreviewActionResult>;
+  setPreviewBounds: (
+    request: PreviewBoundsRequest,
+  ) => Promise<PreviewActionResult>;
+  navigatePreview: (
+    request: PreviewNavigateRequest,
   ) => Promise<PreviewActionResult>;
   reloadPreview: (
     request: PreviewSessionRequest,
@@ -140,6 +165,43 @@ export const isPreviewSessionRequest = (
   hasOnlyKeys(value, ['generation', 'sessionId']) &&
   isGeneration(value.generation) &&
   isSessionId(value.sessionId);
+
+const isPreviewBounds = (value: unknown): value is PreviewBounds => {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['x', 'y', 'width', 'height'])) {
+    return false;
+  }
+  const coordinatesValid = ['x', 'y', 'width', 'height'].every((key) => {
+    const coordinate = value[key];
+    return (
+      Number.isSafeInteger(coordinate) &&
+      (coordinate as number) >= 0 &&
+      (coordinate as number) <= 16_384
+    );
+  });
+  return (
+    coordinatesValid &&
+    (value.width as number) > 0 &&
+    (value.height as number) > 0
+  );
+};
+
+export const isPreviewBoundsRequest = (
+  value: unknown,
+): value is PreviewBoundsRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'sessionId', 'bounds']) &&
+  isGeneration(value.generation) &&
+  isSessionId(value.sessionId) &&
+  (value.bounds === null || isPreviewBounds(value.bounds));
+
+export const isPreviewNavigateRequest = (
+  value: unknown,
+): value is PreviewNavigateRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'sessionId', 'url']) &&
+  isGeneration(value.generation) &&
+  isSessionId(value.sessionId) &&
+  isBoundedUrl(value.url);
 
 export const isPreviewActionResult = (
   value: unknown,

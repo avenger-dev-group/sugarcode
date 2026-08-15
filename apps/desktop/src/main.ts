@@ -287,6 +287,7 @@ const startApplication = async (): Promise<void> => {
     dialog,
     getMainWindow: () => mainWindow,
     getWorkspaceState: workspaceController.getSnapshot,
+    openExternal: (url) => shell.openExternal(url),
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',
@@ -422,6 +423,7 @@ const startApplication = async (): Promise<void> => {
       runtimeMcpApprovalController?.getSnapshot().status === 'pending';
     if (!approvalPending) {
       terminalController?.resumeAfterApproval();
+      previewController?.resumeAfterApproval();
       return;
     }
     terminalController?.pauseForApproval();

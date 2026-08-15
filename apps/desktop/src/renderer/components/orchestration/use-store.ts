@@ -15,16 +15,18 @@ import type {
   ContextRailResource,
 } from './types';
 
-type ContextRailTab = 'workspace' | 'resource' | 'plan' | 'agent';
+type ContextRailTab = 'workspace' | 'preview' | 'resource' | 'plan' | 'agent';
 
 type OrchestrationStore = Readonly<{
   activeTab: ContextRailTab;
   selectedPlan: ContextRailPlan | null;
   selectedResource: ContextRailResource | null;
   selectedTask: AgentTaskViewModel | null;
+  previewTabOpen: boolean;
   taskDockOpen: boolean;
   closeAgentTab: () => void;
   closePlanTab: () => void;
+  closePreviewTab: () => void;
   closeResourceTab: () => void;
   openDiff: (
     path: string,
@@ -32,6 +34,7 @@ type OrchestrationStore = Readonly<{
   ) => void;
   openFile: (path: string) => void;
   openPlan: (plan: ContextRailPlan) => void;
+  openPreview: () => void;
   openSkill: (
     skill: Extract<ContextRailResource, { kind: 'skill' }>,
   ) => void;
@@ -59,6 +62,7 @@ export const OrchestrationStoreProvider = ({
     useState<ContextRailResource | null>(null);
   const [selectedPlan, setSelectedPlan] =
     useState<ContextRailPlan | null>(null);
+  const [previewTabOpen, setPreviewTabOpen] = useState(false);
   const [taskDockOpen, setTaskDockOpen] = useState(false);
 
   const selectTask = useCallback(
@@ -120,6 +124,17 @@ export const OrchestrationStoreProvider = ({
     [onRequestOpen],
   );
 
+  const openPreview = useCallback(() => {
+    setPreviewTabOpen(true);
+    setActiveTab('preview');
+    onRequestOpen();
+  }, [onRequestOpen]);
+
+  const closePreviewTab = useCallback(() => {
+    setPreviewTabOpen(false);
+    setActiveTab('workspace');
+  }, []);
+
   const openSkill = useCallback(
     (skill: Extract<ContextRailResource, { kind: 'skill' }>) => {
       setSelectedResource(skill);
@@ -133,6 +148,7 @@ export const OrchestrationStoreProvider = ({
     setSelectedTask(null);
     setSelectedResource(null);
     setSelectedPlan(null);
+    setPreviewTabOpen(false);
     setTaskDockOpen(false);
     setActiveTab('workspace');
   }, [scopeKey]);
@@ -148,11 +164,14 @@ export const OrchestrationStoreProvider = ({
       activeTab,
       closeAgentTab,
       closePlanTab,
+      closePreviewTab,
       closeResourceTab,
       openDiff,
       openFile,
       openPlan,
+      openPreview,
       openSkill,
+      previewTabOpen,
       selectedPlan,
       selectedResource,
       selectedTask,
@@ -166,11 +185,14 @@ export const OrchestrationStoreProvider = ({
       activeTab,
       closeAgentTab,
       closePlanTab,
+      closePreviewTab,
       closeResourceTab,
       openDiff,
       openFile,
       openPlan,
+      openPreview,
       openSkill,
+      previewTabOpen,
       refreshTask,
       selectTask,
       selectedPlan,

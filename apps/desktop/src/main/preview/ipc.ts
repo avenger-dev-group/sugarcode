@@ -1,14 +1,18 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 
 import {
+  isPreviewBoundsRequest,
+  isPreviewNavigateRequest,
   isPreviewOpenRequest,
   isPreviewSessionRequest,
+  PREVIEW_BOUNDS_SET_CHANNEL,
   PREVIEW_CLOSE_CHANNEL,
+  PREVIEW_EXTERNAL_OPEN_CHANNEL,
   PREVIEW_GO_BACK_CHANNEL,
   PREVIEW_GO_FORWARD_CHANNEL,
+  PREVIEW_NAVIGATE_CHANNEL,
   PREVIEW_OPEN_CHANNEL,
   PREVIEW_RELOAD_CHANNEL,
-  PREVIEW_SHOW_CHANNEL,
   PREVIEW_STATE_CHANGED_CHANNEL,
   PREVIEW_STATE_GET_CHANNEL,
 } from '@/shared/preview';
@@ -43,11 +47,23 @@ export const registerPreviewIpc = (
     }
     return options.controller.open(request);
   });
-  ipcMain.handle(PREVIEW_SHOW_CHANNEL, (event, request: unknown) => {
-    if (!trusted(event) || !isPreviewSessionRequest(request)) {
+  ipcMain.handle(PREVIEW_EXTERNAL_OPEN_CHANNEL, (event, request: unknown) => {
+    if (!trusted(event) || !isPreviewOpenRequest(request)) {
       return { accepted: false, reason: 'invalid' };
     }
-    return options.controller.show(request);
+    return options.controller.openExternal(request);
+  });
+  ipcMain.handle(PREVIEW_BOUNDS_SET_CHANNEL, (event, request: unknown) => {
+    if (!trusted(event) || !isPreviewBoundsRequest(request)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    return options.controller.setBounds(request);
+  });
+  ipcMain.handle(PREVIEW_NAVIGATE_CHANNEL, (event, request: unknown) => {
+    if (!trusted(event) || !isPreviewNavigateRequest(request)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    return options.controller.navigate(request);
   });
   ipcMain.handle(PREVIEW_RELOAD_CHANNEL, (event, request: unknown) => {
     if (!trusted(event) || !isPreviewSessionRequest(request)) {
@@ -84,7 +100,9 @@ export const registerPreviewIpc = (
     unsubscribe();
     ipcMain.removeHandler(PREVIEW_STATE_GET_CHANNEL);
     ipcMain.removeHandler(PREVIEW_OPEN_CHANNEL);
-    ipcMain.removeHandler(PREVIEW_SHOW_CHANNEL);
+    ipcMain.removeHandler(PREVIEW_EXTERNAL_OPEN_CHANNEL);
+    ipcMain.removeHandler(PREVIEW_BOUNDS_SET_CHANNEL);
+    ipcMain.removeHandler(PREVIEW_NAVIGATE_CHANNEL);
     ipcMain.removeHandler(PREVIEW_RELOAD_CHANNEL);
     ipcMain.removeHandler(PREVIEW_GO_BACK_CHANNEL);
     ipcMain.removeHandler(PREVIEW_GO_FORWARD_CHANNEL);

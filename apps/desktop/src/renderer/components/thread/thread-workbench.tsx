@@ -12,7 +12,13 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import { memo, useEffect, useRef, useState } from 'react';
+import {
+  memo,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMarkdown } from '@/renderer/components/agent/agent-markdown';
@@ -52,6 +58,7 @@ import { useOrchestrationStore } from '@/renderer/components/orchestration/use-s
 import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/workspace/navigation/use-store';
 import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 import { UserInputActivity } from '@/renderer/components/user-input/user-input-activity';
+import { parseAgentPreviewResponse } from '@/shared/preview-intent';
 
 import type {
   CompactToolActivity,
@@ -77,6 +84,7 @@ import { TurnChangeSummary } from './turn-change-summary';
 import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
 import { UserMessage } from './user-message';
+import { AgentPreviewCard } from './agent-preview-card';
 
 const currentOrchestrationActivity = (
   store: ThreadWorkbenchViewProps['store'],
@@ -112,6 +120,21 @@ const TranscriptMessage = (props: TranscriptMessageProps) =>
   ) : (
     <UserMessage {...props} entry={props.entry} />
   );
+
+const TurnPreviewOffer = ({
+  turn,
+}: Readonly<{ turn: TranscriptTurnProps['turn'] }>) => {
+  const finalAgentMessage = turn.messages.findLast(
+    (entry) =>
+      entry.role === 'agent' && entry.message.state === 'completed',
+  );
+  const intent = finalAgentMessage
+    ? parseAgentPreviewResponse(finalAgentMessage.message.text).intent
+    : null;
+  return intent ? (
+    <AgentPreviewCard url={intent.url} language={turn.processLanguage} />
+  ) : null;
+};
 
 const PlanProposal = ({
   planId,
@@ -431,6 +454,9 @@ const TranscriptTurnView = ({
           language={turn.processLanguage}
         />
       ) : null}
+      {turn.status === 'completed' ? (
+        <TurnPreviewOffer turn={turn} />
+      ) : null}
       {turn.status === 'inProgress' && progress ? (
         <ActiveTurnStatus progress={progress} language={turn.processLanguage} />
       ) : null}
@@ -654,7 +680,7 @@ export const ThreadWorkbenchView = ({
               type="button"
               size="icon-sm"
               variant="ghost"
-              className="window-no-drag ml-1 hidden text-tertiary min-[1100px]:inline-flex"
+              className="window-no-drag ml-1 text-tertiary"
               onClick={onToggleContextRail}
               aria-controls="workspace-tools"
               aria-expanded={contextRailOpen}
@@ -990,6 +1016,14 @@ export const ThreadWorkbenchView = ({
       </section>
       {contextRail ? (
         <>
+          {contextRailOpen && onToggleContextRail ? (
+            <button
+              type="button"
+              className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px] min-[1100px]:hidden"
+              onClick={onToggleContextRail}
+              aria-label="关闭右侧工具栏"
+            />
+          ) : null}
           {contextRailResize ? (
             <div
               className={`panel-resizer hidden min-[1100px]:block ${
@@ -1010,14 +1044,19 @@ export const ThreadWorkbenchView = ({
           ) : null}
           <aside
             id="workspace-tools"
-            className={`hidden min-h-0 shrink-0 overflow-hidden bg-background min-[1100px]:block ${contextRailTransition} ${
+            className={`fixed inset-y-0 right-0 z-40 block min-h-0 shrink-0 overflow-hidden bg-background shadow-[-24px_0_64px_var(--shadow-soft)] [width:var(--context-rail-mobile-width)] min-[1100px]:static min-[1100px]:z-auto min-[1100px]:shadow-none min-[1100px]:[width:var(--context-rail-desktop-width)] ${contextRailTransition} ${
               contextRailOpen
                 ? 'opacity-100'
                 : 'pointer-events-none opacity-0'
             }`}
             style={{
-              width: contextRailOpen ? contextRailTargetWidth : 0,
-            }}
+              '--context-rail-mobile-width': contextRailOpen
+                ? `min(${contextRailWidth}px, calc(100vw - 1rem))`
+                : '0px',
+              '--context-rail-desktop-width': contextRailOpen
+                ? contextRailTargetWidth
+                : '0px',
+            } as CSSProperties}
             aria-label="Workspace tools"
             aria-hidden={!contextRailOpen}
             inert={contextRailOpen ? undefined : true}

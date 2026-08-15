@@ -37,6 +37,13 @@ test('main Agent instructions are dynamically scoped to capabilities', () => {
   assert.match(prompt, /Skill fixture/u);
   assert.match(prompt, /\*\*\* Begin Patch/u);
   assert.match(prompt, /absolute executable and arguments are separate/u);
+  assert.match(prompt, /proactively hand off the result without waiting to be asked/u);
+  assert.match(prompt, /primary entry point first/u);
+  assert.match(prompt, /exact workspace-relative path/u);
+  assert.match(prompt, /decide whether an interactive preview materially helps/u);
+  assert.match(prompt, /::preview\{url=/u);
+  assert.match(prompt, /Omit it for non-browser work/u);
+  assert.match(prompt, /unless verified/u);
   assert.doesNotMatch(prompt, /Ask 1 to 3/u);
 });
 

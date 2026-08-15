@@ -6,6 +6,7 @@ import {
   FileDiff,
   FolderTree,
   GitBranch,
+  MonitorUp,
   X,
 } from 'lucide-react';
 
@@ -40,14 +41,17 @@ export const ContextRail = () => {
     activeTab,
     closeAgentTab,
     closePlanTab,
+    closePreviewTab,
     closeResourceTab,
     openFile,
+    previewTabOpen,
     selectedResource,
     selectedPlan,
     selectedTask,
     setActiveTab,
   } = useOrchestrationStore();
   const workspaceActive = activeTab === 'workspace';
+  const previewActive = activeTab === 'preview';
   const resourceTitle = selectedResource
     ? selectedResource.kind === 'skill'
       ? `${selectedResource.name} Skill`
@@ -81,6 +85,34 @@ export const ContextRail = () => {
             <FolderTree className="size-3.5" aria-hidden="true" />
             项目
           </button>
+          {previewTabOpen ? (
+            <div
+              className={`flex h-8 min-w-24 shrink-0 items-center border-b-2 transition-colors ${
+                previewActive
+                  ? 'border-link text-link'
+                  : 'border-transparent text-secondary hover:bg-surface hover:text-foreground'
+              }`}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={previewActive}
+                className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-1 text-[12px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => setActiveTab('preview')}
+              >
+                <MonitorUp className="size-3.5" aria-hidden="true" />
+                预览
+              </button>
+              <button
+                type="button"
+                aria-label="关闭预览标签页"
+                className="mr-1 flex size-5 shrink-0 items-center justify-center rounded text-tertiary hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={closePreviewTab}
+              >
+                <X className="size-3" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
           {selectedResource ? (
             <div
               className={`flex h-8 min-w-28 max-w-56 shrink-0 items-center border-b-2 transition-colors ${
@@ -198,12 +230,17 @@ export const ContextRail = () => {
               <RailAction label="Git changes">
                 <GitWorkbench />
               </RailAction>
-              <RailAction label="Local preview">
-                <PreviewWorkbench />
-              </RailAction>
             </div>
           </section>
       </div>
+      {previewTabOpen ? (
+        <div
+          className={`${previewActive ? 'block' : 'hidden'} min-h-0 flex-1`}
+          aria-hidden={!previewActive}
+        >
+          <PreviewWorkbench active={previewActive} />
+        </div>
+      ) : null}
       {selectedResource ? (
         <div
           className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`}

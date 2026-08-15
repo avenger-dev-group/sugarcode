@@ -1,4 +1,4 @@
-import { PREVIEW_URL_MAX_BYTES } from '@/shared/preview';
+import { PREVIEW_URL_MAX_BYTES } from '../../shared/preview.ts';
 
 export type PreviewLocation = Readonly<{
   url: string;
@@ -30,7 +30,7 @@ export const parsePreviewLocation = (
   }
   if (
     parsed.protocol !== 'http:' ||
-    (parsed.hostname !== '127.0.0.1' && parsed.hostname !== '[::1]') ||
+    !['127.0.0.1', '[::1]', 'localhost'].includes(parsed.hostname) ||
     parsed.port.length === 0 ||
     parsed.username.length > 0 ||
     parsed.password.length > 0
@@ -64,17 +64,23 @@ export const isAllowedPreviewRequest = (
     return true;
   }
   if (
-    (method !== 'GET' && method !== 'HEAD') ||
-    resourceType === 'subFrame' ||
-    resourceType === 'webSocket' ||
+    ['CONNECT', 'TRACE'].includes(method.toUpperCase()) ||
     resourceType === 'object' ||
-    resourceType === 'ping' ||
     resourceType === 'cspReport'
   ) {
     return false;
   }
   try {
-    return new URL(url).origin === location.origin;
+    const requested = new URL(url);
+    if (resourceType === 'webSocket') {
+      const preview = new URL(location.url);
+      return (
+        requested.protocol === 'ws:' &&
+        requested.hostname === preview.hostname &&
+        requested.port === preview.port
+      );
+    }
+    return requested.origin === location.origin;
   } catch {
     return false;
   }
