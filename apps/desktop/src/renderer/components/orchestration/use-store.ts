@@ -229,7 +229,7 @@ export const OrchestrationStoreProvider = ({
         try {
           title = new URL(url).host;
         } catch {
-          title = '浏览器';
+          title = url.split(/[\\/]/u).at(-1) || '浏览器';
         }
       }
       setBrowserTabs((current) => [...current, { id, title }]);

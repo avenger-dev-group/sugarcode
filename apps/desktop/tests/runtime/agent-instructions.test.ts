@@ -40,10 +40,10 @@ test('main Agent instructions are dynamically scoped to capabilities', () => {
   assert.match(prompt, /proactively hand off the result without waiting to be asked/u);
   assert.match(prompt, /primary entry point first/u);
   assert.match(prompt, /exact workspace-relative path/u);
-  assert.match(prompt, /decide whether an interactive preview materially helps/u);
-  assert.match(prompt, /::preview\{url=/u);
-  assert.match(prompt, /Omit it for non-browser work/u);
-  assert.match(prompt, /unless verified/u);
+  assert.match(prompt, /standalone HTML artifact/u);
+  assert.match(prompt, /::preview\{path=/u);
+  assert.match(prompt, /never start or keep a development server running solely/u);
+  assert.match(prompt, /do not use &, nohup, disown/u);
   assert.doesNotMatch(prompt, /Ask 1 to 3/u);
 });
 

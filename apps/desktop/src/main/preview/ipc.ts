@@ -2,6 +2,8 @@ import { ipcMain, type BrowserWindow } from 'electron';
 
 import {
   isPreviewExternalOpenRequest,
+  isPreviewArtifactOpenRequest,
+  isPreviewArtifactRequest,
   isPreviewBoundsRequest,
   isPreviewNavigateRequest,
   isPreviewOpenRequest,
@@ -9,6 +11,9 @@ import {
   PREVIEW_BOUNDS_SET_CHANNEL,
   PREVIEW_CLOSE_CHANNEL,
   PREVIEW_EXTERNAL_OPEN_CHANNEL,
+  PREVIEW_ARTIFACT_EXTERNAL_OPEN_CHANNEL,
+  PREVIEW_ARTIFACT_OPEN_CHANNEL,
+  PREVIEW_ARTIFACT_REVEAL_CHANNEL,
   PREVIEW_GO_BACK_CHANNEL,
   PREVIEW_GO_FORWARD_CHANNEL,
   PREVIEW_NAVIGATE_CHANNEL,
@@ -53,6 +58,27 @@ export const registerPreviewIpc = (
       return { accepted: false, reason: 'invalid' };
     }
     return options.controller.openExternal(request);
+  });
+  ipcMain.handle(PREVIEW_ARTIFACT_OPEN_CHANNEL, (event, request: unknown) => {
+    if (!trusted(event) || !isPreviewArtifactOpenRequest(request)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    return options.controller.openArtifact(request);
+  });
+  ipcMain.handle(
+    PREVIEW_ARTIFACT_EXTERNAL_OPEN_CHANNEL,
+    (event, request: unknown) => {
+      if (!trusted(event) || !isPreviewArtifactRequest(request)) {
+        return { accepted: false, reason: 'invalid' };
+      }
+      return options.controller.openExternalArtifact(request);
+    },
+  );
+  ipcMain.handle(PREVIEW_ARTIFACT_REVEAL_CHANNEL, (event, request: unknown) => {
+    if (!trusted(event) || !isPreviewArtifactRequest(request)) {
+      return { accepted: false, reason: 'invalid' };
+    }
+    return options.controller.revealArtifact(request);
   });
   ipcMain.handle(PREVIEW_BOUNDS_SET_CHANNEL, (event, request: unknown) => {
     if (!trusted(event) || !isPreviewBoundsRequest(request)) {
@@ -102,6 +128,9 @@ export const registerPreviewIpc = (
     ipcMain.removeHandler(PREVIEW_STATE_GET_CHANNEL);
     ipcMain.removeHandler(PREVIEW_OPEN_CHANNEL);
     ipcMain.removeHandler(PREVIEW_EXTERNAL_OPEN_CHANNEL);
+    ipcMain.removeHandler(PREVIEW_ARTIFACT_OPEN_CHANNEL);
+    ipcMain.removeHandler(PREVIEW_ARTIFACT_EXTERNAL_OPEN_CHANNEL);
+    ipcMain.removeHandler(PREVIEW_ARTIFACT_REVEAL_CHANNEL);
     ipcMain.removeHandler(PREVIEW_BOUNDS_SET_CHANNEL);
     ipcMain.removeHandler(PREVIEW_NAVIGATE_CHANNEL);
     ipcMain.removeHandler(PREVIEW_RELOAD_CHANNEL);

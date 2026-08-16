@@ -3,14 +3,29 @@ import test from 'node:test';
 
 import { parseAgentPreviewResponse } from '../../src/shared/preview-intent.ts';
 
-test('terminal preview metadata becomes a validated Agent preview intent', () => {
+test('terminal artifact metadata becomes a validated Agent preview intent', () => {
+  assert.deepEqual(
+    parseAgentPreviewResponse(
+      '官网已经完成。\n\n::preview{path="dist/index.html"}',
+    ),
+    {
+      text: '官网已经完成。',
+      intent: { kind: 'artifact', path: 'dist/index.html' },
+    },
+  );
+});
+
+test('legacy local URL metadata remains readable for existing conversations', () => {
   assert.deepEqual(
     parseAgentPreviewResponse(
       '官网已经完成。\n\n::preview{url="http://localhost:5173/landing?mode=demo"}',
     ),
     {
       text: '官网已经完成。',
-      intent: { url: 'http://localhost:5173/landing?mode=demo' },
+      intent: {
+        kind: 'url',
+        url: 'http://localhost:5173/landing?mode=demo',
+      },
     },
   );
 });
@@ -37,6 +52,10 @@ test('unsafe or incomplete preview metadata stays hidden without creating an int
   );
   assert.deepEqual(
     parseAgentPreviewResponse('Done.\n::preview{url="http://localhost:'),
+    { text: 'Done.', intent: null },
+  );
+  assert.deepEqual(
+    parseAgentPreviewResponse('Done.\n::preview{path="../index.html"}'),
     { text: 'Done.', intent: null },
   );
 });

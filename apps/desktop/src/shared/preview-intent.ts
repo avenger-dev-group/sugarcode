@@ -1,8 +1,14 @@
 import { PREVIEW_URL_MAX_BYTES } from './preview.ts';
 
-export type AgentPreviewIntent = Readonly<{
-  url: string;
-}>;
+export type AgentPreviewIntent =
+  | Readonly<{
+      kind: 'artifact';
+      path: string;
+    }>
+  | Readonly<{
+      kind: 'url';
+      url: string;
+    }>;
 
 export type ParsedAgentPreviewResponse = Readonly<{
   text: string;
@@ -10,7 +16,8 @@ export type ParsedAgentPreviewResponse = Readonly<{
 }>;
 
 const DIRECTIVE_PREFIX = '::preview{';
-const DIRECTIVE_PATTERN = /^::preview\{url="([^"\r\n]+)"\}$/u;
+const URL_DIRECTIVE_PATTERN = /^::preview\{url="([^"\r\n]+)"\}$/u;
+const PATH_DIRECTIVE_PATTERN = /^::preview\{path="([^"\r\n]+)"\}$/u;
 
 const hasForbiddenCodePoint = (value: string): boolean =>
   [...value].some((character) => {
@@ -47,6 +54,28 @@ const isLocalPreviewUrl = (value: string): string | null => {
   }
 };
 
+const isHtmlArtifactPath = (value: string): string | null => {
+  if (
+    value.length === 0 ||
+    new TextEncoder().encode(value).byteLength > 1_024 ||
+    value.startsWith('/') ||
+    value.startsWith('\\') ||
+    /^[a-z]:[\\/]/iu.test(value) ||
+    hasForbiddenCodePoint(value)
+  ) {
+    return null;
+  }
+  const parts = value.split(/[\\/]/u);
+  if (
+    parts.length > 64 ||
+    parts.some((part) => part.length === 0 || part === '.' || part === '..') ||
+    !/\.html?$/iu.test(parts.at(-1) ?? '')
+  ) {
+    return null;
+  }
+  return parts.join('/');
+};
+
 export const parseAgentPreviewResponse = (
   source: string,
 ): ParsedAgentPreviewResponse => {
@@ -57,10 +86,18 @@ export const parseAgentPreviewResponse = (
     return { text: source, intent: null };
   }
   const text = trimmed.slice(0, lineStart).trimEnd();
-  const match = DIRECTIVE_PATTERN.exec(candidate);
-  const url = match?.[1] ? isLocalPreviewUrl(match[1]) : null;
+  const pathMatch = PATH_DIRECTIVE_PATTERN.exec(candidate);
+  const artifactPath = pathMatch?.[1]
+    ? isHtmlArtifactPath(pathMatch[1])
+    : null;
+  const urlMatch = URL_DIRECTIVE_PATTERN.exec(candidate);
+  const url = urlMatch?.[1] ? isLocalPreviewUrl(urlMatch[1]) : null;
   return {
     text,
-    intent: url ? { url } : null,
+    intent: artifactPath
+      ? { kind: 'artifact', path: artifactPath }
+      : url
+        ? { kind: 'url', url }
+        : null,
   };
 };

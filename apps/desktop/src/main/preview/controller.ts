@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import type {
   PreviewActionReason,
   PreviewActionResult,
+  PreviewArtifactOpenRequest,
+  PreviewArtifactRequest,
   PreviewBounds,
   PreviewBoundsRequest,
   PreviewFailure,
@@ -22,8 +24,11 @@ import type {
 } from '@/shared/preview';
 import type { WorkspaceStateSnapshot } from '@/shared/workspace';
 
+import { resolvePreviewArtifact } from './artifact-file';
 import {
+  createArtifactPreviewLocation,
   isAllowedPreviewRequest,
+  isLoopbackPreviewLocation,
   parsePreviewLocation,
   type PreviewLocation,
 } from './url';
@@ -36,8 +41,11 @@ type PreviewControllerOptions = Readonly<{
   dialog: DialogBoundary;
   getMainWindow: () => BrowserWindow | null;
   getWorkspaceState: () => WorkspaceStateSnapshot;
+  getWorkspace: () => import('../workspace/controller').WorkspaceLaunchContext | null;
   isApprovalPending: () => boolean;
   openExternal: (url: string) => Promise<void>;
+  openPath: (path: string) => Promise<void>;
+  showItemInFolder: (path: string) => void;
   createWebContentsView?: (
     options: Electron.WebContentsViewConstructorOptions,
   ) => WebContentsView;
@@ -52,6 +60,7 @@ type ActivePreview = {
   previewId: string;
   generation: number;
   sessionId: string;
+  policyLocation: PreviewLocation;
   location: PreviewLocation;
   mainWindow: BrowserWindow;
   browserView: WebContentsView;
@@ -130,12 +139,45 @@ export class PreviewController {
   open = async (
     request: PreviewOpenRequest,
   ): Promise<PreviewActionResult> => {
-    if (this.operationActive) {
-      return actionResult('busy');
-    }
     const location = parsePreviewLocation(request.url);
     if (!location) {
       return actionResult('invalid');
+    }
+    return this.openLocation(
+      request,
+      location,
+      isLoopbackPreviewLocation(location),
+    );
+  };
+
+  openArtifact = async (
+    request: PreviewArtifactOpenRequest,
+  ): Promise<PreviewActionResult> => {
+    const workspace = this.options.getWorkspace();
+    if (
+      !workspace ||
+      workspace.generation !== request.generation ||
+      this.options.getWorkspaceState().status !== 'ready'
+    ) {
+      return actionResult('stale');
+    }
+    const artifact = await resolvePreviewArtifact(workspace, request.path);
+    return artifact
+      ? this.openLocation(
+          request,
+          createArtifactPreviewLocation(artifact.url, artifact.root),
+          false,
+        )
+      : actionResult('invalid');
+  };
+
+  private openLocation = async (
+    request: Pick<PreviewOpenRequest, 'previewId' | 'generation'>,
+    location: PreviewLocation,
+    confirmLocalService: boolean,
+  ): Promise<PreviewActionResult> => {
+    if (this.operationActive) {
+      return actionResult('busy');
     }
     const initialWorkspace = this.options.getWorkspaceState();
     if (request.generation !== initialWorkspace.generation) {
@@ -154,22 +196,24 @@ export class PreviewController {
 
     this.operationActive = true;
     try {
-      const confirmation = await this.options.dialog.showMessageBox(
-        mainWindow,
-        {
-          type: 'warning',
-          buttons: ['取消', '打开本地应用'],
-          defaultId: 0,
-          cancelId: 0,
-          noLink: true,
-          title: '在预览浏览器中打开？',
-          message: `打开 ${location.origin}？`,
-          detail:
-            '该本地应用的脚本和同源请求将可以运行，以便测试真实交互。SugarCode 会使用隔离会话，并阻止跳转到其他主机或端口、下载、弹窗和系统权限。请只打开你信任的开发服务。',
-        },
-      );
-      if (confirmation.response !== 1) {
-        return actionResult('cancelled');
+      if (confirmLocalService) {
+        const confirmation = await this.options.dialog.showMessageBox(
+          mainWindow,
+          {
+            type: 'warning',
+            buttons: ['取消', '打开本地应用'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+            title: '在预览浏览器中打开？',
+            message: `打开 ${location.origin}？`,
+            detail:
+              '该本地应用的脚本和网络请求将可以运行，以便测试真实交互。SugarCode 会使用隔离会话，并阻止下载、弹窗、系统权限和本地文件访问。请只打开你信任的开发服务。',
+          },
+        );
+        if (confirmation.response !== 1) {
+          return actionResult('cancelled');
+        }
       }
       const confirmedWorkspace = this.options.getWorkspaceState();
       if (request.generation !== confirmedWorkspace.generation) {
@@ -254,6 +298,7 @@ export class PreviewController {
         previewId: request.previewId,
         generation: request.generation,
         sessionId,
+        policyLocation: location,
         location,
         mainWindow,
         browserView,
@@ -328,6 +373,57 @@ export class PreviewController {
     }
   };
 
+  openExternalArtifact = async (
+    request: PreviewArtifactRequest,
+  ): Promise<PreviewActionResult> => {
+    if (this.operationActive) {
+      return actionResult('busy');
+    }
+    const workspace = this.options.getWorkspace();
+    if (
+      !workspace ||
+      workspace.generation !== request.generation ||
+      this.options.getWorkspaceState().status !== 'ready'
+    ) {
+      return actionResult('stale');
+    }
+    if (this.options.isApprovalPending()) {
+      return actionResult('busy');
+    }
+    const artifact = await resolvePreviewArtifact(workspace, request.path);
+    if (!artifact) {
+      return actionResult('invalid');
+    }
+    this.operationActive = true;
+    try {
+      await this.options.openPath(artifact.absolutePath);
+      return actionResult('accepted');
+    } catch {
+      return actionResult('failed');
+    } finally {
+      this.operationActive = false;
+    }
+  };
+
+  revealArtifact = async (
+    request: PreviewArtifactRequest,
+  ): Promise<PreviewActionResult> => {
+    const workspace = this.options.getWorkspace();
+    if (!workspace || workspace.generation !== request.generation) {
+      return actionResult('stale');
+    }
+    const artifact = await resolvePreviewArtifact(workspace, request.path);
+    if (!artifact) {
+      return actionResult('invalid');
+    }
+    try {
+      this.options.showItemInFolder(artifact.absolutePath);
+      return actionResult('accepted');
+    } catch {
+      return actionResult('failed');
+    }
+  };
+
   setBounds = (request: PreviewBoundsRequest): PreviewActionResult => {
     const active = this.getMatchingActive(request);
     if (!active) {
@@ -366,8 +462,22 @@ export class PreviewController {
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
     }
-    const location = parsePreviewLocation(request.url);
-    if (!location || location.origin !== active.location.origin) {
+    const webLocation = parsePreviewLocation(request.url);
+    const location = webLocation ?? (
+      active.policyLocation.kind === 'artifact' &&
+      isAllowedPreviewRequest(
+        active.policyLocation,
+        request.url,
+        'GET',
+        'mainFrame',
+      )
+        ? createArtifactPreviewLocation(
+            request.url,
+            active.policyLocation.root,
+          )
+        : null
+    );
+    if (!location) {
       return actionResult('invalid');
     }
     try {
@@ -471,7 +581,11 @@ export class PreviewController {
     location: PreviewLocation,
   ): Promise<void> => {
     await browserSession.clearStorageData();
-    await browserSession.setProxy({ mode: 'direct' });
+    await browserSession.setProxy({
+      mode: location.kind === 'web' && isLoopbackPreviewLocation(location)
+        ? 'direct'
+        : 'system',
+    });
     browserSession.setPermissionCheckHandler(() => false);
     browserSession.setPermissionRequestHandler(
       (_webContents, _permission, callback) => callback(false),
@@ -508,10 +622,13 @@ export class PreviewController {
   };
 
   private installViewPolicy = (active: ActivePreview): void => {
-    const { browserView, location } = active;
-    browserView.webContents.setWindowOpenHandler(() => ({
-      action: 'deny',
-    }));
+    const { browserView, policyLocation } = active;
+    browserView.webContents.setWindowOpenHandler(({ url }) => {
+      if (isAllowedPreviewRequest(policyLocation, url, 'GET', 'mainFrame')) {
+        void browserView.webContents.loadURL(url);
+      }
+      return { action: 'deny' };
+    });
     browserView.webContents.on('will-attach-webview', (event) => {
       event.preventDefault();
     });
@@ -521,7 +638,7 @@ export class PreviewController {
     ): void => {
       if (
         !isAllowedPreviewRequest(
-          location,
+          policyLocation,
           targetUrl,
           'GET',
           'mainFrame',
@@ -536,11 +653,22 @@ export class PreviewController {
       if (!this.isCurrentActive(active)) {
         return;
       }
-      const next = parsePreviewLocation(url);
-      if (!next || next.origin !== location.origin) {
+      const webLocation = parsePreviewLocation(url);
+      if (webLocation) {
+        active.location = webLocation;
+        this.publishReady(active, browserView.getVisible());
         return;
       }
-      active.location = next;
+      if (
+        policyLocation.kind !== 'artifact' ||
+        !isAllowedPreviewRequest(policyLocation, url, 'GET', 'mainFrame')
+      ) {
+        return;
+      }
+      active.location = createArtifactPreviewLocation(
+        url,
+        policyLocation.root,
+      );
       this.publishReady(active, browserView.getVisible());
     };
     browserView.webContents.on('did-navigate', publishNavigation);

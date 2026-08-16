@@ -128,6 +128,47 @@ async fn full_access_shell_executes_pipeline_redirection_and_streams_output() {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
+async fn full_access_shell_cleans_up_background_descendants() {
+    let directory = tempfile::tempdir().expect("workspace");
+    let workspace = WorkspaceTool::open(directory.path()).expect("workspace tool");
+    let workspace_root =
+        Arc::new(CommandWorkspaceRoot::from_workspace(&workspace).expect("command workspace root"));
+    let execution = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        execute_full_access_shell(
+            FullAccessShellArguments {
+                command: "sleep 60 & echo $!".to_string(),
+                cwd: directory.path().to_string_lossy().into_owned(),
+                timeout_ms: 5_000,
+                output_tx: None,
+            },
+            workspace_root,
+            Arc::new(CommandEnvironmentSnapshot::process_fallback(true)),
+            CancellationToken::new(),
+        ),
+    )
+    .await
+    .expect("background descendant must not hold command pipes open");
+
+    let ShellCommandExecution::FullAccessCompleted(output) = execution else {
+        panic!("full access execution: {execution:?}");
+    };
+    assert_eq!(output.outcome, ShellCommandOutcome::ExitCode { code: 0 });
+    let pid = output.stdout.trim().parse::<i32>().expect("background pid");
+    // SAFETY: signal 0 only probes whether the recorded test process still exists.
+    let probe = unsafe { libc::kill(pid, 0) };
+    assert_eq!(
+        probe, -1,
+        "background descendant {pid} survived command completion"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH),
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
 async fn full_access_shell_rejects_a_non_authoritative_absolute_cwd() {
     let directory = tempfile::tempdir().expect("workspace");
     let other = tempfile::tempdir().expect("other directory");

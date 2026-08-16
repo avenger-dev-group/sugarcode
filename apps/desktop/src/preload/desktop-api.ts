@@ -180,6 +180,9 @@ import {
   PREVIEW_BOUNDS_SET_CHANNEL,
   PREVIEW_CLOSE_CHANNEL,
   PREVIEW_EXTERNAL_OPEN_CHANNEL,
+  PREVIEW_ARTIFACT_EXTERNAL_OPEN_CHANNEL,
+  PREVIEW_ARTIFACT_OPEN_CHANNEL,
+  PREVIEW_ARTIFACT_REVEAL_CHANNEL,
   PREVIEW_GO_BACK_CHANNEL,
   PREVIEW_GO_FORWARD_CHANNEL,
   PREVIEW_NAVIGATE_CHANNEL,
@@ -188,6 +191,8 @@ import {
   PREVIEW_STATE_CHANGED_CHANNEL,
   PREVIEW_STATE_GET_CHANNEL,
   type PreviewActionResult,
+  type PreviewArtifactOpenRequest,
+  type PreviewArtifactRequest,
   type PreviewBoundsRequest,
   type PreviewExternalOpenRequest,
   type PreviewNavigateRequest,
@@ -512,6 +517,42 @@ export const createDesktopApi = (
     );
     if (!isPreviewActionResult(result)) {
       throw new Error('Main returned an invalid external preview result.');
+    }
+    return result;
+  },
+  openArtifactPreview: async (
+    request: PreviewArtifactOpenRequest,
+  ): Promise<PreviewActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      PREVIEW_ARTIFACT_OPEN_CHANNEL,
+      request,
+    );
+    if (!isPreviewActionResult(result)) {
+      throw new Error('Main returned an invalid artifact preview result.');
+    }
+    return result;
+  },
+  openExternalArtifactPreview: async (
+    request: PreviewArtifactRequest,
+  ): Promise<PreviewActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      PREVIEW_ARTIFACT_EXTERNAL_OPEN_CHANNEL,
+      request,
+    );
+    if (!isPreviewActionResult(result)) {
+      throw new Error('Main returned an invalid external artifact result.');
+    }
+    return result;
+  },
+  revealPreviewArtifact: async (
+    request: PreviewArtifactRequest,
+  ): Promise<PreviewActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      PREVIEW_ARTIFACT_REVEAL_CHANNEL,
+      request,
+    );
+    if (!isPreviewActionResult(result)) {
+      throw new Error('Main returned an invalid artifact reveal result.');
     }
     return result;
   },

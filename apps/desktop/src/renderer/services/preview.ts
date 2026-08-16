@@ -1,5 +1,7 @@
 import type {
   PreviewActionResult,
+  PreviewArtifactOpenRequest,
+  PreviewArtifactRequest,
   PreviewBoundsRequest,
   PreviewExternalOpenRequest,
   PreviewNavigateRequest,
@@ -22,6 +24,20 @@ export const openPreview = (
 export const openExternalPreview = (
   request: PreviewExternalOpenRequest,
 ): Promise<PreviewActionResult> => window.sugarcode.openExternalPreview(request);
+
+export const openArtifactPreview = (
+  request: PreviewArtifactOpenRequest,
+): Promise<PreviewActionResult> => window.sugarcode.openArtifactPreview(request);
+
+export const openExternalArtifactPreview = (
+  request: PreviewArtifactRequest,
+): Promise<PreviewActionResult> =>
+  window.sugarcode.openExternalArtifactPreview(request);
+
+export const revealPreviewArtifact = (
+  request: PreviewArtifactRequest,
+): Promise<PreviewActionResult> =>
+  window.sugarcode.revealPreviewArtifact(request);
 
 export const setPreviewBounds = (
   request: PreviewBoundsRequest,

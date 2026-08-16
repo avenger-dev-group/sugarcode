@@ -19,6 +19,7 @@ import {
   useState,
   type CSSProperties,
 } from 'react';
+import { useStore as useZustandStore } from 'zustand';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
 import { AgentMarkdown } from '@/renderer/components/agent/agent-markdown';
@@ -59,6 +60,7 @@ import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/w
 import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 import { UserInputActivity } from '@/renderer/components/user-input/user-input-activity';
 import { parseAgentPreviewResponse } from '@/shared/preview-intent';
+import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 
 import type {
   CompactToolActivity,
@@ -81,6 +83,7 @@ import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
 import { ToolActivityGroup } from './tool-activity-group';
 import { TurnChangeSummary } from './turn-change-summary';
+import { collectTurnChangeSummaryFiles } from './turn-change-summary-data';
 import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
 import { UserMessage } from './user-message';
@@ -124,15 +127,37 @@ const TranscriptMessage = (props: TranscriptMessageProps) =>
 const TurnPreviewOffer = ({
   turn,
 }: Readonly<{ turn: TranscriptTurnProps['turn'] }>) => {
+  const workspaceKind = useZustandStore(
+    workspaceProjectionStore,
+    (projection) => projection.snapshot.kind,
+  );
   const finalAgentMessage = turn.messages.findLast(
     (entry) =>
       entry.role === 'agent' && entry.message.state === 'completed',
   );
-  const intent = finalAgentMessage
+  const declaredIntent = finalAgentMessage
     ? parseAgentPreviewResponse(finalAgentMessage.message.text).intent
     : null;
+  const changedHtmlPath = workspaceKind === 'chat'
+    ? collectTurnChangeSummaryFiles(turn.activities)
+        .map((entry) => entry.file)
+        .filter(
+          (file) =>
+            file.afterBytes > 0 && /\.html?$/iu.test(file.path),
+        )
+        .sort((left, right) => {
+          const leftIndex = /(^|\/)index\.html?$/iu.test(left.path) ? 0 : 1;
+          const rightIndex = /(^|\/)index\.html?$/iu.test(right.path) ? 0 : 1;
+          return leftIndex - rightIndex ||
+            left.path.split('/').length - right.path.split('/').length ||
+            left.path.localeCompare(right.path);
+        })[0]?.path
+    : undefined;
+  const intent = declaredIntent ?? (changedHtmlPath
+    ? { kind: 'artifact' as const, path: changedHtmlPath }
+    : null);
   return intent ? (
-    <AgentPreviewCard url={intent.url} language={turn.processLanguage} />
+    <AgentPreviewCard intent={intent} language={turn.processLanguage} />
   ) : null;
 };
 

@@ -368,7 +368,15 @@ const startApplication = async (): Promise<void> => {
     dialog,
     getMainWindow: () => mainWindow,
     getWorkspaceState: workspaceController.getSnapshot,
+    getWorkspace: workspaceController.getLaunchContext,
     openExternal: (url) => shell.openExternal(url),
+    openPath: async (filePath) => {
+      const error = await shell.openPath(filePath);
+      if (error) {
+        throw new Error(error);
+      }
+    },
+    showItemInFolder: (filePath) => shell.showItemInFolder(filePath),
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',

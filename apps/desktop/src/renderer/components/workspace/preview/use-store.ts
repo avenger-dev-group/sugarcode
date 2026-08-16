@@ -75,22 +75,22 @@ const messageForResult = (result: PreviewActionResult): string | null => {
   }
   switch (result.reason) {
     case 'invalid':
-      return '请输入包含端口的 localhost、127.0.0.1 或 ::1 HTTP 地址。';
+      return '请输入有效的 HTTP 或 HTTPS 地址。HTML 交付物请从聊天中的预览卡片打开。';
     case 'stale':
       return '工作区已经切换，请从当前项目重新打开预览。';
     case 'busy':
       return '请先处理当前确认操作，或等待预览操作完成。';
     case 'unavailable':
-      return '当前工作区状态下无法使用本地预览。';
+      return '当前工作区状态下无法使用浏览器。';
     case 'failed':
-      return '无法安全地打开本地预览。';
+      return '无法安全地打开该页面。';
     default:
-      return '本地预览操作失败。';
+      return '浏览器操作失败。';
   }
 };
 
 export const useStore = (previewId: string): PreviewWorkbenchStore => {
-  const [url, setUrl] = useState('http://127.0.0.1:3000/');
+  const [url, setUrl] = useState('');
   const [state, setState] = useState<PreviewWorkbenchState>(
     INITIAL_PREVIEW_STATE,
   );
@@ -115,7 +115,7 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
       })
       .catch(() => {
         if (active) {
-          setError('无法读取本地预览状态。');
+          setError('无法读取浏览器状态。');
         }
       });
     const unsubscribePreview = onPreviewStateChanged((snapshot) => {
@@ -132,8 +132,8 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
           tab.error === 'policyUnavailable'
             ? '无法启用预览浏览器的安全策略。'
             : tab.error === 'renderProcessGone'
-              ? '本地预览进程意外停止。'
-              : '本地开发服务未能完成加载。',
+              ? '浏览器渲染进程意外停止。'
+              : '页面未能完成加载。',
         );
       }
     });
@@ -152,7 +152,7 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
       const result = await action();
       setError(messageForResult(result));
     } catch {
-      setError('本地预览无法连接桌面主进程。');
+      setError('浏览器无法连接桌面主进程。');
     } finally {
       setBusy(false);
     }
@@ -171,7 +171,7 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
   ): Promise<void> => {
     const request = sessionRequest();
     if (!request) {
-      setError('当前没有正在运行的本地预览。');
+      setError('当前没有已打开的页面。');
       return;
     }
     await run(() => action(request));
@@ -185,21 +185,16 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
     error,
     setUrl,
     navigate: async () => {
-      const normalizedUrl = /^[a-z][a-z\d+.-]*:\/\//iu.test(url.trim())
-        ? url.trim()
-        : `http://${url.trim()}`;
+      const value = url.trim();
+      const normalizedUrl = /^[a-z][a-z\d+.-]*:\/\//iu.test(value)
+        ? value
+        : /^(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/iu.test(value)
+          ? `http://${value}`
+          : `https://${value}`;
       setUrl(normalizedUrl);
       const request = sessionRequest();
-      let sameOrigin = false;
-      if (request && state.status === 'ready') {
-        try {
-          sameOrigin = new URL(normalizedUrl).origin === state.origin;
-        } catch {
-          sameOrigin = false;
-        }
-      }
       await run(() =>
-        sameOrigin && request
+        request
           ? navigatePreview({ ...request, url: normalizedUrl })
           : openPreview({
               previewId,
@@ -216,7 +211,7 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
       try {
         await setPreviewBounds({ ...request, bounds });
       } catch {
-        setError('无法定位右侧预览画布。');
+        setError('无法定位右侧浏览器画布。');
       }
     },
     reload: () => runSessionAction(reloadPreview),

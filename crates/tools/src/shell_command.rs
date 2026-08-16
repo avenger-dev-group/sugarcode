@@ -608,6 +608,8 @@ async fn execute_full_access_shell(
             Ok(child) => child,
             Err(error) => return ShellCommandExecution::Error(map_spawn_error(&error)),
         };
+        #[cfg(target_os = "macos")]
+        let process_group_id = child.id();
         #[cfg(windows)]
         let job = match windows_job::Job::assign(&child) {
             Ok(job) => Some(job),
@@ -650,6 +652,8 @@ async fn execute_full_access_shell(
             }
             status = child.wait() => (status.ok(), false),
         };
+        #[cfg(target_os = "macos")]
+        terminate_full_access_group(process_group_id);
         #[cfg(windows)]
         drop(job);
         let stdout = match stdout_reader.await {
@@ -722,6 +726,17 @@ fn terminate_full_access_tree(child: &mut tokio::process::Child) {
         // SAFETY: the child starts a dedicated process group with its pid as pgid.
         unsafe {
             libc::killpg(pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn terminate_full_access_group(process_group_id: Option<u32>) {
+    if let Some(process_group_id) = process_group_id {
+        // The shell is the dedicated process-group leader. Once it exits, clean up
+        // descendants that attempted to outlive this bounded command.
+        unsafe {
+            libc::killpg(process_group_id as i32, libc::SIGKILL);
         }
     }
 }

@@ -19,13 +19,13 @@ const previewStatusLabel = (
 ): string => {
   switch (status) {
     case 'opening':
-      return '正在连接';
+      return '加载中';
     case 'ready':
-      return '实时';
+      return '已打开';
     case 'failed':
-      return '连接失败';
+      return '加载失败';
     default:
-      return '未连接';
+      return '新标签页';
   }
 };
 
@@ -56,7 +56,12 @@ const PreviewWorkbenchView = ({
       return;
     }
     try {
-      onTitleChangeRef.current?.(new URL(store.state.url).host || '浏览器');
+      const location = new URL(store.state.url);
+      onTitleChangeRef.current?.(
+        location.protocol === 'file:'
+          ? decodeURIComponent(location.pathname.split('/').at(-1) ?? '') || '本地 HTML'
+          : location.host || '浏览器',
+      );
     } catch {
       onTitleChangeRef.current?.('浏览器');
     }
@@ -105,7 +110,7 @@ const PreviewWorkbenchView = ({
   return (
     <section
       className="flex h-full min-h-0 flex-col bg-[#ffffff] text-[#202522]"
-      aria-label="应用预览浏览器"
+      aria-label="浏览器"
     >
       <div className="flex h-12 shrink-0 items-center gap-1.5 border-b border-[#dfe4e1] bg-[#f6f8f7] px-2.5">
         <Button
@@ -152,17 +157,17 @@ const PreviewWorkbenchView = ({
             void store.navigate();
           }}
         >
-          {connected ? (
+          {connected && store.state.url.startsWith('https://') ? (
             <LockKeyhole className="size-3.5 shrink-0 text-[#3b8b65]" aria-hidden="true" />
           ) : (
             <Globe2 className="size-3.5 shrink-0 text-[#8b9490]" aria-hidden="true" />
           )}
           <input
-            aria-label="预览地址"
+            aria-label="浏览器地址"
             className="h-8 min-w-0 flex-1 bg-transparent font-mono text-[11px] text-[#303633] outline-none placeholder:text-[#9da5a1]"
             value={store.url}
             onChange={(event) => store.setUrl(event.target.value)}
-            placeholder="http://localhost:3000/"
+            placeholder="输入网址"
             autoComplete="off"
             spellCheck={false}
             disabled={store.busy}
@@ -176,7 +181,7 @@ const PreviewWorkbenchView = ({
           disabled={!workspaceReady || store.busy}
           onClick={() => void store.navigate()}
         >
-          {store.state.status === 'opening' ? '连接中' : connected ? '前往' : '打开'}
+          {store.state.status === 'opening' ? '加载中' : connected ? '前往' : '打开'}
         </Button>
         {connected ? (
           <Button
@@ -186,8 +191,8 @@ const PreviewWorkbenchView = ({
             className="text-[#7a847f] hover:bg-[#e8ecea] hover:text-[#202522]"
             disabled={store.busy}
             onClick={() => void store.close()}
-            aria-label="停止预览"
-            title="停止预览"
+            aria-label="关闭页面"
+            title="关闭页面"
           >
             <Square aria-hidden="true" />
           </Button>
@@ -207,9 +212,9 @@ const PreviewWorkbenchView = ({
             <span className="truncate text-[#9aa29e]">· {store.state.origin}</span>
           ) : null}
         </span>
-        <span className="flex shrink-0 items-center gap-1.5" title="隔离的本地开发会话">
+        <span className="flex shrink-0 items-center gap-1.5" title="隔离的浏览会话">
           <ShieldCheck className="size-3" aria-hidden="true" />
-          Local only
+          Sandboxed
         </span>
       </div>
 
@@ -217,13 +222,13 @@ const PreviewWorkbenchView = ({
         <div
           ref={viewportRef}
           className="relative min-h-0 flex-1 overflow-hidden bg-white"
-          aria-label="网页预览画布"
+          aria-label="网页浏览画布"
         >
           {store.state.status === 'opening' ? (
             <div className="absolute inset-0 grid place-items-center bg-[#fbfcfb]">
               <div className="flex items-center gap-2.5 text-xs text-[#737d78]">
                 <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
-                正在连接本地开发服务…
+                正在加载页面…
               </div>
             </div>
           ) : null}
@@ -236,19 +241,19 @@ const PreviewWorkbenchView = ({
               <Globe2 className="size-5" aria-hidden="true" />
             </span>
             <h2 className="mt-5 text-[15px] font-medium tracking-[-0.015em] text-[#222825]">
-              在这里直接测试应用
+              浏览网页或预览 HTML
             </h2>
             <p className="mt-2 text-xs leading-5 text-[#707a75]">
-              启动本地开发服务，把地址粘贴到上方。页面脚本、路由和同源接口都会在这个隔离浏览器中真实运行。
+              输入任意 HTTP 或 HTTPS 地址。Agent 生成的静态 HTML 可从聊天中的交付物卡片直接在这里打开，无需启动服务。
             </p>
             <p className="mt-4 font-mono text-[10px] leading-4 text-[#9aa29e]">
-              支持 localhost、127.0.0.1、::1 · 必须包含端口
+              普通网页 · 本地开发地址 · file:// HTML 交付物
             </p>
             {!workspaceReady ? (
               <p className="mt-3 text-xs text-[#a66342]">请先打开一个项目工作区。</p>
             ) : null}
             {store.state.status === 'failed' ? (
-              <p className="mt-3 text-xs text-[#b64e49]">本地服务连接失败，请确认地址和开发服务器状态。</p>
+              <p className="mt-3 text-xs text-[#b64e49]">页面加载失败，请检查地址或文件是否仍然存在。</p>
             ) : null}
           </div>
         </div>

@@ -1,15 +1,25 @@
-import { ExternalLink, Globe2, LoaderCircle, MonitorUp } from 'lucide-react';
+import {
+  ExternalLink,
+  FolderOpen,
+  Globe2,
+  LoaderCircle,
+  MonitorUp,
+} from 'lucide-react';
 import { useState } from 'react';
 import { useStore as useZustandStore } from 'zustand';
 
 import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 import { Button } from '@/renderer/components/ui/button';
 import {
+  openArtifactPreview,
+  openExternalArtifactPreview,
   openExternalPreview,
   openPreview as openEmbeddedPreview,
+  revealPreviewArtifact,
 } from '@/renderer/services/preview';
 import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 import type { PreviewActionResult } from '@/shared/preview';
+import type { AgentPreviewIntent } from '@/shared/preview-intent';
 
 import type { ProcessLanguage } from './types';
 
@@ -35,10 +45,10 @@ const resultError = (
 };
 
 export const AgentPreviewCard = ({
-  url,
+  intent,
   language,
 }: Readonly<{
-  url: string;
+  intent: AgentPreviewIntent;
   language: ProcessLanguage;
 }>) => {
   const { openPreview } = useOrchestrationActions();
@@ -46,24 +56,52 @@ export const AgentPreviewCard = ({
     workspaceProjectionStore,
     (projection) => projection.snapshot,
   );
-  const [pending, setPending] = useState<'embedded' | 'external' | null>(null);
+  const [pending, setPending] = useState<
+    'embedded' | 'external' | 'reveal' | null
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const ready = workspace.status === 'ready';
 
-  const run = async (target: 'embedded' | 'external'): Promise<void> => {
+  const run = async (
+    target: 'embedded' | 'external' | 'reveal',
+  ): Promise<void> => {
     if (!ready || pending) {
       return;
     }
     setPending(target);
     setError(null);
     try {
-      const result = target === 'embedded'
-        ? await openEmbeddedPreview({
-            previewId: openPreview(url),
+      let result: PreviewActionResult;
+      if (intent.kind === 'artifact') {
+        if (target === 'embedded') {
+          result = await openArtifactPreview({
+            previewId: openPreview(intent.path),
             generation: workspace.generation,
-            url,
-          })
-        : await openExternalPreview({ generation: workspace.generation, url });
+            path: intent.path,
+          });
+        } else if (target === 'external') {
+          result = await openExternalArtifactPreview({
+            generation: workspace.generation,
+            path: intent.path,
+          });
+        } else {
+          result = await revealPreviewArtifact({
+            generation: workspace.generation,
+            path: intent.path,
+          });
+        }
+      } else {
+        result = target === 'embedded'
+          ? await openEmbeddedPreview({
+              previewId: openPreview(intent.url),
+              generation: workspace.generation,
+              url: intent.url,
+            })
+          : await openExternalPreview({
+              generation: workspace.generation,
+              url: intent.url,
+            });
+      }
       setError(resultError(result, language));
     } catch {
       setError(
@@ -87,13 +125,19 @@ export const AgentPreviewCard = ({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-medium text-foreground">
-            {language === 'zh' ? '查看网页效果' : 'View the web result'}
+            {language === 'zh'
+              ? intent.kind === 'artifact'
+                ? '预览 HTML 成果'
+                : '查看网页效果'
+              : intent.kind === 'artifact'
+                ? 'Preview HTML result'
+                : 'View the web result'}
           </span>
           <code
             className="mt-1 block truncate font-mono text-[11px] text-tertiary"
-            title={url}
+            title={intent.kind === 'artifact' ? intent.path : intent.url}
           >
-            {url}
+            {intent.kind === 'artifact' ? intent.path : intent.url}
           </code>
         </span>
         <div className="flex shrink-0 flex-wrap gap-2">
@@ -126,6 +170,23 @@ export const AgentPreviewCard = ({
             )}
             {language === 'zh' ? '浏览器打开' : 'Open in browser'}
           </Button>
+          {intent.kind === 'artifact' ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 gap-1.5 px-2.5 text-xs text-secondary"
+              disabled={!ready || pending !== null}
+              onClick={() => void run('reveal')}
+            >
+              {pending === 'reveal' ? (
+                <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" />
+              ) : (
+                <FolderOpen className="size-3.5" aria-hidden="true" />
+              )}
+              {language === 'zh' ? '所在文件夹' : 'Show in folder'}
+            </Button>
+          ) : null}
         </div>
       </div>
       {error ? (

@@ -2,11 +2,41 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isPreviewArtifactOpenRequest,
+  isPreviewArtifactRequest,
   isPreviewBoundsRequest,
   isPreviewNavigateRequest,
   isPreviewOpenRequest,
   isPreviewStateSnapshot,
 } from '../../src/shared/preview.ts';
+
+test('artifact preview requests accept only relative HTML entry files', () => {
+  const previewId = '5f53ba9a-f8ea-4b8f-b0db-f1abde48a86d';
+  assert.equal(
+    isPreviewArtifactOpenRequest({
+      previewId,
+      generation: 2,
+      path: 'site/index.html',
+    }),
+    true,
+  );
+  assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: 'landing.htm' }),
+    true,
+  );
+  assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: '../index.html' }),
+    false,
+  );
+  assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: '/tmp/index.html' }),
+    false,
+  );
+  assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: 'src/main.tsx' }),
+    false,
+  );
+});
 
 const sessionId = '12345678-1234-4234-9234-123456789abc';
 const secondSessionId = '22345678-1234-4234-9234-123456789abc';

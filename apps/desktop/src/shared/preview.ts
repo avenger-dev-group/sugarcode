@@ -2,6 +2,10 @@ export const PREVIEW_STATE_GET_CHANNEL = 'preview-state:get';
 export const PREVIEW_STATE_CHANGED_CHANNEL = 'preview-state:changed';
 export const PREVIEW_OPEN_CHANNEL = 'preview:open';
 export const PREVIEW_EXTERNAL_OPEN_CHANNEL = 'preview:open-external';
+export const PREVIEW_ARTIFACT_OPEN_CHANNEL = 'preview:artifact-open';
+export const PREVIEW_ARTIFACT_EXTERNAL_OPEN_CHANNEL =
+  'preview:artifact-open-external';
+export const PREVIEW_ARTIFACT_REVEAL_CHANNEL = 'preview:artifact-reveal';
 export const PREVIEW_BOUNDS_SET_CHANNEL = 'preview-bounds:set';
 export const PREVIEW_NAVIGATE_CHANNEL = 'preview:navigate';
 export const PREVIEW_RELOAD_CHANNEL = 'preview:reload';
@@ -62,6 +66,17 @@ export type PreviewExternalOpenRequest = Readonly<{
   url: string;
 }>;
 
+export type PreviewArtifactOpenRequest = Readonly<{
+  previewId: string;
+  generation: number;
+  path: string;
+}>;
+
+export type PreviewArtifactRequest = Readonly<{
+  generation: number;
+  path: string;
+}>;
+
 export type PreviewSessionRequest = Readonly<{
   generation: number;
   sessionId: string;
@@ -109,6 +124,15 @@ export type PreviewApi = Readonly<{
   openExternalPreview: (
     request: PreviewExternalOpenRequest,
   ) => Promise<PreviewActionResult>;
+  openArtifactPreview: (
+    request: PreviewArtifactOpenRequest,
+  ) => Promise<PreviewActionResult>;
+  openExternalArtifactPreview: (
+    request: PreviewArtifactRequest,
+  ) => Promise<PreviewActionResult>;
+  revealPreviewArtifact: (
+    request: PreviewArtifactRequest,
+  ) => Promise<PreviewActionResult>;
   setPreviewBounds: (
     request: PreviewBoundsRequest,
   ) => Promise<PreviewActionResult>;
@@ -155,6 +179,29 @@ const isSessionId = (value: unknown): value is string =>
 
 const isPreviewId = isSessionId;
 
+const isHtmlArtifactPath = (value: unknown): value is string => {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    new TextEncoder().encode(value).byteLength > 1_024 ||
+    value.startsWith('/') ||
+    value.startsWith('\\') ||
+    /^[a-z]:[\\/]/iu.test(value)
+  ) {
+    return false;
+  }
+  const parts = value.split(/[\\/]/u);
+  return (
+    parts.length <= 64 &&
+    parts.every((part) => part.length > 0 && part !== '.' && part !== '..') &&
+    /\.html?$/iu.test(parts.at(-1) ?? '') &&
+    ![...value].some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x1f || code === 0x7f;
+    })
+  );
+};
+
 const isRevision = (value: unknown): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 
@@ -174,6 +221,23 @@ export const isPreviewExternalOpenRequest = (
   hasOnlyKeys(value, ['generation', 'url']) &&
   isGeneration(value.generation) &&
   isBoundedUrl(value.url);
+
+export const isPreviewArtifactOpenRequest = (
+  value: unknown,
+): value is PreviewArtifactOpenRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['previewId', 'generation', 'path']) &&
+  isPreviewId(value.previewId) &&
+  isGeneration(value.generation) &&
+  isHtmlArtifactPath(value.path);
+
+export const isPreviewArtifactRequest = (
+  value: unknown,
+): value is PreviewArtifactRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['generation', 'path']) &&
+  isGeneration(value.generation) &&
+  isHtmlArtifactPath(value.path);
 
 export const isPreviewSessionRequest = (
   value: unknown,
