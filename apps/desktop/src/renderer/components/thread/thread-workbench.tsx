@@ -636,7 +636,11 @@ export const ThreadWorkbenchView = ({
           onKeyDown={navigatorResize.onKeyDown}
         />
       ) : null}
-      <section className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <section
+        className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${
+          store.thread.isEmpty ? 'empty-thread-workbench' : ''
+        }`}
+      >
         <header
           className={`window-drag-region relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
             navigatorOpen ? 'pl-5' : 'window-collapsed-header'
@@ -717,7 +721,7 @@ export const ThreadWorkbenchView = ({
         >
           <div
             ref={transcriptContent}
-            className={`mx-auto flex min-h-full w-full min-w-0 max-w-3xl flex-col px-6 pb-8 pt-8 [contain:inline-size] sm:px-10 ${
+            className={`mx-auto flex min-h-full w-full min-w-0 max-w-4xl flex-col px-6 pb-8 pt-8 [contain:inline-size] sm:px-10 ${
               store.thread.isEmpty ? 'empty-thread-transcript' : ''
             }`}
           >
@@ -793,7 +797,9 @@ export const ThreadWorkbenchView = ({
 
         <div
           data-layout="conversation-composer"
-          className="relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8"
+          className={`relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8 ${
+            store.thread.isEmpty ? 'empty-thread-composer' : ''
+          }`}
         >
           <div className="mx-auto max-w-3xl">
             {agentTaskActivity ? (

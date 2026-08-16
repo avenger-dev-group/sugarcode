@@ -202,19 +202,30 @@ const renderTokens = (
         return [<hr key={key} className="my-7 border-border" />];
       case 'table': {
         const table = token as Tokens.Table;
+        const columnCount = table.header.length;
+        const useFixedLayout = columnCount >= 4;
+        const useCompactCells = columnCount >= 6;
+        const cellSpacing = useCompactCells ? 'px-2 py-2' : 'px-3 py-2.5';
         return [
           <div
             key={key}
-            className="mb-2.5 max-w-full overflow-x-auto overscroll-x-contain last:mb-0"
+            className="agent-markdown-table-shell mb-2.5 max-w-full last:mb-0"
           >
-            <table className="w-full min-w-full table-auto border-separate border-spacing-0 text-left text-sm leading-[22px]">
+            <table
+              className={`agent-markdown-table w-full max-w-full border-separate border-spacing-0 text-left ${
+                useCompactCells
+                  ? 'text-xs leading-5'
+                  : 'text-sm leading-[22px]'
+              } ${useFixedLayout ? 'table-fixed' : 'table-auto'}`}
+              data-stack-on-narrow={useFixedLayout ? 'true' : undefined}
+            >
               <thead>
                 <tr>
                   {table.header.map((cell, cellIndex) => (
                     <th
                       key={`${key}:header:${cellIndex}`}
                       scope="col"
-                      className={`min-w-28 max-w-96 border-b border-border px-3 py-2.5 align-bottom font-semibold leading-5 whitespace-normal [overflow-wrap:anywhere] first:pl-0 last:pr-0 ${tableAlignmentClass(cell.align)}`}
+                      className={`min-w-0 border-b border-border align-bottom font-semibold leading-5 whitespace-normal [overflow-wrap:anywhere] first:pl-0 last:pr-0 ${cellSpacing} ${tableAlignmentClass(cell.align)}`}
                     >
                       {children(cell.tokens)}
                     </th>
@@ -230,9 +241,15 @@ const renderTokens = (
                     {row.map((cell, cellIndex) => (
                       <td
                         key={`${key}:row:${rowIndex}:cell:${cellIndex}`}
-                        className={`min-w-28 max-w-96 px-3 py-2.5 align-top whitespace-normal [overflow-wrap:anywhere] first:pl-0 last:pr-0 ${tableAlignmentClass(cell.align)}`}
+                        data-label={
+                          table.header[cellIndex]?.text ??
+                          `第 ${cellIndex + 1} 列`
+                        }
+                        className={`agent-markdown-table-cell min-w-0 align-top whitespace-normal [overflow-wrap:anywhere] first:pl-0 last:pr-0 ${cellSpacing} ${tableAlignmentClass(cell.align)}`}
                       >
-                        {children(cell.tokens)}
+                        <span className="agent-markdown-table-value block min-w-0">
+                          {children(cell.tokens)}
+                        </span>
                       </td>
                     ))}
                   </tr>
