@@ -205,16 +205,16 @@ const renderTokens = (
         return [
           <div
             key={key}
-            className="mb-2.5 max-w-full overflow-x-auto last:mb-0"
+            className="mb-2.5 max-w-full overflow-x-auto overscroll-x-contain last:mb-0"
           >
-            <table className="w-max min-w-full border-separate border-spacing-0 text-left text-sm leading-[22px]">
+            <table className="w-full min-w-full table-auto border-separate border-spacing-0 text-left text-sm leading-[22px]">
               <thead>
                 <tr>
                   {table.header.map((cell, cellIndex) => (
                     <th
                       key={`${key}:header:${cellIndex}`}
                       scope="col"
-                      className={`max-w-[30rem] border-b border-border px-0 py-2 pr-6 font-semibold leading-4 last:pr-0 ${tableAlignmentClass(cell.align)}`}
+                      className={`min-w-28 max-w-96 border-b border-border px-3 py-2.5 align-bottom font-semibold leading-5 whitespace-normal [overflow-wrap:anywhere] first:pl-0 last:pr-0 ${tableAlignmentClass(cell.align)}`}
                     >
                       {children(cell.tokens)}
                     </th>
@@ -230,7 +230,7 @@ const renderTokens = (
                     {row.map((cell, cellIndex) => (
                       <td
                         key={`${key}:row:${rowIndex}:cell:${cellIndex}`}
-                        className={`max-w-[30rem] px-0 py-2.5 pr-6 break-words last:pr-0 ${tableAlignmentClass(cell.align)}`}
+                        className={`min-w-28 max-w-96 px-3 py-2.5 align-top whitespace-normal [overflow-wrap:anywhere] first:pl-0 last:pr-0 ${tableAlignmentClass(cell.align)}`}
                       >
                         {children(cell.tokens)}
                       </td>
@@ -393,7 +393,7 @@ const AgentMarkdownView = ({
   );
 
   return (
-    <div className="min-w-0 max-w-full font-normal text-foreground">
+    <div className="min-w-0 max-w-full break-words font-normal text-foreground">
       {renderTokens(
         projection.tokens,
         'root',

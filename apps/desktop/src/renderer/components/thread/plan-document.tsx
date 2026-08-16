@@ -9,13 +9,15 @@ export const PlanDocument = ({
   plan,
 }: Readonly<{ plan: ContextRailPlan }>) => (
   <ScrollArea
-    className="h-full min-h-0"
+    className="h-full min-h-0 min-w-0 max-w-full"
     viewportProps={{
       'aria-label': '完整计划内容',
+      className:
+        '[&>div]:!block [&>div]:w-full [&>div]:min-w-0 [&>div]:max-w-full',
       tabIndex: 0,
     }}
   >
-    <article className="mx-auto w-full max-w-3xl px-6 pb-12 pt-7">
+    <article className="mx-auto w-full min-w-0 max-w-3xl px-6 pb-12 pt-7">
       <header className="mb-6 border-b border-border/80 pb-5">
         <div className="mb-2 flex items-center gap-2 text-xs font-medium text-secondary">
           <span className="flex size-7 items-center justify-center rounded-lg bg-surface">

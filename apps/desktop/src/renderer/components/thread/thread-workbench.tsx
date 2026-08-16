@@ -366,7 +366,7 @@ const TranscriptTurnView = ({
 }: TranscriptTurnProps) => (
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
-    className={`${
+    className={`min-w-0 max-w-full ${
       turn.status === 'inProgress'
         ? ''
         : '[contain-intrinsic-size:auto_240px] [content-visibility:auto]'
@@ -708,6 +708,8 @@ export const ThreadWorkbenchView = ({
           onPointerCancel={endPointerScroll}
           viewportProps={{
             'aria-label': 'Conversation transcript',
+            className:
+              '[&>div]:!block [&>div]:w-full [&>div]:min-w-0 [&>div]:max-w-full',
             tabIndex: 0,
             ref: transcriptViewport,
             onScroll: recordScrollPosition,
@@ -715,7 +717,7 @@ export const ThreadWorkbenchView = ({
         >
           <div
             ref={transcriptContent}
-            className={`mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pb-8 pt-8 sm:px-10 ${
+            className={`mx-auto flex min-h-full w-full min-w-0 max-w-3xl flex-col px-6 pb-8 pt-8 [contain:inline-size] sm:px-10 ${
               store.thread.isEmpty ? 'empty-thread-transcript' : ''
             }`}
           >
@@ -732,7 +734,7 @@ export const ThreadWorkbenchView = ({
                 projectName={composerProjectName}
               />
             ) : (
-              <div>
+              <div className="min-w-0 max-w-full">
                 {store.thread.turns.map((turn, index) => (
                   <TranscriptTurn
                     key={turn.id}

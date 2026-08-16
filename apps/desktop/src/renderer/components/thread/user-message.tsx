@@ -291,7 +291,7 @@ export const UserMessage = ({
 
   return (
     <div
-      className={`ml-auto max-w-[82%] ${editing ? 'w-full' : 'w-fit'}`}
+      className={`ml-auto min-w-0 max-w-[82%] ${editing ? 'w-full' : 'w-fit'}`}
     >
       {editing && editor && onSetEditDraft && onCancelEdit && onSubmitEdit ? (
         <UserMessageEditor

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { usePanelResize } from '@/renderer/hooks/use-panel-resize';
 import { initializeCommandEnvironmentPreference } from '@/renderer/services/command-environment';
@@ -52,20 +52,20 @@ export const useStore = (): FoundationStore => {
     };
   }, []);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
-    } catch {
-      // Layout persistence is best-effort and never blocks the workbench.
-    }
-  }, [layout]);
-
-  const setNavigatorWidth = (width: number): void => {
-    setLayout((current) => ({ ...current, navigatorWidth: width }));
-  };
-  const setContextRailWidth = (width: number): void => {
-    setLayout((current) => ({ ...current, contextRailWidth: width }));
-  };
+  const setNavigatorWidth = useCallback((width: number): void => {
+    setLayout((current) =>
+      current.navigatorWidth === width
+        ? current
+        : { ...current, navigatorWidth: width },
+    );
+  }, []);
+  const setContextRailWidth = useCallback((width: number): void => {
+    setLayout((current) =>
+      current.contextRailWidth === width
+        ? current
+        : { ...current, contextRailWidth: width },
+    );
+  }, []);
   const toggleNavigator = (): void => {
     setLayout((current) => ({
       ...current,
@@ -98,6 +98,17 @@ export const useStore = (): FoundationStore => {
     reverse: true,
     onResize: setContextRailWidth,
   });
+
+  useEffect(() => {
+    if (navigatorResize.dragging || contextRailResize.dragging) {
+      return;
+    }
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+    } catch {
+      // Layout persistence is best-effort and never blocks the workbench.
+    }
+  }, [contextRailResize.dragging, layout, navigatorResize.dragging]);
 
   const toggleTheme = (): void => {
     setTheme((currentTheme: Theme) =>

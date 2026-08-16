@@ -291,7 +291,7 @@ export const ContextRail = () => {
         </div>
       ) : null}
       {selectedPlan ? (
-        <div className={`${activeTab === 'plan' ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={activeTab !== 'plan'}>
+        <div className={`${activeTab === 'plan' ? 'block' : 'hidden'} min-h-0 min-w-0 max-w-full flex-1 overflow-hidden`} aria-hidden={activeTab !== 'plan'}>
           <PlanDocument plan={selectedPlan} />
         </div>
       ) : null}
