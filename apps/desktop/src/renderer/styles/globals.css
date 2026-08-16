@@ -269,21 +269,24 @@
 
 .empty-thread-workbench {
   display: grid;
-  grid-template-rows: 52px minmax(0, 1fr);
+  grid-template-rows: 52px auto auto minmax(0, 1fr);
 }
 
 .empty-thread-workbench > header {
   grid-row: 1;
 }
 
-.empty-thread-workbench > [data-layout='conversation-scroll'],
-.empty-thread-workbench > [data-layout='conversation-composer'] {
+.empty-thread-workbench > [data-layout='conversation-scroll'] {
   grid-row: 2;
   grid-column: 1;
 }
 
+.empty-thread-workbench > [data-layout='conversation-composer'] {
+  grid-row: 3;
+  grid-column: 1;
+}
+
 .empty-thread-composer {
-  align-self: center;
   width: 100%;
   padding-top: 0;
   padding-bottom: 0;
@@ -292,24 +295,19 @@
 }
 
 .empty-thread-stage {
-  display: grid;
-  height: 100%;
-  grid-template-rows: minmax(0, 1fr) 10.5rem minmax(0, 1fr);
-  padding-block: 1rem;
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding-block: 1rem 1.25rem;
 }
 
 .empty-thread-hero {
-  align-self: end;
-  padding-bottom: 1.5rem;
-}
-
-.empty-thread-composer-space {
-  grid-row: 2;
+  padding-bottom: 1.25rem;
 }
 
 .empty-thread-starters {
-  align-self: start;
-  padding-top: 1.5rem;
+  padding-top: 0;
 }
 
 .empty-thread-glow {
@@ -327,16 +325,16 @@
 }
 
 .empty-thread-scroll [data-slot='scroll-area-viewport'] {
-  overflow: hidden !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
 }
 
 .empty-thread-scroll [data-slot='scroll-area-viewport'] > div {
-  height: 100%;
+  min-height: 100%;
 }
 
 .empty-thread-transcript {
-  height: 100%;
-  overflow: hidden;
+  min-height: 100%;
 }
 
 .empty-thread-intro {
@@ -400,7 +398,6 @@
   }
 
   .empty-thread-stage {
-    grid-template-rows: minmax(0, 1fr) 8.5rem minmax(0, 1fr);
     padding-block: 0.5rem;
   }
 
@@ -414,10 +411,6 @@
 
   .empty-thread-subtitle {
     margin-top: 0.25rem;
-  }
-
-  .empty-thread-starters {
-    padding-top: 0.75rem;
   }
 
   .empty-thread-actions-header {
@@ -445,7 +438,6 @@
   }
 
   .empty-thread-stage {
-    grid-template-rows: minmax(0, 1fr) 7.75rem minmax(0, 1fr);
     padding-block: 0.25rem;
   }
 
@@ -461,10 +453,6 @@
   .empty-thread-actions-header,
   .empty-thread-hint {
     display: none;
-  }
-
-  .empty-thread-starters {
-    padding-top: 0.375rem;
   }
 
   .empty-thread-action {

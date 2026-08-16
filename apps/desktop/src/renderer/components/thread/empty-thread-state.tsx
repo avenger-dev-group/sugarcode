@@ -96,8 +96,6 @@ export const EmptyThreadState = ({
         </p>
       </header>
 
-      <div className="empty-thread-composer-space" aria-hidden="true" />
-
       <div className="empty-thread-starters empty-thread-intro empty-thread-intro--actions relative z-[1]">
         <div className="empty-thread-actions-header mb-2.5 flex items-center justify-between px-1">
           <p className="text-[11px] font-medium text-tertiary">或者，从这里开始</p>
