@@ -99,6 +99,8 @@ pub(super) struct QueuedMessageRow {
     pub(super) updated_at: i64,
 }
 
+type QueuedMessageSqlRow = (String, String, i64, i64, String, Option<String>, i64, i64);
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ThreadQueueRow {
@@ -1180,7 +1182,13 @@ impl Store {
             "INSERT INTO queued_messages \
              (id, thread_id, position, revision, content_json, model_profile_id) \
              VALUES (?1, ?2, ?3, 1, ?4, ?5)",
-            params![message_id, thread_id, position, serde_json::to_string(&content)?, model_profile_id],
+            params![
+                message_id,
+                thread_id,
+                position,
+                serde_json::to_string(&content)?,
+                model_profile_id
+            ],
         )?;
         transaction.execute(
             "UPDATE threads SET updated_at = unixepoch() WHERE id = ?1",
@@ -1215,7 +1223,13 @@ impl Store {
             "UPDATE queued_messages SET content_json = ?4, model_profile_id = ?5, \
              revision = revision + 1, updated_at = unixepoch() \
              WHERE id = ?1 AND thread_id = ?2 AND revision = ?3",
-            params![message_id, thread_id, expected_revision, serde_json::to_string(&content)?, model_profile_id],
+            params![
+                message_id,
+                thread_id,
+                expected_revision,
+                serde_json::to_string(&content)?,
+                model_profile_id
+            ],
         )?;
         if updated == 0 {
             let exists: bool = transaction.query_row(
@@ -1224,7 +1238,12 @@ impl Store {
                 |row| row.get(0),
             )?;
             return Err(PersistenceError::Conflict(
-                if exists { "queueRevisionMismatch" } else { "queueItemNotFound" }.to_owned(),
+                if exists {
+                    "queueRevisionMismatch"
+                } else {
+                    "queueItemNotFound"
+                }
+                .to_owned(),
             ));
         }
         transaction.execute(
@@ -1258,7 +1277,12 @@ impl Store {
                 |row| row.get(0),
             )?;
             return Err(PersistenceError::Conflict(
-                if exists { "queueRevisionMismatch" } else { "queueItemNotFound" }.to_owned(),
+                if exists {
+                    "queueRevisionMismatch"
+                } else {
+                    "queueItemNotFound"
+                }
+                .to_owned(),
             ));
         }
         cleanup_empty_queue(&transaction, thread_id)?;
@@ -1282,7 +1306,10 @@ impl Store {
             |row| row.get(0),
         )?;
         if count == 0 {
-            transaction.execute("DELETE FROM thread_queues WHERE thread_id = ?1", [thread_id])?;
+            transaction.execute(
+                "DELETE FROM thread_queues WHERE thread_id = ?1",
+                [thread_id],
+            )?;
         } else {
             transaction.execute(
                 "INSERT INTO thread_queues (thread_id, paused, updated_at) VALUES (?1, ?2, unixepoch()) \
@@ -1315,9 +1342,12 @@ impl Store {
         if queue.paused {
             return Err(PersistenceError::Conflict("queuePaused".to_owned()));
         }
-        let message = queue.messages.first().filter(|message| {
-            message.id == message_id && message.revision == expected_revision
-        }).cloned().ok_or_else(|| PersistenceError::Conflict("queueRevisionMismatch".to_owned()))?;
+        let message = queue
+            .messages
+            .first()
+            .filter(|message| message.id == message_id && message.revision == expected_revision)
+            .cloned()
+            .ok_or_else(|| PersistenceError::Conflict("queueRevisionMismatch".to_owned()))?;
         transaction.execute(
             "INSERT INTO turns \
              (id, thread_id, request_id, status, provider_wire_api, model) \
@@ -1327,7 +1357,11 @@ impl Store {
         transaction.execute(
             "INSERT INTO turn_items (id, turn_id, sequence, kind, payload_json) \
              VALUES (?1, ?2, 0, 'turn.userMessage', ?3)",
-            params![format!("{turn_id}:user"), turn_id, serde_json::to_string(&serde_json::json!({ "content": message.content }))?],
+            params![
+                format!("{turn_id}:user"),
+                turn_id,
+                serde_json::to_string(&serde_json::json!({ "content": message.content }))?
+            ],
         )?;
         transaction.execute("DELETE FROM queued_messages WHERE id = ?1", [message_id])?;
         cleanup_empty_queue(&transaction, thread_id)?;
@@ -1362,7 +1396,9 @@ impl Store {
             validate_id(name, value)?;
         }
         if sequence < 1 {
-            return Err(PersistenceError::InvalidInput("item sequence is invalid".to_owned()));
+            return Err(PersistenceError::InvalidInput(
+                "item sequence is invalid".to_owned(),
+            ));
         }
         let transaction = self
             .connection
@@ -1378,12 +1414,19 @@ impl Store {
         let message = load_queued_message(&transaction, thread_id, message_id)?
             .ok_or_else(|| PersistenceError::Conflict("queueItemNotFound".to_owned()))?;
         if message.revision != expected_revision {
-            return Err(PersistenceError::Conflict("queueRevisionMismatch".to_owned()));
+            return Err(PersistenceError::Conflict(
+                "queueRevisionMismatch".to_owned(),
+            ));
         }
         transaction.execute(
             "INSERT INTO turn_items (id, turn_id, sequence, kind, payload_json) \
              VALUES (?1, ?2, ?3, 'turn.userMessage', ?4)",
-            params![item_id, turn_id, sequence, serde_json::to_string(&serde_json::json!({ "content": message.content }))?],
+            params![
+                item_id,
+                turn_id,
+                sequence,
+                serde_json::to_string(&serde_json::json!({ "content": message.content }))?
+            ],
         )?;
         transaction.execute("DELETE FROM queued_messages WHERE id = ?1", [message_id])?;
         cleanup_empty_queue(&transaction, thread_id)?;
@@ -2434,11 +2477,21 @@ fn validate_queued_content(value: &str) -> Result<Value> {
                         "queued message asset is invalid".to_owned(),
                     ));
                 };
-                let sha = asset.get("sha256").and_then(Value::as_str).unwrap_or_default();
-                let kind = asset.get("kind").and_then(Value::as_str).unwrap_or_default();
-                let required_strings_valid = ["assetId", "mediaType", "originalName"]
-                    .iter()
-                    .all(|key| asset.get(*key).and_then(Value::as_str).is_some_and(|item| !item.is_empty()));
+                let sha = asset
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let kind = asset
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let required_strings_valid =
+                    ["assetId", "mediaType", "originalName"].iter().all(|key| {
+                        asset
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|item| !item.is_empty())
+                    });
                 if object.len() != 2
                     || asset.contains_key("data")
                     || !required_strings_valid
@@ -2446,7 +2499,9 @@ fn validate_queued_content(value: &str) -> Result<Value> {
                     || !sha.bytes().all(|byte| byte.is_ascii_hexdigit())
                     || !matches!(kind, "image" | "pdf" | "text")
                     || asset.get("sizeBytes").and_then(Value::as_u64).is_none()
-                    || asset.get("pdfPages").is_some_and(|pages| pages.as_u64().is_none())
+                    || asset
+                        .get("pdfPages")
+                        .is_some_and(|pages| pages.as_u64().is_none())
                 {
                     return Err(PersistenceError::InvalidInput(
                         "queued message asset is invalid".to_owned(),
@@ -2494,7 +2549,7 @@ fn validate_turn_identity(
     Ok(())
 }
 
-fn queued_message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, i64, i64, String, Option<String>, i64, i64)> {
+fn queued_message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMessageSqlRow> {
     Ok((
         row.get(0)?,
         row.get(1)?,
@@ -2551,7 +2606,16 @@ fn load_thread_queue(connection: &Connection, thread_id: &str) -> Result<ThreadQ
     let messages = statement
         .query_map([thread_id], queued_message_from_row)?
         .map(|row| {
-            let (id, thread_id, position, revision, content, model_profile_id, created_at, updated_at) = row?;
+            let (
+                id,
+                thread_id,
+                position,
+                revision,
+                content,
+                model_profile_id,
+                created_at,
+                updated_at,
+            ) = row?;
             Ok(QueuedMessageRow {
                 id,
                 thread_id,

@@ -38,11 +38,13 @@ fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
             .expect("queue JSON");
             assert_eq!(queue["messages"].as_array().expect("messages").len(), index);
         }
-        assert!(store
-            .create_queued_message_json("thread-1", "queue-11", &content(11), None)
-            .expect_err("queue capacity")
-            .to_string()
-            .contains("queueFull"));
+        assert!(
+            store
+                .create_queued_message_json("thread-1", "queue-11", &content(11), None)
+                .expect_err("queue capacity")
+                .to_string()
+                .contains("queueFull")
+        );
 
         let updated: Value = serde_json::from_str(
             &store
@@ -57,11 +59,13 @@ fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
         )
         .expect("updated queue JSON");
         assert_eq!(updated["messages"][0]["revision"], 2);
-        assert!(store
-            .update_queued_message_json("thread-1", "queue-1", 1, &content(102), None)
-            .expect_err("stale revision")
-            .to_string()
-            .contains("queueRevisionMismatch"));
+        assert!(
+            store
+                .update_queued_message_json("thread-1", "queue-1", 1, &content(102), None)
+                .expect_err("stale revision")
+                .to_string()
+                .contains("queueRevisionMismatch")
+        );
 
         store
             .delete_queued_message_json("thread-1", "queue-2", 1)
@@ -101,26 +105,35 @@ fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
         .expect("steered queue JSON");
         assert_eq!(steered["message"]["id"], "queue-3");
         assert_eq!(steered["queue"]["messages"][0]["id"], "queue-4");
-        let snapshot: Value = serde_json::from_str(
-            &store.load_thread_json("thread-1").expect("thread snapshot"),
-        )
-        .expect("snapshot JSON");
+        let snapshot: Value =
+            serde_json::from_str(&store.load_thread_json("thread-1").expect("thread snapshot"))
+                .expect("snapshot JSON");
         assert_eq!(snapshot["turns"][0]["id"], "turn-queued");
         assert_eq!(snapshot["items"][0]["kind"], "turn.userMessage");
         assert_eq!(snapshot["items"].as_array().expect("items").len(), 2);
-        assert_eq!(snapshot["queue"]["messages"].as_array().expect("queue").len(), 8);
+        assert_eq!(
+            snapshot["queue"]["messages"]
+                .as_array()
+                .expect("queue")
+                .len(),
+            8
+        );
     }
 
     let mut reopened = Store::open(directory.path()).expect("reopen store");
     let recovered: Value = serde_json::from_str(
-        &reopened.load_thread_json("thread-1").expect("recovered thread"),
+        &reopened
+            .load_thread_json("thread-1")
+            .expect("recovered thread"),
     )
     .expect("recovered JSON");
     assert_eq!(recovered["turns"][0]["status"], "interrupted");
     assert_eq!(recovered["queue"]["paused"], true);
-    assert!(reopened
-        .delete_thread("thread-1", "workspace-1")
-        .expect("delete thread"));
+    assert!(
+        reopened
+            .delete_thread("thread-1", "workspace-1")
+            .expect("delete thread")
+    );
     let connection = Connection::open(Store::database_path(directory.path())).expect("database");
     let queued: i64 = connection
         .query_row("SELECT COUNT(*) FROM queued_messages", [], |row| row.get(0))
