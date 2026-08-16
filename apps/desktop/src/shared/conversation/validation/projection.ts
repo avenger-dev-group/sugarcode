@@ -17,10 +17,12 @@ import type {
   ConversationThreadNavigatorSnapshot,
   ConversationThreadProjectionDelta,
   ConversationThreadProjectionSnapshot,
+  ConversationThreadQueue,
   ConversationTurn,
 } from '../projection.ts';
 import {
   isCommandApprovalActivity,
+  isConversationAttachment,
   isFileChangeActivity,
   isMcpActivity,
   isMessage,
@@ -47,6 +49,49 @@ const TURN_STATUSES = new Set<ConversationTurnStatus>([
   'failed',
   'interrupted',
 ]);
+
+const isThreadQueue = (value: unknown): value is ConversationThreadQueue => {
+  if (
+    !isRecord(value) ||
+    !Object.keys(value).every((key) => ['paused', 'messages'].includes(key)) ||
+    typeof value.paused !== 'boolean' ||
+    !Array.isArray(value.messages) ||
+    value.messages.length > 10
+  ) {
+    return false;
+  }
+  const messages = value.messages;
+  return messages.every(
+    (message, index) =>
+      isRecord(message) &&
+      Object.keys(message).every((key) =>
+        [
+          'id',
+          'position',
+          'revision',
+          'input',
+          'attachments',
+          'modelProfileId',
+          'createdAt',
+          'updatedAt',
+        ].includes(key),
+      ) &&
+      isId(message.id) &&
+      Number.isSafeInteger(message.position) &&
+      Number(message.position) >= 1 &&
+      (index === 0 ||
+        (isRecord(messages[index - 1]) &&
+          Number(messages[index - 1]?.position) < Number(message.position))) &&
+      Number.isSafeInteger(message.revision) &&
+      Number(message.revision) >= 1 &&
+      typeof message.input === 'string' &&
+      Array.isArray(message.attachments) &&
+      message.attachments.every(isConversationAttachment) &&
+      (message.modelProfileId === undefined || isId(message.modelProfileId)) &&
+      Number.isSafeInteger(message.createdAt) &&
+      Number.isSafeInteger(message.updatedAt),
+  );
+};
 
 const TERMINAL_TURN_STATUSES = new Set<ConversationTerminalTurnStatus>([
   'completed',
@@ -404,7 +449,7 @@ export const isConversationThreadProjectionSnapshot = (
 ): value is ConversationThreadProjectionSnapshot =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turns'].includes(
+    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turns', 'queue'].includes(
       key,
     ),
   ) &&
@@ -418,6 +463,7 @@ export const isConversationThreadProjectionSnapshot = (
   (!Object.hasOwn(value, 'activeTurnId') || isId(value.activeTurnId)) &&
   Array.isArray(value.turns) &&
   value.turns.every(isTurn) &&
+  (value.queue === undefined || isThreadQueue(value.queue)) &&
   hasValidActiveTurn(
     value.phase as ConversationPhase,
     value.activeTurnId,
@@ -463,6 +509,7 @@ export const isConversationStateSnapshot = (
     !PHASES.has(value.phase as ConversationPhase) ||
     !Array.isArray(value.turns) ||
     !value.turns.every(isTurn) ||
+    (value.queue !== undefined && !isThreadQueue(value.queue)) ||
     !isThreadNavigator(value.navigator) ||
     (Object.hasOwn(value, 'threadId') && !isId(value.threadId)) ||
     (Object.hasOwn(value, 'activeTurnId') && !isId(value.activeTurnId)) ||

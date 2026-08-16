@@ -4,6 +4,9 @@ import type {
   ConversationStateSnapshot,
   ConversationSendRequest,
   ConversationReviseTurnRequest,
+  ConversationQueuedMessageMutationRequest,
+  ConversationQueuedMessageUpdateRequest,
+  ConversationSteerQueuedMessageRequest,
   ConversationProjectionDiagnostic,
   ConversationThreadDeltaListener,
   ConversationThreadProjectionListener,
@@ -47,6 +50,26 @@ export const reviseConversationTurn = (
   request: ConversationReviseTurnRequest,
 ): Promise<ConversationActionResult> =>
   desktopApi().reviseConversationTurn(request);
+
+export const updateQueuedConversationMessage = (
+  request: ConversationQueuedMessageUpdateRequest,
+): Promise<ConversationActionResult> =>
+  desktopApi().updateQueuedConversationMessage(request);
+
+export const deleteQueuedConversationMessage = (
+  request: ConversationQueuedMessageMutationRequest,
+): Promise<ConversationActionResult> =>
+  desktopApi().deleteQueuedConversationMessage(request);
+
+export const steerQueuedConversationMessage = (
+  request: ConversationSteerQueuedMessageRequest,
+): Promise<ConversationActionResult> =>
+  desktopApi().steerQueuedConversationMessage(request);
+
+export const resumeConversationQueue = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().resumeConversationQueue(threadId);
 
 export const stopConversationTurn =
   (threadId: string): Promise<ConversationActionResult> =>

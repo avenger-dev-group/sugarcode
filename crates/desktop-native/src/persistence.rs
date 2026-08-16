@@ -14,7 +14,8 @@ use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
+const MAX_QUEUED_MESSAGES: i64 = 10;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
 
@@ -82,6 +83,34 @@ pub(super) struct TaskWorkspaceRow {
     pub(super) mode: String,
     pub(super) task_root: Option<String>,
     pub(super) branch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct QueuedMessageRow {
+    pub(super) id: String,
+    pub(super) thread_id: String,
+    pub(super) position: i64,
+    pub(super) revision: i64,
+    pub(super) content: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) model_profile_id: Option<String>,
+    pub(super) created_at: i64,
+    pub(super) updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ThreadQueueRow {
+    pub(super) paused: bool,
+    pub(super) messages: Vec<QueuedMessageRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QueueTakeResult {
+    message: QueuedMessageRow,
+    queue: ThreadQueueRow,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1105,6 +1134,267 @@ impl Store {
         Ok(updated == 1)
     }
 
+    pub(super) fn create_queued_message_json(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        content_json: &str,
+        model_profile_id: Option<&str>,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("queue_message_id", message_id)?;
+        validate_model_profile_id(model_profile_id)?;
+        let content = validate_queued_content(content_json)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let owned: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1)",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        if !owned {
+            return Err(PersistenceError::InvalidInput(format!(
+                "thread {thread_id} was not found"
+            )));
+        }
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM queued_messages WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        if count >= MAX_QUEUED_MESSAGES {
+            return Err(PersistenceError::Conflict("queueFull".to_owned()));
+        }
+        let position: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM queued_messages WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "INSERT INTO thread_queues (thread_id, paused, updated_at) VALUES (?1, 0, unixepoch()) \
+             ON CONFLICT(thread_id) DO UPDATE SET updated_at = unixepoch()",
+            [thread_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO queued_messages \
+             (id, thread_id, position, revision, content_json, model_profile_id) \
+             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+            params![message_id, thread_id, position, serde_json::to_string(&content)?, model_profile_id],
+        )?;
+        transaction.execute(
+            "UPDATE threads SET updated_at = unixepoch() WHERE id = ?1",
+            [thread_id],
+        )?;
+        let queue = load_thread_queue(&transaction, thread_id)?;
+        transaction.commit()?;
+        Ok(serde_json::to_string(&queue)?)
+    }
+
+    pub(super) fn update_queued_message_json(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        expected_revision: i64,
+        content_json: &str,
+        model_profile_id: Option<&str>,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("queue_message_id", message_id)?;
+        validate_model_profile_id(model_profile_id)?;
+        if expected_revision < 1 {
+            return Err(PersistenceError::InvalidInput(
+                "queue revision is invalid".to_owned(),
+            ));
+        }
+        let content = validate_queued_content(content_json)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let updated = transaction.execute(
+            "UPDATE queued_messages SET content_json = ?4, model_profile_id = ?5, \
+             revision = revision + 1, updated_at = unixepoch() \
+             WHERE id = ?1 AND thread_id = ?2 AND revision = ?3",
+            params![message_id, thread_id, expected_revision, serde_json::to_string(&content)?, model_profile_id],
+        )?;
+        if updated == 0 {
+            let exists: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM queued_messages WHERE id = ?1 AND thread_id = ?2)",
+                params![message_id, thread_id],
+                |row| row.get(0),
+            )?;
+            return Err(PersistenceError::Conflict(
+                if exists { "queueRevisionMismatch" } else { "queueItemNotFound" }.to_owned(),
+            ));
+        }
+        transaction.execute(
+            "UPDATE thread_queues SET updated_at = unixepoch() WHERE thread_id = ?1",
+            [thread_id],
+        )?;
+        let queue = load_thread_queue(&transaction, thread_id)?;
+        transaction.commit()?;
+        Ok(serde_json::to_string(&queue)?)
+    }
+
+    pub(super) fn delete_queued_message_json(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        expected_revision: i64,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        validate_id("queue_message_id", message_id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let deleted = transaction.execute(
+            "DELETE FROM queued_messages WHERE id = ?1 AND thread_id = ?2 AND revision = ?3",
+            params![message_id, thread_id, expected_revision],
+        )?;
+        if deleted == 0 {
+            let exists: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM queued_messages WHERE id = ?1 AND thread_id = ?2)",
+                params![message_id, thread_id],
+                |row| row.get(0),
+            )?;
+            return Err(PersistenceError::Conflict(
+                if exists { "queueRevisionMismatch" } else { "queueItemNotFound" }.to_owned(),
+            ));
+        }
+        cleanup_empty_queue(&transaction, thread_id)?;
+        let queue = load_thread_queue(&transaction, thread_id)?;
+        transaction.commit()?;
+        Ok(serde_json::to_string(&queue)?)
+    }
+
+    pub(super) fn set_queue_paused_json(
+        &mut self,
+        thread_id: &str,
+        paused: bool,
+    ) -> Result<String> {
+        validate_id("thread_id", thread_id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM queued_messages WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
+            transaction.execute("DELETE FROM thread_queues WHERE thread_id = ?1", [thread_id])?;
+        } else {
+            transaction.execute(
+                "INSERT INTO thread_queues (thread_id, paused, updated_at) VALUES (?1, ?2, unixepoch()) \
+                 ON CONFLICT(thread_id) DO UPDATE SET paused = excluded.paused, updated_at = unixepoch()",
+                params![thread_id, paused],
+            )?;
+        }
+        let queue = load_thread_queue(&transaction, thread_id)?;
+        transaction.commit()?;
+        Ok(serde_json::to_string(&queue)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn promote_queued_message_json(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        expected_revision: i64,
+        turn_id: &str,
+        request_id: &str,
+        provider_wire_api: &str,
+        model: &str,
+    ) -> Result<String> {
+        validate_turn_identity(turn_id, thread_id, request_id, provider_wire_api, model)?;
+        validate_id("queue_message_id", message_id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let queue = load_thread_queue(&transaction, thread_id)?;
+        if queue.paused {
+            return Err(PersistenceError::Conflict("queuePaused".to_owned()));
+        }
+        let message = queue.messages.first().filter(|message| {
+            message.id == message_id && message.revision == expected_revision
+        }).cloned().ok_or_else(|| PersistenceError::Conflict("queueRevisionMismatch".to_owned()))?;
+        transaction.execute(
+            "INSERT INTO turns \
+             (id, thread_id, request_id, status, provider_wire_api, model) \
+             VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
+            params![turn_id, thread_id, request_id, provider_wire_api, model],
+        )?;
+        transaction.execute(
+            "INSERT INTO turn_items (id, turn_id, sequence, kind, payload_json) \
+             VALUES (?1, ?2, 0, 'turn.userMessage', ?3)",
+            params![format!("{turn_id}:user"), turn_id, serde_json::to_string(&serde_json::json!({ "content": message.content }))?],
+        )?;
+        transaction.execute("DELETE FROM queued_messages WHERE id = ?1", [message_id])?;
+        cleanup_empty_queue(&transaction, thread_id)?;
+        transaction.execute(
+            "UPDATE threads SET updated_at = unixepoch() WHERE id = ?1",
+            [thread_id],
+        )?;
+        let result = QueueTakeResult {
+            message,
+            queue: load_thread_queue(&transaction, thread_id)?,
+        };
+        transaction.commit()?;
+        Ok(serde_json::to_string(&result)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn steer_queued_message_json(
+        &mut self,
+        thread_id: &str,
+        message_id: &str,
+        expected_revision: i64,
+        turn_id: &str,
+        item_id: &str,
+        sequence: i64,
+    ) -> Result<String> {
+        for (name, value) in [
+            ("thread_id", thread_id),
+            ("queue_message_id", message_id),
+            ("turn_id", turn_id),
+            ("item_id", item_id),
+        ] {
+            validate_id(name, value)?;
+        }
+        if sequence < 1 {
+            return Err(PersistenceError::InvalidInput("item sequence is invalid".to_owned()));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let active: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM turns WHERE id = ?1 AND thread_id = ?2 AND status = 'running')",
+            params![turn_id, thread_id],
+            |row| row.get(0),
+        )?;
+        if !active {
+            return Err(PersistenceError::Conflict("turnMismatch".to_owned()));
+        }
+        let message = load_queued_message(&transaction, thread_id, message_id)?
+            .ok_or_else(|| PersistenceError::Conflict("queueItemNotFound".to_owned()))?;
+        if message.revision != expected_revision {
+            return Err(PersistenceError::Conflict("queueRevisionMismatch".to_owned()));
+        }
+        transaction.execute(
+            "INSERT INTO turn_items (id, turn_id, sequence, kind, payload_json) \
+             VALUES (?1, ?2, ?3, 'turn.userMessage', ?4)",
+            params![item_id, turn_id, sequence, serde_json::to_string(&serde_json::json!({ "content": message.content }))?],
+        )?;
+        transaction.execute("DELETE FROM queued_messages WHERE id = ?1", [message_id])?;
+        cleanup_empty_queue(&transaction, thread_id)?;
+        let result = QueueTakeResult {
+            message,
+            queue: load_thread_queue(&transaction, thread_id)?,
+        };
+        transaction.commit()?;
+        Ok(serde_json::to_string(&result)?)
+    }
+
     pub(super) fn load_thread_json(&mut self, thread_id: &str) -> Result<String> {
         validate_id("thread_id", thread_id)?;
         let thread = self.connection.query_row(
@@ -1197,6 +1487,7 @@ impl Store {
             turns,
             items,
             agent_tasks,
+            queue: load_thread_queue(&self.connection, thread_id)?,
         })?)
     }
 
@@ -1961,12 +2252,43 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 10;",
         )?;
         transaction.commit()?;
+        version = 10;
+    }
+    if version == 10 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE thread_queues (\
+               thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,\
+               paused INTEGER NOT NULL DEFAULT 0 CHECK(paused IN (0, 1)),\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             CREATE TABLE queued_messages (\
+               id TEXT PRIMARY KEY,\
+               thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\
+               position INTEGER NOT NULL CHECK(position > 0),\
+               revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),\
+               content_json TEXT NOT NULL, model_profile_id TEXT,\
+               created_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               UNIQUE(thread_id, position)\
+             ) STRICT;\
+             CREATE INDEX queued_messages_thread_position \
+               ON queued_messages(thread_id, position);\
+             PRAGMA user_version = 11;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
 
 fn recover_interrupted_work(connection: &mut Connection) -> Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "UPDATE thread_queues SET paused = 1, updated_at = unixepoch()\
+         WHERE EXISTS(SELECT 1 FROM queued_messages WHERE queued_messages.thread_id = thread_queues.thread_id)\
+         AND EXISTS(SELECT 1 FROM turns WHERE turns.thread_id = thread_queues.thread_id AND turns.status = 'running')",
+        [],
+    )?;
     transaction.execute(
         "UPDATE turns SET status = 'interrupted', completed_at = unixepoch(),\
          error_json = '{\"kind\":\"runtimeRestart\",\"retryable\":true}'\
@@ -1995,6 +2317,7 @@ struct ThreadSnapshot {
     turns: Vec<TurnRow>,
     items: Vec<ItemRow>,
     agent_tasks: Vec<AgentTaskRow>,
+    queue: ThreadQueueRow,
 }
 
 #[derive(Serialize)]
@@ -2055,6 +2378,202 @@ fn thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRow> {
         archived_at: row.get(5)?,
         parent_thread_id: row.get(6)?,
     })
+}
+
+fn validate_model_profile_id(value: Option<&str>) -> Result<()> {
+    if value.is_some_and(|profile| {
+        profile.is_empty()
+            || profile.len() > 64
+            || !profile
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    }) {
+        return Err(PersistenceError::InvalidInput(
+            "model profile identifier is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_queued_content(value: &str) -> Result<Value> {
+    let content: Value = serde_json::from_str(value)?;
+    let Some(parts) = content.as_array() else {
+        return Err(PersistenceError::InvalidInput(
+            "queued message content is invalid".to_owned(),
+        ));
+    };
+    if parts.is_empty() || parts.len() > 11 || value.len() > 28 * 1024 * 1024 {
+        return Err(PersistenceError::InvalidInput(
+            "queued message content is invalid".to_owned(),
+        ));
+    }
+    let mut assets = 0usize;
+    for part in parts {
+        let Some(object) = part.as_object() else {
+            return Err(PersistenceError::InvalidInput(
+                "queued message content is invalid".to_owned(),
+            ));
+        };
+        match object.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if object.len() != 2
+                    || object
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_none_or(|text| text.len() > 256 * 1024)
+                {
+                    return Err(PersistenceError::InvalidInput(
+                        "queued message text is invalid".to_owned(),
+                    ));
+                }
+            }
+            Some("asset") => {
+                assets += 1;
+                let Some(asset) = object.get("asset").and_then(Value::as_object) else {
+                    return Err(PersistenceError::InvalidInput(
+                        "queued message asset is invalid".to_owned(),
+                    ));
+                };
+                let sha = asset.get("sha256").and_then(Value::as_str).unwrap_or_default();
+                let kind = asset.get("kind").and_then(Value::as_str).unwrap_or_default();
+                let required_strings_valid = ["assetId", "mediaType", "originalName"]
+                    .iter()
+                    .all(|key| asset.get(*key).and_then(Value::as_str).is_some_and(|item| !item.is_empty()));
+                if object.len() != 2
+                    || asset.contains_key("data")
+                    || !required_strings_valid
+                    || sha.len() != 64
+                    || !sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || !matches!(kind, "image" | "pdf" | "text")
+                    || asset.get("sizeBytes").and_then(Value::as_u64).is_none()
+                    || asset.get("pdfPages").is_some_and(|pages| pages.as_u64().is_none())
+                {
+                    return Err(PersistenceError::InvalidInput(
+                        "queued message asset is invalid".to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(PersistenceError::InvalidInput(
+                    "queued message content is invalid".to_owned(),
+                ));
+            }
+        }
+    }
+    if assets > 10 {
+        return Err(PersistenceError::InvalidInput(
+            "queued message has too many assets".to_owned(),
+        ));
+    }
+    Ok(content)
+}
+
+fn validate_turn_identity(
+    turn_id: &str,
+    thread_id: &str,
+    request_id: &str,
+    provider_wire_api: &str,
+    model: &str,
+) -> Result<()> {
+    for (name, value) in [
+        ("turn_id", turn_id),
+        ("thread_id", thread_id),
+        ("request_id", request_id),
+    ] {
+        validate_id(name, value)?;
+    }
+    if !matches!(
+        provider_wire_api,
+        "openaiResponses" | "openaiChatCompletions" | "anthropicMessages"
+    ) || model.is_empty()
+    {
+        return Err(PersistenceError::InvalidInput(
+            "queued Turn model is invalid".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn queued_message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String, i64, i64, String, Option<String>, i64, i64)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+    ))
+}
+
+fn load_queued_message(
+    connection: &Connection,
+    thread_id: &str,
+    message_id: &str,
+) -> Result<Option<QueuedMessageRow>> {
+    connection
+        .query_row(
+            "SELECT id, thread_id, position, revision, content_json, model_profile_id, created_at, updated_at \
+             FROM queued_messages WHERE thread_id = ?1 AND id = ?2",
+            params![thread_id, message_id],
+            queued_message_from_row,
+        )
+        .optional()?
+        .map(|(id, thread_id, position, revision, content, model_profile_id, created_at, updated_at)| {
+            Ok(QueuedMessageRow {
+                id,
+                thread_id,
+                position,
+                revision,
+                content: serde_json::from_str(&content)?,
+                model_profile_id,
+                created_at,
+                updated_at,
+            })
+        })
+        .transpose()
+}
+
+fn load_thread_queue(connection: &Connection, thread_id: &str) -> Result<ThreadQueueRow> {
+    let paused = connection
+        .query_row(
+            "SELECT paused FROM thread_queues WHERE thread_id = ?1",
+            [thread_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    let mut statement = connection.prepare(
+        "SELECT id, thread_id, position, revision, content_json, model_profile_id, created_at, updated_at \
+         FROM queued_messages WHERE thread_id = ?1 ORDER BY position, id",
+    )?;
+    let messages = statement
+        .query_map([thread_id], queued_message_from_row)?
+        .map(|row| {
+            let (id, thread_id, position, revision, content, model_profile_id, created_at, updated_at) = row?;
+            Ok(QueuedMessageRow {
+                id,
+                thread_id,
+                position,
+                revision,
+                content: serde_json::from_str(&content)?,
+                model_profile_id,
+                created_at,
+                updated_at,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(ThreadQueueRow { paused, messages })
+}
+
+fn cleanup_empty_queue(connection: &Connection, thread_id: &str) -> Result<()> {
+    connection.execute(
+        "DELETE FROM thread_queues WHERE thread_id = ?1 \
+         AND NOT EXISTS(SELECT 1 FROM queued_messages WHERE thread_id = ?1)",
+        [thread_id],
+    )?;
+    Ok(())
 }
 
 fn validate_title(value: Option<&str>) -> Result<()> {

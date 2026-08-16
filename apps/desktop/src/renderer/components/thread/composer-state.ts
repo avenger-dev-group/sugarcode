@@ -57,7 +57,14 @@ export const canStartConversationTurn = ({
   isEditingMessage,
   hasUsableModel,
 }: ConversationTurnStartState): boolean =>
-  (phase === 'idle' || phase === 'ready' || startsChatOnSend) &&
+  (
+    phase === 'idle' ||
+    phase === 'ready' ||
+    phase === 'starting' ||
+    phase === 'inProgress' ||
+    phase === 'stopping' ||
+    startsChatOnSend
+  ) &&
   !hasPendingThreadSelection &&
   !hasPendingMutation &&
   !isSending &&

@@ -13,6 +13,8 @@ import type {
   ConversationTerminalTurnStatus,
   ConversationTurnError,
   ConversationTurnStatus,
+  ConversationThreadQueue,
+  ConversationQueuedMessage,
 } from '@/shared/conversation';
 import type { ComposerReference } from '@/shared/composer';
 
@@ -218,6 +220,7 @@ export type ThreadViewModel = Readonly<{
   workspaceIdentity: string | null;
   threadIdentity: string | null;
   turns: readonly TurnViewModel[];
+  queue: ConversationThreadQueue;
   isEmpty: boolean;
   notice?: string;
 }>;
@@ -268,6 +271,12 @@ export type ThreadStore = Readonly<{
   activeTurnProgress: ActiveTurnProgressViewModel | null;
   isSending: boolean;
   actionError: string | null;
+  queueEditor: Readonly<{
+    itemId: string | null;
+    draft: string;
+    modelProfileId: string;
+    pendingIds: readonly string[];
+  }>;
   editableMessageTarget: EditableMessageTarget | null;
   messageEditor: Readonly<{
     turnId: string | null;
@@ -314,6 +323,14 @@ export type ThreadStore = Readonly<{
   confirmThreadRename: () => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
+  beginQueueEdit: (message: ConversationQueuedMessage) => void;
+  setQueueEditDraft: (value: string) => void;
+  setQueueEditModel: (profileId: string) => void;
+  cancelQueueEdit: () => void;
+  saveQueueEdit: () => Promise<void>;
+  deleteQueueMessage: (message: ConversationQueuedMessage) => Promise<void>;
+  steerQueueMessage: (message: ConversationQueuedMessage) => Promise<void>;
+  resumeQueue: () => Promise<void>;
   respondToUserInput: (
     turnId: string,
     inputRequestId: string,

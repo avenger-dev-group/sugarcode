@@ -7,6 +7,9 @@ import {
   isConversationStateSnapshot,
   isConversationSendRequest,
   isConversationReviseTurnRequest,
+  isConversationQueuedMessageMutationRequest,
+  isConversationQueuedMessageUpdateRequest,
+  isConversationSteerQueuedMessageRequest,
   isConversationUserInputResponse,
   isValidConversationTitle,
   isValidThreadSearchInput,
@@ -20,6 +23,7 @@ import {
   type ConversationThreadProjectionSnapshot,
   type ConversationTokenUsage,
   type ConversationThreadNavigatorSnapshot,
+  type ConversationThreadQueue,
   type ConversationTurn,
   type ConversationUserInputResponse,
 } from '../../shared/conversation.ts';
@@ -27,6 +31,7 @@ import {
   type RuntimeContentPart,
   type RuntimeEvent,
   type RuntimeThreadRecord,
+  type RuntimeThreadQueue as NativeThreadQueue,
 } from '../../runtime/protocol.ts';
 import {
   appendUserInputActivity,
@@ -39,6 +44,7 @@ import {
   commandOutcome,
   orchestrationActivity,
   projectThread,
+  projectThreadQueue,
   visibleRuntimeError,
 } from './conversation-projection.ts';
 import {
@@ -48,7 +54,9 @@ import {
 import { createUuidV7 } from './id.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
-const accepted = (): ConversationActionResult => ({ accepted: true, reason: 'accepted' });
+const accepted = (
+  result: Pick<ConversationActionResult, 'disposition' | 'queueItemId'> = {},
+): ConversationActionResult => ({ accepted: true, reason: 'accepted', ...result });
 const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
 ): ConversationActionResult => ({ accepted: false, reason });
@@ -138,6 +146,10 @@ export class RuntimeConversationController {
   private readonly threadRevisions = new Map<string, number>();
   private readonly threadRecords = new Map<string, RuntimeThreadRecord>();
   private readonly turnsByThread = new Map<string, ConversationTurn[]>();
+  private readonly queuesByThread = new Map<string, ConversationThreadQueue>();
+  private readonly runtimeQueuesByThread = new Map<string, NativeThreadQueue>();
+  private readonly queueOperationTails = new Map<string, Promise<void>>();
+  private readonly promotingQueueItemsByThread = new Map<string, string>();
   private readonly unreadThreadStatuses = new Map<
     string,
     'completed' | 'failed' | 'interrupted'
@@ -188,6 +200,14 @@ export class RuntimeConversationController {
       ...(this.threadId ? { threadId: this.threadId } : {}),
       ...(activeTurn ? { activeTurnId: activeTurn.turnId } : {}),
       turns: this.threadId ? this.turnsByThread.get(this.threadId) ?? [] : [],
+      ...(this.threadId
+        ? {
+            queue: this.queuesByThread.get(this.threadId) ?? {
+              paused: false,
+              messages: [],
+            },
+          }
+        : {}),
       navigator: this.navigator,
       ...(this.notice ? { notice: this.notice } : {}),
     };
@@ -273,14 +293,24 @@ export class RuntimeConversationController {
     let generateTitle = threadId
       ? this.threadRecords.get(threadId)?.title === null
       : true;
-    if (
-      this.pendingTurnStartWorkspaces.has(workspaceId) ||
-      (threadId && this.activeTurnsByThread.has(threadId)) ||
-      this.navigator.pendingMutation
-    ) {
+    const pendingStart = this.pendingTurnStartWorkspaces.has(workspaceId);
+    if ((pendingStart && !threadId) || this.navigator.pendingMutation) {
       return rejected('turnActive');
     }
-    if (compactCommand) {
+    const currentQueue = threadId
+      ? this.queuesByThread.get(threadId)
+      : undefined;
+    const shouldQueue = Boolean(
+      threadId &&
+        (pendingStart ||
+          this.activeTurnsByThread.has(threadId) ||
+          currentQueue?.paused ||
+          (currentQueue?.messages.length ?? 0) > 0),
+    );
+    const releaseQueueOperation = shouldQueue && threadId
+      ? await this.acquireQueueOperation(threadId)
+      : undefined;
+    if (compactCommand && !shouldQueue) {
       if (!threadId || (input.attachments?.length ?? 0) > 0) {
         return rejected('invalidInput');
       }
@@ -307,9 +337,11 @@ export class RuntimeConversationController {
       this.refreshNavigator();
       this.publishThreadProjection(threadId, true);
       this.publish();
-      return accepted();
+      return accepted({ disposition: 'started' });
     }
-    this.pendingTurnStartWorkspaces.add(workspaceId);
+    if (!shouldQueue) {
+      this.pendingTurnStartWorkspaces.add(workspaceId);
+    }
     this.notice = undefined;
     this.publish();
     let optimisticTurn: Readonly<{ threadId: string; turnId: string }> | undefined;
@@ -351,11 +383,49 @@ export class RuntimeConversationController {
         generateTitle = true;
         this.threadRecords.set(created.threadId, created.snapshot.thread);
         this.turnsByThread.set(created.threadId, []);
+        this.queuesByThread.set(
+          created.threadId,
+          projectThreadQueue(created.snapshot.queue),
+        );
+        this.runtimeQueuesByThread.set(created.threadId, created.snapshot.queue);
         if (this.workspaceId === workspaceId && !this.threadId) {
           this.threadSelectionGeneration += 1;
           this.threadId = created.threadId;
         }
         this.refreshNavigator();
+      }
+      if (shouldQueue) {
+        const queueItemId = createUuidV7();
+        const event = await this.runtime.request(
+          {
+            type: 'queue.messageCreate',
+            requestId: randomUUID(),
+            workspaceId,
+            threadId,
+            queueItemId,
+            content,
+            ...(input.modelProfileId
+              ? { modelProfileId: input.modelProfileId }
+              : {}),
+          },
+          'queue.changed',
+        );
+        if (this.applyRuntimeQueue(threadId, event.queue)) {
+          this.publishThreadProjection(threadId, true);
+          this.publish();
+        }
+        releaseQueueOperation?.();
+        if (!this.activeTurnsByThread.has(threadId)) {
+          const terminalStatus = this.turnsByThread.get(threadId)?.at(-1)?.status;
+          if (
+            terminalStatus === 'completed' ||
+            terminalStatus === 'failed' ||
+            terminalStatus === 'interrupted'
+          ) {
+            await this.finishQueueAfterTurn(threadId, terminalStatus);
+          }
+        }
+        return accepted({ disposition: 'queued', queueItemId });
       }
       const turnId = createUuidV7();
       const userMessage = {
@@ -390,8 +460,9 @@ export class RuntimeConversationController {
       });
       this.publishThreadProjection(threadId, true);
       this.publish();
-      return accepted();
+      return accepted({ disposition: 'started' });
     } catch {
+      releaseQueueOperation?.();
       this.pendingTurnStartWorkspaces.delete(workspaceId);
       if (
         optimisticTurn &&
@@ -413,6 +484,179 @@ export class RuntimeConversationController {
       this.publish();
       return rejected('unavailable');
     }
+  };
+
+  updateQueuedMessage = async (input: unknown): Promise<ConversationActionResult> => {
+    if (!isConversationQueuedMessageUpdateRequest(input)) {
+      return rejected('invalidInput');
+    }
+    const workspaceId = this.workspaceId;
+    const thread = this.threadRecords.get(input.threadId);
+    if (!workspaceId || !this.available || thread?.workspaceId !== workspaceId) {
+      return rejected('unknownThread');
+    }
+    const existing = this.runtimeQueuesByThread
+      .get(input.threadId)
+      ?.messages.find((message) => message.id === input.queueItemId);
+    if (!existing) {
+      return rejected('queueItemNotFound');
+    }
+    if (this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId) {
+      return rejected('turnActive');
+    }
+    const content: RuntimeContentPart[] = [
+      ...initialTurnContent(input.input),
+      ...existing.content.filter((part) => part.type === 'asset'),
+    ];
+    const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'queue.messageUpdate',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId: input.threadId,
+          queueItemId: input.queueItemId,
+          expectedRevision: input.expectedRevision,
+          content,
+          ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
+        },
+        'queue.changed',
+      );
+      if (this.applyRuntimeQueue(input.threadId, event.queue)) {
+        this.publishThreadProjection(input.threadId, true);
+        this.publish();
+      }
+      return accepted();
+    } catch (error) {
+      const reason = this.queueErrorReason(error);
+      if (reason === 'queueRevisionMismatch' || reason === 'queueItemNotFound') {
+        await this.refreshRuntimeQueue(input.threadId, workspaceId);
+      }
+      return rejected(reason);
+    } finally {
+      releaseQueueOperation();
+    }
+  };
+
+  deleteQueuedMessage = async (input: unknown): Promise<ConversationActionResult> => {
+    if (!isConversationQueuedMessageMutationRequest(input)) {
+      return rejected('invalidInput');
+    }
+    const workspaceId = this.workspaceId;
+    const thread = this.threadRecords.get(input.threadId);
+    if (!workspaceId || !this.available || thread?.workspaceId !== workspaceId) {
+      return rejected('unknownThread');
+    }
+    if (this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId) {
+      return rejected('turnActive');
+    }
+    const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'queue.messageDelete',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId: input.threadId,
+          queueItemId: input.queueItemId,
+          expectedRevision: input.expectedRevision,
+        },
+        'queue.changed',
+      );
+      if (this.applyRuntimeQueue(input.threadId, event.queue)) {
+        this.publishThreadProjection(input.threadId, true);
+        this.publish();
+      }
+      return accepted();
+    } catch (error) {
+      const reason = this.queueErrorReason(error);
+      if (reason === 'queueRevisionMismatch' || reason === 'queueItemNotFound') {
+        await this.refreshRuntimeQueue(input.threadId, workspaceId);
+      }
+      return rejected(reason);
+    } finally {
+      releaseQueueOperation();
+    }
+  };
+
+  steerQueuedMessage = async (input: unknown): Promise<ConversationActionResult> => {
+    if (!isConversationSteerQueuedMessageRequest(input)) {
+      return rejected('invalidInput');
+    }
+    const workspaceId = this.workspaceId;
+    const active = this.activeTurnsByThread.get(input.threadId);
+    if (!workspaceId || !active || active.turnId !== input.expectedTurnId) {
+      return rejected('turnMismatch');
+    }
+    if (active.phase !== 'inProgress') {
+      return rejected('notSteerable');
+    }
+    if (this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId) {
+      return rejected('turnActive');
+    }
+    const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'turn.steerQueued',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId: input.threadId,
+          expectedTurnId: input.expectedTurnId,
+          queueItemId: input.queueItemId,
+          expectedRevision: input.expectedRevision,
+        },
+        'turn.steered',
+      );
+      const changed = this.applyRuntimeQueue(input.threadId, event.queue);
+      const appended = this.appendSteeredUserMessage(event);
+      if (changed || appended) {
+        this.publishThreadProjection(input.threadId, true);
+        this.publish();
+      }
+      return accepted();
+    } catch (error) {
+      const reason = this.queueErrorReason(error);
+      if (reason === 'queueRevisionMismatch' || reason === 'queueItemNotFound') {
+        await this.refreshRuntimeQueue(input.threadId, workspaceId);
+      }
+      return rejected(reason);
+    } finally {
+      releaseQueueOperation();
+    }
+  };
+
+  resumeQueue = async (threadId: unknown): Promise<ConversationActionResult> => {
+    if (typeof threadId !== 'string') {
+      return rejected('unknownThread');
+    }
+    const workspaceId = this.workspaceId;
+    if (!workspaceId || this.threadRecords.get(threadId)?.workspaceId !== workspaceId) {
+      return rejected('unknownThread');
+    }
+    const releaseQueueOperation = await this.acquireQueueOperation(threadId);
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'queue.resume',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+        },
+        'queue.changed',
+      );
+      if (this.applyRuntimeQueue(threadId, event.queue)) {
+        this.publishThreadProjection(threadId, true);
+        this.publish();
+      }
+    } catch (error) {
+      return rejected(this.queueErrorReason(error));
+    } finally {
+      releaseQueueOperation();
+    }
+    await this.dispatchQueuedMessage(threadId);
+    return accepted();
   };
 
   reviseTurn = async (input: unknown): Promise<ConversationActionResult> => {
@@ -522,6 +766,7 @@ export class RuntimeConversationController {
       const turns = [...projectThread(event.snapshot)];
       this.threadRecords.set(threadId, event.snapshot.thread);
       this.turnsByThread.set(threadId, turns);
+      this.applyRuntimeQueue(threadId, event.snapshot.queue);
       this.activeTurnsByThread.delete(threadId);
       this.refreshNavigator();
       if (this.threadId === threadId) {
@@ -741,6 +986,7 @@ export class RuntimeConversationController {
       }
       this.threadId = threadId;
       this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
+      this.applyRuntimeQueue(threadId, event.snapshot.queue);
       this.unreadThreadStatuses.delete(threadId);
       this.refreshNavigator();
       this.navigator = withoutNavigatorFields(this.navigator, [
@@ -749,6 +995,7 @@ export class RuntimeConversationController {
       ]);
       this.publish();
       this.publishThreadProjection(threadId, true);
+      void this.dispatchQueuedMessage(threadId);
       return accepted();
     } catch {
       if (
@@ -901,6 +1148,8 @@ export class RuntimeConversationController {
       }
       this.threadRecords.delete(threadId);
       this.turnsByThread.delete(threadId);
+      this.queuesByThread.delete(threadId);
+      this.runtimeQueuesByThread.delete(threadId);
       this.threadRevisions.delete(threadId);
       this.unreadThreadStatuses.delete(threadId);
       if (this.threadId === threadId) {
@@ -927,6 +1176,32 @@ export class RuntimeConversationController {
   };
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
+    if (event.type === 'queue.changed') {
+      const thread = this.threadRecords.get(event.threadId);
+      if (thread?.workspaceId === event.workspaceId) {
+        if (this.applyRuntimeQueue(event.threadId, event.queue)) {
+          this.publishThreadProjection(event.threadId, true);
+          if (this.workspaceId === event.workspaceId) {
+            this.publish();
+          }
+        }
+      }
+      return;
+    }
+    if (event.type === 'turn.steered') {
+      const thread = this.threadRecords.get(event.threadId);
+      if (thread?.workspaceId === event.workspaceId) {
+        const changed = this.applyRuntimeQueue(event.threadId, event.queue);
+        const appended = this.appendSteeredUserMessage(event);
+        if (changed || appended) {
+          this.publishThreadProjection(event.threadId, true);
+          if (this.workspaceId === event.workspaceId) {
+            this.publish();
+          }
+        }
+      }
+      return;
+    }
     if (
       event.type === 'thread.mutated' &&
       (event.operation === 'rename' || event.operation === 'generateTitle') &&
@@ -1424,6 +1699,34 @@ export class RuntimeConversationController {
         break;
       }
       case 'turn.completed': {
+        const promotingItemId = this.promotingQueueItemsByThread.get(
+          event.threadId,
+        );
+        const promotionFailedBeforeCommit =
+          event.status === 'failed' &&
+          promotingItemId !== undefined &&
+          this.runtimeQueuesByThread
+            .get(event.threadId)
+            ?.messages.some((message) => message.id === promotingItemId);
+        if (promotionFailedBeforeCommit) {
+          turns.splice(index, 1);
+          this.promotingQueueItemsByThread.delete(event.threadId);
+          if (
+            this.activeTurnsByThread.get(event.threadId)?.turnId ===
+            event.turnId
+          ) {
+            this.activeTurnsByThread.delete(event.threadId);
+          }
+          this.refreshNavigator();
+          this.notice = {
+            kind: 'warning',
+            summary: event.error?.message.includes('modelUnavailable')
+              ? 'The queued message is paused because its saved model is unavailable.'
+              : 'The queued message could not start and remains safely paused.',
+          };
+          void this.finishQueueAfterTurn(event.threadId, 'failed');
+          break;
+        }
         const messages = turn.messages.map((message) => ({ ...message, status: 'completed' as const }));
         const activities = turn.activities?.map((activity) => {
           if (activity.type === 'commentary') {
@@ -1469,6 +1772,7 @@ export class RuntimeConversationController {
           this.unreadThreadStatuses.set(event.threadId, event.status);
         }
         this.refreshNavigator();
+        void this.finishQueueAfterTurn(event.threadId, event.status);
         break;
       }
       default:
@@ -1528,6 +1832,8 @@ export class RuntimeConversationController {
       ) {
         this.threadRecords.delete(threadId);
         this.turnsByThread.delete(threadId);
+        this.queuesByThread.delete(threadId);
+        this.runtimeQueuesByThread.delete(threadId);
         this.threadRevisions.delete(threadId);
       }
     }
@@ -1591,7 +1897,236 @@ export class RuntimeConversationController {
       phase: activeTurn?.phase ?? 'ready',
       ...(activeTurn ? { activeTurnId: activeTurn.turnId } : {}),
       turns,
+      queue: this.queuesByThread.get(threadId) ?? {
+        paused: false,
+        messages: [],
+      },
     };
+  };
+
+  private applyRuntimeQueue = (
+    threadId: string,
+    queue: NativeThreadQueue,
+  ): boolean => {
+    if (this.runtimeQueuesByThread.get(threadId) === queue) {
+      return false;
+    }
+    this.runtimeQueuesByThread.set(threadId, queue);
+    this.queuesByThread.set(threadId, projectThreadQueue(queue));
+    const promoting = this.promotingQueueItemsByThread.get(threadId);
+    if (promoting && !queue.messages.some((message) => message.id === promoting)) {
+      this.promotingQueueItemsByThread.delete(threadId);
+    }
+    return true;
+  };
+
+  private acquireQueueOperation = async (
+    threadId: string,
+  ): Promise<() => void> => {
+    const previous = this.queueOperationTails.get(threadId) ?? Promise.resolve();
+    let releaseCurrent = (): void => undefined;
+    const current = new Promise<void>((resolve) => {
+      releaseCurrent = resolve;
+    });
+    const tail = previous.catch((): void => undefined).then(() => current);
+    this.queueOperationTails.set(threadId, tail);
+    await previous.catch((): void => undefined);
+    return () => {
+      releaseCurrent();
+      if (this.queueOperationTails.get(threadId) === tail) {
+        this.queueOperationTails.delete(threadId);
+      }
+    };
+  };
+
+  private queueErrorReason = (
+    error: unknown,
+  ): Exclude<ConversationActionResult['reason'], 'accepted'> => {
+    const message = error instanceof Error ? error.message : String(error);
+    for (const reason of [
+      'queueFull',
+      'queueItemNotFound',
+      'queueRevisionMismatch',
+      'turnMismatch',
+      'notSteerable',
+      'modelUnavailable',
+    ] as const) {
+      if (message.includes(reason)) {
+        return reason;
+      }
+    }
+    return 'unavailable';
+  };
+
+  private refreshRuntimeQueue = async (
+    threadId: string,
+    workspaceId: string,
+  ): Promise<void> => {
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'thread.load',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+        },
+        'thread.loaded',
+      );
+      if (
+        event.snapshot.thread.id === threadId &&
+        event.snapshot.thread.workspaceId === workspaceId &&
+        this.applyRuntimeQueue(threadId, event.snapshot.queue)
+      ) {
+        this.publishThreadProjection(threadId, true);
+        if (this.workspaceId === workspaceId) {
+          this.publish();
+        }
+      }
+    } catch {
+      // Keep the local draft; the next durable projection can still reconcile it.
+    }
+  };
+
+  private appendSteeredUserMessage = (
+    event: Extract<RuntimeEvent, { type: 'turn.steered' }>,
+  ): boolean => {
+    const turns = [...(this.turnsByThread.get(event.threadId) ?? [])];
+    const index = turns.findIndex((turn) => turn.id === event.turnId);
+    const turn = turns[index];
+    if (turn?.messages.some((message) => message.id === event.itemId)) {
+      return false;
+    }
+    if (!turn) {
+      return false;
+    }
+    const text = event.content
+      .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+        part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+    const attachments = event.content.flatMap((part) =>
+      part.type === 'asset' ? [attachmentFromPart(part)] : []);
+    turns[index] = {
+      ...turn,
+      messages: [
+        ...turn.messages,
+        {
+          id: event.itemId,
+          role: 'user',
+          text,
+          ...(attachments.length > 0 ? { attachments } : {}),
+          status: 'completed',
+        },
+      ],
+    };
+    this.turnsByThread.set(event.threadId, turns);
+    return true;
+  };
+
+  private dispatchQueuedMessage = async (threadId: string): Promise<void> => {
+    const releaseQueueOperation = await this.acquireQueueOperation(threadId);
+    try {
+      const active = this.activeTurnsByThread.get(threadId);
+      const queue = this.runtimeQueuesByThread.get(threadId);
+      const head = queue?.messages[0];
+      const thread = this.threadRecords.get(threadId);
+      if (active || !queue || queue.paused || !head || !thread) {
+        return;
+      }
+      const turnId = createUuidV7();
+    const text = head.content
+      .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+        part.type === 'text')
+      .map((part) => part.text)
+      .join('\n');
+    const attachments = head.content.flatMap((part) =>
+      part.type === 'asset' ? [attachmentFromPart(part)] : []);
+    this.turnsByThread.set(threadId, [
+      ...(this.turnsByThread.get(threadId) ?? []),
+      {
+        id: turnId,
+        status: 'inProgress',
+        messages: [
+          {
+            id: `${turnId}:user`,
+            role: 'user',
+            text,
+            ...(attachments.length > 0 ? { attachments } : {}),
+            status: 'inProgress',
+          },
+        ],
+      },
+    ]);
+    this.activeTurnsByThread.set(threadId, {
+      workspaceId: thread.workspaceId,
+      turnId,
+      phase: 'starting',
+    });
+    this.unreadThreadStatuses.delete(threadId);
+    this.promotingQueueItemsByThread.set(threadId, head.id);
+    this.refreshNavigator();
+    this.runtime.send({
+      type: 'turn.startQueued',
+      requestId: randomUUID(),
+      workspaceId: thread.workspaceId,
+      threadId,
+      turnId,
+      queueItemId: head.id,
+      expectedRevision: head.revision,
+      ...(head.modelProfileId ? { modelProfileId: head.modelProfileId } : {}),
+      content: head.content,
+    });
+      this.publishThreadProjection(threadId, true);
+      this.publish();
+    } finally {
+      releaseQueueOperation();
+    }
+  };
+
+  private finishQueueAfterTurn = async (
+    threadId: string,
+    status: 'completed' | 'failed' | 'interrupted',
+  ): Promise<void> => {
+    await Promise.resolve();
+    this.promotingQueueItemsByThread.delete(threadId);
+    const queue = this.runtimeQueuesByThread.get(threadId);
+    if (!queue || queue.messages.length === 0) {
+      return;
+    }
+    if (status === 'completed' && !queue.paused) {
+      await this.dispatchQueuedMessage(threadId);
+      return;
+    }
+    const thread = this.threadRecords.get(threadId);
+    if (!thread || queue.paused) {
+      return;
+    }
+    const releaseQueueOperation = await this.acquireQueueOperation(threadId);
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'queue.pause',
+          requestId: randomUUID(),
+          workspaceId: thread.workspaceId,
+          threadId,
+        },
+        'queue.changed',
+      );
+      if (this.applyRuntimeQueue(threadId, event.queue)) {
+        this.publishThreadProjection(threadId, true);
+        if (this.workspaceId === thread.workspaceId) {
+          this.publish();
+        }
+      }
+    } catch {
+      this.notice = {
+        kind: 'warning',
+        summary: 'The queued messages could not be paused safely.',
+      };
+      this.publish();
+    } finally {
+      releaseQueueOperation();
+    }
   };
 
   private publishThreadProjection = (

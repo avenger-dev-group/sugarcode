@@ -12,6 +12,10 @@ import { useStore as useZustandStore } from 'zustand';
 
 import {
   deleteConversationThread,
+  deleteQueuedConversationMessage,
+  updateQueuedConversationMessage,
+  steerQueuedConversationMessage,
+  resumeConversationQueue,
   respondToConversationUserInput,
   sendConversationMessage,
   startNewConversationThread,
@@ -49,6 +53,7 @@ import {
   type ConversationSkillActivity,
   type ConversationStateSnapshot,
   type ConversationThreadNavigatorSnapshot,
+  type ConversationQueuedMessage,
   type ConversationTurnStatus,
   type ConversationWorkspaceListActivity,
   type ConversationWorkspaceReadActivity,
@@ -1056,6 +1061,7 @@ export const toThreadViewModel = (
     workspaceIdentity: snapshot.workspaceId ?? null,
     threadIdentity: snapshot.threadId ?? null,
     turns: stableTurns,
+    queue: snapshot.queue ?? { paused: false, messages: [] },
     isEmpty: stableTurns.length === 0,
     ...(snapshot.notice ? { notice: snapshot.notice.summary } : {}),
   };
@@ -1286,6 +1292,12 @@ export const useStore = (): ThreadStore => {
   const [renameDraft, setRenameDraftState] = useState<string>('');
   const [renamePending, setRenamePending] = useState<boolean>(false);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [queueEditor, setQueueEditor] = useState<{
+    itemId: string | null;
+    draft: string;
+    modelProfileId: string;
+  }>({ itemId: null, draft: '', modelProfileId: '' });
+  const [queuePendingIds, setQueuePendingIds] = useState<readonly string[]>([]);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
@@ -1558,7 +1570,11 @@ export const useStore = (): ThreadStore => {
         setActionError(
           result.reason === 'invalidInput'
             ? '消息内容无效，请调整后重试。'
-            : 'The local Agent is not ready for another Turn.',
+            : result.reason === 'queueFull'
+              ? '当前队列已满（最多 10 条），请先调整或删除队列消息。'
+              : result.reason === 'modelUnavailable'
+                ? '所选模型当前不可用，请更换后重试。'
+                : 'The local Agent is not ready for this message.',
         );
       }
     } catch {
@@ -1581,6 +1597,125 @@ export const useStore = (): ThreadStore => {
       }
     } catch {
       setActionError('Desktop could not request a safe stop.');
+    }
+  };
+
+  const beginQueueEdit = (message: ConversationQueuedMessage): void => {
+    setQueueEditor({
+      itemId: message.id,
+      draft: message.input,
+      modelProfileId: message.modelProfileId ?? selectedModelProfileId,
+    });
+    setActionError(null);
+  };
+
+  const setQueuePending = (itemId: string, pending: boolean): void => {
+    setQueuePendingIds((current) =>
+      pending
+        ? current.includes(itemId) ? current : [...current, itemId]
+        : current.filter((candidate) => candidate !== itemId),
+    );
+  };
+
+  const saveQueueEdit = async (): Promise<void> => {
+    const message = thread.queue.messages.find(
+      (candidate) => candidate.id === queueEditor.itemId,
+    );
+    if (!message || !snapshot.threadId || !queueEditor.draft.trim()) {
+      return;
+    }
+    setQueuePending(message.id, true);
+    setActionError(null);
+    try {
+      const result = await updateQueuedConversationMessage({
+        threadId: snapshot.threadId,
+        queueItemId: message.id,
+        expectedRevision: message.revision,
+        input: queueEditor.draft,
+        ...(queueEditor.modelProfileId
+          ? { modelProfileId: queueEditor.modelProfileId }
+          : {}),
+      });
+      if (result.accepted) {
+        setQueueEditor({ itemId: null, draft: '', modelProfileId: '' });
+      } else {
+        setActionError(
+          result.reason === 'queueRevisionMismatch'
+            ? '队列消息已在其他窗口更新；已保留你的草稿，请核对后重试。'
+            : '队列消息保存失败，请重试。',
+        );
+      }
+    } catch {
+      setActionError('队列消息保存失败，请重试。');
+    } finally {
+      setQueuePending(message.id, false);
+    }
+  };
+
+  const deleteQueueMessage = async (
+    message: ConversationQueuedMessage,
+  ): Promise<void> => {
+    if (!snapshot.threadId) return;
+    setQueuePending(message.id, true);
+    setActionError(null);
+    try {
+      const result = await deleteQueuedConversationMessage({
+        threadId: snapshot.threadId,
+        queueItemId: message.id,
+        expectedRevision: message.revision,
+      });
+      if (!result.accepted) {
+        setActionError('该队列消息未能删除，队列可能已经更新。');
+      } else if (queueEditor.itemId === message.id) {
+        setQueueEditor({ itemId: null, draft: '', modelProfileId: '' });
+      }
+    } catch {
+      setActionError('该队列消息未能删除。');
+    } finally {
+      setQueuePending(message.id, false);
+    }
+  };
+
+  const steerQueueMessage = async (
+    message: ConversationQueuedMessage,
+  ): Promise<void> => {
+    if (!snapshot.threadId || !snapshot.activeTurnId) return;
+    setQueuePending(message.id, true);
+    setActionError(null);
+    try {
+      const result = await steerQueuedConversationMessage({
+        threadId: snapshot.threadId,
+        queueItemId: message.id,
+        expectedRevision: message.revision,
+        expectedTurnId: snapshot.activeTurnId,
+      });
+      if (!result.accepted) {
+        setActionError(
+          result.reason === 'notSteerable'
+            ? 'Slash Command 只能排队到下一回合执行。'
+            : '当前回合已越过可调整阶段，消息仍保留在队列中。',
+        );
+      }
+    } catch {
+      setActionError('当前无法调整方向，消息仍保留在队列中。');
+    } finally {
+      setQueuePending(message.id, false);
+    }
+  };
+
+  const resumeQueue = async (): Promise<void> => {
+    if (!snapshot.threadId) return;
+    setQueuePending('resume', true);
+    setActionError(null);
+    try {
+      const result = await resumeConversationQueue(snapshot.threadId);
+      if (!result.accepted) {
+        setActionError('队列未能继续，请检查模型配置后重试。');
+      }
+    } catch {
+      setActionError('队列未能继续。');
+    } finally {
+      setQueuePending('resume', false);
     }
   };
 
@@ -1862,6 +1997,10 @@ export const useStore = (): ThreadStore => {
     activeTurnProgress,
     isSending,
     actionError: actionError ?? projectionError,
+    queueEditor: {
+      ...queueEditor,
+      pendingIds: queuePendingIds,
+    },
     editableMessageTarget: messageEditing.editableMessageTarget,
     messageEditor: messageEditing.messageEditor,
     rename: {
@@ -1876,9 +2015,6 @@ export const useStore = (): ThreadStore => {
     modelOptions,
     selectedModelProfileId,
     modelSelectionDisabled:
-      snapshot.phase === 'starting' ||
-      snapshot.phase === 'inProgress' ||
-      snapshot.phase === 'stopping' ||
       isSending ||
       messageEditing.active,
     modelSwitchConfirmation,
@@ -1902,6 +2038,14 @@ export const useStore = (): ThreadStore => {
     confirmThreadRename,
     send,
     stop,
+    beginQueueEdit,
+    setQueueEditDraft: (value) => setQueueEditor((current) => ({ ...current, draft: value })),
+    setQueueEditModel: (profileId) => setQueueEditor((current) => ({ ...current, modelProfileId: profileId })),
+    cancelQueueEdit: () => setQueueEditor({ itemId: null, draft: '', modelProfileId: '' }),
+    saveQueueEdit,
+    deleteQueueMessage,
+    steerQueueMessage,
+    resumeQueue,
     respondToUserInput,
     implementPlan,
     refinePlan,

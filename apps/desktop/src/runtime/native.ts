@@ -133,6 +133,42 @@ export type NativeRuntimeBinding = Readonly<{
     status: string,
     errorJson?: string,
   ) => boolean;
+  createQueuedMessageJson?: (
+    threadId: string,
+    messageId: string,
+    contentJson: string,
+    modelProfileId?: string,
+  ) => string;
+  updateQueuedMessageJson?: (
+    threadId: string,
+    messageId: string,
+    expectedRevision: number,
+    contentJson: string,
+    modelProfileId?: string,
+  ) => string;
+  deleteQueuedMessageJson?: (
+    threadId: string,
+    messageId: string,
+    expectedRevision: number,
+  ) => string;
+  setQueuePausedJson?: (threadId: string, paused: boolean) => string;
+  promoteQueuedMessageJson?: (
+    threadId: string,
+    messageId: string,
+    expectedRevision: number,
+    turnId: string,
+    requestId: string,
+    providerWireApi: string,
+    model: string,
+  ) => string;
+  steerQueuedMessageJson?: (
+    threadId: string,
+    messageId: string,
+    expectedRevision: number,
+    turnId: string,
+    itemId: string,
+    sequence: number,
+  ) => string;
   createAgentTasksJson: (turnId: string, tasksJson: string) => string;
   updateAgentTask: (
     taskId: string,

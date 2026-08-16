@@ -99,6 +99,7 @@ export const acceptConversationThreadProjection = (
               ? { activeTurnId: projection.activeTurnId }
               : {}),
             turns: projection.turns,
+            ...(projection.queue ? { queue: projection.queue } : {}),
           },
         }
       : {}),
@@ -136,6 +137,7 @@ export const acceptConversationThreadDelta = (
     phase: delta.phase,
     ...(delta.activeTurnId ? { activeTurnId: delta.activeTurnId } : {}),
     turns,
+    ...(previous.queue ? { queue: previous.queue } : {}),
   };
   acceptConversationThreadProjection(projection);
   return 'accepted';
@@ -160,6 +162,7 @@ export const acceptForegroundCommit = (commit: ForegroundCommit): void => {
   };
   delete base.threadId;
   delete base.activeTurnId;
+  delete base.queue;
   conversationProjectionStore.setState({
     snapshot: commit.thread
       ? {
@@ -170,6 +173,7 @@ export const acceptForegroundCommit = (commit: ForegroundCommit): void => {
             ? { activeTurnId: commit.thread.activeTurnId }
             : {}),
           turns: commit.thread.turns,
+          ...(commit.thread.queue ? { queue: commit.thread.queue } : {}),
         }
       : { ...base, phase: 'idle', turns: [] },
     snapshotsByThread,

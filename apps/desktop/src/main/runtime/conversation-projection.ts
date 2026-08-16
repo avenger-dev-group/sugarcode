@@ -3,6 +3,7 @@ import type {
   ConversationAttachment,
   ConversationCommandExecutionResultOutcome,
   ConversationTurn,
+  ConversationThreadQueue,
   ConversationTurnError,
   ConversationWorkspacePatchFile,
 } from '../../shared/conversation.ts';
@@ -13,6 +14,7 @@ import {
   type RuntimeModelSelection,
   type RuntimeProviderError,
   type RuntimeThreadSnapshot,
+  type RuntimeThreadQueue,
   type RuntimeTurnItemRecord,
 } from '../../runtime/protocol.ts';
 import {
@@ -212,6 +214,57 @@ export const attachmentFromPart = (
     : { pdfPages: part.asset.pdfPages }),
 });
 
+const messageFromContent = (
+  id: string,
+  content: readonly unknown[],
+): ConversationTurn['messages'][number] | undefined => {
+  const text = content
+    .filter(
+      (part): part is { type: 'text'; text: string } =>
+        isRecord(part) && part.type === 'text' && typeof part.text === 'string',
+    )
+    .map((part) => part.text)
+    .join('\n');
+  const attachments = content.flatMap(
+    (part): readonly ConversationAttachment[] =>
+      isRecord(part) &&
+      part.type === 'asset' &&
+      isRecord(part.asset)
+        ? [attachmentFromPart(part as Extract<RuntimeContentPart, { type: 'asset' }>)]
+        : [],
+  );
+  return text || attachments.length > 0
+    ? {
+        id,
+        role: 'user',
+        text,
+        ...(attachments.length > 0 ? { attachments } : {}),
+        status: 'completed',
+      }
+    : undefined;
+};
+
+export const projectThreadQueue = (
+  queue: RuntimeThreadQueue,
+): ConversationThreadQueue => ({
+  paused: queue.paused,
+  messages: queue.messages.map((message) => {
+    const projected = messageFromContent(message.id, message.content);
+    return {
+      id: message.id,
+      position: message.position,
+      revision: message.revision,
+      input: projected?.text ?? '',
+      attachments: projected?.attachments ?? [],
+      ...(message.modelProfileId
+        ? { modelProfileId: message.modelProfileId }
+        : {}),
+      createdAt: message.createdAt,
+      updatedAt: message.updatedAt,
+    };
+  }),
+});
+
 export const orchestrationActivity = (
   tasks: readonly RuntimeAgentTask[],
 ): ConversationActivity | undefined => {
@@ -323,32 +376,19 @@ export const projectThread = (
       items,
       fallbackModel(record.providerWireApi, record.model),
     );
-    const user = items.find((item) => item.kind === 'turn.userMessage')?.payload;
-    const userContent = Array.isArray(user?.content) ? user.content : [];
-    const userText = userContent
-      .filter(
-        (part): part is { type: 'text'; text: string } =>
-          typeof part === 'object' &&
-          part !== null &&
-          (part as { type?: unknown }).type === 'text' &&
-          typeof (part as { text?: unknown }).text === 'string',
-      )
-      .map((part) => part.text)
-      .join('\n');
-    const attachments = userContent.flatMap(
-      (part): readonly ConversationAttachment[] =>
-        typeof part === 'object' &&
-        part !== null &&
-        (part as { type?: unknown }).type === 'asset' &&
-        typeof (part as { asset?: unknown }).asset === 'object' &&
-        (part as { asset?: unknown }).asset !== null
-          ? [
-              attachmentFromPart(
-                part as Extract<RuntimeContentPart, { type: 'asset' }>,
-              ),
-            ]
-          : [],
-    );
+    const userMessages = items
+      .filter((item) => item.kind === 'turn.userMessage')
+      .sort((left, right) => left.sequence - right.sequence)
+      .flatMap((item, index) => {
+        const content = Array.isArray(item.payload.content)
+          ? item.payload.content
+          : [];
+        const message = messageFromContent(
+          index === 0 ? `${record.id}:user` : item.id,
+          content,
+        );
+        return message ? [message] : [];
+      });
     const completedTextItems = items.filter(
       (item) => item.kind === 'turn.textCompleted',
     );
@@ -401,17 +441,7 @@ export const projectThread = (
       ...(restoredOrchestration ? [restoredOrchestration] : []),
     ];
     const messages = [
-      ...(userText || attachments.length > 0
-        ? [
-            {
-              id: `${record.id}:user`,
-              role: 'user' as const,
-              text: userText,
-              ...(attachments.length > 0 ? { attachments } : {}),
-              status: 'completed' as const,
-            },
-          ]
-        : []),
+      ...userMessages,
       ...(finalText
         ? [
             {

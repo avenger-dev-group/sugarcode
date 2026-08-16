@@ -261,7 +261,7 @@ export const isMessage = (value: unknown): value is ConversationMessage =>
       value.attachments.length <= MAX_CONVERSATION_ATTACHMENTS &&
       value.attachments.every(isConversationAttachment)));
 
-const isConversationAttachment = (
+export const isConversationAttachment = (
   value: unknown,
 ): value is ConversationAttachment =>
   isRecord(value) &&

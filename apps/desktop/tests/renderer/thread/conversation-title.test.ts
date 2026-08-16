@@ -44,8 +44,9 @@ const thread: ThreadViewModel = {
   phase: 'unavailable',
   workspaceIdentity: null,
   threadIdentity: CURRENT_THREAD_ID,
-  turns: [],
-  isEmpty: true,
+      turns: [],
+      queue: { paused: false, messages: [] },
+      isEmpty: true,
 };
 
 const navigator: ThreadNavigatorViewModel = {

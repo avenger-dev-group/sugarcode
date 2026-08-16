@@ -12,6 +12,10 @@ const {
 
 test('conversation compatibility barrel preserves its public runtime exports', () => {
   assert.deepEqual(Object.keys(conversation).sort(), [
+    'CONVERSATION_QUEUE_DELETE_CHANNEL',
+    'CONVERSATION_QUEUE_RESUME_CHANNEL',
+    'CONVERSATION_QUEUE_STEER_CHANNEL',
+    'CONVERSATION_QUEUE_UPDATE_CHANNEL',
     'CONVERSATION_REVISE_CHANNEL',
     'CONVERSATION_SEND_CHANNEL',
     'CONVERSATION_STATE_CHANGED_CHANNEL',
@@ -36,9 +40,12 @@ test('conversation compatibility barrel preserves its public runtime exports', (
     'MAX_USER_INPUT_OPTIONS',
     'MAX_USER_INPUT_QUESTIONS',
     'isConversationActionResult',
+    'isConversationQueuedMessageMutationRequest',
+    'isConversationQueuedMessageUpdateRequest',
     'isConversationReviseTurnRequest',
     'isConversationSendRequest',
     'isConversationStateSnapshot',
+    'isConversationSteerQueuedMessageRequest',
     'isConversationThreadProjectionDelta',
     'isConversationThreadProjectionSnapshot',
     'isConversationUserInputResponse',

@@ -23,6 +23,8 @@ type RuntimeSkillsContext = Readonly<{
 export type TurnSkills = Readonly<{
   instruction: string;
   tools: readonly FunctionTool<Schema>[];
+  validateSteering: (content: readonly RuntimeContentPart[]) => void;
+  steeringInstruction: (content: readonly RuntimeContentPart[]) => string;
 }>;
 
 const skillSchema = (skills: readonly RuntimeSkill[]): Schema =>
@@ -132,7 +134,12 @@ export const createTurnSkills = (
 ): TurnSkills => {
   const context = parseContext(nativeRuntime.skillsContextJson(workspaceId));
   if (context.skills.length === 0) {
-    return { instruction: '', tools: [] };
+    return {
+      instruction: '',
+      tools: [],
+      validateSteering: () => undefined,
+      steeringInstruction: () => '',
+    };
   }
   const selectedNames = selectedSkillNames(textInput(content), context.skills);
   const selected = context.skills.filter((skill) =>
@@ -155,6 +162,21 @@ export const createTurnSkills = (
     .join('\n');
   const loaded = new Set(selectedNames);
   let loadedBytes = selectedBytes;
+  const validateSteering = (content: readonly RuntimeContentPart[]): void => {
+    const names = selectedSkillNames(textInput(content), context.skills);
+    const additions = context.skills.filter(
+      (skill) => names.includes(skill.name) && !loaded.has(skill.name),
+    );
+    if (loaded.size + additions.length > MAX_SELECTED_SKILLS) {
+      throw new Error('A Turn can explicitly select at most four Skills.');
+    }
+    if (
+      loadedBytes + additions.reduce((bytes, skill) => bytes + skill.bytes, 0) >
+      MAX_SELECTED_BYTES
+    ) {
+      throw new Error('Selected Skills exceed the bounded Turn context.');
+    }
+  };
   const tool = new FunctionTool({
     name: 'load_skill',
     description:
@@ -217,5 +239,30 @@ export const createTurnSkills = (
         ? `\n\n# Explicitly selected Skills\n\n${selectedContent.join('\n\n')}`
         : ''),
     tools: [tool],
+    validateSteering,
+    steeringInstruction: (content) => {
+      const names = selectedSkillNames(textInput(content), context.skills);
+      if (names.length === 0) {
+        return '';
+      }
+      validateSteering(content);
+      const selectedForSteer: string[] = [];
+      for (const name of names) {
+        const skill = context.skills.find((candidate) => candidate.name === name);
+        if (!skill) {
+          continue;
+        }
+        if (!loaded.has(name)) {
+          loaded.add(name);
+          loadedBytes += skill.bytes;
+        }
+        selectedForSteer.push(
+          `## Selected Skill: $${skill.name}\n\n${skill.content}`,
+        );
+      }
+      return selectedForSteer.length > 0
+        ? '# Skills selected by the user adjustment\n\n' + selectedForSteer.join('\n\n')
+        : '';
+    },
   };
 };

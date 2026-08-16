@@ -17,6 +17,118 @@ fn seeded_store(directory: &tempfile::TempDir) -> Store {
 }
 
 #[test]
+fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let content = |index: usize| {
+        serde_json::json!([{"type":"text","text":format!("queued {index}")}]).to_string()
+    };
+    {
+        let mut store = seeded_store(&directory);
+        for index in 1..=10 {
+            let queue: Value = serde_json::from_str(
+                &store
+                    .create_queued_message_json(
+                        "thread-1",
+                        &format!("queue-{index}"),
+                        &content(index),
+                        Some("profile-1"),
+                    )
+                    .expect("enqueue"),
+            )
+            .expect("queue JSON");
+            assert_eq!(queue["messages"].as_array().expect("messages").len(), index);
+        }
+        assert!(store
+            .create_queued_message_json("thread-1", "queue-11", &content(11), None)
+            .expect_err("queue capacity")
+            .to_string()
+            .contains("queueFull"));
+
+        let updated: Value = serde_json::from_str(
+            &store
+                .update_queued_message_json(
+                    "thread-1",
+                    "queue-1",
+                    1,
+                    &content(101),
+                    Some("profile-2"),
+                )
+                .expect("update queue head"),
+        )
+        .expect("updated queue JSON");
+        assert_eq!(updated["messages"][0]["revision"], 2);
+        assert!(store
+            .update_queued_message_json("thread-1", "queue-1", 1, &content(102), None)
+            .expect_err("stale revision")
+            .to_string()
+            .contains("queueRevisionMismatch"));
+
+        store
+            .delete_queued_message_json("thread-1", "queue-2", 1)
+            .expect("delete queued message");
+        store
+            .create_queued_message_json("thread-1", "queue-11", &content(11), None)
+            .expect("reuse queue capacity");
+
+        let promoted: Value = serde_json::from_str(
+            &store
+                .promote_queued_message_json(
+                    "thread-1",
+                    "queue-1",
+                    2,
+                    "turn-queued",
+                    "request-queued",
+                    "openaiResponses",
+                    "fixture-model",
+                )
+                .expect("atomically promote queue head"),
+        )
+        .expect("promoted queue JSON");
+        assert_eq!(promoted["message"]["id"], "queue-1");
+        assert_eq!(promoted["queue"]["messages"][0]["id"], "queue-3");
+        let steered: Value = serde_json::from_str(
+            &store
+                .steer_queued_message_json(
+                    "thread-1",
+                    "queue-3",
+                    1,
+                    "turn-queued",
+                    "turn-queued:steer:queue-3",
+                    5,
+                )
+                .expect("atomically steer queue head"),
+        )
+        .expect("steered queue JSON");
+        assert_eq!(steered["message"]["id"], "queue-3");
+        assert_eq!(steered["queue"]["messages"][0]["id"], "queue-4");
+        let snapshot: Value = serde_json::from_str(
+            &store.load_thread_json("thread-1").expect("thread snapshot"),
+        )
+        .expect("snapshot JSON");
+        assert_eq!(snapshot["turns"][0]["id"], "turn-queued");
+        assert_eq!(snapshot["items"][0]["kind"], "turn.userMessage");
+        assert_eq!(snapshot["items"].as_array().expect("items").len(), 2);
+        assert_eq!(snapshot["queue"]["messages"].as_array().expect("queue").len(), 8);
+    }
+
+    let mut reopened = Store::open(directory.path()).expect("reopen store");
+    let recovered: Value = serde_json::from_str(
+        &reopened.load_thread_json("thread-1").expect("recovered thread"),
+    )
+    .expect("recovered JSON");
+    assert_eq!(recovered["turns"][0]["status"], "interrupted");
+    assert_eq!(recovered["queue"]["paused"], true);
+    assert!(reopened
+        .delete_thread("thread-1", "workspace-1")
+        .expect("delete thread"));
+    let connection = Connection::open(Store::database_path(directory.path())).expect("database");
+    let queued: i64 = connection
+        .query_row("SELECT COUNT(*) FROM queued_messages", [], |row| row.get(0))
+        .expect("queued count");
+    assert_eq!(queued, 0);
+}
+
+#[test]
 fn project_environment_trust_is_durable_and_bound_to_the_exact_hash() {
     let directory = tempfile::tempdir().expect("tempdir");
     let root = "/fixture/workspace";
@@ -906,6 +1018,8 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
              DROP TABLE skill_preferences;
              DROP TABLE project_environment_trust;
              DROP TABLE task_workspaces;
+             DROP TABLE queued_messages;
+             DROP TABLE thread_queues;
              ALTER TABLE approvals DROP COLUMN payload_json;
              DROP INDEX threads_workspace_archive_updated;
              CREATE TABLE threads_v1 (
@@ -935,5 +1049,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 10);
+    assert_eq!(version, 11);
 }

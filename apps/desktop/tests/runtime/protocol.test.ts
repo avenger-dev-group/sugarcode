@@ -69,6 +69,66 @@ test('private runtime records an explicit user Stop source', () => {
   assert.equal(isRuntimeCommand(command), false);
 });
 
+test('private runtime v5 validates durable queue mutations and steering guards', () => {
+  const create = {
+    type: 'queue.messageCreate',
+    requestId: 'request-queue-create',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    queueItemId: 'queue-fixture',
+    modelProfileId: 'profile_1',
+    content: [{ type: 'text', text: 'Continue with this detail.' }],
+  } as const;
+  assert.equal(isRuntimeCommand(create), true);
+  assert.equal(
+    isRuntimeCommand({
+      ...create,
+      type: 'queue.messageUpdate',
+      expectedRevision: 1,
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'turn.steerQueued',
+      requestId: 'request-queue-steer',
+      workspaceId: 'workspace-fixture',
+      threadId: 'thread-fixture',
+      expectedTurnId: 'turn-fixture',
+      queueItemId: 'queue-fixture',
+      expectedRevision: 1,
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({ ...create, type: 'queue.messageUpdate', expectedRevision: 0 }),
+    false,
+  );
+  assert.equal(
+    isRuntimeEvent({
+      type: 'queue.changed',
+      sequence: 7,
+      requestId: 'request-queue-create',
+      workspaceId: 'workspace-fixture',
+      threadId: 'thread-fixture',
+      queue: {
+        paused: false,
+        messages: [{
+          id: 'queue-fixture',
+          threadId: 'thread-fixture',
+          position: 1,
+          revision: 1,
+          content: create.content,
+          modelProfileId: 'profile_1',
+          createdAt: 1,
+          updatedAt: 1,
+        }],
+      },
+    }),
+    true,
+  );
+});
+
 test('private runtime validates bounded workspace path suggestions', () => {
   assert.equal(
     isRuntimeCommand({

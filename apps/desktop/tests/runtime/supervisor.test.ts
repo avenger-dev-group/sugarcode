@@ -85,7 +85,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 4,
+    protocolVersion: 5,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(first.messages[1]?.type, 'workspace.open');
@@ -124,7 +124,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 4,
+    protocolVersion: 5,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(second?.messages[1]?.type, 'workspace.open');
@@ -147,7 +147,7 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 4,
+    protocolVersion: 5,
   });
   const response = supervisor.request(
     { type: 'model.inspect', requestId: 'request-model-inspect' },
@@ -169,6 +169,45 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
   supervisor.shutdown();
 });
 
+test('RuntimeSupervisor tracks a promoted queued Turn through a runtime crash', () => {
+  const child = new FixtureChild();
+  const events: RuntimeEvent[] = [];
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => child as never,
+  });
+  supervisor.subscribe((event) => events.push(event));
+  supervisor.start();
+  child.emit('spawn');
+  child.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: child.messages[0]?.requestId,
+    protocolVersion: 5,
+  });
+  supervisor.send({
+    type: 'turn.startQueued',
+    requestId: 'request-queued-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-queued',
+    queueItemId: 'queue-1',
+    expectedRevision: 1,
+    content: [{ type: 'text', text: 'Queued request' }],
+  });
+  child.emit('exit', 19);
+  const interrupted = events.find(
+    (event) => event.type === 'turn.completed' && event.turnId === 'turn-queued',
+  );
+  assert.equal(interrupted?.type, 'turn.completed');
+  if (interrupted?.type === 'turn.completed') {
+    assert.equal(interrupted.status, 'interrupted');
+  }
+  supervisor.shutdown();
+});
+
 test('RuntimeSupervisor rejects an unconfirmed revision when its Turn ends', async () => {
   const child = new FixtureChild();
   const supervisor = new RuntimeSupervisor({
@@ -183,7 +222,7 @@ test('RuntimeSupervisor rejects an unconfirmed revision when its Turn ends', asy
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 4,
+    protocolVersion: 5,
   });
   const response = supervisor.request(
     {
@@ -238,7 +277,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 4,
+    protocolVersion: 5,
   });
   supervisor.send({
     type: 'mcp.sessionSet',
@@ -280,7 +319,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 4,
+    protocolVersion: 5,
   });
   assert.equal(second.messages[1]?.type, 'mcp.sessionSet');
   assert.deepEqual(

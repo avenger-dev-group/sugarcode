@@ -20,8 +20,16 @@ export type ConversationActionResult = Readonly<{
     | 'notLatestTurn'
     | 'unknownThread'
     | 'turnActive'
+    | 'queueFull'
+    | 'queueItemNotFound'
+    | 'queueRevisionMismatch'
+    | 'turnMismatch'
+    | 'notSteerable'
+    | 'modelUnavailable'
     | 'unavailable'
     | 'noActiveTurn';
+  disposition?: 'started' | 'queued';
+  queueItemId?: string;
 }>;
 export type ConversationApi = Readonly<{
   getConversationState: () => Promise<ConversationStateSnapshot>;
@@ -45,6 +53,16 @@ export type ConversationApi = Readonly<{
   reviseConversationTurn: (
     request: ConversationReviseTurnRequest,
   ) => Promise<ConversationActionResult>;
+  updateQueuedConversationMessage: (
+    request: ConversationQueuedMessageUpdateRequest,
+  ) => Promise<ConversationActionResult>;
+  deleteQueuedConversationMessage: (
+    request: ConversationQueuedMessageMutationRequest,
+  ) => Promise<ConversationActionResult>;
+  steerQueuedConversationMessage: (
+    request: ConversationSteerQueuedMessageRequest,
+  ) => Promise<ConversationActionResult>;
+  resumeConversationQueue: (threadId: string) => Promise<ConversationActionResult>;
   stopConversationTurn: (threadId: string) => Promise<ConversationActionResult>;
   respondToConversationUserInput: (
     response: ConversationUserInputResponse,
@@ -73,3 +91,22 @@ export type ConversationReviseTurnRequest = Readonly<{
   text: string;
   modelProfileId?: string;
 }>;
+
+export type ConversationQueuedMessageUpdateRequest = Readonly<{
+  threadId: string;
+  queueItemId: string;
+  expectedRevision: number;
+  input: string;
+  modelProfileId?: string;
+}>;
+
+export type ConversationQueuedMessageMutationRequest = Readonly<{
+  threadId: string;
+  queueItemId: string;
+  expectedRevision: number;
+}>;
+
+export type ConversationSteerQueuedMessageRequest =
+  ConversationQueuedMessageMutationRequest & Readonly<{
+    expectedTurnId: string;
+  }>;

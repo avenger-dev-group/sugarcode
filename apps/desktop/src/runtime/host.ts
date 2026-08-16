@@ -12,6 +12,7 @@ import { Type, type Content, type Part, type Schema } from '@google/genai';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { userInputBoundaryCommentary } from '../shared/conversation/user-input-boundary.ts';
+import { parseComposerSubmission } from '../shared/composer.ts';
 import {
   ContextManager,
   type RuntimeContextCheckpoint,
@@ -70,6 +71,7 @@ import {
   type RuntimeProviderConfig,
   type RuntimeProviderError,
   type RuntimeThreadRecord,
+  type RuntimeThreadQueue,
   type RuntimeThreadSnapshot,
   type RuntimeUsage,
   type RuntimeUserInputQuestion,
@@ -82,7 +84,7 @@ import {
   executePrivilegedWorkspaceTool,
   workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
-import { createTurnSkills } from './skills.ts';
+import { createTurnSkills, type TurnSkills } from './skills.ts';
 import {
   toolFailureRecoveryKey,
   toolResultFailed,
@@ -275,6 +277,7 @@ type ResolvedProfile = Readonly<{
 
 type TurnExecutionCommand =
   | Extract<RuntimeCommand, { type: 'turn.start' }>
+  | Extract<RuntimeCommand, { type: 'turn.startQueued' }>
   | Extract<RuntimeCommand, { type: 'turn.revise' }>;
 
 type TurnContextCommand =
@@ -298,6 +301,7 @@ type TurnDriverOptions = Readonly<{
   onEvent: (event: Event, textItems: Map<string, TextItemState>) => void;
   onCompletedEvent?: (event: Event) => void;
   consumePendingResults?: () => Promise<string | null>;
+  consumePendingSteers?: () => readonly Content[];
   completionGate?: () => boolean;
   retryFinalAfterToolFailure?: () => boolean;
   terminalToolResult?: (event: Event) => boolean;
@@ -309,6 +313,16 @@ type TurnDriverOptions = Readonly<{
   takeProviderError?: () => RuntimeProviderError | undefined;
   validateInvocation?: () => void;
 }>;
+
+type QueueNativeBinding = Required<Pick<
+  NativeRuntimeBinding,
+  | 'createQueuedMessageJson'
+  | 'updateQueuedMessageJson'
+  | 'deleteQueuedMessageJson'
+  | 'setQueuePausedJson'
+  | 'promoteQueuedMessageJson'
+  | 'steerQueuedMessageJson'
+>>;
 
 type InvalidArgumentGuard = {
   repeats: Map<string, number>;
@@ -671,6 +685,12 @@ export class RuntimeHost {
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly activeTurnThreads = new Map<string, string>();
+  private readonly activeTurnSelections = new Map<string, RuntimeModelSelection>();
+  private readonly activeTurnSkills = new Map<string, TurnSkills>();
+  private readonly pendingSteersByTurn = new Map<
+    string,
+    RuntimeContentPart[][]
+  >();
   private readonly cancellationSources = new Map<string, 'stopButton'>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingUserInputs = new Map<string, PendingUserInput>();
@@ -855,10 +875,157 @@ export class RuntimeHost {
         });
         break;
       case 'turn.start':
+      case 'turn.startQueued':
       case 'turn.revise':
         this.requireReady(command.requestId);
         void this.startTurn(command);
         break;
+      case 'queue.messageCreate': {
+        this.requireReady(command.requestId);
+        const queue = this.parseNativeJson<RuntimeThreadQueue>(
+          this.requireQueueNative().createQueuedMessageJson(
+            command.threadId,
+            command.queueItemId,
+            JSON.stringify(command.content),
+            command.modelProfileId,
+          ),
+        );
+        this.emit({
+          type: 'queue.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          queue,
+        });
+        break;
+      }
+      case 'queue.messageUpdate': {
+        this.requireReady(command.requestId);
+        const queue = this.parseNativeJson<RuntimeThreadQueue>(
+          this.requireQueueNative().updateQueuedMessageJson(
+            command.threadId,
+            command.queueItemId,
+            command.expectedRevision,
+            JSON.stringify(command.content),
+            command.modelProfileId,
+          ),
+        );
+        this.emit({
+          type: 'queue.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          queue,
+        });
+        break;
+      }
+      case 'queue.messageDelete': {
+        this.requireReady(command.requestId);
+        const queue = this.parseNativeJson<RuntimeThreadQueue>(
+          this.requireQueueNative().deleteQueuedMessageJson(
+            command.threadId,
+            command.queueItemId,
+            command.expectedRevision,
+          ),
+        );
+        this.emit({
+          type: 'queue.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          queue,
+        });
+        break;
+      }
+      case 'queue.pause':
+      case 'queue.resume': {
+        this.requireReady(command.requestId);
+        const queue = this.parseNativeJson<RuntimeThreadQueue>(
+          this.requireQueueNative().setQueuePausedJson(
+            command.threadId,
+            command.type === 'queue.pause',
+          ),
+        );
+        this.emit({
+          type: 'queue.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          queue,
+        });
+        break;
+      }
+      case 'turn.steerQueued': {
+        this.requireReady(command.requestId);
+        if (
+          !this.activeTurns.has(command.expectedTurnId) ||
+          this.activeTurnThreads.get(command.expectedTurnId) !== command.threadId ||
+          this.activeTurns.get(command.expectedTurnId)?.signal.aborted
+        ) {
+          throw new Error('turnMismatch');
+        }
+        const snapshot = this.parseNativeJson<RuntimeThreadSnapshot>(
+          this.requireNative().loadThreadJson(command.threadId),
+        );
+        const queued = snapshot.queue.messages.find(
+          (message) => message.id === command.queueItemId,
+        );
+        if (!queued) {
+          throw new Error('queueItemNotFound');
+        }
+        if (queued.revision !== command.expectedRevision) {
+          throw new Error('queueRevisionMismatch');
+        }
+        const activeSelection = this.activeTurnSelections.get(
+          command.expectedTurnId,
+        );
+        if (!activeSelection) {
+          throw new Error('notSteerable');
+        }
+        this.contentFromParts(queued.content, activeSelection);
+        const activeSkills = this.activeTurnSkills.get(command.expectedTurnId);
+        if (!activeSkills) {
+          throw new Error('notSteerable');
+        }
+        activeSkills.validateSteering(queued.content);
+        if (
+          queued.content.some(
+            (part) =>
+              part.type === 'text' &&
+              parseComposerSubmission(part.text).references.some(
+                (reference) => reference.kind === 'command',
+              ),
+          )
+        ) {
+          throw new Error('notSteerable');
+        }
+        const itemId = `${command.expectedTurnId}:steer:${command.queueItemId}`;
+        const taken = this.parseNativeJson<{
+          message: { content: RuntimeContentPart[] };
+          queue: RuntimeThreadQueue;
+        }>(this.requireQueueNative().steerQueuedMessageJson(
+          command.threadId,
+          command.queueItemId,
+          command.expectedRevision,
+          command.expectedTurnId,
+          itemId,
+          this.sequence + 1,
+        ));
+        const pending = this.pendingSteersByTurn.get(command.expectedTurnId) ?? [];
+        pending.push([...taken.message.content]);
+        this.pendingSteersByTurn.set(command.expectedTurnId, pending);
+        this.emitTransient({
+          type: 'turn.steered',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.expectedTurnId,
+          itemId,
+          content: taken.message.content,
+          queue: taken.queue,
+        });
+        break;
+      }
       case 'context.compact':
         this.requireReady(command.requestId);
         void this.compactContext(command);
@@ -1480,6 +1647,21 @@ export class RuntimeHost {
     return this.nativeRuntime;
   };
 
+  private requireQueueNative = (): QueueNativeBinding => {
+    const native = this.requireNative();
+    if (
+      typeof native.createQueuedMessageJson !== 'function' ||
+      typeof native.updateQueuedMessageJson !== 'function' ||
+      typeof native.deleteQueuedMessageJson !== 'function' ||
+      typeof native.setQueuePausedJson !== 'function' ||
+      typeof native.promoteQueuedMessageJson !== 'function' ||
+      typeof native.steerQueuedMessageJson !== 'function'
+    ) {
+      throw new Error('The native runtime does not support durable queues.');
+    }
+    return native as QueueNativeBinding;
+  };
+
   private taskWorkspaceBindingId = (workspaceId: string, threadId: string): string => {
     const native = this.requireNative();
     return typeof native.taskWorkspaceBindingId === 'function'
@@ -1705,29 +1887,30 @@ export class RuntimeHost {
         const items = snapshot.items
           .filter((item) => item.turnId === turn.id)
           .sort((left, right) => left.sequence - right.sequence);
-        const user = items.find((item) => item.kind === 'turn.userMessage');
-        const content = user?.payload.content;
-        if (Array.isArray(content)) {
-          if (!content.every(isRuntimeContentPart)) {
-            throw new Error('Stored user content is invalid.');
+        for (const item of items) {
+          if (item.kind === 'turn.userMessage') {
+            const content = item.payload.content;
+            if (!Array.isArray(content) || !content.every(isRuntimeContentPart)) {
+              throw new Error('Stored user content is invalid.');
+            }
+            await this.sessions.appendEvent({
+              session,
+              event: createEvent({
+                id: item.id,
+                invocationId: `restore:${turn.id}`,
+                author: 'user',
+                content: this.contentFromParts(content, selection),
+              }),
+            });
+            continue;
           }
-          await this.sessions.appendEvent({
-            session,
-            event: createEvent({
-              id: `${turn.id}:restored-user`,
-              invocationId: `restore:${turn.id}`,
-              author: 'user',
-              content: this.contentFromParts(content, selection),
-            }),
-          });
-        }
-        if (turn.status !== 'completed') {
-          continue;
-        }
-        for (const item of items.filter((candidate) =>
-          candidate.kind === 'turn.modelHistory' ||
-          candidate.kind === 'turn.contextCheckpoint'
-        )) {
+          if (
+            turn.status !== 'completed' ||
+            (item.kind !== 'turn.modelHistory' &&
+              item.kind !== 'turn.contextCheckpoint')
+          ) {
+            continue;
+          }
           const restored = item.kind === 'turn.contextCheckpoint' &&
               typeof item.payload.summary === 'string'
             ? {
@@ -2530,6 +2713,25 @@ export class RuntimeHost {
         });
       }
       if (outcome.kind === 'final') {
+        const pendingSteers = options.consumePendingSteers?.() ?? [];
+        if (pendingSteers.length > 0) {
+          options.settleFinalCandidate?.(false, textItems);
+          message = {
+            role: 'user',
+            parts: pendingSteers.flatMap((content, index) => [
+              ...(index === 0
+                ? [{
+                    text:
+                      '# User adjustment\n\nThe user added the following direction while this Turn was running. Apply it before continuing.',
+                  }]
+                : []),
+              ...(content.parts ?? []),
+            ]),
+          };
+          commentaryOnlyCount = 0;
+          truncationCount = 0;
+          continue;
+        }
         const pendingResults = await options.consumePendingResults?.() ?? null;
         if (pendingResults) {
           options.settleFinalCandidate?.(false, textItems);
@@ -2693,10 +2895,49 @@ export class RuntimeHost {
     }
     const controller = new AbortController();
     let revisionCommitted = false;
+    let turnContent = command.type === 'turn.startQueued' ? [] : command.content;
     this.activeTurns.set(command.turnId, controller);
     this.activeTurnThreads.set(command.turnId, command.threadId);
     try {
-      const resolved = this.resolveProfile(command);
+      const resolved = (() => {
+        try {
+          return this.resolveProfile(command);
+        } catch (error) {
+          if (command.type === 'turn.startQueued') {
+            const message = error instanceof Error
+              ? error.message
+              : 'The queued model is unavailable.';
+            throw new Error(`modelUnavailable: ${message}`);
+          }
+          throw error;
+        }
+      })();
+      this.activeTurnSelections.set(command.turnId, resolved.selection);
+      const queuedSubmissionBeforePromotion = command.type === 'turn.startQueued'
+        ? parseComposerSubmission(
+            command.content
+              .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+                part.type === 'text')
+              .map((part) => part.text)
+              .join('\n'),
+          )
+        : undefined;
+      const queuedCompaction = queuedSubmissionBeforePromotion?.references.some(
+        (reference) =>
+          reference.kind === 'command' && reference.target === 'compact',
+      ) ?? false;
+      let queuedTurnSkills: TurnSkills | undefined;
+      if (command.type === 'turn.startQueued') {
+        this.contentFromParts(command.content, resolved.selection);
+        if (this.nativeRuntime && !queuedCompaction) {
+          queuedTurnSkills = createTurnSkills(
+            this.nativeRuntime,
+            this.taskWorkspaceBindingId(command.workspaceId, command.threadId),
+            command.content,
+          );
+          this.activeTurnSkills.set(command.turnId, queuedTurnSkills);
+        }
+      }
       if (command.type === 'turn.revise') {
         // Resolve and validate every retained asset before replacing durable history.
         // Once the transaction commits, later provider failures belong to the new Turn.
@@ -2735,6 +2976,34 @@ export class RuntimeHost {
           sessionId: command.threadId,
         });
         await this.ensureSession(command, resolved.selection);
+      } else if (command.type === 'turn.startQueued') {
+        withDurableStateWrite(() =>
+          this.nativeRuntime?.ensureThread(
+            command.threadId,
+            command.workspaceId,
+          ));
+        await this.ensureSession(command, resolved.selection);
+        const promoted = this.parseNativeJson<{
+          message: { content: RuntimeContentPart[] };
+          queue: RuntimeThreadQueue;
+        }>(withDurableStateWrite(() =>
+          this.requireQueueNative().promoteQueuedMessageJson(
+            command.threadId,
+            command.queueItemId,
+            command.expectedRevision,
+            command.turnId,
+            command.requestId,
+            resolved.provider.wireApi,
+            resolved.provider.model,
+          )));
+        this.emit({
+          type: 'queue.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          queue: promoted.queue,
+        });
+        turnContent = promoted.message.content;
       } else {
         withDurableStateWrite(() =>
           this.nativeRuntime?.ensureThread(
@@ -2766,17 +3035,29 @@ export class RuntimeHost {
         threadId: command.threadId,
         turnId: command.turnId,
         itemId: `${command.turnId}:user`,
-        content: command.content,
+        content: turnContent,
       } as const;
-      if (command.type === 'turn.revise') {
+      if (command.type === 'turn.revise' || command.type === 'turn.startQueued') {
         this.emitTransient(userMessageEvent);
       } else {
         this.emit(userMessageEvent);
       }
-      if (command.generateTitle) {
+      if (
+        command.type === 'turn.startQueued' &&
+        queuedCompaction
+      ) {
+        await this.executeManualCompaction(
+          command,
+          resolved,
+          controller,
+          queuedSubmissionBeforePromotion?.text.trim() || undefined,
+        );
+        return;
+      }
+      if ('generateTitle' in command && command.generateTitle) {
         void this.generateTitle(command, resolved, controller.signal);
       }
-      const turnMode = composerTurnMode(command.content);
+      const turnMode = composerTurnMode(turnContent);
       const turnAccess = turnMode === 'execute'
         ? 'workspaceWrite' as const
         : 'readOnly' as const;
@@ -2836,20 +3117,47 @@ export class RuntimeHost {
       const nativeWorkspaceId = this.nativeRuntime
         ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
         : command.workspaceId;
-      const turnSkills = this.nativeRuntime
+      const turnSkills = queuedTurnSkills ?? (this.nativeRuntime
         ? createTurnSkills(
             this.nativeRuntime,
             nativeWorkspaceId,
-            command.content,
+            turnContent,
           )
-        : { instruction: '', tools: [] };
-      const composerInstruction = composerIntentInstruction(command.content);
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          });
+      this.activeTurnSkills.set(command.turnId, turnSkills);
+      const takePendingSteers = (): readonly Content[] => {
+        const queued = this.pendingSteersByTurn.get(command.turnId) ?? [];
+        this.pendingSteersByTurn.delete(command.turnId);
+        return queued.map((content) => {
+          const modelContent = this.contentFromParts(content, resolved.selection);
+          const composerInstruction = composerIntentInstruction(content);
+          const skillInstruction = turnSkills.steeringInstruction(content);
+          const metadata = [composerInstruction, skillInstruction]
+            .filter(Boolean)
+            .join('\n\n');
+          return metadata
+            ? {
+                role: 'user' as const,
+                parts: [
+                  { text: `# User adjustment metadata\n\n${metadata}` },
+                  ...(modelContent.parts ?? []),
+                ],
+              }
+            : modelContent;
+        });
+      };
+      const composerInstruction = composerIntentInstruction(turnContent);
       const workspaceInstructions = this.nativeRuntime
         ? new WorkspaceInstructionContext(this.nativeRuntime, nativeWorkspaceId)
         : undefined;
       workspaceInstructions?.preloadRoot();
       const currentUserContent = this.contentFromParts(
-        command.content,
+        turnContent,
         resolved.selection,
       );
       const turnModel = this.createModel(resolved.provider);
@@ -2925,6 +3233,9 @@ export class RuntimeHost {
           maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
         },
         beforeModelCallback: async ({ request }) => {
+          for (const steer of takePendingSteers()) {
+            request.contents.push(steer);
+          }
           this.assertInvalidArgumentProgress(invalidArgumentGuard);
           const repeatedFailureRecovery =
             this.takeRepeatedToolFailureRecovery(invalidArgumentGuard);
@@ -3061,6 +3372,7 @@ export class RuntimeHost {
                 command.turnId,
                 controller.signal,
               ),
+            consumePendingSteers: takePendingSteers,
             completionGate: () =>
               !controller.signal.aborted &&
               ![...this.pendingUserInputs.values()].some(
@@ -3154,6 +3466,9 @@ export class RuntimeHost {
       this.cancelTurnUserInputs(command.turnId);
       this.activeTurns.delete(command.turnId);
       this.activeTurnThreads.delete(command.turnId);
+      this.activeTurnSelections.delete(command.turnId);
+      this.activeTurnSkills.delete(command.turnId);
+      this.pendingSteersByTurn.delete(command.turnId);
       this.cancellationSources.delete(command.turnId);
     }
   };
@@ -3169,6 +3484,99 @@ export class RuntimeHost {
           code: 'stopButton',
         }
       : undefined;
+
+  private executeManualCompaction = async (
+    command: TurnExecutionCommand,
+    resolved: ResolvedProfile,
+    controller: AbortController,
+    focus?: string,
+  ): Promise<void> => {
+    const session = await this.sessions.getSession({
+      appName: APPLICATION_NAME,
+      userId: command.workspaceId,
+      sessionId: command.threadId,
+    });
+    const contents = (session?.events ?? []).flatMap((event) =>
+      event.content ? [event.content] : []
+    );
+    const request: LlmRequest = {
+      model: resolved.selection.modelId,
+      contents,
+      config: { maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS },
+      liveConnectConfig: {},
+      toolsDict: {},
+    };
+    const compacted = await this.contextManager.compactRequest({
+      threadId: command.threadId,
+      request,
+      selection: resolved.selection,
+      summarizer: this.createModel({
+        ...resolved.provider,
+        nativeCompaction: false,
+      }),
+      signal: controller.signal,
+      trigger: 'manual',
+      focus,
+      force: true,
+      callbacks: {
+        onStarted: (event) => this.emit({
+          type: 'turn.contextCompactionStarted',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          ...event,
+        }),
+        onFinished: (event) => this.emit({
+          type: 'turn.contextCompactionFinished',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          ...event,
+        }),
+        persist: (checkpoint) =>
+          this.persistContextCheckpoint(command, checkpoint),
+        currentSequence: () => this.sequence,
+      },
+    });
+    if (!compacted) {
+      const compactionId = randomUUID();
+      this.emit({
+        type: 'turn.contextCompactionStarted',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        compactionId,
+        trigger: 'manual',
+        strategy: 'applicationSummary',
+        beforeContextTokens: 0,
+      });
+      this.emit({
+        type: 'turn.contextCompactionFinished',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        compactionId,
+        trigger: 'manual',
+        strategy: 'applicationSummary',
+        outcome: 'completed',
+        beforeContextTokens: 0,
+        afterContextTokens: 0,
+        durationMs: 0,
+        message: 'There is not enough context to compact.',
+      });
+    }
+    this.emitCompleted(
+      command,
+      controller.signal.aborted ? 'interrupted' : 'completed',
+      controller.signal.aborted
+        ? this.cancellationError(command.turnId)
+        : undefined,
+    );
+  };
 
   private compactContext = async (
     command: Extract<RuntimeCommand, { type: 'context.compact' }>,
@@ -3490,7 +3898,12 @@ export class RuntimeHost {
             nativeWorkspaceId,
             command.content,
           )
-        : { instruction: '', tools: [] };
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          };
       const agentTools = [
         this.invalidArgumentsTool(invalidArgumentGuard),
         ...tools,

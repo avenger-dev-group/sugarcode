@@ -92,6 +92,21 @@ test('a direct plan action can start a Turn without composer content', () => {
   );
 });
 
+test('the composer remains submittable while a Turn is running or stopping', () => {
+  const state = {
+    phase: 'inProgress' as const,
+    startsChatOnSend: false,
+    hasPendingThreadSelection: false,
+    hasPendingMutation: false,
+    isSending: false,
+    isEditingMessage: false,
+    hasUsableModel: true,
+  };
+  assert.equal(canStartConversationTurn(state), true);
+  assert.equal(canStartConversationTurn({ ...state, phase: 'starting' }), true);
+  assert.equal(canStartConversationTurn({ ...state, phase: 'stopping' }), true);
+});
+
 test('only a new project draft can remove its project before first send', () => {
   const project = {
     revision: 1,

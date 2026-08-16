@@ -9,6 +9,7 @@ import type {
   RuntimeEvent,
   RuntimeThreadRecord,
   RuntimeThreadSnapshot,
+  RuntimeThreadQueue,
 } from '../../../src/runtime/protocol.ts';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
@@ -32,6 +33,7 @@ class FixtureRuntime {
   private readonly failRevisionAfterCommit: boolean;
   private reconciledRevision?: Extract<RuntimeCommand, { type: 'turn.revise' }>;
   private createdThreads = 0;
+  private readonly queues = new Map<string, RuntimeThreadQueue>();
 
   constructor(
     beforeThreadCreated?: (workspaceId: string) => Promise<void>,
@@ -86,6 +88,7 @@ class FixtureRuntime {
           turns: [],
           items: [],
           agentTasks: [],
+          queue: { paused: false, messages: [] },
         },
       } as RuntimeEvent;
     }
@@ -110,6 +113,7 @@ class FixtureRuntime {
           turns: [],
           items: [],
           agentTasks: [],
+          queue: { paused: false, messages: [] },
         },
       } as RuntimeEvent;
     }
@@ -166,6 +170,7 @@ class FixtureRuntime {
               payload: { content: revision.content },
             }],
             agentTasks: [],
+            queue: { paused: false, messages: [] },
           },
         } as RuntimeEvent;
       }
@@ -188,6 +193,7 @@ class FixtureRuntime {
           turns: [],
           items: [],
           agentTasks: [],
+          queue: { paused: false, messages: [] },
         },
       } as RuntimeEvent;
     }
@@ -223,6 +229,60 @@ class FixtureRuntime {
       } as const satisfies RuntimeEvent;
       this.emit(event);
       return event;
+    }
+    if (command.type === 'queue.messageCreate') {
+      const previous = this.queues.get(command.threadId) ?? {
+        paused: false,
+        messages: [],
+      };
+      const queue: RuntimeThreadQueue = {
+        ...previous,
+        messages: [
+          ...previous.messages,
+          {
+            id: command.queueItemId,
+            threadId: command.threadId,
+            position: (previous.messages.at(-1)?.position ?? 0) + 1,
+            revision: 1,
+            content: command.content,
+            ...(command.modelProfileId
+              ? { modelProfileId: command.modelProfileId }
+              : {}),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        ],
+      };
+      this.queues.set(command.threadId, queue);
+      return {
+        type: 'queue.changed',
+        requestId: command.requestId,
+        sequence: 7,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        queue,
+      } satisfies RuntimeEvent;
+    }
+    if (command.type === 'queue.pause' || command.type === 'queue.resume') {
+      const previous = this.queues.get(command.threadId) ?? {
+        paused: false,
+        messages: [],
+      };
+      const queue: RuntimeThreadQueue = {
+        paused: previous.messages.length > 0
+          ? command.type === 'queue.pause'
+          : false,
+        messages: previous.messages,
+      };
+      this.queues.set(command.threadId, queue);
+      return {
+        type: 'queue.changed',
+        requestId: command.requestId,
+        sequence: 8,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        queue,
+      } satisfies RuntimeEvent;
     }
     throw new Error(`Unexpected fixture request ${command.type}.`);
   };
@@ -321,6 +381,77 @@ test('Stop records the user control as the cancellation source', async () => {
   const interrupted = controller.getSnapshot().turns.at(-1);
   assert.equal(interrupted?.status, 'interrupted');
   assert.equal(interrupted?.error, undefined);
+});
+
+test('running sends enqueue in FIFO order and completion starts the queue head', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  await controller.switchWorkspace(WORKSPACE_ID);
+  controller.startNewThread();
+  const first = await controller.startTurn({ input: 'First task' });
+  const second = await controller.startTurn({ input: 'Second task' });
+  const third = await controller.startTurn({ input: 'Third task' });
+  assert.equal(first.disposition, 'started');
+  assert.equal(second.disposition, 'queued');
+  assert.equal(third.disposition, 'queued');
+  assert.deepEqual(
+    controller.getSnapshot().queue?.messages.map((message) => message.input),
+    ['Second task', 'Third task'],
+  );
+
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      command.type === 'turn.start',
+  );
+  assert.ok(started);
+  fixture.emit({
+    type: 'turn.completed',
+    requestId: started.requestId,
+    sequence: 20,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    status: 'completed',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const queuedStart = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.startQueued' }> =>
+      command.type === 'turn.startQueued',
+  );
+  assert.ok(queuedStart);
+  assert.equal(queuedStart.queueItemId, second.queueItemId);
+});
+
+test('an interrupted Turn pauses its durable queue until resume', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  await controller.switchWorkspace(WORKSPACE_ID);
+  controller.startNewThread();
+  await controller.startTurn({ input: 'Long task' });
+  await controller.startTurn({ input: 'Keep this queued' });
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      command.type === 'turn.start',
+  );
+  assert.ok(started);
+  fixture.emit({
+    type: 'turn.completed',
+    requestId: started.requestId,
+    sequence: 21,
+    workspaceId: WORKSPACE_ID,
+    threadId: THREAD_ID,
+    turnId: started.turnId,
+    status: 'interrupted',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(controller.getSnapshot().queue?.paused, true);
+  assert.equal((await controller.resumeQueue(THREAD_ID)).accepted, true);
+  assert.equal(controller.getSnapshot().queue?.paused, false);
+  assert.ok(fixture.sent.some((command) => command.type === 'turn.startQueued'));
 });
 
 test('command output projection updates are batched and completion flushes them', async () => {
@@ -1184,6 +1315,7 @@ test('runtime conversation controller projects generated and user-edited titles'
       turns: [],
       items: [],
       agentTasks: [],
+      queue: { paused: false, messages: [] },
     },
   });
   assert.equal(
@@ -1314,6 +1446,7 @@ test('runtime conversation controller commits only the latest Thread selection',
         turns: [],
         items: [],
         agentTasks: [],
+        queue: { paused: false, messages: [] },
       },
     });
   };
@@ -1424,6 +1557,7 @@ test('runtime conversation controller restores interleaved tool activity from du
       },
     ],
     agentTasks: [],
+    queue: { paused: false, messages: [] },
   });
   const controller = new RuntimeConversationController(
     runtime as unknown as RuntimeSupervisor,

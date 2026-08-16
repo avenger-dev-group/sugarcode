@@ -99,3 +99,25 @@ test('Turn Skills return the frozen inventory when a requested name is unknown',
     },
   );
 });
+
+test('steering resolves explicit Skills from the frozen Turn inventory and shared limits', () => {
+  const turn = createTurnSkills(
+    nativeWithSkills(['one', 'two', 'three', 'four', 'five']),
+    'workspace-1',
+    [{ type: 'text', text: 'Start with $one.' }],
+  );
+  assert.match(
+    turn.steeringInstruction([{ type: 'text', text: 'Also apply $two.' }]),
+    /Selected Skill: \$two/u,
+  );
+  turn.steeringInstruction([{ type: 'text', text: '$three' }]);
+  turn.steeringInstruction([{ type: 'text', text: '$four' }]);
+  assert.throws(
+    () => turn.steeringInstruction([{ type: 'text', text: '$five' }]),
+    /at most four Skills/u,
+  );
+  assert.equal(
+    turn.steeringInstruction([{ type: 'text', text: '$missing' }]),
+    '',
+  );
+});

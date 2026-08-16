@@ -65,6 +65,10 @@ import {
 import {
   CONVERSATION_SEND_CHANNEL,
   CONVERSATION_REVISE_CHANNEL,
+  CONVERSATION_QUEUE_UPDATE_CHANNEL,
+  CONVERSATION_QUEUE_DELETE_CHANNEL,
+  CONVERSATION_QUEUE_STEER_CHANNEL,
+  CONVERSATION_QUEUE_RESUME_CHANNEL,
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
@@ -83,6 +87,9 @@ import {
   type ConversationActionResult,
   type ConversationStateSnapshot,
   type ConversationReviseTurnRequest,
+  type ConversationQueuedMessageMutationRequest,
+  type ConversationQueuedMessageUpdateRequest,
+  type ConversationSteerQueuedMessageRequest,
   type ConversationThreadProjectionSnapshot,
   type ConversationUserInputResponse,
 } from '@/shared/conversation';
@@ -948,6 +955,40 @@ export const createDesktopApi = (
     );
     if (!isConversationActionResult(result)) {
       throw new Error('Main returned an invalid conversation revision result.');
+    }
+    return result;
+  },
+  updateQueuedConversationMessage: async (
+    request: ConversationQueuedMessageUpdateRequest,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_UPDATE_CHANNEL, request);
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid queued message update result.');
+    }
+    return result;
+  },
+  deleteQueuedConversationMessage: async (
+    request: ConversationQueuedMessageMutationRequest,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_DELETE_CHANNEL, request);
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid queued message deletion result.');
+    }
+    return result;
+  },
+  steerQueuedConversationMessage: async (
+    request: ConversationSteerQueuedMessageRequest,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_STEER_CHANNEL, request);
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid queued message steering result.');
+    }
+    return result;
+  },
+  resumeConversationQueue: async (threadId: string): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_RESUME_CHANNEL, threadId);
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid queue resume result.');
     }
     return result;
   },

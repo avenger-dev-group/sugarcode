@@ -49,7 +49,7 @@ import {
   type TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 4 as const;
+export const RUNTIME_PROTOCOL_VERSION = 5 as const;
 
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
@@ -155,6 +155,23 @@ export type RuntimeThreadSnapshot = Readonly<{
   turns: readonly RuntimeTurnRecord[];
   items: readonly RuntimeTurnItemRecord[];
   agentTasks: readonly RuntimeAgentTaskRecord[];
+  queue: RuntimeThreadQueue;
+}>;
+
+export type RuntimeQueuedMessage = Readonly<{
+  id: string;
+  threadId: string;
+  position: number;
+  revision: number;
+  content: readonly RuntimeContentPart[];
+  modelProfileId?: string;
+  createdAt: number;
+  updatedAt: number;
+}>;
+
+export type RuntimeThreadQueue = Readonly<{
+  paused: boolean;
+  messages: readonly RuntimeQueuedMessage[];
 }>;
 
 export type RuntimeAgentTaskStatus =
@@ -348,6 +365,59 @@ export type RuntimeCommand =
       modelProfileId?: string;
       generateTitle?: boolean;
       content: readonly RuntimeContentPart[];
+    }>
+  | Readonly<{
+      type: 'queue.messageCreate';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      queueItemId: string;
+      content: readonly RuntimeContentPart[];
+      modelProfileId?: string;
+    }>
+  | Readonly<{
+      type: 'queue.messageUpdate';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      queueItemId: string;
+      expectedRevision: number;
+      content: readonly RuntimeContentPart[];
+      modelProfileId?: string;
+    }>
+  | Readonly<{
+      type: 'queue.messageDelete';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      queueItemId: string;
+      expectedRevision: number;
+    }>
+  | Readonly<{
+      type: 'queue.pause' | 'queue.resume';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+    }>
+  | Readonly<{
+      type: 'turn.startQueued';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      queueItemId: string;
+      expectedRevision: number;
+      modelProfileId?: string;
+      content: readonly RuntimeContentPart[];
+    }>
+  | Readonly<{
+      type: 'turn.steerQueued';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      expectedTurnId: string;
+      queueItemId: string;
+      expectedRevision: number;
     }>
   | Readonly<{
       type: 'turn.revise';
@@ -1046,6 +1116,23 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'queue.changed';
+        workspaceId: string;
+        threadId: string;
+        queue: RuntimeThreadQueue;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'turn.steered';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        itemId: string;
+        content: readonly RuntimeContentPart[];
+        queue: RuntimeThreadQueue;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'thread.mutated';
         workspaceId: string;
         operation:
@@ -1345,6 +1432,70 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
+      );
+    case 'queue.messageCreate':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.queueItemId === 'string' &&
+        (value.modelProfileId === undefined ||
+          (typeof value.modelProfileId === 'string' &&
+            /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        Array.isArray(value.content) &&
+        value.content.length > 0 &&
+        value.content.every(isRuntimeContentPart)
+      );
+    case 'queue.messageUpdate':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.queueItemId === 'string' &&
+        Number.isSafeInteger(value.expectedRevision) &&
+        Number(value.expectedRevision) >= 1 &&
+        (value.modelProfileId === undefined ||
+          (typeof value.modelProfileId === 'string' &&
+            /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        Array.isArray(value.content) &&
+        value.content.length > 0 &&
+        value.content.every(isRuntimeContentPart)
+      );
+    case 'queue.messageDelete':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.queueItemId === 'string' &&
+        Number.isSafeInteger(value.expectedRevision) &&
+        Number(value.expectedRevision) >= 1
+      );
+    case 'queue.pause':
+    case 'queue.resume':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string'
+      );
+    case 'turn.startQueued':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.turnId === 'string' &&
+        typeof value.queueItemId === 'string' &&
+        Number.isSafeInteger(value.expectedRevision) &&
+        Number(value.expectedRevision) >= 1 &&
+        (value.modelProfileId === undefined ||
+          (typeof value.modelProfileId === 'string' &&
+            /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        Array.isArray(value.content) &&
+        value.content.length > 0 &&
+        value.content.every(isRuntimeContentPart)
+      );
+    case 'turn.steerQueued':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.expectedTurnId === 'string' &&
+        typeof value.queueItemId === 'string' &&
+        Number.isSafeInteger(value.expectedRevision) &&
+        Number(value.expectedRevision) >= 1
       );
     case 'turn.cancel':
       return (
@@ -1970,6 +2121,21 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.workspaceId === 'string' &&
         isThreadSnapshot(value.snapshot)
       );
+    case 'queue.changed':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        isRuntimeThreadQueue(value.queue)
+      );
+    case 'turn.steered':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.itemId === 'string' &&
+        Array.isArray(value.content) &&
+        value.content.length > 0 &&
+        value.content.every(isRuntimeContentPart) &&
+        isRuntimeThreadQueue(value.queue)
+      );
     case 'thread.mutated':
       return (
         typeof value.workspaceId === 'string' &&
@@ -2018,6 +2184,7 @@ const isThreadTitle = (value: unknown): value is string =>
 const isThreadSnapshot = (value: unknown): value is RuntimeThreadSnapshot =>
   isRecord(value) &&
   isThreadRecord(value.thread) &&
+  isRuntimeThreadQueue(value.queue) &&
   Array.isArray(value.turns) &&
   Array.isArray(value.items) &&
   value.turns.every(
@@ -2039,4 +2206,28 @@ const isThreadSnapshot = (value: unknown): value is RuntimeThreadSnapshot =>
       Number.isInteger(item.sequence) &&
       typeof item.kind === 'string' &&
       isRecord(item.payload),
+  );
+
+const isRuntimeThreadQueue = (value: unknown): value is RuntimeThreadQueue =>
+  isRecord(value) &&
+  typeof value.paused === 'boolean' &&
+  Array.isArray(value.messages) &&
+  value.messages.length <= 10 &&
+  value.messages.every(
+    (message) =>
+      isRecord(message) &&
+      typeof message.id === 'string' &&
+      typeof message.threadId === 'string' &&
+      Number.isSafeInteger(message.position) &&
+      Number(message.position) >= 1 &&
+      Number.isSafeInteger(message.revision) &&
+      Number(message.revision) >= 1 &&
+      Array.isArray(message.content) &&
+      message.content.length > 0 &&
+      message.content.every(isRuntimeContentPart) &&
+      (message.modelProfileId === undefined ||
+        (typeof message.modelProfileId === 'string' &&
+          /^[A-Za-z0-9_-]{1,64}$/u.test(message.modelProfileId))) &&
+      Number.isInteger(message.createdAt) &&
+      Number.isInteger(message.updatedAt),
   );

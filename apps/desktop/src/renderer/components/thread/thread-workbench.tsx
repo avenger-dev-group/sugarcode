@@ -6,6 +6,11 @@ import {
   Folder,
   LoaderCircle,
   Paperclip,
+  ListOrdered,
+  Pencil,
+  Trash2,
+  CornerUpRight,
+  Play,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
@@ -30,6 +35,7 @@ import { WorkspaceReadActivity } from '@/renderer/components/agent/workspace-rea
 import { WorkspaceListActivity } from '@/renderer/components/agent/workspace-list-activity';
 import { WorkspaceSearchActivity } from '@/renderer/components/agent/workspace-search-activity';
 import { Button } from '@/renderer/components/ui/button';
+import { Textarea } from '@/renderer/components/ui/textarea';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,6 +66,7 @@ import { useStore as useWorkspaceNavigationStore } from '@/renderer/components/w
 import { UserInputSurface } from '@/renderer/components/user-input/user-input-surface';
 import { UserInputActivity } from '@/renderer/components/user-input/user-input-activity';
 import { parseAgentPreviewResponse } from '@/shared/preview-intent';
+import { parseComposerSubmission } from '@/shared/composer';
 import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection-store';
 
 import type {
@@ -259,6 +266,145 @@ const PlanProposal = ({
         <div className="h-4" aria-hidden="true" />
       )}
     </article>
+  );
+};
+
+const QueueDock = ({
+  store,
+}: Readonly<{ store: ThreadWorkbenchViewProps['store'] }>) => {
+  const queue = store.thread.queue;
+  if (queue.messages.length === 0) return null;
+  const modelLabel = (profileId?: string): string =>
+    store.modelOptions.find((option) => option.profileId === profileId)?.label ??
+    profileId ??
+    '默认模型';
+  return (
+    <section
+      className="mb-2 overflow-hidden rounded-2xl border border-border/80 bg-card/70 shadow-sm backdrop-blur"
+      aria-label="待处理消息队列"
+    >
+      <header className="flex items-center gap-2 border-b border-border/70 px-3 py-2.5">
+        <ListOrdered className="size-3.5 text-tertiary" aria-hidden="true" />
+        <span className="text-xs font-medium text-secondary">
+          队列 · {queue.messages.length}/10
+        </span>
+        {queue.paused ? (
+          <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-300">
+            已暂停
+          </span>
+        ) : (
+          <span className="text-[11px] text-tertiary">当前回合完成后依次执行</span>
+        )}
+        {queue.paused ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="ml-auto h-7 gap-1.5 rounded-lg px-2.5 text-xs"
+            disabled={store.queueEditor.pendingIds.includes('resume')}
+            onClick={() => void store.resumeQueue()}
+          >
+            {store.queueEditor.pendingIds.includes('resume') ? (
+              <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+            ) : (
+              <Play className="size-3 fill-current" aria-hidden="true" />
+            )}
+            继续
+          </Button>
+        ) : null}
+      </header>
+      {queue.paused ? (
+        <p className="border-b border-border/60 bg-amber-500/[0.04] px-3 py-2 text-[11px] text-tertiary">
+          上一回合被停止、失败或中断。新消息仍会加入队尾，点击“继续”后从队首恢复。
+        </p>
+      ) : null}
+      <ol className="max-h-64 divide-y divide-border/60 overflow-y-auto">
+        {queue.messages.map((message, index) => {
+          const editing = store.queueEditor.itemId === message.id;
+          const pending = store.queueEditor.pendingIds.includes(message.id);
+          const slashCommand = parseComposerSubmission(message.input).references.some(
+            (reference) => reference.kind === 'command',
+          );
+          const steerable =
+            store.thread.phase === 'inProgress' && !slashCommand && !pending;
+          return (
+            <li key={message.id} className="group px-3 py-2.5">
+              {editing ? (
+                <div className="space-y-2">
+                  <Textarea
+                    value={store.queueEditor.draft}
+                    onChange={(event) => store.setQueueEditDraft(event.target.value)}
+                    className="min-h-20 resize-y rounded-xl bg-background text-sm"
+                    autoFocus
+                  />
+                  {message.attachments.length > 0 ? (
+                    <p className="text-[11px] text-tertiary">
+                      已上传附件保持不变；如需更换，请删除此消息后重新发送。
+                    </p>
+                  ) : null}
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={store.queueEditor.modelProfileId}
+                      onValueChange={store.setQueueEditModel}
+                      disabled={pending}
+                    >
+                      <SelectTrigger className="h-8 max-w-52 text-xs">
+                        <SelectValue placeholder="选择模型" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {store.modelOptions.map((option) => (
+                          <SelectItem key={option.profileId} value={option.profileId} disabled={!option.available}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button type="button" size="sm" variant="ghost" className="ml-auto h-8" onClick={store.cancelQueueEdit} disabled={pending}>
+                      取消
+                    </Button>
+                    <Button type="button" size="sm" className="h-8" onClick={() => void store.saveQueueEdit()} disabled={pending || !store.queueEditor.draft.trim()}>
+                      {pending ? <LoaderCircle className="size-3 animate-spin" aria-hidden="true" /> : null}
+                      保存
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-md bg-surface text-[10px] font-semibold text-tertiary">
+                    {index + 1}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="line-clamp-2 whitespace-pre-wrap text-sm text-foreground">
+                      {message.input || `${message.attachments.length} 个附件`}
+                    </p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-tertiary">
+                      <span>{modelLabel(message.modelProfileId)}</span>
+                      {message.attachments.map((attachment) => (
+                        <span key={attachment.assetId} className="max-w-40 truncate rounded-md bg-surface px-1.5 py-0.5">
+                          {attachment.originalName}
+                        </span>
+                      ))}
+                      {slashCommand ? <span>命令将在下一回合执行</span> : null}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-0.5 opacity-70 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                    <Button type="button" size="icon-xs" variant="ghost" disabled={!steerable} title={slashCommand ? 'Slash Command 只能作为下一回合执行' : '调整当前回合方向'} aria-label="调整方向" onClick={() => void store.steerQueueMessage(message)}>
+                      <CornerUpRight className="size-3.5" aria-hidden="true" />
+                    </Button>
+                    <Button type="button" size="icon-xs" variant="ghost" disabled={pending} aria-label="编辑队列消息" onClick={() => store.beginQueueEdit(message)}>
+                      <Pencil className="size-3.5" aria-hidden="true" />
+                    </Button>
+                    <Button type="button" size="icon-xs" variant="ghost" className="hover:text-destructive" disabled={pending} aria-label="删除队列消息" onClick={() => void store.deleteQueueMessage(message)}>
+                      {pending ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <Trash2 className="size-3.5" aria-hidden="true" />}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 };
 
@@ -830,6 +976,7 @@ export const ThreadWorkbenchView = ({
             {agentTaskActivity ? (
               <AgentTaskDock activity={agentTaskActivity} />
             ) : null}
+            {composerSurface === 'composer' ? <QueueDock store={store} /> : null}
             {(store.actionError || store.thread.notice || workspace.error) && (
               <p className="mb-2 px-1 text-xs text-destructive" role="alert">
                 {store.actionError ?? store.thread.notice ?? workspace.error}
@@ -960,9 +1107,6 @@ export const ThreadWorkbenchView = ({
                 }}
                 onSubmit={() => void store.send()}
                 disabled={
-                  store.thread.phase === 'inProgress' ||
-                  store.thread.phase === 'stopping' ||
-                  store.thread.phase === 'starting' ||
                   (store.thread.phase === 'unavailable' &&
                     !store.startsChatOnSend) ||
                   store.isSending ||
@@ -1012,32 +1156,27 @@ export const ThreadWorkbenchView = ({
                     {permissionControl}
                   </div>
                 </div>
-                {store.showStopControl ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void store.stop()}
-                    disabled={!store.canStop}
-                    aria-label="Stop current turn"
-                  >
-                    {store.canStop ? (
-                      <Square
-                        className="size-3 fill-current"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <LoaderCircle
-                        className="size-3 animate-spin"
-                        aria-hidden="true"
-                      />
-                    )}
-                    {store.thread.phase === 'stopping'
-                      ? 'Stopping'
-                      : store.canStop
-                        ? 'Stop'
-                        : 'Starting'}
-                  </Button>
-                ) : (
+                <div className="flex shrink-0 items-center gap-2">
+                  {store.showStopControl ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void store.stop()}
+                      disabled={!store.canStop}
+                      aria-label="Stop current turn"
+                    >
+                      {store.canStop ? (
+                        <Square className="size-3 fill-current" aria-hidden="true" />
+                      ) : (
+                        <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+                      )}
+                      {store.thread.phase === 'stopping'
+                        ? 'Stopping'
+                        : store.canStop
+                          ? 'Stop'
+                          : 'Starting'}
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     size="icon"
@@ -1048,7 +1187,7 @@ export const ThreadWorkbenchView = ({
                   >
                     <ArrowUp aria-hidden="true" />
                   </Button>
-                )}
+                </div>
               </div>
               </div>
             )}

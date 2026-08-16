@@ -1109,6 +1109,109 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn create_queued_message_json(
+        &self,
+        thread_id: String,
+        message_id: String,
+        content_json: String,
+        model_profile_id: Option<String>,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.create_queued_message_json(
+                &thread_id,
+                &message_id,
+                &content_json,
+                model_profile_id.as_deref(),
+            )
+        })
+    }
+
+    #[napi]
+    pub fn update_queued_message_json(
+        &self,
+        thread_id: String,
+        message_id: String,
+        expected_revision: u32,
+        content_json: String,
+        model_profile_id: Option<String>,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.update_queued_message_json(
+                &thread_id,
+                &message_id,
+                i64::from(expected_revision),
+                &content_json,
+                model_profile_id.as_deref(),
+            )
+        })
+    }
+
+    #[napi]
+    pub fn delete_queued_message_json(
+        &self,
+        thread_id: String,
+        message_id: String,
+        expected_revision: u32,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.delete_queued_message_json(&thread_id, &message_id, i64::from(expected_revision))
+        })
+    }
+
+    #[napi]
+    pub fn set_queue_paused_json(&self, thread_id: String, paused: bool) -> Result<String> {
+        self.with_store(|store| store.set_queue_paused_json(&thread_id, paused))
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn promote_queued_message_json(
+        &self,
+        thread_id: String,
+        message_id: String,
+        expected_revision: u32,
+        turn_id: String,
+        request_id: String,
+        provider_wire_api: String,
+        model: String,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.promote_queued_message_json(
+                &thread_id,
+                &message_id,
+                i64::from(expected_revision),
+                &turn_id,
+                &request_id,
+                &provider_wire_api,
+                &model,
+            )
+        })
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn steer_queued_message_json(
+        &self,
+        thread_id: String,
+        message_id: String,
+        expected_revision: u32,
+        turn_id: String,
+        item_id: String,
+        sequence: u32,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.steer_queued_message_json(
+                &thread_id,
+                &message_id,
+                i64::from(expected_revision),
+                &turn_id,
+                &item_id,
+                i64::from(sequence),
+            )
+        })
+    }
+
+    #[napi]
     pub fn create_agent_tasks_json(&self, turn_id: String, tasks_json: String) -> Result<String> {
         self.with_store(|store| store.create_agent_tasks_json(&turn_id, &tasks_json))
     }

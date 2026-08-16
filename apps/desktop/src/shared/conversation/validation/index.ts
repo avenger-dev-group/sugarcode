@@ -11,6 +11,9 @@ export {
 export {
   isConversationActionResult,
   isConversationReviseTurnRequest,
+  isConversationQueuedMessageMutationRequest,
+  isConversationQueuedMessageUpdateRequest,
+  isConversationSteerQueuedMessageRequest,
   isConversationSendRequest,
   isConversationUserInputResponse,
   isValidConversationInput,

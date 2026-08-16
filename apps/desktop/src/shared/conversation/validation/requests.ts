@@ -13,6 +13,9 @@ import type {
 import type {
   ConversationActionResult,
   ConversationReviseTurnRequest,
+  ConversationQueuedMessageMutationRequest,
+  ConversationQueuedMessageUpdateRequest,
+  ConversationSteerQueuedMessageRequest,
   ConversationSendRequest,
 } from '../api.ts';
 import { hasBoundedText, isId, isRecord } from './primitives.ts';
@@ -24,6 +27,12 @@ const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'notLatestTurn',
   'unknownThread',
   'turnActive',
+  'queueFull',
+  'queueItemNotFound',
+  'queueRevisionMismatch',
+  'turnMismatch',
+  'notSteerable',
+  'modelUnavailable',
   'unavailable',
   'noActiveTurn',
 ]);
@@ -31,10 +40,18 @@ export const isConversationActionResult = (
   value: unknown,
 ): value is ConversationActionResult =>
   isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['accepted', 'reason', 'disposition', 'queueItemId'].includes(key),
+  ) &&
   typeof value.accepted === 'boolean' &&
   typeof value.reason === 'string' &&
   ACTION_REASONS.has(value.reason as ConversationActionResult['reason']) &&
-  value.accepted === (value.reason === 'accepted');
+  value.accepted === (value.reason === 'accepted') &&
+  (value.disposition === undefined ||
+    value.disposition === 'started' ||
+    value.disposition === 'queued') &&
+  (value.queueItemId === undefined || isId(value.queueItemId)) &&
+  (value.disposition !== 'queued' || isId(value.queueItemId));
 
 export const isValidConversationInput = (value: unknown): value is string =>
   typeof value === 'string' &&
@@ -76,6 +93,47 @@ export const isConversationReviseTurnRequest = (
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
       /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+
+export const isConversationQueuedMessageMutationRequest = (
+  value: unknown,
+): value is ConversationQueuedMessageMutationRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['threadId', 'queueItemId', 'expectedRevision'].includes(key),
+  ) &&
+  isId(value.threadId) &&
+  isId(value.queueItemId) &&
+  Number.isSafeInteger(value.expectedRevision) &&
+  Number(value.expectedRevision) >= 1;
+
+export const isConversationQueuedMessageUpdateRequest = (
+  value: unknown,
+): value is ConversationQueuedMessageUpdateRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['threadId', 'queueItemId', 'expectedRevision', 'input', 'modelProfileId'].includes(key),
+  ) &&
+  isId(value.threadId) &&
+  isId(value.queueItemId) &&
+  Number.isSafeInteger(value.expectedRevision) &&
+  Number(value.expectedRevision) >= 1 &&
+  isValidConversationInput(value.input) &&
+  (value.modelProfileId === undefined ||
+    (typeof value.modelProfileId === 'string' &&
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+
+export const isConversationSteerQueuedMessageRequest = (
+  value: unknown,
+): value is ConversationSteerQueuedMessageRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['threadId', 'queueItemId', 'expectedRevision', 'expectedTurnId'].includes(key),
+  ) &&
+  isId(value.threadId) &&
+  isId(value.queueItemId) &&
+  isId(value.expectedTurnId) &&
+  Number.isSafeInteger(value.expectedRevision) &&
+  Number(value.expectedRevision) >= 1;
 
 export const isConversationUserInputResponse = (
   value: unknown,

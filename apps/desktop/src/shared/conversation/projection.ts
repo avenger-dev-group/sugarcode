@@ -18,6 +18,22 @@ import type {
   ConversationWorkspaceSearchActivity,
 } from './activities.ts';
 
+export type ConversationQueuedMessage = Readonly<{
+  id: string;
+  position: number;
+  revision: number;
+  input: string;
+  attachments: readonly import('./activities.ts').ConversationAttachment[];
+  modelProfileId?: string;
+  createdAt: number;
+  updatedAt: number;
+}>;
+
+export type ConversationThreadQueue = Readonly<{
+  paused: boolean;
+  messages: readonly ConversationQueuedMessage[];
+}>;
+
 export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
@@ -76,6 +92,7 @@ export type ConversationStateSnapshot = Readonly<{
   threadId?: string;
   activeTurnId?: string;
   turns: readonly ConversationTurn[];
+  queue?: ConversationThreadQueue;
   navigator: ConversationThreadNavigatorSnapshot;
   notice?: ConversationNotice;
 }>;
@@ -87,6 +104,7 @@ export type ConversationThreadProjectionSnapshot = Readonly<{
   phase: Exclude<ConversationPhase, 'idle' | 'unavailable'>;
   activeTurnId?: string;
   turns: readonly ConversationTurn[];
+  queue?: ConversationThreadQueue;
 }>;
 
 export type ConversationThreadProjectionDelta = Readonly<{

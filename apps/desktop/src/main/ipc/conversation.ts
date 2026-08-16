@@ -3,6 +3,10 @@ import { ipcMain } from 'electron';
 import {
   CONVERSATION_SEND_CHANNEL,
   CONVERSATION_REVISE_CHANNEL,
+  CONVERSATION_QUEUE_UPDATE_CHANNEL,
+  CONVERSATION_QUEUE_DELETE_CHANNEL,
+  CONVERSATION_QUEUE_STEER_CHANNEL,
+  CONVERSATION_QUEUE_RESUME_CHANNEL,
   CONVERSATION_STATE_CHANGED_CHANNEL,
   CONVERSATION_STATE_GET_CHANNEL,
   CONVERSATION_STOP_CHANNEL,
@@ -39,6 +43,10 @@ type ConversationControllerBoundary = Readonly<{
   ) => () => void;
   startTurn: (input: unknown) => Promise<ConversationActionResult>;
   reviseTurn: (input: unknown) => Promise<ConversationActionResult>;
+  updateQueuedMessage: (input: unknown) => Promise<ConversationActionResult>;
+  deleteQueuedMessage: (input: unknown) => Promise<ConversationActionResult>;
+  steerQueuedMessage: (input: unknown) => Promise<ConversationActionResult>;
+  resumeQueue: (threadId: unknown) => Promise<ConversationActionResult>;
   stopTurn: (threadId: unknown) => Promise<ConversationActionResult>;
   respondToUserInput: (input: unknown) => Promise<ConversationActionResult>;
   searchThreads: (query: unknown) => Promise<ConversationActionResult>;
@@ -104,6 +112,31 @@ export const registerConversationIpc = (
       return options.controller.reviseTurn(input);
     },
   );
+
+  ipcMain.handle(CONVERSATION_QUEUE_UPDATE_CHANNEL, async (event, input: unknown) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('Queued message update came from an untrusted frame.');
+    }
+    return options.controller.updateQueuedMessage(input);
+  });
+  ipcMain.handle(CONVERSATION_QUEUE_DELETE_CHANNEL, async (event, input: unknown) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('Queued message deletion came from an untrusted frame.');
+    }
+    return options.controller.deleteQueuedMessage(input);
+  });
+  ipcMain.handle(CONVERSATION_QUEUE_STEER_CHANNEL, async (event, input: unknown) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('Queued message steering came from an untrusted frame.');
+    }
+    return options.controller.steerQueuedMessage(input);
+  });
+  ipcMain.handle(CONVERSATION_QUEUE_RESUME_CHANNEL, async (event, threadId: unknown) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('Queue resume came from an untrusted frame.');
+    }
+    return options.controller.resumeQueue(threadId);
+  });
 
   ipcMain.handle(CONVERSATION_STOP_CHANNEL, async (event, threadId: unknown) => {
     if (!isTrustedIpcSender(event, options)) {
@@ -186,6 +219,10 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_THREAD_PROJECTION_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_REVISE_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_QUEUE_UPDATE_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_QUEUE_DELETE_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_QUEUE_STEER_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_QUEUE_RESUME_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_STOP_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_USER_INPUT_RESPONSE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_SEARCH_CHANNEL);
