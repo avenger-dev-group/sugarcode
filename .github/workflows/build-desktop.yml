@@ -44,7 +44,18 @@ jobs:
       - name: Synchronize release version
         env:
           RELEASE_VERSION: ${{ inputs.version }}
-        run: node scripts/set-build-version.mjs
+        run: |
+          tag="v${RELEASE_VERSION}"
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            tagged_version="$(git show "${tag}:package.json" | node -e "let input = ''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => process.stdout.write(JSON.parse(input).version));")"
+            test "$tagged_version" = "$RELEASE_VERSION" || {
+              echo "Tag ${tag} contains package version ${tagged_version}, expected ${RELEASE_VERSION}."
+              exit 1
+            }
+            echo "Reusing existing source tag ${tag}."
+          else
+            node scripts/set-build-version.mjs
+          fi
 
       - name: Commit release version and create source tag
         env:
@@ -52,26 +63,28 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          tag="v${RELEASE_VERSION}"
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Source tag ${tag} already exists; leaving it unchanged."
+            exit 0
+          fi
+
           if ! git diff --quiet -- package.json apps/desktop/package.json Cargo.toml Cargo.lock; then
             git add package.json apps/desktop/package.json Cargo.toml Cargo.lock
             git commit -m "chore(release): v${RELEASE_VERSION}"
             git push origin HEAD:main
           fi
 
-          tag="v${RELEASE_VERSION}"
-          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
-            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)" || {
-              echo "Tag ${tag} already points to another commit."
-              exit 1
-            }
-          else
-            git tag -a "$tag" -m "SugarCode ${tag}"
-            git push origin "$tag"
-          fi
+          git tag -a "$tag" -m "SugarCode ${tag}"
+          git push origin "$tag"
 
       - name: Record release revision
         id: revision
-        run: echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          tag="v${RELEASE_VERSION}"
+          echo "commit_sha=$(git rev-list -n 1 "$tag")" >> "$GITHUB_OUTPUT"
 
   build:
     name: Desktop / ${{ matrix.asset_name }}
@@ -115,8 +128,36 @@ jobs:
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build installers
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
         run: pnpm desktop:make
+
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: pnpm --filter @sugarcode/desktop exec electron-forge package --arch ${{ matrix.arch }}
+
+      - name: Build macOS ZIP
+        if: runner.os == 'macOS'
+        run: pnpm --filter @sugarcode/desktop exec electron-forge make --skip-package --arch ${{ matrix.arch }} --targets @electron-forge/maker-zip
+
+      - name: Build macOS DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm --filter @sugarcode/desktop exec electron-forge make --skip-package --arch "${{ matrix.arch }}" --targets @electron-forge/maker-dmg; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "DMG creation failed after ${attempt} attempts."
+              exit 1
+            fi
+
+            echo "DMG creation attempt ${attempt} failed; cleaning up the transient mount and retrying."
+            hdiutil detach "/Volumes/SugarCode" -force >/dev/null 2>&1 || true
+            sleep $((attempt * 5))
+          done
 
       - name: Verify packaged application
         run: node scripts/verify-packaged-desktop.mjs ${{ matrix.platform }} ${{ matrix.arch }}
