@@ -31,7 +31,7 @@ export const SkillsSettingsPanel = ({ active }: SkillsSettingsPanelProps) => {
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
       <header className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
         <Sparkles className="size-4 text-secondary" aria-hidden="true" />
-        <h2 className="text-sm font-medium">Skills</h2>
+        <h2 className="text-sm font-medium">技能</h2>
         <div className="ml-auto flex items-center gap-2">
           <Popover
             open={store.importMenuOpen}

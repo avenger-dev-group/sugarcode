@@ -68,6 +68,7 @@ use tokio_util::sync::CancellationToken;
 
 use persistence::AssetRow;
 use persistence::Store;
+use persistence::TaskWorkspaceRow;
 
 #[napi]
 pub struct NativeRuntime {
@@ -88,6 +89,27 @@ pub struct NativeRuntime {
 struct ProjectTaskEnvironment {
     config_hash: String,
     snapshot: Arc<CommandEnvironmentSnapshot>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskWorkspaceStatus {
+    thread_id: String,
+    mode: String,
+    root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+}
+
+fn task_workspace_status(binding: TaskWorkspaceRow, default_root: &Path) -> TaskWorkspaceStatus {
+    TaskWorkspaceStatus {
+        thread_id: binding.thread_id,
+        mode: binding.mode,
+        root: binding
+            .task_root
+            .unwrap_or_else(|| default_root.to_string_lossy().into_owned()),
+        branch: binding.branch,
+    }
 }
 
 #[napi]
@@ -491,12 +513,7 @@ impl NativeRuntime {
     ) -> Result<String> {
         let base = self.workspace(&workspace_id)?;
         let binding = self.with_store(|store| store.task_workspace(&thread_id, &workspace_id))?;
-        json_string(json!({
-            "threadId": thread_id,
-            "mode": binding.mode,
-            "root": binding.task_root.unwrap_or_else(|| base.canonical_root().to_string_lossy().into_owned()),
-            "branch": binding.branch,
-        }))
+        json_string(json!(task_workspace_status(binding, base.canonical_root())))
     }
 
     #[napi]
@@ -577,12 +594,7 @@ impl NativeRuntime {
             .remove(&thread_id);
         json_string(json!({
             "accepted": true,
-            "workspace": {
-                "threadId": thread_id,
-                "mode": binding.mode,
-                "root": binding.task_root.unwrap_or_else(|| base.canonical_root().to_string_lossy().into_owned()),
-                "branch": binding.branch,
-            }
+            "workspace": task_workspace_status(binding, base.canonical_root()),
         }))
     }
 

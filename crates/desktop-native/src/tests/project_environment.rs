@@ -54,6 +54,37 @@ fn assert_environment_output(output: &str, expected_value: &str, expected_root: 
     );
 }
 
+#[test]
+fn local_task_workspace_json_omits_an_absent_branch() {
+    let data_directory = tempfile::tempdir().expect("data directory");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let runtime = NativeRuntime::open(data_directory.path().to_string_lossy().into_owned())
+        .expect("native runtime");
+    runtime
+        .ensure_workspace(
+            "workspace-1".to_owned(),
+            workspace.path().to_string_lossy().into_owned(),
+        )
+        .expect("workspace");
+    runtime
+        .ensure_thread("thread-local".to_owned(), "workspace-1".to_owned(), None)
+        .expect("thread");
+
+    let inspection: Value = serde_json::from_str(
+        &runtime
+            .inspect_task_workspace_json("workspace-1".to_owned(), "thread-local".to_owned())
+            .expect("inspect task workspace"),
+    )
+    .expect("task workspace JSON");
+    assert_eq!(inspection["threadId"], "thread-local");
+    assert_eq!(inspection["mode"], "local");
+    assert_eq!(
+        inspection["root"],
+        workspace.path().to_string_lossy().as_ref()
+    );
+    assert!(inspection.get("branch").is_none());
+}
+
 #[tokio::test]
 async fn trusted_project_environment_and_worktrees_stay_task_isolated() {
     let data_directory = tempfile::tempdir().expect("data directory");

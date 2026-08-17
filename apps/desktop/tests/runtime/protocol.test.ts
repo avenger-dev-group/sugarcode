@@ -57,6 +57,24 @@ test('private runtime validates lazy task-bound command environments', () => {
   }), false);
 });
 
+test('private runtime accepts a local task workspace without a branch', () => {
+  const event = {
+    type: 'taskWorkspace.inspection',
+    sequence: 1,
+    requestId: 'request-task-workspace',
+    workspace: {
+      threadId: 'thread-fixture',
+      mode: 'local',
+      root: '/fixture/workspace',
+    },
+  } as const;
+  assert.equal(isRuntimeEvent(event), true);
+  assert.equal(isRuntimeEvent({
+    ...event,
+    workspace: { ...event.workspace, branch: null },
+  }), false);
+});
+
 test('private runtime records an explicit user Stop source', () => {
   const command = {
     type: 'turn.cancel',

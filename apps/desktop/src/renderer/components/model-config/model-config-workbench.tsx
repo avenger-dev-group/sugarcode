@@ -71,7 +71,7 @@ export const ModelConfigSettingsPanel = (
       <div className="flex h-full min-h-0 flex-col">
         <header className="flex h-[4.25rem] shrink-0 items-center gap-3 border-b px-6">
           <Cpu className="size-4 text-secondary" aria-hidden="true" />
-          <h2 className="text-sm font-medium">Model configuration</h2>
+          <h2 className="text-sm font-medium">模型配置</h2>
           <Button
             className="ml-auto"
             type="button"
@@ -81,7 +81,7 @@ export const ModelConfigSettingsPanel = (
             onClick={store.addConfiguration}
           >
             <Plus aria-hidden="true" />
-            New
+            新建
           </Button>
         </header>
 
@@ -130,7 +130,7 @@ export const ModelConfigSettingsPanel = (
                       <span className="mt-0.5 block truncate text-xs text-tertiary">
                         {preset?.label ??
                           connection?.providerFamily ??
-                          'Unavailable'}
+                          '不可用'}
                         {profile.modelId
                           ? ` · ${profile.modelId}`
                           : ''}
@@ -148,7 +148,7 @@ export const ModelConfigSettingsPanel = (
               disabled={store.busy || !store.inspection}
             >
               <legend className="sr-only">
-                Selected model configuration
+                当前模型配置
               </legend>
 
               <div className="flex min-h-7 flex-wrap items-center justify-between gap-2">
@@ -157,7 +157,7 @@ export const ModelConfigSettingsPanel = (
                   {isDefault ? (
                     <span className="inline-flex items-center gap-1 rounded-full bg-surface px-2 py-1 text-primary">
                       <Star className="size-3" aria-hidden="true" />
-                      Default
+                      默认
                     </span>
                   ) : null}
                 </div>
@@ -171,14 +171,14 @@ export const ModelConfigSettingsPanel = (
                       onClick={store.setDefaultProfile}
                     >
                       <Star aria-hidden="true" />
-                      Make default
+                      设为默认
                     </Button>
                   ) : null}
                   <Button
                     type="button"
                     size="icon-sm"
                     variant="ghost"
-                    aria-label="Delete configuration"
+                    aria-label="删除配置"
                     onClick={store.deleteConfiguration}
                   >
                     <Trash2 aria-hidden="true" />
@@ -188,7 +188,7 @@ export const ModelConfigSettingsPanel = (
 
               {!store.selectedConnection.enabled ? (
                 <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm text-secondary">
-                  <span>This saved connection is disabled.</span>
+                  <span>这个已保存的连接当前已停用。</span>
                   <Button
                     type="button"
                     size="sm"
@@ -197,14 +197,14 @@ export const ModelConfigSettingsPanel = (
                       store.updateConnection({ enabled: true })
                     }
                   >
-                    Enable
+                    启用
                   </Button>
                 </div>
               ) : null}
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="grid gap-1 text-sm">
-                  <span className="text-secondary">Provider</span>
+                  <span className="text-secondary">服务商</span>
                   <Select
                     value={store.selectedConnection.wireApi}
                     onValueChange={(wireApi) =>
@@ -231,11 +231,11 @@ export const ModelConfigSettingsPanel = (
 
                 <label className="grid gap-1 text-sm">
                   <span className="text-secondary">
-                    Configuration name
+                    配置名称
                   </span>
                   <Input
                     value={store.selectedProfile.displayName}
-                    placeholder="Work model"
+                    placeholder="工作模型"
                     onChange={(event) =>
                       store.updateSelectedProfile({
                         displayName: event.target.value,
@@ -245,7 +245,7 @@ export const ModelConfigSettingsPanel = (
                 </label>
 
                 <label className="grid gap-1 text-sm">
-                  <span className="text-secondary">Model</span>
+                  <span className="text-secondary">模型</span>
                   <Input
                     value={store.selectedProfile.modelId}
                     placeholder="gpt-5"
@@ -261,7 +261,7 @@ export const ModelConfigSettingsPanel = (
               </div>
 
               <label className="grid gap-1 text-sm">
-                <span className="text-secondary">Base URL</span>
+                <span className="text-secondary">基础 URL</span>
                 <Input
                   value={store.selectedConnection.baseUrl}
                   inputMode="url"
@@ -276,9 +276,9 @@ export const ModelConfigSettingsPanel = (
 
               <label className="grid gap-1 text-sm">
                 <span className="flex items-center gap-2 text-secondary">
-                  <span>API key</span>
+                  <span>API 密钥</span>
                   {credentialStatus === 'present' ? (
-                    <span className="text-xs text-tertiary">Saved</span>
+                    <span className="text-xs text-tertiary">已保存</span>
                   ) : null}
                 </span>
                 <div className="flex gap-2">
@@ -289,8 +289,8 @@ export const ModelConfigSettingsPanel = (
                     spellCheck={false}
                     placeholder={
                       credentialStatus === 'present'
-                        ? 'Leave blank to keep the saved key'
-                        : 'Optional'
+                        ? '留空以保留已保存的密钥'
+                        : '可选'
                     }
                     onChange={(event) =>
                       store.setCredentialValue(event.target.value)
@@ -301,7 +301,7 @@ export const ModelConfigSettingsPanel = (
                       type="button"
                       size="icon-lg"
                       variant="outline"
-                      aria-label="Delete saved API key"
+                      aria-label="删除已保存的 API 密钥"
                       onClick={() =>
                         store.setDeleteCredentialOpen(true)
                       }
@@ -321,24 +321,24 @@ export const ModelConfigSettingsPanel = (
                     })
                   }
                 />
-                <span>Supports image understanding (Vision)</span>
+                <span>支持图像理解（视觉）</span>
               </label>
 
               <details className="rounded-lg border px-3.5 py-2.5 text-sm">
                 <summary className="cursor-pointer select-none text-secondary">
-                  Context compaction
+                  上下文压缩
                 </summary>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2">
                   <label className="grid gap-1">
-                    <span className="text-secondary">Context window tokens</span>
+                    <span className="text-secondary">上下文窗口 Token 数</span>
                     <Input
                       type="number"
                       min={4096}
                       max={2097152}
                       value={store.selectedProfile.contextWindowTokens ?? ''}
                       placeholder={contextWindow === undefined
-                        ? 'Required for unknown models'
-                        : `Auto: ${contextWindow.toLocaleString()}`}
+                        ? '未知模型必须填写'
+                        : `自动：${contextWindow.toLocaleString()}`}
                       onChange={(event) =>
                         store.updateSelectedProfile({
                           contextWindowTokens: event.target.value
@@ -349,15 +349,15 @@ export const ModelConfigSettingsPanel = (
                     />
                   </label>
                   <label className="grid gap-1">
-                    <span className="text-secondary">Compact at tokens</span>
+                    <span className="text-secondary">压缩触发 Token 数</span>
                     <Input
                       type="number"
                       min={4096}
                       max={2097152}
                       value={store.selectedProfile.compactThresholdTokens ?? ''}
                       placeholder={calculatedThreshold === undefined
-                        ? 'Set a context window first'
-                        : `Auto: ${calculatedThreshold.toLocaleString()}`}
+                        ? '请先设置上下文窗口'
+                        : `自动：${calculatedThreshold.toLocaleString()}`}
                       onChange={(event) =>
                         store.updateSelectedProfile({
                           compactThresholdTokens: event.target.value
@@ -368,7 +368,7 @@ export const ModelConfigSettingsPanel = (
                     />
                   </label>
                   <label className="grid gap-1">
-                    <span className="text-secondary">Automatic compaction</span>
+                    <span className="text-secondary">自动压缩</span>
                     <Select
                       value={store.selectedProfile.autoCompaction ?? 'auto'}
                       onValueChange={(value) =>
@@ -379,14 +379,14 @@ export const ModelConfigSettingsPanel = (
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="auto">Auto</SelectItem>
-                        <SelectItem value="enabled">Enabled</SelectItem>
-                        <SelectItem value="disabled">Disabled</SelectItem>
+                        <SelectItem value="auto">自动</SelectItem>
+                        <SelectItem value="enabled">启用</SelectItem>
+                        <SelectItem value="disabled">停用</SelectItem>
                       </SelectContent>
                     </Select>
                   </label>
                   <label className="grid gap-1">
-                    <span className="text-secondary">Provider-native compaction</span>
+                    <span className="text-secondary">服务商原生压缩</span>
                     <Select
                       value={store.selectedProfile.nativeCompaction ?? 'auto'}
                       onValueChange={(value) =>
@@ -397,16 +397,16 @@ export const ModelConfigSettingsPanel = (
                     >
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="auto">Auto</SelectItem>
-                        <SelectItem value="enabled">Enabled</SelectItem>
-                        <SelectItem value="disabled">Disabled</SelectItem>
+                        <SelectItem value="auto">自动</SelectItem>
+                        <SelectItem value="enabled">启用</SelectItem>
+                        <SelectItem value="disabled">停用</SelectItem>
                       </SelectContent>
                     </Select>
                   </label>
                 </div>
                 <p className="mt-3 text-xs text-tertiary">
-                  Auto compaction requires a known context window. SugarCode reserves
-                  output capacity and a 5% safety margin before compacting.
+                  自动压缩需要明确的上下文窗口。压缩前，SugarCode
+                  会为输出预留容量和 5% 的安全余量。
                 </p>
               </details>
 
@@ -423,14 +423,14 @@ export const ModelConfigSettingsPanel = (
                         aria-hidden="true"
                       />
                       {store.phase === 'loading'
-                        ? 'Loading configuration…'
+                        ? '正在加载配置…'
                         : store.phase === 'deleting'
-                          ? 'Deleting API key…'
-                          : 'Saving configuration…'}
+                          ? '正在删除 API 密钥…'
+                          : '正在保存配置…'}
                     </span>
                   ) : (
                     store.notice ??
-                    'Changes apply to new turns; active turns keep their current model.'
+                    '更改会应用于新回合；正在进行的回合继续使用当前模型。'
                   )}
                 </div>
                 <div className="flex gap-2 sm:justify-end">
@@ -441,7 +441,7 @@ export const ModelConfigSettingsPanel = (
                         variant="ghost"
                         disabled={store.busy}
                       >
-                        Close
+                        关闭
                       </Button>
                     </DialogClose>
                   ) : null}
@@ -452,7 +452,7 @@ export const ModelConfigSettingsPanel = (
                     onClick={store.save}
                   >
                     <Check aria-hidden="true" />
-                    Save configuration
+                    保存配置
                   </Button>
                 </div>
               </div>
@@ -467,16 +467,15 @@ export const ModelConfigSettingsPanel = (
       >
         <AlertDialogContent className="max-w-md p-5">
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete saved API key?</AlertDialogTitle>
+            <AlertDialogTitle>删除已保存的 API 密钥？</AlertDialogTitle>
             <AlertDialogDescription>
-              The model configuration and endpoint will remain. Active turns
-              continue unchanged.
+              模型配置和接口地址会保留，正在进行的回合不会受到影响。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="mt-5">
             <AlertDialogCancel asChild>
               <Button type="button" variant="outline">
-                Cancel
+                取消
               </Button>
             </AlertDialogCancel>
             <AlertDialogAction asChild>
@@ -485,7 +484,7 @@ export const ModelConfigSettingsPanel = (
                 variant="destructive"
                 onClick={store.deleteCredential}
               >
-                Delete API key
+                删除 API 密钥
               </Button>
             </AlertDialogAction>
           </AlertDialogFooter>

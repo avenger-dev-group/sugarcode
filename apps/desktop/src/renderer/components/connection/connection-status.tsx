@@ -48,7 +48,7 @@ export const ConnectionStatusView = ({
     className="relative overflow-hidden rounded-xl border bg-surface px-4 py-3.5"
     role={connection.status === 'failed' ? 'alert' : 'status'}
     aria-live="polite"
-    aria-label={`Local runtime: ${connection.label}`}
+    aria-label={`本地运行时：${connection.label}`}
   >
     <div
       className={`absolute inset-y-0 left-0 w-0.5 ${

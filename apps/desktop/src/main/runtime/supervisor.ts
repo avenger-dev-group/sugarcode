@@ -132,6 +132,8 @@ export class RuntimeSupervisor {
   ): Promise<Extract<RuntimeEvent, { type: TType }>> =>
     new Promise((resolve, reject) => {
       let settled = false;
+      let unsubscribe = (): void => undefined;
+      let unsubscribeLifecycle = (): void => undefined;
       const finish = (): void => {
         if (settled) {
           return;
@@ -139,8 +141,9 @@ export class RuntimeSupervisor {
         settled = true;
         clearTimeout(timer);
         unsubscribe();
+        unsubscribeLifecycle();
       };
-      const unsubscribe = this.subscribe((event) => {
+      unsubscribe = this.subscribe((event) => {
         if (event.requestId !== command.requestId) {
           return;
         }
@@ -158,6 +161,15 @@ export class RuntimeSupervisor {
           finish();
           reject(new Error(event.message));
         }
+      });
+      unsubscribeLifecycle = this.subscribeLifecycle((snapshot) => {
+        if (!snapshot.failure && snapshot.status !== 'closed') {
+          return;
+        }
+        finish();
+        reject(new Error(
+          snapshot.detail ?? 'The TypeScript runtime became unavailable.',
+        ));
       });
       const timer = setTimeout(() => {
         finish();

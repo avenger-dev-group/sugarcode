@@ -122,7 +122,7 @@ export const AboutSettings = () => {
       <header className="border-b px-6 py-5">
         <div className="flex items-center gap-2.5">
           <Info className="size-4 text-secondary" aria-hidden="true" />
-          <h2 className="text-sm font-medium">About</h2>
+          <h2 className="text-sm font-medium">关于</h2>
         </div>
         <p className="mt-1.5 max-w-2xl text-sm font-normal leading-normal text-secondary">
           查看版本信息，并保持 SugarCode 为最新版本。
@@ -139,7 +139,7 @@ export const AboutSettings = () => {
               SugarCode
             </h3>
             <p className="mt-1 text-sm font-normal text-secondary">
-              AI coding workbench · Version {desktopPackage.version}
+              AI 编程工作台 · 版本 {desktopPackage.version}
             </p>
           </div>
         </section>
@@ -218,7 +218,7 @@ export const AboutSettings = () => {
         </section>
 
         <footer className="border-t pt-5 text-xs font-normal leading-relaxed text-tertiary">
-          © 2026 AixvoLink LLC. All rights reserved.
+          © 2026 AixvoLink LLC。保留所有权利。
         </footer>
       </div>
     </>

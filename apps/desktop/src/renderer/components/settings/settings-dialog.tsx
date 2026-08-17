@@ -38,9 +38,9 @@ const SETTINGS_SECTIONS: readonly Readonly<{
   disabled?: boolean;
   notice?: string;
 }>[] = [
-  { id: 'general', label: 'General', icon: Monitor },
-  { id: 'model', label: 'Model', icon: Cpu },
-  { id: 'skills', label: 'Skills', icon: Sparkles },
+  { id: 'general', label: '通用', icon: Monitor },
+  { id: 'model', label: '模型', icon: Cpu },
+  { id: 'skills', label: '技能', icon: Sparkles },
   {
     id: 'mcp',
     label: 'MCP',
@@ -48,7 +48,7 @@ const SETTINGS_SECTIONS: readonly Readonly<{
     disabled: true,
     notice: '即将推出',
   },
-  { id: 'about', label: 'About', icon: CircleHelp },
+  { id: 'about', label: '关于', icon: CircleHelp },
 ];
 
 const SettingsPageHeader = ({
@@ -84,16 +84,16 @@ const GeneralSettings = ({
   <>
     <SettingsPageHeader
       icon={Monitor}
-      title="General"
-      description="Choose the desktop appearance and inspect the packaged local runtime."
+      title="通用"
+      description="设置桌面外观，并查看本地运行时状态。"
     />
     <div className="space-y-7 px-6 py-6">
       <section aria-labelledby="appearance-title">
         <h3 id="appearance-title" className="text-sm font-medium">
-          Color theme
+          配色主题
         </h3>
         <p className="mt-1 text-sm font-normal text-secondary">
-          Keep the workbench comfortable in your current environment.
+          选择适合当前环境的界面主题。
         </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button
@@ -107,7 +107,7 @@ const GeneralSettings = ({
             }}
           >
             <Sun aria-hidden="true" />
-            Light
+            浅色
           </Button>
           <Button
             type="button"
@@ -120,7 +120,7 @@ const GeneralSettings = ({
             }}
           >
             <Moon aria-hidden="true" />
-            Dark
+            深色
           </Button>
           <span className="sr-only">{themeLabel}</span>
         </div>
@@ -128,7 +128,7 @@ const GeneralSettings = ({
 
       <section aria-labelledby="runtime-title">
         <h3 id="runtime-title" className="mb-3 text-sm font-medium">
-          Local runtime
+          本地运行时
         </h3>
         <ConnectionStatus />
       </section>
@@ -156,20 +156,20 @@ export const SettingsDialog = ({
           type="button"
           variant="ghost"
           className="w-full justify-start"
-          aria-label="Open settings"
+          aria-label="打开设置"
         >
           <Settings aria-hidden="true" />
-          Settings
+          设置
         </Button>
       </DialogTrigger>
       <DialogContent className="h-[min(44rem,calc(100vh-2rem))] max-w-[58rem]">
         <div className="flex h-16 shrink-0 items-center border-b px-5">
           <DialogTitle className="text-base font-semibold tracking-[-0.02em]">
-            Settings
+            设置
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Configure SugarCode Desktop, the model connection, workspace
-            Skills, MCP servers, updates, and application information.
+            配置 SugarCode 桌面端、模型连接、工作区技能、MCP
+            服务、软件更新和应用信息。
           </DialogDescription>
           <DialogClose asChild>
             <Button
@@ -177,7 +177,7 @@ export const SettingsDialog = ({
               size="icon"
               variant="ghost"
               className="ml-auto"
-              aria-label="Close settings"
+              aria-label="关闭设置"
             >
               <X aria-hidden="true" />
             </Button>
@@ -187,7 +187,7 @@ export const SettingsDialog = ({
         <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] sm:grid-cols-[11.5rem_minmax(0,1fr)] sm:grid-rows-1">
           <nav
             className="border-b bg-surface/45 p-2 sm:border-r sm:border-b-0"
-            aria-label="Settings sections"
+            aria-label="设置分类"
           >
             <div className="grid grid-cols-5 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {

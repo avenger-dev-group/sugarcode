@@ -23,20 +23,20 @@ type Props = Readonly<{
 const statusLabel = (status: CommandEnvironmentStatus): string => {
   switch (status.state) {
     case 'notCaptured':
-      return 'Not captured yet';
+      return '尚未捕获';
     case 'capturing':
-      return 'Capturing';
+      return '正在捕获';
     case 'ready':
-      return 'Ready';
+      return '就绪';
     case 'degraded':
-      return 'Using process fallback';
+      return '正在使用进程环境';
     case 'failed':
-      return 'Unavailable';
+      return '不可用';
   }
 };
 
 const sourceLabel = (status: CommandEnvironmentStatus): string =>
-  status.source === 'shellProfile' ? 'Shell profile' : 'SugarCode process';
+  status.source === 'shellProfile' ? 'Shell 配置' : 'SugarCode 进程';
 
 export const CommandEnvironmentSettings = ({
   workspaceId,
@@ -62,7 +62,7 @@ export const CommandEnvironmentSettings = ({
         if (active) setStatus(next);
       })
       .catch(() => {
-        if (active) setError('Command environment status is unavailable.');
+        if (active) setError('无法获取命令环境状态。');
       });
     return () => {
       active = false;
@@ -80,7 +80,7 @@ export const CommandEnvironmentSettings = ({
         if (active) setTaskWorkspace(next);
       })
       .catch(() => {
-        if (active) setError('Task workspace status is unavailable.');
+        if (active) setError('无法获取任务工作区状态。');
       });
     return () => {
       active = false;
@@ -94,12 +94,12 @@ export const CommandEnvironmentSettings = ({
     try {
       const result = await refreshCommandEnvironment({ workspaceId, threadId });
       if (!result.accepted || !result.status) {
-        setError('The command environment could not be refreshed.');
+        setError('无法刷新命令环境。');
       } else {
         setStatus(result.status);
       }
     } catch {
-      setError('The command environment could not be refreshed.');
+      setError('无法刷新命令环境。');
     } finally {
       setBusy(false);
     }
@@ -115,7 +115,7 @@ export const CommandEnvironmentSettings = ({
         ...(threadId ? { threadId } : {}),
       });
       if (!result.accepted) {
-        setError('The Shell profile preference could not be updated.');
+        setError('无法更新 Shell 配置读取选项。');
       } else if (result.status) {
         setStatus(result.status);
       } else {
@@ -124,7 +124,7 @@ export const CommandEnvironmentSettings = ({
         );
       }
     } catch {
-      setError('The Shell profile preference could not be updated.');
+      setError('无法更新 Shell 配置读取选项。');
     } finally {
       setBusy(false);
     }
@@ -139,15 +139,15 @@ export const CommandEnvironmentSettings = ({
     try {
       const result = await setTaskWorkspaceMode({ workspaceId, threadId, mode });
       if (!result.accepted || !result.workspace) {
-        setError('The task workspace mode could not be changed.');
+        setError('无法切换任务工作区模式。');
       } else {
         setTaskWorkspace(result.workspace);
       }
     } catch {
       setError(
         mode === 'worktree'
-          ? 'A Git worktree could not be created. Confirm the project is the repository root and has an initial commit.'
-          : 'The task could not return to the local project.',
+          ? '无法创建 Git 工作树。请确认当前项目是仓库根目录，并且至少有一次提交。'
+          : '任务无法返回本地项目目录。',
       );
     } finally {
       setBusy(false);
@@ -159,10 +159,10 @@ export const CommandEnvironmentSettings = ({
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 id="command-environment-title" className="text-sm font-medium">
-            Command environment
+            命令环境
           </h3>
           <p className="mt-1 text-sm text-secondary">
-            Shell profiles are captured lazily when an Agent first runs a command.
+            代理首次执行命令时，才会读取并保存 Shell 配置。
           </p>
         </div>
         <Button
@@ -177,7 +177,7 @@ export const CommandEnvironmentSettings = ({
           ) : (
             <RefreshCw aria-hidden="true" />
           )}
-          Refresh
+          刷新
         </Button>
       </div>
 
@@ -190,9 +190,9 @@ export const CommandEnvironmentSettings = ({
           }
         />
         <span>
-          <span className="block text-sm font-medium">Read Shell profile</span>
+          <span className="block text-sm font-medium">读取 Shell 配置</span>
           <span className="mt-0.5 block text-xs text-secondary">
-            Loads exported PATH changes from your normal terminal configuration.
+            从常用终端配置中加载导出的 PATH 变更。
           </span>
         </span>
       </label>
@@ -201,7 +201,7 @@ export const CommandEnvironmentSettings = ({
         <div className="mt-3 rounded-lg border bg-surface/35 p-3 text-xs">
           <div className="flex items-center gap-2">
             <SquareTerminal className="size-3.5 text-tertiary" aria-hidden="true" />
-            <span className="font-medium">{status ? statusLabel(status) : 'Loading status'}</span>
+            <span className="font-medium">{status ? statusLabel(status) : '正在加载状态'}</span>
             {status ? (
               <code className="ml-auto max-w-[55%] truncate text-tertiary" title={status.shell.executable}>
                 {status.shell.executable}
@@ -210,13 +210,13 @@ export const CommandEnvironmentSettings = ({
           </div>
           {status?.createdAt ? (
             <p className="mt-2 text-tertiary">
-              Captured {new Date(status.createdAt).toLocaleString()} · {sourceLabel(status)} · {status.shell.kind} · {status.variableCount} variables · {status.filteredVariableCount} filtered
+              捕获于 {new Date(status.createdAt).toLocaleString('zh-CN')} · {sourceLabel(status)} · {status.shell.kind} · {status.variableCount} 个变量 · 已过滤 {status.filteredVariableCount} 个
             </p>
           ) : null}
           {status && status.pathEntries.length > 0 ? (
             <details className="mt-2">
               <summary className="cursor-pointer text-secondary">
-                Effective PATH ({status.pathEntries.length})
+                有效 PATH（{status.pathEntries.length} 项）
               </summary>
               <div className="mt-2 max-h-32 space-y-1 overflow-auto font-mono text-[11px] text-tertiary">
                 {status.pathEntries.map((entry, index) => (
@@ -231,7 +231,7 @@ export const CommandEnvironmentSettings = ({
         </div>
       ) : (
         <p className="mt-3 text-xs text-tertiary">
-          Open a project to inspect its command environment.
+          打开一个项目后即可查看其命令环境。
         </p>
       )}
       {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
@@ -241,10 +241,10 @@ export const CommandEnvironmentSettings = ({
           <div>
             <h3 className="flex items-center gap-2 text-sm font-medium">
               <GitBranch className="size-4" aria-hidden="true" />
-              Task workspace
+              任务工作区
             </h3>
             <p className="mt-1 text-sm text-secondary">
-              Local tasks share the project directory. Worktree tasks use an isolated Git branch and directory.
+              本地任务共享项目目录；工作树任务使用独立的 Git 分支和目录。
             </p>
           </div>
           <div className="flex rounded-lg border p-0.5">
@@ -257,7 +257,7 @@ export const CommandEnvironmentSettings = ({
                 disabled={busy || !workspaceId || !threadId || !taskWorkspace}
                 onClick={() => void changeTaskWorkspace(mode)}
               >
-                {mode === 'local' ? 'Local' : 'Worktree'}
+                {mode === 'local' ? '本地' : '工作树'}
               </Button>
             ))}
           </div>
@@ -266,7 +266,7 @@ export const CommandEnvironmentSettings = ({
           <div className="mt-3 rounded-lg border bg-surface/35 p-3 text-xs text-tertiary">
             <p className="break-all font-mono">{taskWorkspace.root}</p>
             {taskWorkspace.branch ? (
-              <p className="mt-1 break-all">Branch: <code>{taskWorkspace.branch}</code></p>
+              <p className="mt-1 break-all">分支：<code>{taskWorkspace.branch}</code></p>
             ) : null}
           </div>
         ) : null}

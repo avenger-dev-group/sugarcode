@@ -123,7 +123,7 @@ export const useStore = (): FoundationStore => {
     contextRailOpen: layout.contextRailOpen,
     contextRailResize,
     openContextRail,
-    themeLabel: isDark ? 'Use light theme' : 'Use dark theme',
+    themeLabel: isDark ? '使用浅色主题' : '使用深色主题',
     toggleNavigator,
     toggleContextRail,
     toggleTheme,

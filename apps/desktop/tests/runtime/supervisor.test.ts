@@ -169,6 +169,47 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
   supervisor.shutdown();
 });
 
+test('RuntimeSupervisor rejects pending requests when an invalid event stops the runtime', async () => {
+  const child = new FixtureChild();
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => child as never,
+  });
+  supervisor.start();
+  child.emit('spawn');
+  child.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: child.messages[0]?.requestId,
+    protocolVersion: 5,
+  });
+  const response = supervisor.request(
+    {
+      type: 'taskWorkspace.inspect',
+      requestId: 'request-task-workspace',
+      workspaceId: 'workspace-fixture',
+      threadId: 'thread-fixture',
+    },
+    'taskWorkspace.inspection',
+  );
+  child.emit('message', {
+    type: 'taskWorkspace.inspection',
+    sequence: 2,
+    requestId: 'request-task-workspace',
+    workspace: {
+      threadId: 'thread-fixture',
+      mode: 'local',
+      root: '/fixture/workspace',
+      branch: null,
+    },
+  });
+  await assert.rejects(response, /invalid event/u);
+  assert.equal(child.killed, true);
+  supervisor.shutdown();
+});
+
 test('RuntimeSupervisor tracks a promoted queued Turn through a runtime crash', () => {
   const child = new FixtureChild();
   const events: RuntimeEvent[] = [];

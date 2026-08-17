@@ -26,7 +26,7 @@ import {
 const INITIAL_CONNECTION: ModelConnectionValue = {
   id: 'conn_openai',
   providerFamily: 'openai',
-  displayName: 'OpenAI-compatible',
+  displayName: 'OpenAI 兼容接口',
   baseUrl: 'https://api.openai.com/v1',
   enabled: true,
   wireApi: 'openaiChatCompletions',
@@ -36,7 +36,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
 const INITIAL_PROFILE: ModelProfileValue = {
   id: 'model_primary',
   connectionId: INITIAL_CONNECTION.id,
-  displayName: 'Work model',
+  displayName: '工作模型',
   modelId: '',
   autoCompaction: 'auto',
   nativeCompaction: 'auto',
@@ -55,18 +55,18 @@ const EMPTY_CONFIG: ModelConfigValue = {
 
 const noticeFor = (result: ModelConfigActionResult): string => {
   if (result.state === 'saved') {
-    return 'Saved. New turns will use the updated model configuration.';
+    return '已保存。新回合将使用更新后的模型配置。';
   }
   if (result.reason === 'reconnectPending') {
-    return 'Another local configuration or workspace change is in progress.';
+    return '另一项本地配置或工作区更改正在进行中。';
   }
   if (result.reason === 'stale') {
-    return 'Configuration changed elsewhere. Reopen Settings before saving.';
+    return '配置已在其他位置发生变化，请重新打开设置后再保存。';
   }
   if (result.reason === 'invalid') {
-    return 'Check the required fields before saving this configuration.';
+    return '请检查必填项后再保存此配置。';
   }
-  return 'The model configuration could not be saved.';
+  return '无法保存模型配置。';
 };
 
 const uniqueId = (prefix: string, existing: readonly string[]): string => {
@@ -115,7 +115,7 @@ export const useStore = ({
       })
       .catch(() => {
         if (current) {
-          setNotice('The saved model configuration is unavailable.');
+          setNotice('无法读取已保存的模型配置。');
           setPhase('idle');
         }
       });
@@ -165,11 +165,11 @@ export const useStore = ({
 
   const addConfiguration = (): void => {
     if (config.connections.length >= 16) {
-      setNotice('A model catalog can contain at most 16 connections.');
+      setNotice('模型目录最多可包含 16 个连接。');
       return;
     }
     if (config.profiles.length >= 128) {
-      setNotice('A model catalog can contain at most 128 profiles.');
+      setNotice('模型目录最多可包含 128 个配置。');
       return;
     }
     const connectionId = uniqueId(
@@ -183,13 +183,13 @@ export const useStore = ({
     const connection: ModelConnectionValue = {
       ...INITIAL_CONNECTION,
       id: connectionId,
-      displayName: 'OpenAI-compatible',
+      displayName: 'OpenAI 兼容接口',
     };
     const profile: ModelProfileValue = {
       ...INITIAL_PROFILE,
       id: profileId,
       connectionId,
-      displayName: 'New configuration',
+      displayName: '新配置',
     };
     updateConfig((current) => ({
       ...current,
@@ -203,7 +203,7 @@ export const useStore = ({
 
   const deleteConfiguration = (): void => {
     if (config.profiles.length === 1) {
-      setNotice('At least one model configuration is required.');
+      setNotice('至少需要保留一个模型配置。');
       return;
     }
     const nextProfile =
@@ -231,7 +231,7 @@ export const useStore = ({
     }));
     setSelectedProfileId(nextProfile.id);
     setCredentialValue('');
-    setNotice('Configuration removed from this draft. Save to apply.');
+    setNotice('已从当前草稿中移除该配置，保存后生效。');
   };
 
   const applyResult = (result: ModelConfigActionResult): void => {
@@ -261,7 +261,7 @@ export const useStore = ({
           profile.modelId.trim().length === 0,
       )
     ) {
-      setNotice('Configuration name and model ID are required.');
+      setNotice('配置名称和模型 ID 为必填项。');
       return;
     }
     const savedConfig: ModelConfigValue = config;
@@ -286,7 +286,7 @@ export const useStore = ({
     })
       .then(applyResult)
       .catch(() => {
-        setNotice('The model configuration could not be saved.');
+        setNotice('无法保存模型配置。');
         setPhase('idle');
       });
   };
@@ -304,7 +304,7 @@ export const useStore = ({
     )
       .then(applyResult)
       .catch(() => {
-        setNotice('The API key could not be deleted.');
+        setNotice('无法删除 API 密钥。');
         setPhase('idle');
       });
   };
