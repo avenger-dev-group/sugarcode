@@ -9,6 +9,8 @@ import {
   DEFAULT_LAYOUT,
   NAVIGATOR_WIDTH,
   parseStoredLayout,
+  resolveContextRailOpen,
+  updateContextRailVisibility,
 } from './layout-state';
 import type { StoredLayout } from './layout-state';
 import type { FoundationStore, Theme } from './types';
@@ -23,10 +25,20 @@ const loadLayout = () => {
   }
 };
 
-export const useStore = (): FoundationStore => {
+export const useStore = (
+  contextRailScopeKey: string | null = null,
+): FoundationStore => {
   const [theme, setTheme] = useState<Theme>('light');
   const [layout, setLayout] = useState<StoredLayout>(loadLayout);
+  const [contextRailVisibility, setContextRailVisibility] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
   const isDark = theme === 'dark';
+  const contextRailOpen = resolveContextRailOpen(
+    contextRailVisibility,
+    contextRailScopeKey,
+    layout.contextRailOpen,
+  );
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDark);
@@ -72,19 +84,35 @@ export const useStore = (): FoundationStore => {
       navigatorOpen: !current.navigatorOpen,
     }));
   };
-  const toggleContextRail = (): void => {
+  const toggleContextRail = useCallback((): void => {
+    if (contextRailScopeKey !== null) {
+      setContextRailVisibility((current) =>
+        updateContextRailVisibility(
+          current,
+          contextRailScopeKey,
+          !resolveContextRailOpen(current, contextRailScopeKey, false),
+        ),
+      );
+      return;
+    }
     setLayout((current) => ({
       ...current,
       contextRailOpen: !current.contextRailOpen,
     }));
-  };
-  const openContextRail = (): void => {
+  }, [contextRailScopeKey]);
+  const openContextRail = useCallback((): void => {
+    if (contextRailScopeKey !== null) {
+      setContextRailVisibility((current) =>
+        updateContextRailVisibility(current, contextRailScopeKey, true),
+      );
+      return;
+    }
     setLayout((current) =>
       current.contextRailOpen
         ? current
         : { ...current, contextRailOpen: true },
     );
-  };
+  }, [contextRailScopeKey]);
   const navigatorResize = usePanelResize({
     width: layout.navigatorWidth,
     minWidth: NAVIGATOR_WIDTH.min,
@@ -120,7 +148,7 @@ export const useStore = (): FoundationStore => {
     isDark,
     navigatorOpen: layout.navigatorOpen,
     navigatorResize,
-    contextRailOpen: layout.contextRailOpen,
+    contextRailOpen,
     contextRailResize,
     openContextRail,
     themeLabel: isDark ? '使用浅色主题' : '使用深色主题',

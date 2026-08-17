@@ -3,7 +3,6 @@ import {
   createElement,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -15,6 +14,13 @@ import type {
   ContextRailPlan,
   ContextRailResource,
 } from './types';
+import {
+  clearSelectedDrawioForSession,
+  closeDrawioForSession,
+  getSelectedDrawioPath,
+  openDrawioForSession,
+  type DrawioSessionRegistry,
+} from './drawio-session-state';
 
 export type BrowserContextTab = Readonly<{
   id: string;
@@ -102,11 +108,21 @@ export const OrchestrationStoreProvider = ({
   onRequestOpen: () => void;
   scopeKey: string | null;
 }>) => {
-  const [activeTab, setActiveTab] = useState<ContextRailTab>('launcher');
+  const drawioSessionsRef = useRef<DrawioSessionRegistry>(new Map());
+  const drawioSessions = drawioSessionsRef.current;
+  const restoredDrawioPath = getSelectedDrawioPath(drawioSessions, scopeKey);
+  const [stateScopeKey, setStateScopeKey] = useState(scopeKey);
+  const [activeTab, setActiveTab] = useState<ContextRailTab>(
+    restoredDrawioPath ? 'resource' : 'launcher',
+  );
   const [selectedTask, setSelectedTask] =
     useState<AgentTaskViewModel | null>(null);
   const [selectedResource, setSelectedResource] =
-    useState<ContextRailResource | null>(null);
+    useState<ContextRailResource | null>(
+      restoredDrawioPath
+        ? { kind: 'drawio', path: restoredDrawioPath }
+        : null,
+    );
   const [selectedPlan, setSelectedPlan] =
     useState<ContextRailPlan | null>(null);
   const [filesTabOpen, setFilesTabOpen] = useState(false);
@@ -118,11 +134,20 @@ export const OrchestrationStoreProvider = ({
   const [requestedFile, setRequestedFile] =
     useState<ContextFileRequest | null>(null);
   const [taskDockOpen, setTaskDockOpen] = useState(false);
-  const autoOpenedDrawioPathsRef = useRef(new Set<string>());
-  const autoOpenedDrawioScopeRef = useRef(scopeKey);
-  if (autoOpenedDrawioScopeRef.current !== scopeKey) {
-    autoOpenedDrawioScopeRef.current = scopeKey;
-    autoOpenedDrawioPathsRef.current.clear();
+
+  if (stateScopeKey !== scopeKey) {
+    const nextDrawioPath = getSelectedDrawioPath(drawioSessions, scopeKey);
+    setStateScopeKey(scopeKey);
+    setActiveTab(nextDrawioPath ? 'resource' : 'launcher');
+    setSelectedTask(null);
+    setSelectedResource(
+      nextDrawioPath ? { kind: 'drawio', path: nextDrawioPath } : null,
+    );
+    setSelectedPlan(null);
+    setFilesTabOpen(false);
+    setBrowserTabs([]);
+    setRequestedFile(null);
+    setTaskDockOpen(false);
   }
 
   const selectTask = useCallback(
@@ -153,6 +178,13 @@ export const OrchestrationStoreProvider = ({
   }, [browserTabs, filesTabOpen, selectedPlan, selectedResource]);
 
   const closeResourceTab = useCallback(() => {
+    if (selectedResource?.kind === 'drawio') {
+      closeDrawioForSession(
+        drawioSessions,
+        scopeKey,
+        selectedResource.path,
+      );
+    }
     setSelectedResource(null);
     setActiveTab((current) =>
       current === 'resource'
@@ -167,7 +199,15 @@ export const OrchestrationStoreProvider = ({
                 : 'launcher'
         : current,
     );
-  }, [browserTabs, filesTabOpen, selectedPlan, selectedTask]);
+  }, [
+    browserTabs,
+    drawioSessions,
+    filesTabOpen,
+    scopeKey,
+    selectedPlan,
+    selectedResource,
+    selectedTask,
+  ]);
 
   const closePlanTab = useCallback(() => {
     setSelectedPlan(null);
@@ -201,31 +241,32 @@ export const OrchestrationStoreProvider = ({
       path: string,
       changes: readonly import('../workspace/types').FileChangeReviewFile[],
     ) => {
+      clearSelectedDrawioForSession(drawioSessions, scopeKey);
       setSelectedResource({ kind: 'diff', path, changes });
       setActiveTab('resource');
       onRequestOpen();
     },
-    [onRequestOpen],
+    [drawioSessions, onRequestOpen, scopeKey],
   );
 
   const openDrawio = useCallback(
     (path: string) => {
+      openDrawioForSession(drawioSessions, scopeKey, path, false);
       setSelectedResource({ kind: 'drawio', path });
       setActiveTab('resource');
       onRequestOpen();
     },
-    [onRequestOpen],
+    [drawioSessions, onRequestOpen, scopeKey],
   );
 
   const autoOpenDrawio = useCallback(
     (path: string) => {
-      if (autoOpenedDrawioPathsRef.current.has(path)) return;
-      autoOpenedDrawioPathsRef.current.add(path);
+      if (!openDrawioForSession(drawioSessions, scopeKey, path, true)) return;
       setSelectedResource({ kind: 'drawio', path });
       setActiveTab('resource');
       onRequestOpen();
     },
-    [onRequestOpen],
+    [drawioSessions, onRequestOpen, scopeKey],
   );
 
   const openPlan = useCallback(
@@ -309,23 +350,13 @@ export const OrchestrationStoreProvider = ({
 
   const openSkill = useCallback(
     (skill: Extract<ContextRailResource, { kind: 'skill' }>) => {
+      clearSelectedDrawioForSession(drawioSessions, scopeKey);
       setSelectedResource(skill);
       setActiveTab('resource');
       onRequestOpen();
     },
-    [onRequestOpen],
+    [drawioSessions, onRequestOpen, scopeKey],
   );
-
-  useEffect(() => {
-    setSelectedTask(null);
-    setSelectedResource(null);
-    setSelectedPlan(null);
-    setFilesTabOpen(false);
-    setBrowserTabs([]);
-    setRequestedFile(null);
-    setTaskDockOpen(false);
-    setActiveTab('launcher');
-  }, [scopeKey]);
 
   const refreshTask = useCallback((task: AgentTaskViewModel) => {
     setSelectedTask((current) =>

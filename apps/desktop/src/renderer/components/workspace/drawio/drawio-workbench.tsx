@@ -2,13 +2,14 @@ import '@maxgraph/core/css/common.css';
 import './drawio-workbench.css';
 
 import {
-  FitPlugin,
   Graph,
   InternalEvent,
   ModelXmlSerializer,
   PanningHandler,
 } from '@maxgraph/core';
 import {
+  Check,
+  Copy,
   Focus,
   LoaderCircle,
   Minus,
@@ -27,6 +28,13 @@ import {
   isDrawioFlowAnimationValue,
   resolveDrawioFlowAnimation,
 } from './drawio-animation';
+import { copyDrawioSvgAsPng } from './drawio-copy-image';
+import {
+  clampDrawioScale,
+  DRAWIO_MAX_SCALE,
+  DRAWIO_MIN_SCALE,
+  resolveDrawioFitScale,
+} from './drawio-viewport';
 
 type DiagramSummary = Readonly<{
   animatedEdges: number;
@@ -34,8 +42,9 @@ type DiagramSummary = Readonly<{
   edges: number;
 }>;
 
-const MIN_SCALE = 0.2;
-const MAX_SCALE = 4;
+type CopyState = 'idle' | 'copying' | 'copied' | 'error';
+
+const RESIZE_SETTLE_MS = 80;
 
 const ORIGINAL_DASH_ATTRIBUTE = 'data-drawio-flow-original-dasharray';
 const NO_DASH_VALUE = '__none__';
@@ -141,12 +150,17 @@ const DrawioWorkbenchView = ({
   const store = useWorkspaceDocumentStore(path);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Graph | null>(null);
+  const activeRef = useRef(active);
   const initialFitPendingRef = useRef(true);
   const motionEnabledRef = useRef(true);
+  const copyResetTimerRef = useRef(0);
+  const viewportRefreshTimerRef = useRef(0);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [summary, setSummary] = useState<DiagramSummary | null>(null);
   const [scale, setScale] = useState(100);
   const [motionEnabled, setMotionEnabled] = useState(true);
+  const [copyState, setCopyState] = useState<CopyState>('idle');
+  activeRef.current = active;
   motionEnabledRef.current = motionEnabled;
 
   const syncScale = useCallback((graph: Graph): void => {
@@ -156,29 +170,110 @@ const DrawioWorkbenchView = ({
   const fit = useCallback((): void => {
     const graph = graphRef.current;
     const container = canvasRef.current;
-    if (!graph || !container || container.clientWidth < 32 || container.clientHeight < 32) {
+    if (!graph || !container || !activeRef.current) {
       return;
     }
-    const plugin = graph.getPlugin<FitPlugin>('fit');
-    if (plugin) {
-      plugin.maxFitScale = 1.25;
-      plugin.fitCenter({ margin: 32 });
-      initialFitPendingRef.current = false;
-      syncScale(graph);
+    const view = graph.getView();
+    let originalScale = view.getScale();
+    if (!Number.isFinite(originalScale) || originalScale < DRAWIO_MIN_SCALE) {
+      view.setScale(1);
+      graph.refresh();
+      originalScale = 1;
     }
+    const bounds = graph.getGraphBounds();
+    const graphWidth = bounds.width / originalScale;
+    const graphHeight = bounds.height / originalScale;
+    const nextScale = resolveDrawioFitScale({
+      containerHeight: container.clientHeight,
+      containerWidth: container.clientWidth,
+      graphHeight,
+      graphWidth,
+    });
+    if (nextScale === null) return;
+    const translateX = Math.floor(
+      view.getTranslate().x +
+      (container.clientWidth - graphWidth * nextScale) / (2 * nextScale) -
+      bounds.x / originalScale,
+    );
+    const translateY = Math.floor(
+      view.getTranslate().y +
+      (container.clientHeight - graphHeight * nextScale) / (2 * nextScale) -
+      bounds.y / originalScale,
+    );
+    view.scaleAndTranslate(nextScale, translateX, translateY);
+    initialFitPendingRef.current = false;
+    syncScale(graph);
   }, [syncScale]);
+
+  const scheduleViewportRefresh = useCallback((): void => {
+    if (viewportRefreshTimerRef.current) {
+      window.clearTimeout(viewportRefreshTimerRef.current);
+    }
+    viewportRefreshTimerRef.current = window.setTimeout(() => {
+      viewportRefreshTimerRef.current = 0;
+      const graph = graphRef.current;
+      const container = canvasRef.current;
+      if (!graph || !container || !activeRef.current) return;
+      graph.refresh();
+      updateFlowAnimations(graph, motionEnabledRef.current);
+      const currentScale = graph.getView().getScale();
+      if (
+        initialFitPendingRef.current ||
+        !Number.isFinite(currentScale) ||
+        currentScale < DRAWIO_MIN_SCALE
+      ) {
+        fit();
+      } else {
+        syncScale(graph);
+      }
+    }, RESIZE_SETTLE_MS);
+  }, [fit, syncScale]);
 
   const zoom = useCallback((direction: 'in' | 'out'): void => {
     const graph = graphRef.current;
     if (!graph) return;
-    const current = graph.getView().getScale();
+    const current = clampDrawioScale(graph.getView().getScale());
     const next = direction === 'in'
-      ? Math.min(MAX_SCALE, current * graph.zoomFactor)
-      : Math.max(MIN_SCALE, current / graph.zoomFactor);
+      ? Math.min(DRAWIO_MAX_SCALE, current * graph.zoomFactor)
+      : Math.max(DRAWIO_MIN_SCALE, current / graph.zoomFactor);
     graph.zoomTo(next, true);
     initialFitPendingRef.current = false;
     syncScale(graph);
   }, [syncScale]);
+
+  const copyAsImage = useCallback(async (): Promise<void> => {
+    const graph = graphRef.current;
+    const svg = canvasRef.current?.querySelector('svg');
+    if (!graph || !(svg instanceof SVGSVGElement)) return;
+    if (copyResetTimerRef.current) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = 0;
+    }
+    setCopyState('copying');
+    try {
+      await copyDrawioSvgAsPng({
+        bounds: graph.getGraphBounds(),
+        svg,
+        viewScale: graph.getView().getScale(),
+      });
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      copyResetTimerRef.current = 0;
+      setCopyState('idle');
+    }, 2_000);
+  }, []);
+
+  useEffect(() => () => {
+    if (copyResetTimerRef.current) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    if (viewportRefreshTimerRef.current) {
+      window.clearTimeout(viewportRefreshTimerRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     const container = canvasRef.current;
@@ -192,7 +287,6 @@ const DrawioWorkbenchView = ({
       return;
     }
     let graph: Graph | null = null;
-    let frame = 0;
     let flowFrame = 0;
     let flowObserver: MutationObserver | null = null;
     let refreshFlowAnimations: (() => void) | null = null;
@@ -212,8 +306,8 @@ const DrawioWorkbenchView = ({
       if (panning) {
         panning.useLeftButtonForPanning = true;
         panning.ignoreCell = true;
-        panning.minScale = MIN_SCALE;
-        panning.maxScale = MAX_SCALE;
+        panning.minScale = DRAWIO_MIN_SCALE;
+        panning.maxScale = DRAWIO_MAX_SCALE;
         panning.setPanningEnabled(true);
       }
       graph.getView().rendering = false;
@@ -244,7 +338,7 @@ const DrawioWorkbenchView = ({
       initialFitPendingRef.current = true;
       setSummary(parsed.summary);
       setRenderError(null);
-      frame = window.requestAnimationFrame(fit);
+      scheduleViewportRefresh();
     } catch (error) {
       setSummary(null);
       setRenderError(
@@ -252,7 +346,10 @@ const DrawioWorkbenchView = ({
       );
     }
     return () => {
-      if (frame) window.cancelAnimationFrame(frame);
+      if (viewportRefreshTimerRef.current) {
+        window.clearTimeout(viewportRefreshTimerRef.current);
+        viewportRefreshTimerRef.current = 0;
+      }
       if (flowFrame) window.cancelAnimationFrame(flowFrame);
       flowObserver?.disconnect();
       if (graph && refreshFlowAnimations) {
@@ -263,7 +360,7 @@ const DrawioWorkbenchView = ({
       graph?.destroy();
       container.replaceChildren();
     };
-  }, [fit, store.document]);
+  }, [scheduleViewportRefresh, store.document]);
 
   useEffect(() => {
     const container = canvasRef.current;
@@ -288,8 +385,13 @@ const DrawioWorkbenchView = ({
         if (!currentGraph) return;
         const factor = Math.exp(-wheelDelta * 0.0018);
         wheelDelta = 0;
-        const current = currentGraph.getView().getScale();
-        const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, current * factor));
+        const current = clampDrawioScale(
+          currentGraph.getView().getScale(),
+        );
+        const next = Math.min(
+          DRAWIO_MAX_SCALE,
+          Math.max(DRAWIO_MIN_SCALE, current * factor),
+        );
         currentGraph.zoomTo(next, true);
         initialFitPendingRef.current = false;
         syncScale(currentGraph);
@@ -309,30 +411,25 @@ const DrawioWorkbenchView = ({
   }, [motionEnabled]);
 
   useEffect(() => {
-    if (!active) return;
-    const frame = window.requestAnimationFrame(() => {
-      const graph = graphRef.current;
-      const container = canvasRef.current;
-      if (!graph || !container || container.clientWidth < 32 || container.clientHeight < 32) {
-        return;
+    if (!active) {
+      if (viewportRefreshTimerRef.current) {
+        window.clearTimeout(viewportRefreshTimerRef.current);
+        viewportRefreshTimerRef.current = 0;
       }
-      graph.refresh();
-      updateFlowAnimations(graph, motionEnabledRef.current);
-      if (initialFitPendingRef.current) fit();
-      else syncScale(graph);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [active, fit, syncScale]);
+      return;
+    }
+    scheduleViewportRefresh();
+  }, [active, scheduleViewportRefresh]);
 
   useEffect(() => {
     const container = canvasRef.current;
     if (!container) return;
     const observer = new ResizeObserver(() => {
-      if (active && initialFitPendingRef.current) fit();
+      if (active) scheduleViewportRefresh();
     });
     observer.observe(container);
     return () => observer.disconnect();
-  }, [active, fit]);
+  }, [active, scheduleViewportRefresh]);
 
   const documentError =
     store.document?.status === 'error'
@@ -380,6 +477,35 @@ const DrawioWorkbenchView = ({
         >
           <Sparkles aria-hidden="true" />
         </Button>
+        <Button
+          type="button"
+          size="icon-xs"
+          variant={copyState === 'copied' ? 'secondary' : 'ghost'}
+          onClick={() => void copyAsImage()}
+          disabled={!summary || copyState === 'copying'}
+          aria-label={
+            copyState === 'copied'
+              ? '图片已复制'
+              : copyState === 'error'
+                ? '复制图片失败'
+                : '复制为 PNG 图片'
+          }
+          title={
+            copyState === 'copied'
+              ? '图片已复制'
+              : copyState === 'error'
+                ? '复制失败，请重试'
+                : '复制为图片'
+          }
+        >
+          {copyState === 'copying' ? (
+            <LoaderCircle className="animate-spin" aria-hidden="true" />
+          ) : copyState === 'copied' ? (
+            <Check className="text-[#287453]" aria-hidden="true" />
+          ) : (
+            <Copy aria-hidden="true" />
+          )}
+        </Button>
         <Button type="button" size="icon-xs" variant="ghost" onClick={() => void store.reload()} disabled={store.loading} aria-label="重新读取图表">
           <RefreshCw aria-hidden="true" />
         </Button>
@@ -407,7 +533,15 @@ const DrawioWorkbenchView = ({
       </div>
       <footer className="flex h-7 shrink-0 items-center justify-between border-t border-[#dfe5e2] bg-white/75 px-3 font-mono text-[9px] uppercase tracking-[0.12em] text-[#8a9690]">
         <span>Local renderer · read only</span>
-        <span>Scroll to zoom · drag to pan</span>
+        <span aria-live="polite">
+          {copyState === 'copying'
+            ? 'Rendering PNG…'
+            : copyState === 'copied'
+              ? 'PNG copied'
+              : copyState === 'error'
+                ? 'Copy failed'
+                : 'Scroll to zoom · drag to pan'}
+        </span>
       </footer>
     </section>
   );

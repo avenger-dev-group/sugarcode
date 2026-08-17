@@ -23,6 +23,33 @@ export const DEFAULT_LAYOUT: StoredLayout = {
   contextRailOpen: false,
 };
 
+export const MAX_CONTEXT_RAIL_SCOPES = 100;
+
+export const resolveContextRailOpen = (
+  visibilityByScope: ReadonlyMap<string, boolean>,
+  scopeKey: string | null,
+  fallback: boolean,
+): boolean => scopeKey === null
+  ? fallback
+  : visibilityByScope.get(scopeKey) ?? false;
+
+export const updateContextRailVisibility = (
+  visibilityByScope: ReadonlyMap<string, boolean>,
+  scopeKey: string,
+  open: boolean,
+): ReadonlyMap<string, boolean> => {
+  if (visibilityByScope.get(scopeKey) === open) return visibilityByScope;
+  const next = new Map(visibilityByScope);
+  next.delete(scopeKey);
+  next.set(scopeKey, open);
+  while (next.size > MAX_CONTEXT_RAIL_SCOPES) {
+    const oldest = next.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    next.delete(oldest);
+  }
+  return next;
+};
+
 const validWidth = (
   value: unknown,
   range: typeof NAVIGATOR_WIDTH | typeof CONTEXT_RAIL_WIDTH,

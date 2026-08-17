@@ -16,11 +16,11 @@ import { ContextRail } from './context-rail';
 import { useStore } from './use-store';
 
 export const FoundationScreen = () => {
-  const foundation = useStore();
   const threadStore = useThreadStore();
+  const activeThreadId = threadStore.thread.threadIdentity;
+  const foundation = useStore(activeThreadId ?? null);
   const commandApprovalStore = useCommandApprovalStore();
   const mcpStore = useMcpStore();
-  const activeThreadId = threadStore.thread.threadIdentity;
   const activeCommandApproval = commandApprovalStore.requests.find(
     (request) =>
       isApprovalVisibleForThread(request.threadId, activeThreadId),
@@ -85,7 +85,12 @@ export const FoundationScreen = () => {
                 />
               </div>
             }
-            contextRail={<ContextRail />}
+            contextRail={
+              <ContextRail
+                scopeKey={activeThreadId ?? null}
+                visible={foundation.contextRailOpen}
+              />
+            }
             approvalThreadIds={approvalThreadIds}
           />
         </main>

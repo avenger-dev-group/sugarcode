@@ -118,7 +118,10 @@ const WorkspaceMenu = ({
   );
 };
 
-export const ContextRail = () => {
+export const ContextRail = ({
+  scopeKey,
+  visible,
+}: Readonly<{ scopeKey: string | null; visible: boolean }>) => {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const {
     activeTab,
@@ -295,7 +298,8 @@ export const ContextRail = () => {
           ) : selectedResource.kind === 'drawio' ? (
             <Suspense fallback={<div className="grid h-full place-items-center text-xs text-tertiary">正在加载 Draw.io 画布…</div>}>
               <DrawioWorkbench
-                active={activeTab === 'resource'}
+                key={`${scopeKey ?? 'no-thread'}:${selectedResource.path}`}
+                active={visible && activeTab === 'resource'}
                 path={selectedResource.path}
               />
             </Suspense>
