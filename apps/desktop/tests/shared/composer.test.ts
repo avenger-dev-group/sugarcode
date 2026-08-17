@@ -57,3 +57,12 @@ test('/compact is parsed as maintenance metadata with an optional focus', () => 
     target,
   })), [{ kind: 'command', target: 'compact' }]);
 });
+
+test('/draw is parsed as an executable diagram command', () => {
+  const submission = parseComposerSubmission('/draw 画员工请假审批流程图');
+  assert.equal(submission.text.trim(), '画员工请假审批流程图');
+  assert.deepEqual(submission.references.map(({ kind, target }) => ({
+    kind,
+    target,
+  })), [{ kind: 'command', target: 'draw' }]);
+});

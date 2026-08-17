@@ -124,6 +124,11 @@ const toolInstruction = (availableTools: readonly string[]): string => {
       'Use workspace_apply_patch for project file changes. Send one `*** Begin Patch` / `*** End Patch` document; Update File bodies need `-` and `+` change lines, not a pasted whole file or GNU diff headers. Keep writes small; on a context mismatch, re-read the file and rebuild only that patch.',
     );
   }
+  if (names.includes('drawio_generate')) {
+    guidance.push(
+      'For a requested diagram, use drawio_generate with complete native, uncompressed mxGraph XML and a new workspace-relative .drawio path. Prefer a descriptive file in the workspace root unless you verified that a target directory exists. Generate mxCell nodes, mxGeometry positions, styles, and edges directly; do not convert from Mermaid or another intermediate format. If the user requests animated flow, add `flowAnimation=1;` to each mxCell edge style that should visibly flow; do not put it on vertex styles. After the tool succeeds, append exactly one final metadata line `::draw{path="generated-file.drawio"}` so SugarCode can offer the diagram in its right-side canvas.',
+    );
+  }
   if (names.includes('shell_exec')) {
     guidance.push(
       'For sandboxed shell_exec, command is one verified absolute executable and arguments are separate strings. For shell syntax or pipelines use fullAccess with the complete command; never put a command plus arguments into the executable field. Commands must finish within the requested timeout; do not use &, nohup, disown, or another detachment mechanism to leave a persistent process behind.',

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { lazy, Suspense, useState, type ReactNode } from 'react';
 import {
   BookOpenText,
   ClipboardList,
@@ -7,6 +7,7 @@ import {
   Files,
   GitBranch,
   Globe2,
+  Workflow,
   Plus,
   X,
 } from 'lucide-react';
@@ -26,6 +27,12 @@ import { PreviewWorkbench } from '@/renderer/components/workspace/preview/previe
 import { FileDiffWorkbench } from '@/renderer/components/workspace/review/file-diff-workbench';
 import { WorkspaceDocument } from '@/renderer/components/workspace/review/workspace-document';
 import { WorkspaceWorkbench } from '@/renderer/components/workspace/workbench/workspace-workbench';
+
+const DrawioWorkbench = lazy(() =>
+  import('@/renderer/components/workspace/drawio/drawio-workbench').then(
+    (module) => ({ default: module.DrawioWorkbench }),
+  ),
+);
 
 const ContextTab = ({
   active,
@@ -208,6 +215,8 @@ export const ContextRail = () => {
               icon={
                 selectedResource.kind === 'skill' ? (
                   <BookOpenText className="size-3.5" />
+                ) : selectedResource.kind === 'drawio' ? (
+                  <Workflow className="size-3.5" />
                 ) : selectedResource.kind === 'diff' ? (
                   <FileDiff className="size-3.5" />
                 ) : (
@@ -283,6 +292,13 @@ export const ContextRail = () => {
         <div className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={activeTab !== 'resource'} title={resourceTitle}>
           {selectedResource.kind === 'skill' ? (
             <SkillDocument name={selectedResource.name} description={selectedResource.description} content={selectedResource.content} />
+          ) : selectedResource.kind === 'drawio' ? (
+            <Suspense fallback={<div className="grid h-full place-items-center text-xs text-tertiary">正在加载 Draw.io 画布…</div>}>
+              <DrawioWorkbench
+                active={activeTab === 'resource'}
+                path={selectedResource.path}
+              />
+            </Suspense>
           ) : selectedResource.kind === 'diff' ? (
             <FileDiffWorkbench path={selectedResource.path} changes={selectedResource.changes} />
           ) : (

@@ -10,11 +10,12 @@ const COMMAND_INTENT: Readonly<Record<string, string>> = {
   test: 'Run tests relevant to the current changes and resolve any failures in scope.',
   explain: 'Explain the specified code, files, or behavior and identify the important locations.',
   init: 'Analyze the repository and create or improve its AGENTS.md guidance.',
+  draw: 'Create an editable native Draw.io diagram for the request. Classify the content as a product proposal, operations flow, sales flow, technical architecture, training flow, project implementation, or general presentation; then choose the clearest flowchart, architecture, swimlane, topology, ER, or mind-map layout. Generate complete mxGraph XML directly with labels in the user\'s language, non-overlapping geometry, meaningful colors, and connected branches. Use drawio_generate to validate and save the final XML, then end the final answer with exactly one `::draw{path="workspace-relative.drawio"}` metadata line.',
   compact: 'Compact the active conversation context while preserving the requested focus.',
 };
 
 const READ_ONLY_COMMANDS = new Set(['review', 'explain', 'compact']);
-const EXECUTE_COMMANDS = new Set(['fix', 'test', 'init']);
+const EXECUTE_COMMANDS = new Set(['fix', 'test', 'init', 'draw']);
 
 export const composerTurnMode = (
   content: readonly RuntimeContentPart[],

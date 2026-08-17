@@ -1,5 +1,8 @@
+import { Workflow } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
+import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
+import { Button } from '@/renderer/components/ui/button';
 import { codeLanguageForPath } from '@/renderer/utils/code-language';
 import { highlightCode } from '@/renderer/utils/syntax-highlighter';
 import type { WorkspaceInspectDocument } from '@/shared/workspace';
@@ -7,7 +10,11 @@ import type { WorkspaceInspectDocument } from '@/shared/workspace';
 export const FileInspector = ({
   document,
 }: Readonly<{ document: WorkspaceInspectDocument | null }>) => {
+  const { openDrawio } = useOrchestrationActions();
   const language = codeLanguageForPath(document?.path ?? '');
+  const drawioPath = document?.path && /\.drawio$/iu.test(document.path)
+    ? document.path
+    : null;
   const [highlight, setHighlight] = useState<Readonly<{
     source: string;
     value: string | null;
@@ -79,18 +86,32 @@ export const FileInspector = ({
   }
   return (
     <section className="flex min-h-0 flex-1 flex-col" aria-label={`File inspector ${document.path}`}>
-      <header className="border-b px-4 py-3">
-        <p className="truncate text-sm font-medium" title={document.path}>
-          {document.path}
-        </p>
-        <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.14em] text-tertiary">
-          {language.label} · {document.bytes.toLocaleString()} bytes · {document.lines.toLocaleString()} lines
-          {document.hasUtf8Bom ? ' · UTF-8 BOM' : ''}
-        </p>
-        {document.status === 'truncated' ? (
-          <p className="mt-2 text-xs text-secondary" role="status">
-            Bounded preview — {document.returnedBytes.toLocaleString()} bytes shown.
+      <header className="flex min-h-[62px] items-start gap-3 border-b px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium" title={document.path}>
+            {document.path}
           </p>
+          <p className="mt-1 font-mono text-[9px] uppercase tracking-[0.14em] text-tertiary">
+            {language.label} · {document.bytes.toLocaleString()} bytes · {document.lines.toLocaleString()} lines
+            {document.hasUtf8Bom ? ' · UTF-8 BOM' : ''}
+          </p>
+          {document.status === 'truncated' ? (
+            <p className="mt-2 text-xs text-secondary" role="status">
+              Bounded preview — {document.returnedBytes.toLocaleString()} bytes shown.
+            </p>
+          ) : null}
+        </div>
+        {drawioPath ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 gap-1.5 border-[#b9d9c9] bg-[#edf7f1] px-3 text-xs text-[#216b4c] shadow-sm hover:bg-[#dff1e7] hover:text-[#15583c] dark:border-[#315c49] dark:bg-[#173428] dark:text-[#70c69d] dark:hover:bg-[#204534]"
+            onClick={() => openDrawio(drawioPath)}
+          >
+            <Workflow className="size-3.5" aria-hidden="true" />
+            渲染图表
+          </Button>
         ) : null}
       </header>
       <div className="workspace-code-scroll min-h-0 flex-1 overflow-auto bg-surface/40" tabIndex={0} aria-label="Read-only file content">

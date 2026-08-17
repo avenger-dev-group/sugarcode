@@ -30,6 +30,18 @@ test('legacy local URL metadata remains readable for existing conversations', ()
   );
 });
 
+test('terminal Draw.io metadata becomes a validated diagram intent', () => {
+  assert.deepEqual(
+    parseAgentPreviewResponse(
+      '流程图已经生成。\n\n::draw{path="diagrams/leave-approval.drawio"}',
+    ),
+    {
+      text: '流程图已经生成。',
+      intent: { kind: 'drawio', path: 'diagrams/leave-approval.drawio' },
+    },
+  );
+});
+
 test('preview metadata is ignored unless it is the final response line', () => {
   const source = [
     '::preview{url="http://localhost:5173/"}',
@@ -56,6 +68,10 @@ test('unsafe or incomplete preview metadata stays hidden without creating an int
   );
   assert.deepEqual(
     parseAgentPreviewResponse('Done.\n::preview{path="../index.html"}'),
+    { text: 'Done.', intent: null },
+  );
+  assert.deepEqual(
+    parseAgentPreviewResponse('Done.\n::draw{path="../diagram.drawio"}'),
     { text: 'Done.', intent: null },
   );
 });

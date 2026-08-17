@@ -48,7 +48,7 @@ export const AgentPreviewCard = ({
   intent,
   language,
 }: Readonly<{
-  intent: AgentPreviewIntent;
+  intent: Exclude<AgentPreviewIntent, { kind: 'drawio' }>;
   language: ProcessLanguage;
 }>) => {
   const { openPreview } = useOrchestrationActions();

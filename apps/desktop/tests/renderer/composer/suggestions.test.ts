@@ -42,6 +42,9 @@ test('command filtering and insertion preserve text around the caret', () => {
   assert.deepEqual(commandSuggestions('rev').map((entry) => entry.alias), [
     '/review',
   ]);
+  assert.deepEqual(commandSuggestions('图表').map((entry) => entry.alias), [
+    '/draw',
+  ]);
   const token = findComposerToken('check $front later', 12);
   assert.ok(token);
   assert.deepEqual(replaceComposerToken('check $front later', token, '$frontend-design'), {

@@ -56,7 +56,20 @@ test('Composer commands derive an immutable execution mode with plan taking prec
     'execute',
   );
   assert.equal(
+    composerTurnMode([{ type: 'text', text: '/draw\n\n画审批流程图' }]),
+    'execute',
+  );
+  assert.equal(
     composerTurnMode([{ type: 'text', text: '/fix\n/plan\n\n先制定计划' }]),
     'plan',
   );
+});
+
+test('/draw injects the native Draw.io generation and handoff contract', () => {
+  const instruction = composerIntentInstruction([
+    { type: 'text', text: '/draw\n\n画一个员工请假审批流程图' },
+  ]);
+  assert.match(instruction, /drawio_generate/u);
+  assert.match(instruction, /mxGraph XML/u);
+  assert.match(instruction, /::draw\{path=/u);
 });

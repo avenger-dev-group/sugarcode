@@ -14,7 +14,7 @@ export type ComposerSubmission = Readonly<{
 }>;
 
 const REFERENCE_PATTERN =
-  /\/(?:plan|review|fix|test|explain|init|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@`[^`\r\n]+`|@[^\s@$]+/gu;
+  /\/(?:plan|review|fix|test|explain|init|draw|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@`[^`\r\n]+`|@[^\s@$]+/gu;
 
 export const isComposerLineLeading = (
   value: string,

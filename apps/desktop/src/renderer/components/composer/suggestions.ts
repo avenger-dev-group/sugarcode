@@ -60,6 +60,14 @@ const COMMANDS: readonly ComposerSuggestion[] = [
     insertion: '/init',
   },
   {
+    id: 'command:draw',
+    kind: 'command',
+    label: '绘制图表',
+    alias: '/draw',
+    description: '生成可编辑的 Draw.io 原生图表，并在右侧画布中打开',
+    insertion: '/draw',
+  },
+  {
     id: 'command:compact',
     kind: 'command',
     label: '压缩上下文',

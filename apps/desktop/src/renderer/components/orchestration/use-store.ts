@@ -48,10 +48,12 @@ type OrchestrationStore = Readonly<{
   closeFilesTab: () => void;
   closePreviewTab: (id: string) => void;
   closeResourceTab: () => void;
+  autoOpenDrawio: (path: string) => void;
   openDiff: (
     path: string,
     changes: readonly import('../workspace/types').FileChangeReviewFile[],
   ) => void;
+  openDrawio: (path: string) => void;
   openFile: (path: string) => void;
   openPlan: (plan: ContextRailPlan) => void;
   openFiles: () => void;
@@ -68,7 +70,9 @@ type OrchestrationStore = Readonly<{
 
 type OrchestrationActions = Pick<
   OrchestrationStore,
+  | 'autoOpenDrawio'
   | 'openDiff'
+  | 'openDrawio'
   | 'openFile'
   | 'openFiles'
   | 'openPlan'
@@ -114,6 +118,12 @@ export const OrchestrationStoreProvider = ({
   const [requestedFile, setRequestedFile] =
     useState<ContextFileRequest | null>(null);
   const [taskDockOpen, setTaskDockOpen] = useState(false);
+  const autoOpenedDrawioPathsRef = useRef(new Set<string>());
+  const autoOpenedDrawioScopeRef = useRef(scopeKey);
+  if (autoOpenedDrawioScopeRef.current !== scopeKey) {
+    autoOpenedDrawioScopeRef.current = scopeKey;
+    autoOpenedDrawioPathsRef.current.clear();
+  }
 
   const selectTask = useCallback(
     (task: AgentTaskViewModel) => {
@@ -192,6 +202,26 @@ export const OrchestrationStoreProvider = ({
       changes: readonly import('../workspace/types').FileChangeReviewFile[],
     ) => {
       setSelectedResource({ kind: 'diff', path, changes });
+      setActiveTab('resource');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
+
+  const openDrawio = useCallback(
+    (path: string) => {
+      setSelectedResource({ kind: 'drawio', path });
+      setActiveTab('resource');
+      onRequestOpen();
+    },
+    [onRequestOpen],
+  );
+
+  const autoOpenDrawio = useCallback(
+    (path: string) => {
+      if (autoOpenedDrawioPathsRef.current.has(path)) return;
+      autoOpenedDrawioPathsRef.current.add(path);
+      setSelectedResource({ kind: 'drawio', path });
       setActiveTab('resource');
       onRequestOpen();
     },
@@ -306,6 +336,7 @@ export const OrchestrationStoreProvider = ({
   const value = useMemo<OrchestrationStore>(
     () => ({
       activeTab,
+      autoOpenDrawio,
       browserTabs,
       closeAgentTab,
       closeFilesTab,
@@ -313,6 +344,7 @@ export const OrchestrationStoreProvider = ({
       closePreviewTab,
       closeResourceTab,
       openDiff,
+      openDrawio,
       openFile,
       openFiles,
       openPlan,
@@ -332,6 +364,7 @@ export const OrchestrationStoreProvider = ({
     }),
     [
       activeTab,
+      autoOpenDrawio,
       browserTabs,
       closeAgentTab,
       closeFilesTab,
@@ -339,6 +372,7 @@ export const OrchestrationStoreProvider = ({
       closePreviewTab,
       closeResourceTab,
       openDiff,
+      openDrawio,
       openFile,
       openFiles,
       openPlan,
@@ -358,7 +392,9 @@ export const OrchestrationStoreProvider = ({
 
   const actions = useMemo<OrchestrationActions>(
     () => ({
+      autoOpenDrawio,
       openDiff,
+      openDrawio,
       openFile,
       openFiles,
       openPlan,
@@ -368,7 +404,9 @@ export const OrchestrationStoreProvider = ({
       selectTask,
     }),
     [
+      autoOpenDrawio,
       openDiff,
+      openDrawio,
       openFile,
       openFiles,
       openPlan,

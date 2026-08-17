@@ -46,6 +46,8 @@ export const toolProgressSummary = (
       }
       case 'workspace_apply_patch':
         return '正在更新项目文件。';
+      case 'drawio_generate':
+        return paths[0] ? `正在生成 ${pathBasename(paths[0])} 图表。` : '正在生成 Draw.io 图表。';
       case 'shell_exec':
         return '正在运行项目命令。';
       case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
@@ -65,6 +67,8 @@ export const toolProgressSummary = (
     }
     case 'workspace_apply_patch':
       return 'Updating project files.';
+    case 'drawio_generate':
+      return paths[0] ? `Generating the ${pathBasename(paths[0])} diagram.` : 'Generating a Draw.io diagram.';
     case 'shell_exec':
       return 'Running a project command.';
     case INVALID_TOOL_ARGUMENTS_TOOL_NAME:

@@ -1,0 +1,25 @@
+.drawio-canvas,
+.drawio-canvas * {
+  cursor: grab !important;
+}
+
+.drawio-canvas:active,
+.drawio-canvas:active * {
+  cursor: grabbing !important;
+}
+
+.drawio-flow-path {
+  will-change: stroke-dashoffset;
+}
+
+@keyframes drawio-flow-path {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawio-flow-path {
+    animation: none !important;
+  }
+}

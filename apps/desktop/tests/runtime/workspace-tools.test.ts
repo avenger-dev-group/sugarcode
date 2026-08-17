@@ -60,6 +60,41 @@ test('workspace_read accepts a bounded batch and preserves each path', async () 
   });
 });
 
+test('drawio_generate validates native XML and saves it through the workspace boundary', async () => {
+  let operationTool = '';
+  let approvedPatch = '';
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    async (toolName, argumentsValue) => {
+      operationTool = toolName;
+      approvedPatch = String(argumentsValue.patch);
+      return { ok: true };
+    },
+  );
+  const drawioTool = tools.find((tool) => tool.name === 'drawio_generate');
+  assert.ok(drawioTool);
+
+  const xml = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="node" value="节点" vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="40" as="geometry"/></mxCell></root></mxGraphModel>';
+  const result = await drawioTool.runAsync({
+    args: { path: 'diagrams/example.drawio', xml },
+    toolContext: {} as never,
+  });
+
+  assert.equal(operationTool, 'workspace_apply_patch');
+  assert.match(approvedPatch, /\*\*\* Add File: diagrams\/example\.drawio/u);
+  assert.deepEqual(result, {
+    ok: true,
+    artifact: {
+      kind: 'drawio',
+      path: 'diagrams/example.drawio',
+      cells: 3,
+      edges: 0,
+    },
+    finalDirective: '::draw{path="diagrams/example.drawio"}',
+  });
+});
+
 test('project_action trusts the exact displayed config before running its named action', async () => {
   let trustedHash = '';
   let executedAction = '';

@@ -95,6 +95,7 @@ import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
 import { UserMessage } from './user-message';
 import { AgentPreviewCard } from './agent-preview-card';
+import { AgentDrawioCard } from './agent-drawio-card';
 
 const currentOrchestrationActivity = (
   store: ThreadWorkbenchViewProps['store'],
@@ -163,9 +164,11 @@ const TurnPreviewOffer = ({
   const intent = declaredIntent ?? (changedHtmlPath
     ? { kind: 'artifact' as const, path: changedHtmlPath }
     : null);
-  return intent ? (
-    <AgentPreviewCard intent={intent} language={turn.processLanguage} />
-  ) : null;
+  return intent
+    ? intent.kind === 'drawio'
+      ? <AgentDrawioCard path={intent.path} language={turn.processLanguage} />
+      : <AgentPreviewCard intent={intent} language={turn.processLanguage} />
+    : null;
 };
 
 const PlanProposal = ({

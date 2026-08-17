@@ -54,6 +54,10 @@ export type ContextRailResource =
       changes: readonly FileChangeReviewFile[];
     }>
   | Readonly<{
+      kind: 'drawio';
+      path: string;
+    }>
+  | Readonly<{
       kind: 'skill';
       name: string;
       description?: string;

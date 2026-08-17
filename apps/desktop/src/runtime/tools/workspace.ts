@@ -4,6 +4,11 @@ import { basename, isAbsolute } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../native.ts';
 import {
+  drawioAddPatch,
+  isDrawioPath,
+  validateDrawioXml,
+} from './drawio.ts';
+import {
   instructionScopeForFile,
   instructionScopesForPatch,
   type WorkspaceInstructionContext,
@@ -120,6 +125,23 @@ const patchSchema = {
     },
   },
   required: ['patch'],
+} satisfies Schema;
+
+const drawioSchema = {
+  type: Type.OBJECT,
+  properties: {
+    path: {
+      type: Type.STRING,
+      description:
+        'New workspace-relative .drawio file path, for example leave-approval.drawio. Use a descriptive unique name; existing files are not overwritten. Prefer the workspace root unless you already verified that a target directory exists.',
+    },
+    xml: {
+      type: Type.STRING,
+      description:
+        'Complete, uncompressed Draw.io XML with an mxGraphModel root, or an mxfile containing an inline mxGraphModel. Write native mxCell nodes, mxGeometry coordinates, styles, and edges directly. Do not wrap it in Markdown fences. Use unique ids, standard root cells 0 and 1, labels in the user\'s language, non-overlapping coordinates, distinct colors by node role, and orthogonal arrows where useful. Escape XML attribute characters. Do not use DOCTYPE, ENTITY, scripts, external images, or compressed diagram payloads.',
+    },
+  },
+  required: ['path', 'xml'],
 } satisfies Schema;
 
 const commandSchema = {
@@ -866,6 +888,74 @@ export const createWorkspaceTools = (
         instructionContext?.invalidateAfterWrite(
           workspacePatchInstructionPaths(patch),
         );
+      }
+      return result;
+    },
+  }),
+  new FunctionTool({
+    name: 'drawio_generate',
+    description:
+      'Validate and save one new editable Draw.io diagram from complete native mxGraph XML. Use this for flowcharts, technical architecture, swimlanes, topology, ER diagrams, mind maps, product proposals, operations and sales processes, training flows, project implementation diagrams, and general presentation graphics. Generate the final XML directly rather than converting from Mermaid or another intermediate format.',
+    parameters: drawioSchema,
+    execute: async (input) => {
+      if (
+        typeof input !== 'object' ||
+        input === null ||
+        !('path' in input) ||
+        typeof input.path !== 'string' ||
+        !('xml' in input) ||
+        typeof input.xml !== 'string'
+      ) {
+        throw new Error('drawio_generate arguments are invalid');
+      }
+      const path = input.path.replaceAll('\\', '/');
+      if (!isDrawioPath(path)) {
+        return {
+          ok: false,
+          error: 'invalidPath',
+          message: 'Use a safe workspace-relative path ending in .drawio.',
+        };
+      }
+      const validation = validateDrawioXml(input.xml);
+      if (!validation.ok) {
+        return validation;
+      }
+      if (!runPrivileged) {
+        return { ok: false, error: 'approvalUnavailable' };
+      }
+      const instructionCheck = instructionContext?.checkWrite([path]);
+      if (instructionCheck) {
+        return instructionCheck;
+      }
+      const patch = drawioAddPatch(path, validation.xml);
+      const result = await runPrivileged(
+        'workspace_apply_patch',
+        { patch },
+        async (operationId) => {
+          const revalidated = instructionContext?.revalidateWrite([path]);
+          return revalidated ?? executePrivilegedWorkspaceTool(
+            nativeRuntime,
+            operationId,
+            nativeWorkspaceId,
+            'workspace_apply_patch',
+            { patch },
+            onCommandOutput,
+            threadId,
+          );
+        },
+      );
+      if (isRecord(result) && result.ok === true) {
+        instructionContext?.invalidateAfterWrite([path]);
+        return {
+          ...result,
+          artifact: {
+            kind: 'drawio',
+            path,
+            cells: validation.cells,
+            edges: validation.edges,
+          },
+          finalDirective: `::draw{path="${path}"}`,
+        };
       }
       return result;
     },
