@@ -17,20 +17,20 @@ export const AgentDrawioCard = ({
   }, [autoOpenDrawio, path]);
   return (
     <section
-      className="overflow-hidden rounded-xl border border-[#bfd9cc] bg-[linear-gradient(115deg,#edf7f1,var(--background)_70%)] dark:border-[#315c49] dark:bg-[linear-gradient(115deg,#173428,var(--background)_72%)]"
+      className="agent-result-card overflow-hidden rounded-xl border border-[#bfd9cc] bg-[linear-gradient(115deg,#edf7f1,var(--background)_70%)] dark:border-[#315c49] dark:bg-[linear-gradient(115deg,#173428,var(--background)_72%)]"
       aria-label={chinese ? 'Draw.io 图表成果' : 'Draw.io diagram result'}
     >
-      <div className="flex flex-col gap-3.5 px-4 py-3.5 sm:flex-row sm:items-center">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-[#cce1d6] bg-white text-[#287453] shadow-sm dark:border-[#3d6c57] dark:bg-[#173126] dark:text-[#70c69d]">
+      <div className="agent-result-card__body">
+        <span className="agent-result-card__icon grid size-10 place-items-center rounded-xl border border-[#cce1d6] bg-white text-[#287453] shadow-sm dark:border-[#3d6c57] dark:bg-[#173126] dark:text-[#70c69d]">
           <Workflow className="size-[18px]" aria-hidden="true" />
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-foreground">
+        <span className="agent-result-card__summary">
+          <span className="agent-result-card__title block text-sm font-medium text-foreground">
             {chinese ? '可编辑的 Draw.io 图表已生成' : 'Editable Draw.io diagram generated'}
           </span>
           <code className="mt-1 block truncate font-mono text-[11px] text-tertiary" title={path}>{path}</code>
         </span>
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="agent-result-card__actions">
           <Button type="button" size="sm" className="h-8 gap-1.5 px-3 text-xs" onClick={() => openDrawio(path)}>
             <ArrowRight className="size-3.5" aria-hidden="true" />
             {chinese ? '右侧打开' : 'Open canvas'}

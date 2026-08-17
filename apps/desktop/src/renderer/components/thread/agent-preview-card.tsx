@@ -116,15 +116,15 @@ export const AgentPreviewCard = ({
 
   return (
     <section
-      className="overflow-hidden rounded-xl border border-border-subtle bg-[linear-gradient(115deg,var(--surface),var(--background)_68%)]"
+      className="agent-result-card overflow-hidden rounded-xl border border-border-subtle bg-[linear-gradient(115deg,var(--surface),var(--background)_68%)]"
       aria-label={language === 'zh' ? '网页预览选项' : 'Web preview options'}
     >
-      <div className="flex flex-col gap-3.5 px-4 py-3.5 sm:flex-row sm:items-center">
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-border bg-background text-link shadow-sm">
+      <div className="agent-result-card__body">
+        <span className="agent-result-card__icon grid size-10 place-items-center rounded-xl border border-border bg-background text-link shadow-sm">
           <Globe2 className="size-[18px]" aria-hidden="true" />
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-medium text-foreground">
+        <span className="agent-result-card__summary">
+          <span className="agent-result-card__title block text-sm font-medium text-foreground">
             {language === 'zh'
               ? intent.kind === 'artifact'
                 ? '预览 HTML 成果'
@@ -140,7 +140,7 @@ export const AgentPreviewCard = ({
             {intent.kind === 'artifact' ? intent.path : intent.url}
           </code>
         </span>
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="agent-result-card__actions">
           <Button
             type="button"
             size="sm"
