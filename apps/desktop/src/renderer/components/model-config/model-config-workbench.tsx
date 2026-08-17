@@ -204,7 +204,7 @@ export const ModelConfigSettingsPanel = (
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <label className="grid gap-1 text-sm">
-                  <span className="text-secondary">服务商</span>
+                  <span className="text-secondary">模型协议</span>
                   <Select
                     value={store.selectedConnection.wireApi}
                     onValueChange={(wireApi) =>
@@ -386,7 +386,7 @@ export const ModelConfigSettingsPanel = (
                     </Select>
                   </label>
                   <label className="grid gap-1">
-                    <span className="text-secondary">服务商原生压缩</span>
+                    <span className="text-secondary">模型原生压缩</span>
                     <Select
                       value={store.selectedProfile.nativeCompaction ?? 'auto'}
                       onValueChange={(value) =>
