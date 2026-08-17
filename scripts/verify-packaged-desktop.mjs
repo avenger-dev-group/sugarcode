@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { extractFile, listPackage } = require('@electron/asar');
+const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
 const workspaceRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -62,6 +63,16 @@ for (const requiredPath of [
   if (!existsSync(requiredPath)) {
     throw new Error(`Packaged Desktop payload is missing ${requiredPath}.`);
   }
+}
+
+const fuseWire = await getCurrentFuseWire(executablePath);
+const cookieEncryptionState =
+  fuseWire[FuseV1Options.EnableCookieEncryption];
+// Fuse wire states are stored as ASCII `0` (disabled) and `1` (enabled).
+if (cookieEncryptionState !== '0'.charCodeAt(0)) {
+  throw new Error(
+    'Packaged Desktop must keep Electron cookie encryption disabled to avoid macOS Safe Storage access.',
+  );
 }
 
 // @electron/asar builds its listing paths with the host path module, so Windows
