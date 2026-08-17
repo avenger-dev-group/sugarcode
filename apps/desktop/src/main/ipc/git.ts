@@ -16,8 +16,8 @@ import {
 
 import type { GitController } from '../git/controller';
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
 } from './trusted-sender';
 
 type GitIpcOptions = Readonly<{
@@ -66,7 +66,8 @@ export const registerGitIpc = (
   );
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       GIT_STATE_CHANGED_CHANNEL,
       snapshot,
     );

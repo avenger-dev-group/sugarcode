@@ -27,8 +27,8 @@ type CommandApprovalControllerBoundary = Readonly<{
   ) => CommandApprovalActionResult;
 }>;
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
   type IpcSenderValidationOptions,
 } from './trusted-sender';
 
@@ -86,8 +86,8 @@ export const registerCommandApprovalIpc = (
   );
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
-    const window = getTrustedMainWindow(options);
-    window?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       COMMAND_APPROVAL_STATE_CHANGED_CHANNEL,
       snapshot,
     );

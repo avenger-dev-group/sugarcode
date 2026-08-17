@@ -25,8 +25,8 @@ import {
 
 import type { PreviewController } from './controller';
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
 } from '../ipc/trusted-sender';
 
 type PreviewIpcOptions = Readonly<{
@@ -118,7 +118,8 @@ export const registerPreviewIpc = (
   });
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       PREVIEW_STATE_CHANGED_CHANNEL,
       snapshot,
     );

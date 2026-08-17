@@ -23,8 +23,8 @@ import type {
   McpSessionStateSnapshot,
 } from '@/shared/mcp';
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
   type IpcSenderValidationOptions,
 } from './trusted-sender';
 
@@ -102,13 +102,15 @@ export const registerMcpIpc = (options: McpIpcOptions): (() => void) => {
     },
   );
   const unsubscribeSession = options.session.subscribe((snapshot) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       MCP_SESSION_STATE_CHANGED_CHANNEL,
       snapshot,
     );
   });
   const unsubscribeApproval = options.approvals.subscribe((snapshot) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       MCP_APPROVAL_STATE_CHANGED_CHANNEL,
       snapshot,
     );

@@ -10,10 +10,10 @@ export type TurnChangeSummaryFile = Readonly<{
 }>;
 
 export const collectTurnChangeSummaryFiles = (
-  activities: TurnChangeSummaryProps['activities'],
+  activities: TurnChangeSummaryProps['activities'] | undefined,
 ): readonly TurnChangeSummaryFile[] => {
   const latestByPath = new Map<string, TurnChangeSummaryFile>();
-  for (const entry of activities) {
+  for (const entry of activities ?? []) {
     if (
       entry.type !== 'commandApproval' ||
       entry.activity.executionResult?.outcome.type !== 'workspacePatch'

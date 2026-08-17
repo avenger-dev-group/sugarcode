@@ -39,6 +39,10 @@ const patchActivity = (
   },
 });
 
+test('Turn change summary accepts turns without activities', () => {
+  assert.deepEqual(collectTurnChangeSummaryFiles(undefined), []);
+});
+
 test('Turn change summary keeps one latest review row per modified path', () => {
   const files = collectTurnChangeSummaryFiles([
     patchActivity('first', 'src/example.ts', 'one', 'two'),

@@ -15,8 +15,8 @@ import {
 } from '@/shared/terminal';
 
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
 } from '../ipc/trusted-sender';
 import type { TerminalController } from './controller';
 
@@ -64,7 +64,8 @@ export const registerTerminalIpc = (
   });
 
   const unsubscribe = options.controller.subscribe((signal) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       TERMINAL_STATE_CHANGED_CHANNEL,
       signal,
     );

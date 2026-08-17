@@ -13,8 +13,8 @@ import type {
   ConnectionStateSnapshot,
 } from '@/shared/connection';
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
 } from './trusted-sender';
 
 type ConnectionIpcOptions = Readonly<{
@@ -39,8 +39,11 @@ export const registerConnectionIpc = (
   });
 
   const unsubscribe = options.supervisor.subscribe((snapshot) => {
-    const window = getTrustedMainWindow(options);
-    window?.webContents.send(CONNECTION_STATE_CHANGED_CHANNEL, snapshot);
+    sendToTrustedMainWindow(
+      options,
+      CONNECTION_STATE_CHANGED_CHANNEL,
+      snapshot,
+    );
   });
 
   return () => {

@@ -55,8 +55,8 @@ type ConversationControllerBoundary = Readonly<{
   deleteThread: (threadId: unknown) => Promise<ConversationActionResult>;
 }>;
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
   type IpcSenderValidationOptions,
 } from './trusted-sender';
 
@@ -193,21 +193,27 @@ export const registerConversationIpc = (
   );
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
-    const window = getTrustedMainWindow(options);
-    window?.webContents.send(CONVERSATION_STATE_CHANGED_CHANNEL, snapshot);
+    sendToTrustedMainWindow(
+      options,
+      CONVERSATION_STATE_CHANGED_CHANNEL,
+      snapshot,
+    );
   });
   const unsubscribeThreadProjection =
     options.controller.subscribeThreadProjection((snapshot) => {
-      const window = getTrustedMainWindow(options);
-      window?.webContents.send(
+      sendToTrustedMainWindow(
+        options,
         CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL,
         snapshot,
       );
     });
   const unsubscribeThreadDelta = options.controller.subscribeThreadDelta(
     (delta) => {
-      const window = getTrustedMainWindow(options);
-      window?.webContents.send(CONVERSATION_THREAD_DELTA_CHANNEL, delta);
+      sendToTrustedMainWindow(
+        options,
+        CONVERSATION_THREAD_DELTA_CHANNEL,
+        delta,
+      );
     },
   );
 

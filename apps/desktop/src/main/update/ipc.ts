@@ -9,8 +9,8 @@ import {
 } from '@/shared/update';
 
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
 } from '../ipc/trusted-sender';
 import type { UpdateController } from './controller';
 
@@ -52,7 +52,8 @@ export const registerUpdateIpc = (
   });
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       UPDATE_STATE_CHANGED_CHANNEL,
       snapshot,
     );

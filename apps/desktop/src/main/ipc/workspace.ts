@@ -26,8 +26,8 @@ import {
 
 import type { WorkspaceController } from '../workspace/controller';
 import {
-  getTrustedMainWindow,
   isTrustedIpcSender,
+  sendToTrustedMainWindow,
 } from './trusted-sender';
 
 type WorkspaceIpcOptions = Readonly<{
@@ -166,7 +166,8 @@ export const registerWorkspaceIpc = (
   });
 
   const unsubscribe = options.controller.subscribe((snapshot) => {
-    getTrustedMainWindow(options)?.webContents.send(
+    sendToTrustedMainWindow(
+      options,
       WORKSPACE_STATE_CHANGED_CHANNEL,
       snapshot,
     );
