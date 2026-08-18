@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,7 +11,7 @@ use tempfile::tempdir;
 use zip::write::SimpleFileOptions;
 
 use crate::knowledge;
-use crate::persistence::{KnowledgeEmbeddingInput, Store};
+use crate::persistence::{KnowledgeEmbeddingInput, KnowledgeHybridSearchRequest, Store};
 
 #[test]
 fn indexes_and_searches_chinese_and_code_content_without_a_model() {
@@ -94,6 +94,65 @@ fn project_scope_is_enforced_and_linked_source_is_not_deleted() {
         .delete_knowledge_base(&knowledge_base_id)
         .expect("delete index");
     assert!(file.exists(), "linked source file must remain on disk");
+}
+
+#[test]
+fn knowledge_read_rejects_documents_outside_the_explicit_selection() {
+    let data = tempdir().expect("data directory");
+    let source = tempdir().expect("source directory");
+    let first_path = source.path().join("first.txt");
+    let second_path = source.path().join("second.txt");
+    fs::write(&first_path, "first selected knowledge").expect("first fixture");
+    fs::write(&second_path, "second private knowledge").expect("second fixture");
+    let mut store = Store::open(data.path()).expect("store");
+    let first_id = store
+        .create_knowledge_base("First", "", &[])
+        .expect("first knowledge base");
+    let second_id = store
+        .create_knowledge_base("Second", "", &[])
+        .expect("second knowledge base");
+    knowledge::add_managed_files(
+        &mut store,
+        &data.path().join("knowledge"),
+        &first_id,
+        &[first_path.to_string_lossy().into_owned()],
+    )
+    .expect("index first fixture");
+    knowledge::add_managed_files(
+        &mut store,
+        &data.path().join("knowledge"),
+        &second_id,
+        &[second_path.to_string_lossy().into_owned()],
+    )
+    .expect("index second fixture");
+    let second_document = store
+        .knowledge_documents(&second_id)
+        .expect("second documents")
+        .into_iter()
+        .next()
+        .expect("second document");
+
+    let denied = store
+        .read_knowledge_document(
+            std::slice::from_ref(&first_id),
+            None,
+            &second_document.id,
+            0,
+        )
+        .expect("unselected document lookup remains indistinguishable from a missing document");
+    assert!(
+        denied.is_empty(),
+        "unselected document content must not leak"
+    );
+    let allowed = store
+        .read_knowledge_document(
+            std::slice::from_ref(&second_id),
+            None,
+            &second_document.id,
+            0,
+        )
+        .expect("selected document is readable");
+    assert!(allowed[0].content.contains("second private knowledge"));
 }
 
 #[test]
@@ -201,16 +260,16 @@ fn semantic_vectors_are_isolated_per_knowledge_base_and_fused_with_fts() {
     );
     let query = knowledge::search_query("备份回滚").expect("fts query");
     let hits = store
-        .search_knowledge_hybrid(
-            std::slice::from_ref(&knowledge_base_id),
-            std::slice::from_ref(&knowledge_base_id),
-            None,
-            &query,
-            &vec![1.0 / 384_f32.sqrt(); 384],
-            "test/model",
-            "test-version",
-            8,
-        )
+        .search_knowledge_hybrid(KnowledgeHybridSearchRequest {
+            knowledge_base_ids: std::slice::from_ref(&knowledge_base_id),
+            semantic_knowledge_base_ids: std::slice::from_ref(&knowledge_base_id),
+            workspace_id: None,
+            query: &query,
+            query_vector: &vec![1.0 / 384_f32.sqrt(); 384],
+            model_id: "test/model",
+            model_version: "test-version",
+            limit: 8,
+        })
         .expect("hybrid search");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].citation, "K1");
@@ -758,4 +817,104 @@ fn interrupted_index_jobs_recover_paused_and_remain_retryable() {
             .update_knowledge_index_job_progress(&job_id, 1, 0, 0, 0, 0, 0)
             .expect("observe cancellation"),
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_knowledge_folder_never_follows_file_or_directory_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let data = tempdir().expect("data directory");
+    let source = tempdir().expect("source directory");
+    let outside = tempdir().expect("outside directory");
+    fs::write(source.path().join("inside.txt"), "inside marker").expect("inside fixture");
+    fs::write(outside.path().join("secret.txt"), "outside secret marker").expect("outside fixture");
+    symlink(
+        outside.path().join("secret.txt"),
+        source.path().join("linked-secret.txt"),
+    )
+    .expect("file symlink");
+    symlink(outside.path(), source.path().join("linked-directory")).expect("directory symlink");
+    let mut store = Store::open(data.path()).expect("store");
+    let knowledge_base_id = store
+        .create_knowledge_base("Symlink safety", "", &[])
+        .expect("knowledge base");
+    knowledge::add_linked_folder(
+        &mut store,
+        &knowledge_base_id,
+        &source.path().to_string_lossy(),
+    )
+    .expect("index linked folder");
+
+    let documents = store
+        .knowledge_documents(&knowledge_base_id)
+        .expect("knowledge documents");
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].file_name, "inside.txt");
+    let outside_query = knowledge::search_query("outside secret").expect("outside query");
+    assert!(
+        store
+            .search_knowledge(
+                std::slice::from_ref(&knowledge_base_id),
+                None,
+                &outside_query,
+                8,
+            )
+            .expect("outside search")
+            .is_empty()
+    );
+}
+
+#[test]
+fn malicious_knowledge_files_are_bounded_and_record_parse_errors() {
+    let data = tempdir().expect("data directory");
+    let source = tempdir().expect("source directory");
+    let invalid_utf8 = source.path().join("invalid.txt");
+    fs::write(&invalid_utf8, [0xff, 0xfe, 0xfd]).expect("invalid UTF-8 fixture");
+    let oversized = source.path().join("oversized.txt");
+    File::create(&oversized)
+        .and_then(|file| file.set_len(11 * 1024 * 1024))
+        .expect("oversized sparse fixture");
+    let docx = source.path().join("expansion.docx");
+    let file = File::create(&docx).expect("DOCX fixture");
+    let mut archive = zip::ZipWriter::new(file);
+    archive
+        .start_file(
+            "word/document.xml",
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+        )
+        .expect("DOCX body");
+    let block = vec![b'a'; 1024 * 1024];
+    for _ in 0..17 {
+        archive.write_all(&block).expect("expanded DOCX body");
+    }
+    archive.finish().expect("finish DOCX");
+    let mut store = Store::open(data.path()).expect("store");
+    let knowledge_base_id = store
+        .create_knowledge_base("Malicious files", "", &[])
+        .expect("knowledge base");
+
+    let result = knowledge::add_managed_files(
+        &mut store,
+        &data.path().join("knowledge"),
+        &knowledge_base_id,
+        &[
+            invalid_utf8.to_string_lossy().into_owned(),
+            oversized.to_string_lossy().into_owned(),
+            docx.to_string_lossy().into_owned(),
+        ],
+    )
+    .expect("malicious files are isolated as per-file errors");
+    assert_eq!(result.indexed, 0);
+    assert_eq!(result.errors, 3);
+    let documents = store
+        .knowledge_documents(&knowledge_base_id)
+        .expect("error documents");
+    assert_eq!(documents.len(), 2);
+    assert!(
+        documents
+            .iter()
+            .all(|document| document.parse_status == "error")
+    );
+    assert!(documents.iter().all(|document| document.chunk_count == 0));
 }

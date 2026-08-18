@@ -21,6 +21,7 @@ use crate::persistence::{KnowledgeChunkInput, PersistenceError, Result, Store};
 const MAX_TEXT_BYTES: u64 = 10 * 1_024 * 1_024;
 const MAX_EDITABLE_TEXT_BYTES: usize = 2 * 1_024 * 1_024;
 const MAX_DOCUMENT_BYTES: u64 = 50 * 1_024 * 1_024;
+const MAX_DOCX_XML_BYTES: u64 = 16 * 1_024 * 1_024;
 const MAX_FOLDER_FILES: usize = 20_000;
 const MAX_KNOWLEDGE_CHUNKS: usize = 50_000;
 const TARGET_TOKENS: usize = 360;
@@ -177,10 +178,7 @@ fn watch_worker(
     while let Ok(first_paths) = receiver.recv() {
         let mut changed_paths = first_paths;
         let deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                break;
-            };
+        while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
             match receiver.recv_timeout(remaining) {
                 Ok(paths) => changed_paths.extend(paths),
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
@@ -244,9 +242,51 @@ pub(super) fn add_managed_files(
         .sum::<usize>();
     for (position, raw_path) in paths.iter().enumerate() {
         index_priority_checkpoint();
-        let source_path = canonical_regular_file(Path::new(raw_path))?;
-        let metadata = fs::metadata(&source_path)?;
-        ensure_supported_size(&source_path, metadata.len())?;
+        let source_path = match canonical_regular_file(Path::new(raw_path)) {
+            Ok(path) => path,
+            Err(_) => {
+                result.errors += 1;
+                store.update_knowledge_index_job_progress(
+                    &job_id,
+                    paths.len(),
+                    position + 1,
+                    result.indexed,
+                    result.skipped,
+                    result.deleted,
+                    result.errors,
+                )?;
+                continue;
+            }
+        };
+        let metadata = match fs::metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                result.errors += 1;
+                store.update_knowledge_index_job_progress(
+                    &job_id,
+                    paths.len(),
+                    position + 1,
+                    result.indexed,
+                    result.skipped,
+                    result.deleted,
+                    result.errors,
+                )?;
+                continue;
+            }
+        };
+        if ensure_supported_size(&source_path, metadata.len()).is_err() {
+            result.errors += 1;
+            store.update_knowledge_index_job_progress(
+                &job_id,
+                paths.len(),
+                position + 1,
+                result.indexed,
+                result.skipped,
+                result.deleted,
+                result.errors,
+            )?;
+            continue;
+        }
         if !is_supported(&source_path) {
             result.skipped += 1;
             store.update_knowledge_index_job_progress(
@@ -260,7 +300,22 @@ pub(super) fn add_managed_files(
             )?;
             continue;
         }
-        let bytes = fs::read(&source_path)?;
+        let bytes = match fs::read(&source_path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                result.errors += 1;
+                store.update_knowledge_index_job_progress(
+                    &job_id,
+                    paths.len(),
+                    position + 1,
+                    result.indexed,
+                    result.skipped,
+                    result.deleted,
+                    result.errors,
+                )?;
+                continue;
+            }
+        };
         let sha256 = hex_sha256(&bytes);
         let file_name = source_path
             .file_name()
@@ -372,7 +427,7 @@ fn validate_editable_text(file_name: &str, content: &str) -> Result<()> {
         ));
     }
     if content.trim().is_empty()
-        || content.as_bytes().len() > MAX_EDITABLE_TEXT_BYTES
+        || content.len() > MAX_EDITABLE_TEXT_BYTES
         || content.contains('\0')
     {
         return Err(PersistenceError::InvalidInput(
@@ -770,10 +825,10 @@ pub(super) fn rescan_linked_source(
     }
 
     for document in existing.values() {
-        if !seen.contains(&document.relative_path) {
-            if store.delete_knowledge_document(&document.id)? {
-                result.deleted += 1;
-            }
+        if !seen.contains(&document.relative_path)
+            && store.delete_knowledge_document(&document.id)?
+        {
+            result.deleted += 1;
         }
     }
     store.update_knowledge_index_job_progress(
@@ -1057,8 +1112,19 @@ fn parse_docx(path: &Path) -> Result<String> {
     let mut document = archive
         .by_name("word/document.xml")
         .map_err(|_| PersistenceError::InvalidInput("DOCX document body is missing".to_owned()))?;
+    if document.size() > MAX_DOCX_XML_BYTES {
+        return Err(PersistenceError::InvalidInput(
+            "DOCX document body expands beyond the 16 MiB limit".to_owned(),
+        ));
+    }
     let mut xml = String::new();
-    document.read_to_string(&mut xml)?;
+    let copied =
+        std::io::Read::take(&mut document, MAX_DOCX_XML_BYTES + 1).read_to_string(&mut xml)?;
+    if copied as u64 > MAX_DOCX_XML_BYTES {
+        return Err(PersistenceError::InvalidInput(
+            "DOCX document body expands beyond the 16 MiB limit".to_owned(),
+        ));
+    }
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(true);
     let mut output = String::new();
@@ -1074,10 +1140,10 @@ fn parse_docx(path: &Path) -> Result<String> {
                 if local_xml_name(start.name().as_ref()) == b"pStyle" =>
             {
                 for attribute in start.attributes().flatten() {
-                    if local_xml_name(attribute.key.as_ref()) == b"val" {
-                        if let Ok(value) = attribute.decode_and_unescape_value(reader.decoder()) {
-                            style = value.into_owned();
-                        }
+                    if local_xml_name(attribute.key.as_ref()) == b"val"
+                        && let Ok(value) = attribute.decode_and_unescape_value(reader.decoder())
+                    {
+                        style = value.into_owned();
                     }
                 }
             }

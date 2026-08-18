@@ -71,6 +71,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 
 use persistence::AssetRow;
+use persistence::KnowledgeHybridSearchRequest;
 use persistence::Store;
 use persistence::TaskWorkspaceRow;
 
@@ -189,11 +190,11 @@ impl NativeRuntime {
                 };
                 if let Ok(mut slot) = watcher_slot.lock() {
                     *slot = Some(watcher);
-                    if let Ok(mut pending) = pending_watch_paths.lock() {
-                        if let Some(watcher) = slot.as_mut() {
-                            for path in pending.drain(..) {
-                                let _ = watcher.watch(&path);
-                            }
+                    if let Ok(mut pending) = pending_watch_paths.lock()
+                        && let Some(watcher) = slot.as_mut()
+                    {
+                        for path in pending.drain(..) {
+                            let _ = watcher.watch(&path);
                         }
                     }
                 }
@@ -707,16 +708,16 @@ impl NativeRuntime {
                     Ok(vector) => (
                         "hybrid",
                         store
-                            .search_knowledge_hybrid(
-                                &knowledge_base_ids,
-                                &semantic_knowledge_base_ids,
-                                workspace_id.as_deref(),
-                                &fts_query,
-                                &vector,
+                            .search_knowledge_hybrid(KnowledgeHybridSearchRequest {
+                                knowledge_base_ids: &knowledge_base_ids,
+                                semantic_knowledge_base_ids: &semantic_knowledge_base_ids,
+                                workspace_id: workspace_id.as_deref(),
+                                query: &fts_query,
+                                query_vector: &vector,
                                 model_id,
                                 model_version,
-                                8,
-                            )
+                                limit: 8,
+                            })
                             .map_err(native_error)?,
                     ),
                     Err(_) => (
@@ -2919,6 +2920,10 @@ mod skills_tests;
 #[cfg(test)]
 #[path = "tests/knowledge.rs"]
 mod knowledge_tests;
+
+#[cfg(test)]
+#[path = "tests/performance.rs"]
+mod performance_tests;
 
 #[cfg(test)]
 #[path = "tests/workspace.rs"]

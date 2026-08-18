@@ -1,0 +1,33 @@
+name: Semantic model verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 18 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  live-models:
+    name: Production semantic models / macOS ARM64
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Verify downloads, hashes, ONNX loading, dimensions, RSS, and removal
+        run: pnpm test:semantic-models:live

@@ -11,6 +11,7 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
+import { useEffect } from 'react';
 
 import { AgentMarkdown } from '@/renderer/components/agent/agent-markdown';
 import { Button } from '@/renderer/components/ui/button';
@@ -25,8 +26,19 @@ import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 import type { SkillsSettingsPanelProps } from './types';
 import { useStore } from './use-store';
 
-export const SkillsSettingsPanel = ({ active }: SkillsSettingsPanelProps) => {
+export const SkillsSettingsPanel = ({
+  active,
+  initialSkillId,
+  onInitialSkillHandled,
+}: SkillsSettingsPanelProps) => {
   const store = useStore(active);
+
+  useEffect(() => {
+    if (!initialSkillId || store.status !== 'ready') return;
+    const skill = store.skills.find((candidate) => candidate.id === initialSkillId);
+    if (skill) void store.openSkill(skill);
+    onInitialSkillHandled?.();
+  }, [initialSkillId, onInitialSkillHandled, store.openSkill, store.skills, store.status]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden">

@@ -30,6 +30,8 @@ export type SkillsStore = Readonly<{
 
 export type SkillsSettingsPanelProps = Readonly<{
   active: boolean;
+  initialSkillId?: string;
+  onInitialSkillHandled?: () => void;
 }>;
 
 export type SkillDocumentProps = Readonly<{

@@ -235,6 +235,17 @@ pub(super) struct KnowledgeSearchHit {
     pub(super) score: f64,
 }
 
+pub(super) struct KnowledgeHybridSearchRequest<'a> {
+    pub(super) knowledge_base_ids: &'a [String],
+    pub(super) semantic_knowledge_base_ids: &'a [String],
+    pub(super) workspace_id: Option<&'a str>,
+    pub(super) query: &'a str,
+    pub(super) query_vector: &'a [f32],
+    pub(super) model_id: &'a str,
+    pub(super) model_version: &'a str,
+    pub(super) limit: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct KnowledgeReadChunk {
@@ -1982,7 +1993,7 @@ fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
 }
 
 fn dot_product_blob(blob: &[u8], query: &[f32]) -> Option<f64> {
-    if query.is_empty() || blob.len() != query.len() * std::mem::size_of::<f32>() {
+    if query.is_empty() || blob.len() != std::mem::size_of_val(query) {
         return None;
     }
     let mut score = 0.0_f64;
@@ -2851,28 +2862,28 @@ impl Store {
 
     pub(super) fn search_knowledge_hybrid(
         &mut self,
-        knowledge_base_ids: &[String],
-        semantic_knowledge_base_ids: &[String],
-        workspace_id: Option<&str>,
-        query: &str,
-        query_vector: &[f32],
-        model_id: &str,
-        model_version: &str,
-        limit: usize,
+        request: KnowledgeHybridSearchRequest<'_>,
     ) -> Result<Vec<KnowledgeSearchHit>> {
-        if query_vector.is_empty() || model_id.is_empty() || model_version.is_empty() {
+        if request.query_vector.is_empty()
+            || request.model_id.is_empty()
+            || request.model_version.is_empty()
+        {
             return Err(PersistenceError::InvalidInput(
                 "knowledge semantic search request is invalid".to_owned(),
             ));
         }
-        let lexical =
-            self.search_knowledge_candidates(knowledge_base_ids, workspace_id, query, 30)?;
+        let lexical = self.search_knowledge_candidates(
+            request.knowledge_base_ids,
+            request.workspace_id,
+            request.query,
+            30,
+        )?;
         let semantic = self.search_knowledge_vector_candidates(
-            semantic_knowledge_base_ids,
-            workspace_id,
-            query_vector,
-            model_id,
-            model_version,
+            request.semantic_knowledge_base_ids,
+            request.workspace_id,
+            request.query_vector,
+            request.model_id,
+            request.model_version,
             30,
         )?;
         let mut fused = std::collections::HashMap::<String, (KnowledgeSearchHit, f64)>::new();
@@ -2904,7 +2915,7 @@ impl Store {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| left.chunk_id.cmp(&right.chunk_id))
         });
-        Ok(finalize_knowledge_hits(hits, limit.min(8)))
+        Ok(finalize_knowledge_hits(hits, request.limit.min(8)))
     }
 
     fn search_knowledge_candidates(

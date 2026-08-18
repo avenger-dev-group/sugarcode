@@ -143,9 +143,13 @@ const actionError = (
 export const KnowledgeCenter = ({
   workspaceId,
   navigatorOpen = true,
+  initialKnowledgeBaseId,
+  onInitialKnowledgeBaseHandled,
 }: {
   workspaceId?: string;
   navigatorOpen?: boolean;
+  initialKnowledgeBaseId?: string;
+  onInitialKnowledgeBaseHandled?: () => void;
 }) => {
   const [inspection, setInspection] = useState(EMPTY_INSPECTION);
   const [query, setQuery] = useState('');
@@ -169,6 +173,13 @@ export const KnowledgeCenter = ({
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!initialKnowledgeBaseId) return;
+    setRetrievalSettingsOpen(false);
+    setSelectedId(initialKnowledgeBaseId);
+    onInitialKnowledgeBaseHandled?.();
+  }, [initialKnowledgeBaseId, onInitialKnowledgeBaseHandled]);
 
   const visible = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();

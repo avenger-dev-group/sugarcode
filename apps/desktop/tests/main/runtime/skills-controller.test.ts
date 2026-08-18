@@ -10,6 +10,7 @@ const inspection = { skills: [], workspaceAvailable: true } as const;
 const controllerFor = (
   workspace: WorkspaceStateSnapshot,
   onDialog: () => void = () => undefined,
+  appVersion = '3.3.2',
 ): RuntimeSkillsController =>
   new RuntimeSkillsController({
     runtime: {
@@ -29,6 +30,7 @@ const controllerFor = (
     getMainWindow: () => ({}) as Electron.BrowserWindow,
     getWorkspace: () => ({ workspaceId: 'workspace-1' }),
     getWorkspaceState: () => workspace,
+    getAppVersion: () => appVersion,
   });
 
 test('Skills settings expose project import only for project workspaces', async () => {
@@ -54,4 +56,17 @@ test('Skills settings expose project import only for project workspaces', async 
     kind: 'project',
   });
   assert.equal((await project.inspect()).workspaceAvailable, true);
+});
+
+test('curated Skill installation rejects incompatible application versions before network access', async () => {
+  const controller = controllerFor(
+    { revision: 1, generation: 1, status: 'ready', kind: 'chat' },
+    () => undefined,
+    '3.3.1',
+  );
+  const result = await controller.installCurated('openai-test-driven-development');
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'unavailable');
+  assert.match(result.message ?? '', /3\.3\.2/u);
+  assert.match(result.message ?? '', /3\.3\.1/u);
 });

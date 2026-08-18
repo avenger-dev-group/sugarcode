@@ -21,6 +21,8 @@ import { useStore } from './use-store';
 
 export const FoundationScreen = () => {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [knowledgeTargetId, setKnowledgeTargetId] = useState<string>();
+  const [skillTargetId, setSkillTargetId] = useState<string>();
   const threadStore = useThreadStore();
   const activeThreadId = threadStore.thread.threadIdentity;
   const foundation = useStore(activeThreadId ?? null);
@@ -54,8 +56,14 @@ export const FoundationScreen = () => {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [foundation.openSearch]);
 
-  const openKnowledge = (): void => foundation.setSurface('knowledge');
-  const openSkills = (): void => foundation.setSurface('skills');
+  const openKnowledge = (knowledgeBaseId?: string): void => {
+    setKnowledgeTargetId(knowledgeBaseId);
+    foundation.setSurface('knowledge');
+  };
+  const openSkills = (skillId?: string): void => {
+    setSkillTargetId(skillId);
+    foundation.setSurface('skills');
+  };
 
   return (
     <div
@@ -123,9 +131,14 @@ export const FoundationScreen = () => {
                 <KnowledgeCenter
                   workspaceId={threadStore.thread.workspaceIdentity}
                   navigatorOpen={foundation.navigatorOpen}
+                  initialKnowledgeBaseId={knowledgeTargetId}
+                  onInitialKnowledgeBaseHandled={() => setKnowledgeTargetId(undefined)}
                 />
               ) : foundation.surface === 'skills' ? (
-                <SkillsCenter />
+                <SkillsCenter
+                  initialSkillId={skillTargetId}
+                  onInitialSkillHandled={() => setSkillTargetId(undefined)}
+                />
               ) : undefined
             }
           />

@@ -17,7 +17,10 @@ import {
   type SkillsInspection,
 } from '../../shared/skills.ts';
 import type { WorkspaceStateSnapshot } from '../../shared/workspace.ts';
-import { CURATED_SKILLS } from '../../shared/skill-market.ts';
+import {
+  appVersionSatisfies,
+  CURATED_SKILLS,
+} from '../../shared/skill-market.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
 type SkillsWorkspace = Readonly<{
@@ -32,6 +35,7 @@ type RuntimeSkillsControllerOptions = Readonly<{
   getWorkspace: () => SkillsWorkspace | null;
   getWorkspaceState: () => WorkspaceStateSnapshot;
   tempDirectory?: string;
+  getAppVersion?: () => string;
 }>;
 
 const execFileAsync = promisify(execFile);
@@ -269,6 +273,14 @@ export class RuntimeSkillsController {
     if (typeof entryId !== 'string') return { accepted: false, reason: 'invalid' };
     const entry = CURATED_SKILLS.find((candidate) => candidate.id === entryId);
     if (!entry) return { accepted: false, reason: 'invalid' };
+    const currentVersion = this.options.getAppVersion?.() ?? '0.0.0';
+    if (!appVersionSatisfies(currentVersion, entry.minimumAppVersion)) {
+      return {
+        accepted: false,
+        reason: 'unavailable',
+        message: `此 Skill 需要 SugarCode ${entry.minimumAppVersion} 或更高版本；当前版本为 ${currentVersion}。`,
+      };
+    }
     if (!this.options.tempDirectory) {
       return { accepted: false, reason: 'unavailable', message: '临时目录不可用。' };
     }

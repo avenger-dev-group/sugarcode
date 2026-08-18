@@ -188,6 +188,7 @@ pub(super) fn import_skill_zip(
     let staging_root = user_root.join(format!(".import-{}", Uuid::now_v7().simple()));
     fs::create_dir(&staging_root).map_err(|error| error.to_string())?;
     let extracted = (|| -> Result<(), String> {
+        let mut extracted_bytes = 0_u64;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
             let enclosed = entry
@@ -207,7 +208,16 @@ pub(super) fn import_skill_zip(
                     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                 }
                 let mut output = File::create(&destination).map_err(|error| error.to_string())?;
-                std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+                let remaining = MAX_IMPORT_BYTES.saturating_sub(extracted_bytes);
+                let copied = std::io::copy(
+                    &mut Read::by_ref(&mut entry).take(remaining.saturating_add(1)),
+                    &mut output,
+                )
+                .map_err(|error| error.to_string())?;
+                if copied > remaining {
+                    return Err("Skill ZIP expands beyond the 16 MiB limit.".to_owned());
+                }
+                extracted_bytes = extracted_bytes.saturating_add(copied);
             }
         }
         import_skill(user_root, workspace_root, &staging_root, scope)

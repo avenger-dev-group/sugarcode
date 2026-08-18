@@ -1,6 +1,10 @@
 use serde_json::Value;
 use std::fs;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use super::NativeRuntime;
 
@@ -183,4 +187,64 @@ fn native_skills_reject_project_roots_that_escape_through_symlinks() {
             .inspect_skills_json(Some("workspace-1".to_owned()))
             .is_err()
     );
+}
+
+#[test]
+fn native_skill_zip_rejects_path_traversal_before_extraction() {
+    let data = tempfile::tempdir().expect("data directory");
+    let archive_path = data.path().join("traversal.zip");
+    let file = File::create(&archive_path).expect("archive file");
+    let mut archive = ZipWriter::new(file);
+    archive
+        .start_file("../SKILL.md", SimpleFileOptions::default())
+        .expect("unsafe entry");
+    archive
+        .write_all(b"---\nname: escaped\ndescription: escaped\n---\n")
+        .expect("unsafe content");
+    archive.finish().expect("finish archive");
+    let runtime =
+        NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
+
+    let error = runtime
+        .import_skill_zip_json(
+            None,
+            archive_path.to_string_lossy().into_owned(),
+            "user".to_owned(),
+        )
+        .expect_err("path traversal must be rejected");
+    assert!(error.to_string().contains("unsafe path"));
+    assert!(!data.path().join("SKILL.md").exists());
+}
+
+#[test]
+fn native_skill_zip_rejects_highly_compressed_expansion_bombs() {
+    let data = tempfile::tempdir().expect("data directory");
+    let archive_path = data.path().join("bomb.zip");
+    let file = File::create(&archive_path).expect("archive file");
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    archive
+        .start_file("bomb/SKILL.md", options)
+        .expect("Skill entry");
+    archive
+        .write_all(b"---\nname: bomb\ndescription: bomb\n---\n")
+        .expect("Skill header");
+    let block = vec![b'a'; 1024 * 1024];
+    for _ in 0..17 {
+        archive.write_all(&block).expect("compressed payload");
+    }
+    archive.finish().expect("finish archive");
+    assert!(fs::metadata(&archive_path).expect("archive metadata").len() < 16 * 1024 * 1024);
+    let runtime =
+        NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
+
+    let error = runtime
+        .import_skill_zip_json(
+            None,
+            archive_path.to_string_lossy().into_owned(),
+            "user".to_owned(),
+        )
+        .expect_err("expansion bomb must be rejected");
+    assert!(error.to_string().contains("expands beyond"));
+    assert!(!data.path().join("skills/bomb").exists());
 }

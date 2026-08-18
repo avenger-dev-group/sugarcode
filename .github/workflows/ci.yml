@@ -53,6 +53,13 @@ jobs:
       - name: Check TypeScript workspace
         run: pnpm check
 
+      - name: Test Desktop end-to-end navigation and local knowledge flow
+        run: pnpm test:e2e
+
+      - name: Benchmark knowledge retrieval
+        if: runner.os == 'macOS'
+        run: pnpm test:performance
+
       - name: Test native filesystem read-only sandbox
         run: cargo test -p sugarcode-sandbox --test filesystem_read_only --locked -- --nocapture
 

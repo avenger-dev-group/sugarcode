@@ -37,6 +37,15 @@ import { RuntimeKnowledgeController } from '@/main/runtime/knowledge-controller'
 import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 import { UpdateController } from '@/main/update/controller';
 import { registerUpdateIpc } from '@/main/update/ipc';
+import { runDesktopE2EProbe } from '@/main/e2e-probe';
+
+const processStartedAtMs = Date.now();
+const e2eRoot = process.env.SUGARCODE_E2E_PROBE === '1'
+  ? process.env.SUGARCODE_E2E_ROOT
+  : undefined;
+if (e2eRoot) {
+  app.setPath('userData', path.join(e2eRoot, 'user-data'));
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -186,9 +195,15 @@ const createWindow = (): void => {
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     void window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-    window.webContents.openDevTools();
+    if (!e2eRoot) window.webContents.openDevTools();
   } else {
     void window.loadFile(rendererFilePath);
+  }
+  const reportPath = e2eRoot ? process.env.SUGARCODE_E2E_REPORT : undefined;
+  if (reportPath) {
+    window.webContents.once('did-finish-load', () => {
+      void runDesktopE2EProbe(window, reportPath, processStartedAtMs);
+    });
   }
 };
 
@@ -264,7 +279,9 @@ const startApplication = async (): Promise<void> => {
   await app.whenReady();
   runtimeSupervisor = new RuntimeSupervisor({
     runtimePath: path.join(__dirname, 'runtime.mjs'),
-    dataDirectory: path.join(app.getPath('home'), '.sugarcode', 'v3'),
+    dataDirectory: e2eRoot
+      ? path.join(e2eRoot, 'data')
+      : path.join(app.getPath('home'), '.sugarcode', 'v3'),
     nativeModulePath: app.isPackaged
       ? path.join(process.resourcesPath, 'sugarcode-desktop-native.node')
       : path.join(app.getAppPath(), 'native', 'sugarcode-desktop-native.node'),
@@ -419,6 +436,7 @@ const startApplication = async (): Promise<void> => {
       getWorkspace: workspaceController.getLaunchContext,
       getWorkspaceState: workspaceController.getSnapshot,
       tempDirectory: app.getPath('temp'),
+      getAppVersion: () => app.getVersion(),
     }),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,

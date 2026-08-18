@@ -19,13 +19,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::persistence::{KnowledgeEmbeddingInput, Store};
 use crate::semantic_catalog::{
-    DEFAULT_SEMANTIC_MODEL_ID, MULTILINGUAL_E5_SMALL, PoolingStrategy, SemanticModelDefinition,
-    package_size as model_package_size, semantic_model,
+    DEFAULT_SEMANTIC_MODEL_ID, MULTILINGUAL_E5_SMALL, ModelFileDefinition, PoolingStrategy,
+    SemanticModelDefinition, package_size as model_package_size, semantic_model,
 };
 
 const MODEL: &SemanticModelDefinition = &MULTILINGUAL_E5_SMALL;
 const INDEX_DISK_BUDGET: u64 = 512 * 1024 * 1024;
 const MANIFEST_SCHEMA_VERSION: u8 = 1;
+const DOWNLOAD_ATTEMPTS: u8 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -811,116 +812,34 @@ async fn download_and_install(
                 .await
                 .map_err(|error| InstallError::Failure(error.to_string()))?;
         }
-        let part_path = staging.join(format!("{}.part", file.local_name));
-        let mut existing = file_size(&part_path).unwrap_or(0);
-        if existing > file.size {
-            tokio::fs::remove_file(&part_path)
-                .await
-                .map_err(|error| InstallError::Failure(error.to_string()))?;
-            existing = 0;
-        }
-        if existing == file.size {
-            let verification_path = part_path.clone();
-            let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&verification_path))
-                .await
-                .map_err(|error| InstallError::Failure(error.to_string()))?
-                .map_err(|error| InstallError::Failure(error.to_string()))?;
-            if actual_hash == file.sha256 {
-                tokio::fs::rename(&part_path, &final_path)
-                    .await
-                    .map_err(|error| InstallError::Failure(error.to_string()))?;
-                completed_before += file.size;
-                update_progress(state, completed_before, model_package_size(model));
-                continue;
-            }
-            tokio::fs::remove_file(&part_path)
-                .await
-                .map_err(|error| InstallError::Failure(error.to_string()))?;
-            existing = 0;
-        }
-        update_progress(
-            state,
-            completed_before + existing,
-            model_package_size(model),
-        );
-        let url = format!(
-            "https://huggingface.co/{}/resolve/{}/{}",
-            file.repository, file.revision, file.remote_path
-        );
-        let mut request = client.get(url);
-        if existing > 0 {
-            request = request.header(RANGE, format!("bytes={existing}-"));
-        }
-        let response = tokio::select! {
-            _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
-            result = request.send() => result
-                .map_err(|error| InstallError::Failure(error.to_string()))?,
-        };
-        if !response.status().is_success() {
-            return Err(InstallError::Failure(format!(
-                "模型文件下载失败：HTTP {}",
-                response.status()
-            )));
-        }
-        let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-        if existing > 0 && !resumed {
-            existing = 0;
-        }
-        let mut output = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(resumed)
-            .truncate(!resumed)
-            .open(&part_path)
-            .await
-            .map_err(|error| InstallError::Failure(error.to_string()))?;
-        let mut received = existing;
-        let mut stream = response.bytes_stream();
+        let mut attempt = 1;
         loop {
-            tokio::select! {
-                _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
-                chunk = stream.next() => match chunk {
-                    Some(Ok(bytes)) => {
-                        output.write_all(&bytes).await
-                            .map_err(|error| InstallError::Failure(error.to_string()))?;
-                        received = received.saturating_add(bytes.len() as u64);
-                        update_progress(
-                            state,
-                            completed_before + received.min(file.size),
-                            model_package_size(model),
-                        );
+            match download_model_file(
+                &client,
+                &staging,
+                file,
+                completed_before,
+                model_package_size(model),
+                state,
+                cancellation,
+            )
+            .await
+            {
+                Ok(()) => break,
+                Err(InstallError::Cancelled) => return Err(InstallError::Cancelled),
+                Err(error @ InstallError::Failure(_)) if attempt >= DOWNLOAD_ATTEMPTS => {
+                    return Err(error);
+                }
+                Err(InstallError::Failure(_)) => {
+                    let delay = std::time::Duration::from_millis(250 * u64::from(attempt));
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
+                        () = tokio::time::sleep(delay) => {}
                     }
-                    Some(Err(error)) => return Err(InstallError::Failure(error.to_string())),
-                    None => break,
+                    attempt += 1;
                 }
             }
         }
-        output
-            .flush()
-            .await
-            .map_err(|error| InstallError::Failure(error.to_string()))?;
-        drop(output);
-        if file_size(&part_path) != Some(file.size) {
-            return Err(InstallError::Failure(format!(
-                "模型文件大小校验失败：{}",
-                file.local_name
-            )));
-        }
-        let hash_path = part_path.clone();
-        let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
-            .await
-            .map_err(|error| InstallError::Failure(error.to_string()))?
-            .map_err(|error| InstallError::Failure(error.to_string()))?;
-        if actual_hash != file.sha256 {
-            let _ = tokio::fs::remove_file(&part_path).await;
-            return Err(InstallError::Failure(format!(
-                "模型文件完整性校验失败：{}",
-                file.local_name
-            )));
-        }
-        tokio::fs::rename(&part_path, &final_path)
-            .await
-            .map_err(|error| InstallError::Failure(error.to_string()))?;
         completed_before += file.size;
         update_progress(state, completed_before, model_package_size(model));
     }
@@ -955,24 +874,150 @@ async fn download_and_install(
 
     let installed = installed_directory(root, model);
     let backup = model_root(root, model).join(format!("{}.backup", model.version));
-    if backup.exists() {
-        std::fs::remove_dir_all(&backup)
+    activate_staged_install(&staging, &installed, &backup).map_err(InstallError::Failure)?;
+    Ok(())
+}
+
+async fn download_model_file(
+    client: &reqwest::Client,
+    staging: &Path,
+    file: &ModelFileDefinition,
+    completed_before: u64,
+    package_size: u64,
+    state: &Arc<Mutex<RuntimeState>>,
+    cancellation: &CancellationToken,
+) -> Result<(), InstallError> {
+    let final_path = staging.join(file.local_name);
+    let part_path = staging.join(format!("{}.part", file.local_name));
+    let mut existing = file_size(&part_path).unwrap_or(0);
+    if existing > file.size {
+        tokio::fs::remove_file(&part_path)
+            .await
             .map_err(|error| InstallError::Failure(error.to_string()))?;
+        existing = 0;
+    }
+    if existing == file.size {
+        let verification_path = part_path.clone();
+        let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&verification_path))
+            .await
+            .map_err(|error| InstallError::Failure(error.to_string()))?
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        if actual_hash == file.sha256 {
+            tokio::fs::rename(&part_path, &final_path)
+                .await
+                .map_err(|error| InstallError::Failure(error.to_string()))?;
+            return Ok(());
+        }
+        tokio::fs::remove_file(&part_path)
+            .await
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        existing = 0;
+    }
+    update_progress(state, completed_before + existing, package_size);
+    let url = format!(
+        "https://huggingface.co/{}/resolve/{}/{}",
+        file.repository, file.revision, file.remote_path
+    );
+    let mut request = client.get(url);
+    if existing > 0 {
+        request = request.header(RANGE, format!("bytes={existing}-"));
+    }
+    let response = tokio::select! {
+        _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
+        result = request.send() => result
+            .map_err(|error| InstallError::Failure(error.to_string()))?,
+    };
+    if !response.status().is_success() {
+        return Err(InstallError::Failure(format!(
+            "模型文件下载失败：HTTP {}",
+            response.status()
+        )));
+    }
+    let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if existing > 0 && !resumed {
+        existing = 0;
+    }
+    let mut output = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resumed)
+        .truncate(!resumed)
+        .open(&part_path)
+        .await
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+    let mut received = existing;
+    let mut stream = response.bytes_stream();
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
+            chunk = stream.next() => match chunk {
+                Some(Ok(bytes)) => {
+                    output.write_all(&bytes).await
+                        .map_err(|error| InstallError::Failure(error.to_string()))?;
+                    received = received.saturating_add(bytes.len() as u64);
+                    update_progress(
+                        state,
+                        completed_before + received.min(file.size),
+                        package_size,
+                    );
+                }
+                Some(Err(error)) => return Err(InstallError::Failure(error.to_string())),
+                None => break,
+            }
+        }
+    }
+    output
+        .flush()
+        .await
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+    drop(output);
+    if file_size(&part_path) != Some(file.size) {
+        return Err(InstallError::Failure(format!(
+            "模型文件大小校验失败：{}",
+            file.local_name
+        )));
+    }
+    let hash_path = part_path.clone();
+    let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
+        .await
+        .map_err(|error| InstallError::Failure(error.to_string()))?
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+    if actual_hash != file.sha256 {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(InstallError::Failure(format!(
+            "模型文件完整性校验失败：{}",
+            file.local_name
+        )));
+    }
+    tokio::fs::rename(&part_path, &final_path)
+        .await
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+    Ok(())
+}
+
+fn activate_staged_install(staging: &Path, installed: &Path, backup: &Path) -> Result<(), String> {
+    if backup.exists() {
+        std::fs::remove_dir_all(backup).map_err(|error| error.to_string())?;
     }
     if installed.exists() {
-        std::fs::rename(&installed, &backup)
-            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        std::fs::rename(installed, backup).map_err(|error| error.to_string())?;
     }
-    if let Err(error) = std::fs::rename(&staging, &installed) {
+    if let Err(error) = std::fs::rename(staging, installed) {
         if backup.exists() {
-            let _ = std::fs::rename(&backup, &installed);
+            let _ = std::fs::rename(backup, installed);
         }
-        return Err(InstallError::Failure(error.to_string()));
+        return Err(error.to_string());
     }
     if backup.exists() {
         let _ = std::fs::remove_dir_all(backup);
     }
     Ok(())
+}
+
+fn required_disk_bytes(model: &SemanticModelDefinition) -> u64 {
+    model_package_size(model)
+        .saturating_mul(2)
+        .saturating_add(INDEX_DISK_BUDGET)
 }
 
 fn inspect_device(root: &Path, model: &SemanticModelDefinition) -> DeviceInspection {
@@ -984,9 +1029,7 @@ fn inspect_device(root: &Path, model: &SemanticModelDefinition) -> DeviceInspect
     let total_memory_bytes = system.total_memory();
     let available_memory_bytes = system.available_memory();
     let available_disk_bytes = fs2::available_space(root).unwrap_or(0);
-    let required_disk_bytes = model_package_size(model)
-        .saturating_mul(2)
-        .saturating_add(INDEX_DISK_BUDGET);
+    let required_disk_bytes = required_disk_bytes(model);
     let mut warnings = Vec::new();
     if !supported {
         warnings.push("当前 CPU 架构不受支持，建议继续使用全文检索。".to_owned());
@@ -1134,7 +1177,15 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sysinfo::{ProcessesToUpdate, System};
     use tempfile::tempdir;
+
+    fn current_rss_bytes() -> u64 {
+        let pid = sysinfo::get_current_pid().expect("current process id");
+        let mut system = System::new();
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
+        system.process(pid).map_or(0, sysinfo::Process::memory)
+    }
 
     #[test]
     fn package_metadata_is_consistent() {
@@ -1227,5 +1278,61 @@ mod tests {
             "untouched"
         );
         assert_eq!(manager.inspect().state, "notInstalled");
+    }
+
+    #[test]
+    fn model_activation_restores_the_previous_install_when_atomic_switch_fails() {
+        let directory = tempdir().expect("temporary directory");
+        let installed = directory.path().join("installed");
+        let staging = directory.path().join("missing-staging");
+        let backup = directory.path().join("backup");
+        std::fs::create_dir(&installed).expect("installed directory");
+        std::fs::write(installed.join("marker"), "old-version").expect("installed marker");
+
+        assert!(activate_staged_install(&staging, &installed, &backup).is_err());
+        assert_eq!(
+            std::fs::read_to_string(installed.join("marker")).expect("restored marker"),
+            "old-version"
+        );
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn model_disk_precheck_reserves_download_install_and_index_capacity() {
+        assert_eq!(
+            required_disk_bytes(MODEL),
+            model_package_size(MODEL) * 2 + INDEX_DISK_BUDGET
+        );
+        assert!(required_disk_bytes(MODEL) > model_package_size(MODEL) * 2);
+    }
+
+    #[tokio::test]
+    #[ignore = "downloads and loads every production semantic model"]
+    async fn live_catalog_models_download_load_and_remove() {
+        let directory = tempdir().expect("temporary directory");
+        let manager = SemanticModelManager::open(directory.path()).expect("model manager");
+        for definition in crate::semantic_catalog::SEMANTIC_MODELS {
+            manager
+                .select_model(definition.id)
+                .expect("select catalog model");
+            manager.install().await.expect("download and install model");
+            assert!(manager.is_model_ready(definition.id, definition.version));
+            let rss_before_load = current_rss_bytes();
+            let vectors = manager
+                .embed_passages(&["SugarCode semantic model verification".to_owned()])
+                .expect("load model and embed a passage");
+            let rss_after_load = current_rss_bytes();
+            assert_eq!(vectors.len(), 1);
+            assert_eq!(vectors[0].len(), usize::from(definition.dimensions));
+            eprintln!(
+                "SUGARCODE_MODEL_RSS model={} before_mb={:.1} after_mb={:.1} delta_mb={:.1}",
+                definition.id,
+                rss_before_load as f64 / 1_048_576.0,
+                rss_after_load as f64 / 1_048_576.0,
+                rss_after_load.saturating_sub(rss_before_load) as f64 / 1_048_576.0,
+            );
+            manager.remove().expect("remove verified model");
+            assert_eq!(manager.inspect().state, "notInstalled");
+        }
     }
 }
