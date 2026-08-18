@@ -18,14 +18,6 @@ export type SkillSummary = Readonly<{
   sha256: string;
   bytes: number;
   enabled: boolean;
-  market?: Readonly<{
-    catalogId: string;
-    version: string;
-    installedSha256: string;
-    directorySha256: string;
-    localModified: boolean;
-    checkedAt?: number;
-  }>;
 }>;
 
 export type SkillsInspection = Readonly<{
@@ -72,22 +64,7 @@ export const isSkillSummary = (value: unknown): value is SkillSummary =>
   Number.isSafeInteger(value.bytes) &&
   Number(value.bytes) > 0 &&
   Number(value.bytes) <= 32 * 1_024 &&
-  typeof value.enabled === 'boolean' &&
-  (value.market === undefined ||
-    (isRecord(value.market) &&
-      typeof value.market.catalogId === 'string' &&
-      /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value.market.catalogId) &&
-      typeof value.market.version === 'string' &&
-      value.market.version.length > 0 &&
-      value.market.version.length <= 64 &&
-      typeof value.market.installedSha256 === 'string' &&
-      /^[0-9a-f]{64}$/u.test(value.market.installedSha256) &&
-      typeof value.market.directorySha256 === 'string' &&
-      /^[0-9a-f]{64}$/u.test(value.market.directorySha256) &&
-      typeof value.market.localModified === 'boolean' &&
-      (value.market.checkedAt === undefined ||
-        (Number.isSafeInteger(value.market.checkedAt) &&
-          Number(value.market.checkedAt) >= 0))));
+  typeof value.enabled === 'boolean';
 
 export const isSkillsInspection = (value: unknown): value is SkillsInspection =>
   isRecord(value) &&

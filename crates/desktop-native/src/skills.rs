@@ -14,8 +14,6 @@ use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::persistence::SkillMarketSourceRow;
-
 const MAX_ROOT_ENTRIES: usize = 256;
 const MAX_IMPORT_FILES: usize = 512;
 const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
@@ -31,33 +29,18 @@ struct SkillEntry {
     sha256: String,
     bytes: usize,
     enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    market: Option<SkillMarketStatus>,
     #[serde(skip_serializing)]
     source_directory: PathBuf,
     #[serde(skip_serializing)]
     content: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SkillMarketStatus {
-    catalog_id: String,
-    version: String,
-    installed_sha256: String,
-    directory_sha256: String,
-    local_modified: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    checked_at: Option<i64>,
-}
-
 pub(super) fn inspect_skills_json(
     user_root: &Path,
     workspace_root: Option<&Path>,
     preferences: &HashMap<String, bool>,
-    market_sources: &HashMap<String, SkillMarketSourceRow>,
 ) -> Result<String, String> {
-    let skills = discover(user_root, workspace_root, preferences, Some(market_sources))?;
+    let skills = discover(user_root, workspace_root, preferences)?;
     serde_json::to_string(&json!({
         "skills": skills,
         "workspaceAvailable": workspace_root.is_some(),
@@ -71,7 +54,7 @@ pub(super) fn skills_context_json(
     preferences: &HashMap<String, bool>,
 ) -> Result<String, String> {
     let mut context_bytes = 0usize;
-    let skills = discover(user_root, workspace_root, preferences, None)?
+    let skills = discover(user_root, workspace_root, preferences)?
         .into_iter()
         .filter(|skill| skill.enabled)
         .map(|skill| {
@@ -114,7 +97,7 @@ fn require_skill(
     preferences: &HashMap<String, bool>,
     skill_id: &str,
 ) -> Result<SkillEntry, String> {
-    discover(user_root, workspace_root, preferences, None)?
+    discover(user_root, workspace_root, preferences)?
         .into_iter()
         .find(|skill| skill.id == skill_id)
         .ok_or_else(|| "Skill is not available in the active scope.".to_owned())
@@ -315,7 +298,6 @@ fn discover(
     user_root: &Path,
     workspace_root: Option<&Path>,
     preferences: &HashMap<String, bool>,
-    market_sources: Option<&HashMap<String, SkillMarketSourceRow>>,
 ) -> Result<Vec<SkillEntry>, String> {
     let mut roots = vec![("user", user_root.to_path_buf(), "skills".to_owned())];
     if let Some(workspace_root) = workspace_root {
@@ -364,21 +346,6 @@ fn discover(
                 return Err("Too many Skills are available in this scope.".to_owned());
             }
             let id = skill_id(&source_directory)?;
-            let market = market_sources
-                .and_then(|sources| sources.get(&id))
-                .map(|source| {
-                    let current_directory_sha256 = directory_sha256(&source_directory).ok();
-                    SkillMarketStatus {
-                        catalog_id: source.catalog_id.clone(),
-                        version: source.version.clone(),
-                        installed_sha256: source.installed_sha256.clone(),
-                        directory_sha256: source.directory_sha256.clone(),
-                        local_modified: sha256 != source.installed_sha256
-                            || current_directory_sha256.as_deref()
-                                != Some(source.directory_sha256.as_str()),
-                        checked_at: source.checked_at,
-                    }
-                });
             let folder = source_directory
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -395,7 +362,6 @@ fn discover(
                     path,
                     sha256,
                     bytes,
-                    market,
                     source_directory,
                     content,
                 },
@@ -403,59 +369,6 @@ fn discover(
         }
     }
     Ok(effective.into_values().collect())
-}
-
-pub(super) fn verify_market_skill(
-    user_root: &Path,
-    skill_id: &str,
-    expected_skill_sha256: &str,
-    expected_directory_sha256: &str,
-) -> Result<(), String> {
-    let preferences = HashMap::new();
-    let skill = require_skill(user_root, None, &preferences, skill_id)?;
-    if skill.source != "user"
-        || skill.sha256 != expected_skill_sha256
-        || directory_sha256(&skill.source_directory)? != expected_directory_sha256
-    {
-        return Err("Installed Skill does not match the verified market package.".to_owned());
-    }
-    Ok(())
-}
-
-fn directory_sha256(root: &Path) -> Result<String, String> {
-    validate_copy_tree(root)?;
-    let mut files = Vec::<PathBuf>::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let file_type = entry.file_type().map_err(|error| error.to_string())?;
-            if file_type.is_dir() {
-                pending.push(entry.path());
-            } else if file_type.is_file() {
-                files.push(entry.path());
-            }
-        }
-    }
-    files.sort_by_key(|path| {
-        path.strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/")
-    });
-    let mut hash = Sha256::new();
-    for file in files {
-        let relative = file
-            .strip_prefix(root)
-            .map_err(|error| error.to_string())?
-            .to_string_lossy()
-            .replace('\\', "/");
-        hash.update(relative.as_bytes());
-        hash.update([0]);
-        hash.update(fs::read(file).map_err(|error| error.to_string())?);
-        hash.update([0]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
 }
 
 fn read_definition(

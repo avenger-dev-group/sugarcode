@@ -1,5 +1,4 @@
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 
@@ -16,77 +15,6 @@ fn write_skill(root: &Path, name: &str, description: &str, body: &str) {
 
 fn json(value: String) -> Value {
     serde_json::from_str(&value).expect("valid Skills JSON")
-}
-
-fn single_file_directory_sha256(name: &str, content: &[u8]) -> String {
-    let mut hash = Sha256::new();
-    hash.update(name.as_bytes());
-    hash.update([0]);
-    hash.update(content);
-    hash.update([0]);
-    format!("{:x}", hash.finalize())
-}
-
-#[test]
-fn market_skill_provenance_detects_local_directory_changes() {
-    let data = tempfile::tempdir().expect("data directory");
-    let skill_root = data.path().join("skills/verified-market-skill");
-    write_skill(
-        &skill_root,
-        "verified-market-skill",
-        "Verified catalog Skill",
-        "Original instructions.",
-    );
-    let skill_content = fs::read(skill_root.join("SKILL.md")).expect("Skill content");
-    let directory_sha256 = single_file_directory_sha256("SKILL.md", &skill_content);
-    let runtime =
-        NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
-    let initial = json(runtime.inspect_skills_json(None).expect("inspect Skills"));
-    let skill = &initial["skills"][0];
-    let skill_id = skill["id"].as_str().expect("skill id").to_owned();
-    let skill_sha256 = skill["sha256"].as_str().expect("Skill SHA-256").to_owned();
-
-    let recorded = json(
-        runtime
-            .record_skill_market_install_json(
-                None,
-                skill_id,
-                "verified-market-skill".to_owned(),
-                "2026.08.18".to_owned(),
-                skill_sha256.clone(),
-                directory_sha256.clone(),
-            )
-            .expect("record market install"),
-    );
-    assert_eq!(
-        recorded["skills"][0]["market"]["catalogId"],
-        "verified-market-skill"
-    );
-    assert_eq!(recorded["skills"][0]["market"]["localModified"], false);
-
-    fs::create_dir(skill_root.join("scripts")).expect("scripts directory");
-    fs::write(skill_root.join("scripts/check.sh"), "echo changed\n").expect("local script");
-    let changed = json(
-        runtime
-            .inspect_skills_json(None)
-            .expect("inspect changed Skill"),
-    );
-    assert_eq!(changed["skills"][0]["market"]["localModified"], true);
-    assert!(
-        runtime
-            .record_skill_market_install_json(
-                None,
-                changed["skills"][0]["id"]
-                    .as_str()
-                    .expect("skill id")
-                    .to_owned(),
-                "verified-market-skill".to_owned(),
-                "2026.08.19".to_owned(),
-                skill_sha256,
-                directory_sha256,
-            )
-            .is_err()
-    );
 }
 
 #[test]

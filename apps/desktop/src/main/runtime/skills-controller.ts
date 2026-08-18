@@ -306,28 +306,7 @@ export class RuntimeSkillsController {
         },
         'skills.action',
       );
-      const imported = this.normalizeAction(event.action);
-      if (!imported.accepted || !imported.inspection) return imported;
-      const installed = imported.inspection.skills.find(
-        (skill) => skill.source === 'user' && skill.name === entry.name,
-      );
-      if (!installed) {
-        throw new Error('精选 Skill 已复制，但无法确认安装后的安全状态。');
-      }
-      const recorded = await this.options.runtime.request(
-        {
-          type: 'skills.marketRecord',
-          requestId: randomUUID(),
-          workspaceId: this.workspaceId(),
-          skillId: installed.id,
-          catalogId: entry.id,
-          version: entry.version,
-          installedSha256: entry.skillSha256,
-          directorySha256: entry.directorySha256,
-        },
-        'skills.action',
-      );
-      return this.normalizeAction(recorded.action);
+      return this.normalizeAction(event.action);
     } catch (error) {
       return failed(error);
     } finally {

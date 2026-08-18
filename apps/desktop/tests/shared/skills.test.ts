@@ -32,20 +32,6 @@ test('Skills bridge contracts bound inventory and verified content', () => {
   );
   assert.equal(isSkillContent({ skill, content: '你好\n' }), true);
   assert.equal(isSkillContent({ skill, content: 'short' }), false);
-  assert.equal(isSkillsInspection({
-    skills: [{
-      ...skill,
-      market: {
-        catalogId: 'openai-code-review',
-        version: '2026.08.18',
-        installedSha256: 'c'.repeat(64),
-        directorySha256: 'd'.repeat(64),
-        localModified: false,
-        checkedAt: 1_776_470_400,
-      },
-    }],
-    workspaceAvailable: true,
-  }), true);
 });
 
 test('Skills actions accept only the bounded result union', () => {

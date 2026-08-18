@@ -640,16 +640,6 @@ export type RuntimeCommand =
       enabled: boolean;
     }>
   | Readonly<{
-      type: 'skills.marketRecord';
-      requestId: string;
-      workspaceId?: string;
-      skillId: string;
-      catalogId: string;
-      version: string;
-      installedSha256: string;
-      directorySha256: string;
-    }>
-  | Readonly<{
       type: 'skills.import';
       requestId: string;
       workspaceId?: string;
@@ -1853,22 +1843,6 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
         isSkillId(value.skillId) &&
         typeof value.enabled === 'boolean'
-      );
-    case 'skills.marketRecord':
-      return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
-        isSkillId(value.skillId) &&
-        typeof value.catalogId === 'string' &&
-        /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value.catalogId) &&
-        value.catalogId.length <= 128 &&
-        typeof value.version === 'string' &&
-        value.version.length > 0 &&
-        value.version.length <= 64 &&
-        !/\s/u.test(value.version) &&
-        typeof value.installedSha256 === 'string' &&
-        /^[0-9a-f]{64}$/u.test(value.installedSha256) &&
-        typeof value.directorySha256 === 'string' &&
-        /^[0-9a-f]{64}$/u.test(value.directorySha256)
       );
     case 'skills.import':
       return (

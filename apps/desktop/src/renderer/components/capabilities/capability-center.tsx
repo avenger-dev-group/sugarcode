@@ -16,7 +16,7 @@ import { getSkills, installCuratedSkill } from '@/renderer/services/skills';
 import { CURATED_SKILLS, type CuratedSkill } from '@/shared/skill-market';
 import type { SkillSummary } from '@/shared/skills';
 
-type SkillTab = 'featured' | 'installed' | 'updates';
+type SkillTab = 'featured' | 'installed';
 
 const FeaturedCard = ({
   entry,
@@ -29,12 +29,7 @@ const FeaturedCard = ({
   pending: boolean;
   onInstall: (entry: CuratedSkill) => void;
 }>) => {
-  const tracked = installed?.market?.catalogId === entry.id;
-  const matchesCatalog =
-    tracked &&
-    installed.market?.version === entry.version &&
-    installed.market.localModified === false &&
-    installed.sha256 === entry.skillSha256;
+  const matchesCatalog = installed?.sha256 === entry.skillSha256;
   return (
     <article className="flex min-h-48 flex-col rounded-2xl border bg-background p-5 shadow-xs">
       <div className="flex items-start justify-between gap-3">
@@ -53,15 +48,9 @@ const FeaturedCard = ({
           <span className="inline-flex items-center gap-1 text-xs font-medium text-secondary">
             <CheckCircle2 className="size-3.5 text-emerald-600" aria-hidden="true" />已安装
           </span>
-        ) : tracked && installed?.market?.localModified ? (
-          <span className="text-xs font-medium text-amber-600" title="为保护本地修改，精选安装不会覆盖同名 Skill">
-            已本地修改
-          </span>
-        ) : tracked ? (
-          <span className="text-xs font-medium text-brand">可更新</span>
         ) : installed ? (
-          <span className="text-xs font-medium text-secondary" title="本地导入的 Skill 不参与市场更新">
-            本地安装
+          <span className="text-xs font-medium text-secondary" title="精选安装不会覆盖同名 Skill">
+            同名 Skill 已存在
           </span>
         ) : (
           <Button size="sm" disabled={pending} onClick={() => onInstall(entry)}>
@@ -96,19 +85,6 @@ export const SkillsCenter = () => {
     () => new Map(skills.map((skill) => [skill.name, skill])),
     [skills],
   );
-  const updates = useMemo(
-    () =>
-      CURATED_SKILLS.flatMap((entry) => {
-        const installed = installedByName.get(entry.name);
-        return installed?.market?.catalogId === entry.id &&
-          installed.market.version.localeCompare(entry.version, undefined, {
-            numeric: true,
-          }) < 0
-          ? [{ entry, installed }]
-          : [];
-      }),
-    [installedByName],
-  );
 
   const install = async (entry: CuratedSkill) => {
     setPendingId(entry.id);
@@ -135,7 +111,6 @@ export const SkillsCenter = () => {
   }>[] = [
     { id: 'featured', label: '精选 Skills', icon: Store, count: CURATED_SKILLS.length },
     { id: 'installed', label: '已安装', icon: Wrench, count: skills.length },
-    { id: 'updates', label: '可更新', icon: RefreshCw, count: updates.length },
   ];
 
   return (
@@ -172,7 +147,7 @@ export const SkillsCenter = () => {
 
       {tab === 'installed' ? (
         <div className="min-h-0 flex-1"><SkillsSettingsPanel active /></div>
-      ) : tab === 'featured' ? (
+      ) : (
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 sm:px-8">
           <div className="mb-4 flex items-center justify-between gap-4">
             <div>
@@ -192,51 +167,6 @@ export const SkillsCenter = () => {
                 pending={pendingId === entry.id}
                 onInstall={(value) => void install(value)}
               />
-            ))}
-          </div>
-        </div>
-      ) : updates.length === 0 ? (
-        <div className="grid min-h-0 flex-1 place-items-center p-8 text-center">
-          <div className="max-w-sm">
-            <span className="mx-auto grid size-11 place-items-center rounded-2xl border bg-surface">
-              <CheckCircle2 className="size-5 text-secondary" aria-hidden="true" />
-            </span>
-            <h2 className="mt-4 text-sm font-medium">所有精选 Skills 均为当前版本</h2>
-            <p className="mt-1.5 text-xs leading-5 text-tertiary">SugarCode 只检查更新，不会自动下载或覆盖本地内容。</p>
-          </div>
-        </div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 sm:px-8">
-          <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
-            {updates.map(({ entry, installed }) => (
-              <article
-                key={entry.id}
-                className="rounded-2xl border bg-background p-5 shadow-xs"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <span className="grid size-9 place-items-center rounded-xl bg-brand/10 text-brand">
-                    <RefreshCw className="size-4" aria-hidden="true" />
-                  </span>
-                  <span className="font-mono text-[10px] text-tertiary">
-                    {installed.market?.version} → {entry.version}
-                  </span>
-                </div>
-                <h2 className="mt-4 text-sm font-semibold">{entry.name}</h2>
-                <p className="mt-1.5 text-xs leading-5 text-secondary">
-                  {entry.description}
-                </p>
-                <p
-                  className={`mt-4 border-t pt-3 text-xs ${
-                    installed.market?.localModified
-                      ? 'text-amber-600'
-                      : 'text-tertiary'
-                  }`}
-                >
-                  {installed.market?.localModified
-                    ? '检测到本地修改，后续更新前必须先选择备份或确认覆盖。'
-                    : '已检测到新版；SugarCode 不会自动下载或覆盖。'}
-                </p>
-              </article>
             ))}
           </div>
         </div>
