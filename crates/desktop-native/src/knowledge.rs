@@ -199,13 +199,43 @@ fn watch_worker(
             if !changed_paths.is_empty()
                 && !changed_paths
                     .iter()
-                    .any(|path| path.starts_with(root) || root.starts_with(path))
+                    .any(|path| watch_paths_overlap(path, root))
             {
                 continue;
             }
             let _ = rescan_linked_source(&mut store, &source.id, "incremental");
             thread::yield_now();
         }
+    }
+}
+
+pub(super) fn watch_paths_overlap(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        fn normalize(path: &Path) -> String {
+            let value = path.to_string_lossy().replace('\\', "/");
+            let value = if let Some(value) = value.strip_prefix("//?/UNC/") {
+                format!("//{value}")
+            } else {
+                value.strip_prefix("//?/").unwrap_or(&value).to_owned()
+            };
+            value.trim_end_matches('/').to_lowercase()
+        }
+
+        fn is_within(path: &str, root: &str) -> bool {
+            path == root
+                || path
+                    .strip_prefix(root)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        }
+
+        let path = normalize(path);
+        let root = normalize(root);
+        is_within(&path, &root) || is_within(&root, &path)
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root) || root.starts_with(path)
     }
 }
 

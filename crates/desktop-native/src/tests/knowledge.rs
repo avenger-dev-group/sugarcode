@@ -1,5 +1,7 @@
 use std::fs::{self, File};
 use std::io::Write;
+#[cfg(windows)]
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -600,6 +602,23 @@ fn linked_folder_watcher_debounces_changes_and_runs_incremental_indexing() {
     );
     drop(poll_store);
     drop(watcher);
+}
+
+#[cfg(windows)]
+#[test]
+fn linked_folder_watcher_matches_windows_verbatim_and_event_paths() {
+    assert!(knowledge::watch_paths_overlap(
+        Path::new(r"C:\Users\runner\source\changed.md"),
+        Path::new(r"\\?\C:\Users\Runner\source"),
+    ));
+    assert!(knowledge::watch_paths_overlap(
+        Path::new(r"\\server\share\source\changed.md"),
+        Path::new(r"\\?\UNC\server\share\source"),
+    ));
+    assert!(!knowledge::watch_paths_overlap(
+        Path::new(r"C:\Users\runner\source-other\changed.md"),
+        Path::new(r"\\?\C:\Users\runner\source"),
+    ));
 }
 
 #[test]
