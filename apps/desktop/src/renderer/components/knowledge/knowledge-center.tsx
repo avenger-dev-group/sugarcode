@@ -27,6 +27,12 @@ import {
 import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { MainSurfaceHeader } from '@/renderer/components/foundation/main-surface-header';
+import {
+  buildKnowledgeDocumentFileName,
+  isValidKnowledgeDocumentBaseName,
+  stripKnowledgeDocumentExtension,
+  type KnowledgeDocumentExtension,
+} from '@/renderer/components/knowledge/knowledge-document-name';
 import { Button } from '@/renderer/components/ui/button';
 import {
   Dialog,
@@ -1112,7 +1118,8 @@ const KnowledgeTextEditorDialog = ({
   onSaved: () => Promise<void>;
 }) => {
   const [document, setDocument] = useState<KnowledgeEditableDocument>();
-  const [fileName, setFileName] = useState('新建文档.md');
+  const [fileName, setFileName] = useState('新建文档');
+  const [format, setFormat] = useState<KnowledgeDocumentExtension>('md');
   const [content, setContent] = useState('');
   const [originalContent, setOriginalContent] = useState('');
   const [loading, setLoading] = useState(false);
@@ -1124,7 +1131,8 @@ const KnowledgeTextEditorDialog = ({
     setError(undefined);
     if (!sourceId) {
       setDocument(undefined);
-      setFileName('新建文档.md');
+      setFileName('新建文档');
+      setFormat('md');
       setContent('');
       setOriginalContent('');
       setLoading(false);
@@ -1137,6 +1145,7 @@ const KnowledgeTextEditorDialog = ({
         if (cancelled) return;
         setDocument(next);
         setFileName(next.fileName);
+        setFormat(next.format === 'markdown' ? 'md' : 'txt');
         setContent(next.content);
         setOriginalContent(next.content);
       })
@@ -1156,18 +1165,11 @@ const KnowledgeTextEditorDialog = ({
   const bytes = new TextEncoder().encode(content).length;
   const dirty = sourceId
     ? content !== originalContent
-    : content.length > 0 || fileName !== '新建文档.md';
-  const validFileName =
-    fileName.trim() === fileName &&
-    fileName.length > 0 &&
-    fileName.length <= 255 &&
-    !fileName.includes('/') &&
-    !fileName.includes('\\') &&
-    ![...fileName].some((character) => {
-      const code = character.charCodeAt(0);
-      return code < 32 || code === 127;
-    }) &&
-    /\.(?:txt|md)$/iu.test(fileName);
+    : content.length > 0 || fileName !== '新建文档' || format !== 'md';
+  const completeFileName = sourceId
+    ? fileName
+    : buildKnowledgeDocumentFileName(fileName, format);
+  const validFileName = sourceId || isValidKnowledgeDocumentBaseName(fileName, format);
   const canSave =
     !loading &&
     !saving &&
@@ -1193,7 +1195,10 @@ const KnowledgeTextEditorDialog = ({
             expectedSha256: document.sha256,
             content,
           })
-        : await createKnowledgeTextDocument(knowledgeBaseId, { fileName, content });
+        : await createKnowledgeTextDocument(knowledgeBaseId, {
+            fileName: completeFileName,
+            content,
+          });
       if (!result.accepted) {
         setError(actionError(result, sourceId ? '保存文档失败。' : '创建文档失败。'));
         return;
@@ -1206,14 +1211,6 @@ const KnowledgeTextEditorDialog = ({
     } finally {
       setSaving(false);
     }
-  };
-
-  const setFormat = (format: 'md' | 'txt'): void => {
-    setFileName((current) =>
-      /\.(?:txt|md)$/iu.test(current)
-        ? current.replace(/\.(?:txt|md)$/iu, `.${format}`)
-        : `${current}.${format}`,
-    );
   };
 
   return (
@@ -1243,13 +1240,20 @@ const KnowledgeTextEditorDialog = ({
             <div className="mb-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
               <label className="block text-xs font-medium">
                 文件名
-                <Input
-                  className="mt-1.5"
-                  value={fileName}
-                  maxLength={255}
-                  onChange={(event) => setFileName(event.target.value)}
-                  placeholder="例如：公司信息.md"
-                />
+                <div className="relative mt-1.5">
+                  <Input
+                    className="pr-12"
+                    value={fileName}
+                    maxLength={255 - format.length - 1}
+                    onChange={(event) =>
+                      setFileName(stripKnowledgeDocumentExtension(event.target.value))
+                    }
+                    placeholder="例如：公司信息"
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-tertiary">
+                    .{format}
+                  </span>
+                </div>
               </label>
               <fieldset>
                 <legend className="text-xs font-medium">格式</legend>
@@ -1257,7 +1261,7 @@ const KnowledgeTextEditorDialog = ({
                   <Button
                     type="button"
                     size="sm"
-                    variant={fileName.toLowerCase().endsWith('.md') ? 'secondary' : 'ghost'}
+                    variant={format === 'md' ? 'secondary' : 'ghost'}
                     onClick={() => setFormat('md')}
                   >
                     Markdown
@@ -1265,7 +1269,7 @@ const KnowledgeTextEditorDialog = ({
                   <Button
                     type="button"
                     size="sm"
-                    variant={fileName.toLowerCase().endsWith('.txt') ? 'secondary' : 'ghost'}
+                    variant={format === 'txt' ? 'secondary' : 'ghost'}
                     onClick={() => setFormat('txt')}
                   >
                     纯文本
@@ -1290,7 +1294,7 @@ const KnowledgeTextEditorDialog = ({
                 spellCheck={false}
                 onChange={(event) => setContent(event.target.value)}
                 placeholder={
-                  fileName.toLowerCase().endsWith('.md')
+                  format === 'md'
                     ? '# 标题\n\n输入需要检索的知识内容…'
                     : '输入需要检索的知识内容…'
                 }
@@ -1305,7 +1309,7 @@ const KnowledgeTextEditorDialog = ({
           </div>
           {!validFileName && !sourceId ? (
             <p className="mt-2 text-xs text-destructive">
-              文件名只能是当前目录中的 `.txt` 或 `.md` 文件。
+              请输入不包含路径的文件名，扩展名会根据所选格式自动添加。
             </p>
           ) : null}
           {error ? (
