@@ -571,13 +571,31 @@ fn linked_folder_watcher_debounces_changes_and_runs_incremental_indexing() {
         Arc::new(Mutex::new(())),
     )
     .expect("watcher");
+
+    let initial_deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if poll_store
+            .knowledge_index_jobs(&knowledge_base_id)
+            .expect("initial watch jobs")
+            .iter()
+            .any(|job| job.kind == "incremental" && job.status == "completed")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < initial_deadline,
+            "watcher did not complete its initial scan"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+
     fs::write(
         source.path().join("changed.md"),
         "watched incremental marker",
     )
     .expect("watched fixture");
 
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         if poll_store
             .knowledge_documents_for_source(&source_id)

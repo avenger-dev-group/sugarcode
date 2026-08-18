@@ -96,6 +96,10 @@ impl KnowledgeWatcher {
         roots: &[PathBuf],
         scan_gate: Arc<Mutex<()>>,
     ) -> Result<Self> {
+        let roots = roots
+            .iter()
+            .map(|root| fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+            .collect::<Vec<_>>();
         let (sender, receiver) = mpsc::channel::<Vec<PathBuf>>();
         let event_sender = sender.clone();
         let mut watcher =
@@ -107,7 +111,7 @@ impl KnowledgeWatcher {
                 PersistenceError::InvalidInput(format!("knowledge folder watcher failed: {error}"))
             })?;
         let mut watched = HashSet::new();
-        for root in roots {
+        for root in &roots {
             if root.is_dir() && watched.insert(root.clone()) {
                 let _ = watcher.watch(root, RecursiveMode::Recursive);
             }
@@ -122,7 +126,7 @@ impl KnowledgeWatcher {
             .name("sugarcode-knowledge-watch".to_owned())
             .spawn(move || watch_worker(receiver, data_directory, scan_gate))?;
         if !roots.is_empty() {
-            let _ = sender.send(roots.to_vec());
+            let _ = sender.send(roots);
         }
         Ok(Self {
             watcher: Some(watcher),
@@ -132,13 +136,14 @@ impl KnowledgeWatcher {
     }
 
     pub(super) fn watch(&mut self, root: &Path) -> Result<()> {
+        let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         if root.is_dir() {
             self.watcher
                 .as_mut()
                 .ok_or_else(|| {
                     PersistenceError::InvalidInput("knowledge folder watcher is closed".to_owned())
                 })?
-                .watch(root, RecursiveMode::Recursive)
+                .watch(&root, RecursiveMode::Recursive)
                 .map_err(|error| {
                     PersistenceError::InvalidInput(format!(
                         "knowledge folder watcher could not watch {}: {error}",
@@ -151,6 +156,9 @@ impl KnowledgeWatcher {
                     .as_mut()
                     .expect("watcher exists while registering a path")
                     .watch(parent, RecursiveMode::NonRecursive);
+            }
+            if let Some(sender) = &self.sender {
+                let _ = sender.send(vec![root]);
             }
         }
         Ok(())
@@ -185,28 +193,52 @@ fn watch_worker(
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
-        let Ok(_scan_guard) = scan_gate.lock() else {
-            return;
-        };
-        let Ok(mut store) = Store::open_worker(&data_directory) else {
-            continue;
-        };
-        let Ok(sources) = store.linked_knowledge_sources() else {
-            continue;
-        };
-        for source in sources {
-            let root = Path::new(&source.path);
-            if !changed_paths.is_empty()
-                && !changed_paths
-                    .iter()
-                    .any(|path| watch_paths_overlap(path, root))
-            {
-                continue;
+
+        for retry_delay in [
+            Duration::ZERO,
+            Duration::from_millis(250),
+            Duration::from_secs(1),
+        ] {
+            if !retry_delay.is_zero() {
+                thread::sleep(retry_delay);
             }
-            let _ = rescan_linked_source(&mut store, &source.id, "incremental");
-            thread::yield_now();
+            if process_watch_batch(&data_directory, &scan_gate, &changed_paths) {
+                break;
+            }
         }
     }
+}
+
+fn process_watch_batch(
+    data_directory: &Path,
+    scan_gate: &Mutex<()>,
+    changed_paths: &[PathBuf],
+) -> bool {
+    let Ok(_scan_guard) = scan_gate.lock() else {
+        return false;
+    };
+    let Ok(mut store) = Store::open_worker(data_directory) else {
+        return false;
+    };
+    let Ok(sources) = store.linked_knowledge_sources() else {
+        return false;
+    };
+    let mut completed = true;
+    for source in sources {
+        let root = Path::new(&source.path);
+        if !changed_paths.is_empty()
+            && !changed_paths
+                .iter()
+                .any(|path| watch_paths_overlap(path, root))
+        {
+            continue;
+        }
+        if rescan_linked_source(&mut store, &source.id, "incremental").is_err() {
+            completed = false;
+        }
+        thread::yield_now();
+    }
+    completed
 }
 
 pub(super) fn watch_paths_overlap(path: &Path, root: &Path) -> bool {
