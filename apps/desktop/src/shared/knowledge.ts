@@ -1,13 +1,24 @@
 export const KNOWLEDGE_GET_CHANNEL = 'knowledge:get';
 export const KNOWLEDGE_CREATE_CHANNEL = 'knowledge:create';
+export const KNOWLEDGE_UPDATE_CHANNEL = 'knowledge:update';
 export const KNOWLEDGE_DELETE_CHANNEL = 'knowledge:delete';
 export const KNOWLEDGE_ADD_FILES_CHANNEL = 'knowledge:add-files';
 export const KNOWLEDGE_ADD_FOLDER_CHANNEL = 'knowledge:add-folder';
+export const KNOWLEDGE_TEXT_CREATE_CHANNEL = 'knowledge:text-create';
+export const KNOWLEDGE_TEXT_READ_CHANNEL = 'knowledge:text-read';
+export const KNOWLEDGE_TEXT_UPDATE_CHANNEL = 'knowledge:text-update';
 export const KNOWLEDGE_DETAIL_CHANNEL = 'knowledge:detail';
+export const KNOWLEDGE_SOURCE_DELETE_CHANNEL = 'knowledge:source-delete';
+export const KNOWLEDGE_SOURCE_RESCAN_CHANNEL = 'knowledge:source-rescan';
+export const KNOWLEDGE_INDEX_CANCEL_CHANNEL = 'knowledge:index-cancel';
 export const KNOWLEDGE_SEARCH_CHANNEL = 'knowledge:search';
+export const KNOWLEDGE_DOCUMENT_OPEN_CHANNEL = 'knowledge:document-open';
+export const KNOWLEDGE_DOCUMENT_REVEAL_CHANNEL = 'knowledge:document-reveal';
 export const KNOWLEDGE_MODEL_INSTALL_CHANNEL = 'knowledge:model-install';
 export const KNOWLEDGE_MODEL_CANCEL_CHANNEL = 'knowledge:model-cancel';
 export const KNOWLEDGE_MODEL_REMOVE_CHANNEL = 'knowledge:model-remove';
+export const KNOWLEDGE_RETRIEVAL_SELECT_CHANNEL = 'knowledge:retrieval-select';
+export const KNOWLEDGE_SEMANTIC_INDEX_PAUSE_CHANNEL = 'knowledge:semantic-index-pause';
 
 export type KnowledgeBaseSummary = Readonly<{
   id: string;
@@ -21,6 +32,7 @@ export type KnowledgeBaseSummary = Readonly<{
   errorCount: number;
   sizeBytes: number;
   status: 'ready' | 'indexing' | 'error';
+  semanticEnabled?: boolean;
   updatedAt: number;
 }>;
 
@@ -38,7 +50,7 @@ export type SemanticModelState = Readonly<{
   installedBytes: number;
   error?: string;
   semanticIndex: Readonly<{
-    state: 'notIndexed' | 'indexing' | 'ready' | 'error';
+    state: 'notIndexed' | 'indexing' | 'paused' | 'ready' | 'error';
     indexedChunks: number;
     totalChunks: number;
     errorCount: number;
@@ -59,6 +71,36 @@ export type SemanticModelState = Readonly<{
 export type KnowledgeInspection = Readonly<{
   knowledgeBases: readonly KnowledgeBaseSummary[];
   semanticModel: SemanticModelState;
+  retrievalPlans?: readonly RetrievalPlan[];
+  retrievalSettings?: RetrievalSettings;
+}>;
+
+export type RetrievalPlan = Readonly<{
+  id: string;
+  name: string;
+  description: string;
+  language: string;
+  downloadBytes: number;
+  model?: Readonly<{
+    id: string;
+    name: string;
+    description: string;
+    language: string;
+    version: string;
+    revision: string;
+    dimensions: number;
+    minimumAppVersion: string;
+  }>;
+}>;
+
+export type RetrievalSettings = Readonly<{
+  strategy: 'fullText' | 'semantic';
+  selectedPlanId: string;
+  activeModelId?: string | null;
+  activeModelVersion?: string | null;
+  pendingModelId?: string | null;
+  pendingModelVersion?: string | null;
+  indexPaused?: boolean;
 }>;
 
 export type KnowledgeSource = Readonly<{
@@ -69,6 +111,28 @@ export type KnowledgeSource = Readonly<{
   displayName: string;
   documentCount: number;
   errorCount: number;
+  status?: 'ready' | 'scanning' | 'disconnected' | 'error';
+  lastError?: string;
+  lastScannedAt?: number;
+  updatedAt: number;
+}>;
+
+export type KnowledgeIndexJob = Readonly<{
+  id: string;
+  knowledgeBaseId: string;
+  sourceId?: string;
+  kind: 'initial' | 'incremental' | 'rescan' | 'rebuild';
+  status: 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+  discoveredFiles: number;
+  processedFiles: number;
+  indexedFiles: number;
+  skippedFiles: number;
+  deletedFiles: number;
+  errorCount: number;
+  attemptCount: number;
+  cancelRequested: boolean;
+  lastError?: string;
+  createdAt: number;
   updatedAt: number;
 }>;
 
@@ -91,6 +155,9 @@ export type KnowledgeDocument = Readonly<{
 export type KnowledgeBaseDetail = Readonly<{
   sources: readonly KnowledgeSource[];
   documents: readonly KnowledgeDocument[];
+  indexJobs?: readonly KnowledgeIndexJob[];
+  ignoreRules?: readonly string[];
+  semanticEnabled?: boolean;
 }>;
 
 export type KnowledgeSearchHit = Readonly<{
@@ -102,6 +169,10 @@ export type KnowledgeSearchHit = Readonly<{
   relativePath: string;
   heading?: string;
   pageNumber?: number;
+  contentKind?: 'text' | 'code';
+  language?: string;
+  startLine?: number;
+  endLine?: number;
   content: string;
   score: number;
 }>;
@@ -112,6 +183,26 @@ export type KnowledgeSearchResult = Readonly<{
   hits: readonly KnowledgeSearchHit[];
 }>;
 
+export type KnowledgeEditableDocument = Readonly<{
+  sourceId: string;
+  knowledgeBaseId: string;
+  fileName: string;
+  format: 'text' | 'markdown';
+  content: string;
+  sha256: string;
+  sizeBytes: number;
+}>;
+
+export type KnowledgeTextCreateRequest = Readonly<{
+  fileName: string;
+  content: string;
+}>;
+
+export type KnowledgeTextUpdateRequest = Readonly<{
+  expectedSha256: string;
+  content: string;
+}>;
+
 export type KnowledgeActionResult =
   | Readonly<{
       accepted: true;
@@ -119,6 +210,8 @@ export type KnowledgeActionResult =
       indexed?: number;
       skipped?: number;
       errors?: number;
+      deleted?: number;
+      jobId?: string;
     }>
   | Readonly<{
       accepted: false;
@@ -131,6 +224,9 @@ export type KnowledgeCreateRequest = Readonly<{
   description: string;
   workspaceIds: readonly string[];
 }>;
+
+export type KnowledgeUpdateRequest = KnowledgeCreateRequest &
+  Readonly<{ ignoreRules: readonly string[]; semanticEnabled?: boolean }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -155,6 +251,7 @@ export const isKnowledgeBaseSummary = (
   safeCount(value.errorCount) &&
   safeCount(value.sizeBytes) &&
   ['ready', 'indexing', 'error'].includes(String(value.status)) &&
+  (value.semanticEnabled === undefined || typeof value.semanticEnabled === 'boolean') &&
   safeCount(value.updatedAt);
 
 export const isKnowledgeInspection = (
@@ -171,7 +268,8 @@ export const isKnowledgeInspection = (
   typeof value.semanticModel.modelId === 'string' &&
   typeof value.semanticModel.version === 'string' &&
   /^[0-9a-f]{40}$/u.test(String(value.semanticModel.revision)) &&
-  value.semanticModel.dimensions === 384 &&
+  safeCount(value.semanticModel.dimensions) &&
+  value.semanticModel.dimensions > 0 &&
   typeof value.semanticModel.runtime === 'string' &&
   typeof value.semanticModel.variant === 'string' &&
   safeCount(value.semanticModel.downloadedBytes) &&
@@ -180,7 +278,7 @@ export const isKnowledgeInspection = (
   (value.semanticModel.error === undefined ||
     typeof value.semanticModel.error === 'string') &&
   isRecord(value.semanticModel.semanticIndex) &&
-  ['notIndexed', 'indexing', 'ready', 'error'].includes(
+  ['notIndexed', 'indexing', 'paused', 'ready', 'error'].includes(
     String(value.semanticModel.semanticIndex.state),
   ) &&
   safeCount(value.semanticModel.semanticIndex.indexedChunks) &&
@@ -198,7 +296,49 @@ export const isKnowledgeInspection = (
   Array.isArray(value.semanticModel.device.warnings) &&
   value.semanticModel.device.warnings.every(
     (warning) => typeof warning === 'string',
-  );
+  ) &&
+  (value.retrievalPlans === undefined ||
+    (Array.isArray(value.retrievalPlans) &&
+      value.retrievalPlans.length === 4 &&
+      value.retrievalPlans.every(
+        (plan) =>
+          isRecord(plan) &&
+          typeof plan.id === 'string' &&
+          typeof plan.name === 'string' &&
+          typeof plan.description === 'string' &&
+          typeof plan.language === 'string' &&
+          safeCount(plan.downloadBytes) &&
+          (plan.model === undefined ||
+            (isRecord(plan.model) &&
+              typeof plan.model.id === 'string' &&
+              typeof plan.model.name === 'string' &&
+              typeof plan.model.description === 'string' &&
+              typeof plan.model.language === 'string' &&
+              typeof plan.model.version === 'string' &&
+              /^[0-9a-f]{40}$/u.test(String(plan.model.revision)) &&
+              safeCount(plan.model.dimensions) &&
+              plan.model.dimensions > 0 &&
+              typeof plan.model.minimumAppVersion === 'string')),
+      ))) &&
+  (value.retrievalSettings === undefined ||
+    (isRecord(value.retrievalSettings) &&
+      (value.retrievalSettings.strategy === 'fullText' ||
+        value.retrievalSettings.strategy === 'semantic') &&
+      typeof value.retrievalSettings.selectedPlanId === 'string' &&
+      (value.retrievalSettings.activeModelId === null ||
+        value.retrievalSettings.activeModelId === undefined ||
+        typeof value.retrievalSettings.activeModelId === 'string') &&
+      (value.retrievalSettings.activeModelVersion === null ||
+        value.retrievalSettings.activeModelVersion === undefined ||
+        typeof value.retrievalSettings.activeModelVersion === 'string') &&
+      (value.retrievalSettings.pendingModelId === null ||
+        value.retrievalSettings.pendingModelId === undefined ||
+        typeof value.retrievalSettings.pendingModelId === 'string') &&
+      (value.retrievalSettings.pendingModelVersion === null ||
+        value.retrievalSettings.pendingModelVersion === undefined ||
+        typeof value.retrievalSettings.pendingModelVersion === 'string') &&
+      (value.retrievalSettings.indexPaused === undefined ||
+        typeof value.retrievalSettings.indexPaused === 'boolean')));
 
 const isKnowledgeSource = (value: unknown): value is KnowledgeSource =>
   isRecord(value) &&
@@ -209,6 +349,35 @@ const isKnowledgeSource = (value: unknown): value is KnowledgeSource =>
   typeof value.displayName === 'string' &&
   safeCount(value.documentCount) &&
   safeCount(value.errorCount) &&
+  (value.status === undefined ||
+    ['ready', 'scanning', 'disconnected', 'error'].includes(String(value.status))) &&
+  (value.lastError === null ||
+    value.lastError === undefined ||
+    typeof value.lastError === 'string') &&
+  (value.lastScannedAt === null ||
+    value.lastScannedAt === undefined ||
+    safeCount(value.lastScannedAt)) &&
+  safeCount(value.updatedAt);
+
+const isKnowledgeIndexJob = (value: unknown): value is KnowledgeIndexJob =>
+  isRecord(value) &&
+  validId(value.id, 'kj') &&
+  validId(value.knowledgeBaseId, 'kb') &&
+  (value.sourceId === null || value.sourceId === undefined || validId(value.sourceId, 'ks')) &&
+  ['initial', 'incremental', 'rescan', 'rebuild'].includes(String(value.kind)) &&
+  ['queued', 'running', 'paused', 'completed', 'failed', 'cancelled'].includes(
+    String(value.status),
+  ) &&
+  safeCount(value.discoveredFiles) &&
+  safeCount(value.processedFiles) &&
+  safeCount(value.indexedFiles) &&
+  safeCount(value.skippedFiles) &&
+  safeCount(value.deletedFiles) &&
+  safeCount(value.errorCount) &&
+  safeCount(value.attemptCount) &&
+  typeof value.cancelRequested === 'boolean' &&
+  (value.lastError === null || value.lastError === undefined || typeof value.lastError === 'string') &&
+  safeCount(value.createdAt) &&
   safeCount(value.updatedAt);
 
 const isKnowledgeDocument = (value: unknown): value is KnowledgeDocument =>
@@ -237,7 +406,13 @@ export const isKnowledgeBaseDetail = (
   Array.isArray(value.sources) &&
   value.sources.every(isKnowledgeSource) &&
   Array.isArray(value.documents) &&
-  value.documents.every(isKnowledgeDocument);
+  value.documents.every(isKnowledgeDocument) &&
+  (value.indexJobs === undefined ||
+    (Array.isArray(value.indexJobs) && value.indexJobs.every(isKnowledgeIndexJob))) &&
+  (value.ignoreRules === undefined ||
+    (Array.isArray(value.ignoreRules) &&
+      value.ignoreRules.every((rule) => typeof rule === 'string'))) &&
+  (value.semanticEnabled === undefined || typeof value.semanticEnabled === 'boolean');
 
 const isKnowledgeSearchHit = (value: unknown): value is KnowledgeSearchHit =>
   isRecord(value) &&
@@ -253,6 +428,12 @@ const isKnowledgeSearchHit = (value: unknown): value is KnowledgeSearchHit =>
   (value.pageNumber === null ||
     value.pageNumber === undefined ||
     safeCount(value.pageNumber)) &&
+  (value.contentKind === undefined ||
+    value.contentKind === 'text' ||
+    value.contentKind === 'code') &&
+  (value.language === null || value.language === undefined || typeof value.language === 'string') &&
+  (value.startLine === null || value.startLine === undefined || safeCount(value.startLine)) &&
+  (value.endLine === null || value.endLine === undefined || safeCount(value.endLine)) &&
   typeof value.content === 'string' &&
   typeof value.score === 'number';
 
@@ -282,24 +463,70 @@ export const isKnowledgeActionResult = (
     (value.knowledgeBaseId === undefined || validId(value.knowledgeBaseId, 'kb')) &&
     (value.indexed === undefined || safeCount(value.indexed)) &&
     (value.skipped === undefined || safeCount(value.skipped)) &&
-    (value.errors === undefined || safeCount(value.errors))
+    (value.errors === undefined || safeCount(value.errors)) &&
+    (value.deleted === undefined || safeCount(value.deleted)) &&
+    (value.jobId === undefined || validId(value.jobId, 'kj'))
   );
 };
+
+export const isKnowledgeEditableDocument = (
+  value: unknown,
+): value is KnowledgeEditableDocument =>
+  isRecord(value) &&
+  validId(value.sourceId, 'ks') &&
+  validId(value.knowledgeBaseId, 'kb') &&
+  typeof value.fileName === 'string' &&
+  value.fileName.length > 0 &&
+  value.fileName.length <= 255 &&
+  (value.format === 'text' || value.format === 'markdown') &&
+  typeof value.content === 'string' &&
+  value.content.length <= 2 * 1_024 * 1_024 &&
+  typeof value.sha256 === 'string' &&
+  /^[0-9a-f]{64}$/u.test(value.sha256) &&
+  safeCount(value.sizeBytes) &&
+  value.sizeBytes <= 2 * 1_024 * 1_024 &&
+  new TextEncoder().encode(value.content).byteLength === value.sizeBytes;
 
 export type KnowledgeApi = Readonly<{
   getKnowledge: () => Promise<KnowledgeInspection>;
   createKnowledgeBase: (
     request: KnowledgeCreateRequest,
   ) => Promise<KnowledgeActionResult>;
+  updateKnowledgeBase: (
+    id: string,
+    request: KnowledgeUpdateRequest,
+  ) => Promise<KnowledgeActionResult>;
   deleteKnowledgeBase: (id: string) => Promise<KnowledgeActionResult>;
   addKnowledgeFiles: (id: string) => Promise<KnowledgeActionResult>;
   addKnowledgeFolder: (id: string) => Promise<KnowledgeActionResult>;
+  createKnowledgeTextDocument: (
+    id: string,
+    request: KnowledgeTextCreateRequest,
+  ) => Promise<KnowledgeActionResult>;
+  readKnowledgeTextDocument: (sourceId: string) => Promise<KnowledgeEditableDocument>;
+  updateKnowledgeTextDocument: (
+    sourceId: string,
+    request: KnowledgeTextUpdateRequest,
+  ) => Promise<KnowledgeActionResult>;
+  deleteKnowledgeSource: (id: string) => Promise<KnowledgeActionResult>;
+  rescanKnowledgeSource: (id: string, rebuild?: boolean) => Promise<KnowledgeActionResult>;
+  cancelKnowledgeIndexJob: (id: string) => Promise<KnowledgeActionResult>;
   getKnowledgeBaseDetail: (id: string) => Promise<KnowledgeBaseDetail>;
   searchKnowledge: (
     ids: readonly string[],
     query: string,
   ) => Promise<KnowledgeSearchResult>;
+  openKnowledgeDocument: (
+    knowledgeBaseId: string,
+    documentId: string,
+  ) => Promise<KnowledgeActionResult>;
+  revealKnowledgeDocument: (
+    knowledgeBaseId: string,
+    documentId: string,
+  ) => Promise<KnowledgeActionResult>;
   installSemanticModel: () => Promise<KnowledgeActionResult>;
   cancelSemanticModelDownload: () => Promise<KnowledgeActionResult>;
   removeSemanticModel: () => Promise<KnowledgeActionResult>;
+  selectKnowledgeRetrievalPlan: (planId: string) => Promise<KnowledgeActionResult>;
+  setSemanticIndexPaused: (paused: boolean) => Promise<KnowledgeActionResult>;
 }>;

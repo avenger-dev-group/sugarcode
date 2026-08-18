@@ -1024,6 +1024,8 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = OFF;
+             DROP TABLE knowledge_index_jobs;
+             DROP TABLE knowledge_retrieval_settings;
              DROP TABLE knowledge_semantic_indexes;
              DROP TABLE knowledge_chunk_embeddings;
              DROP TABLE skill_update_history;
@@ -1072,5 +1074,233 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 14);
+    assert_eq!(version, 16);
+}
+
+#[test]
+fn schema_fourteen_database_migrates_to_durable_knowledge_index_jobs() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    {
+        let _store = Store::open(directory.path()).expect("create current store");
+    }
+    let database_path = Store::database_path(directory.path());
+    let connection = Connection::open(&database_path).expect("database");
+    connection
+        .execute_batch(
+            "DROP TABLE knowledge_retrieval_settings;
+             DROP TABLE knowledge_semantic_indexes;
+             DROP TABLE knowledge_chunk_embeddings;
+             CREATE TABLE knowledge_chunk_embeddings (
+               chunk_id TEXT PRIMARY KEY REFERENCES knowledge_chunks(id) ON DELETE CASCADE,
+               knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+               content_hash TEXT NOT NULL, model_version TEXT NOT NULL,
+               dimensions INTEGER NOT NULL CHECK(dimensions = 384), vector BLOB NOT NULL,
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             ) STRICT;
+             CREATE INDEX knowledge_chunk_embeddings_base_model
+               ON knowledge_chunk_embeddings(knowledge_base_id, model_version);
+             CREATE TABLE knowledge_semantic_indexes (
+               knowledge_base_id TEXT PRIMARY KEY REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+               model_version TEXT NOT NULL,
+               status TEXT NOT NULL CHECK(status IN ('notIndexed','indexing','ready','error')),
+               error TEXT, updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             ) STRICT;
+             ALTER TABLE knowledge_bases DROP COLUMN semantic_enabled;
+             DROP TABLE knowledge_index_jobs;
+             ALTER TABLE knowledge_sources DROP COLUMN last_scanned_at;
+             ALTER TABLE knowledge_sources DROP COLUMN last_error;
+             ALTER TABLE knowledge_sources DROP COLUMN status;
+             ALTER TABLE knowledge_chunks DROP COLUMN estimated_tokens;
+             ALTER TABLE knowledge_chunks DROP COLUMN end_line;
+             ALTER TABLE knowledge_chunks DROP COLUMN start_line;
+             ALTER TABLE knowledge_chunks DROP COLUMN language;
+             ALTER TABLE knowledge_chunks DROP COLUMN content_kind;
+             PRAGMA user_version = 14;",
+        )
+        .expect("downgrade to v14 fixture");
+    drop(connection);
+
+    let _store = Store::open(directory.path()).expect("migrate v14 store");
+    let connection = Connection::open(database_path).expect("migrated database");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(version, 16);
+    let job_table: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_index_jobs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("job table");
+    assert_eq!(job_table, 1);
+}
+
+#[test]
+fn schema_fifteen_migration_preserves_existing_semantic_vectors_and_indexes() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    {
+        let _store = Store::open(directory.path()).expect("create current store");
+    }
+    let database_path = Store::database_path(directory.path());
+    let connection = Connection::open(&database_path).expect("database");
+    connection
+        .execute_batch(
+            "INSERT INTO knowledge_bases (id, name, description, scope, status)
+               VALUES ('kb_11111111111111111111111111111111', '迁移测试', '', 'global', 'ready');
+             INSERT INTO knowledge_sources (id, knowledge_base_id, kind, path, display_name)
+               VALUES ('ks_22222222222222222222222222222222', 'kb_11111111111111111111111111111111',
+                 'managedFile', '/fixture/migrate.md', 'migrate.md');
+             INSERT INTO knowledge_documents
+               (id, knowledge_base_id, source_id, relative_path, file_name, media_type,
+                size_bytes, modified_at, sha256, parse_status)
+               VALUES ('kd_33333333333333333333333333333333', 'kb_11111111111111111111111111111111',
+                 'ks_22222222222222222222222222222222', 'migrate.md', 'migrate.md', 'text/markdown',
+                 7, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'ready');
+             INSERT INTO knowledge_chunks
+               (id, knowledge_base_id, document_id, ordinal, content, content_hash)
+               VALUES ('kc_44444444444444444444444444444444', 'kb_11111111111111111111111111111111',
+                 'kd_33333333333333333333333333333333', 0, '迁移内容',
+                 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+             INSERT INTO knowledge_chunk_embeddings
+               (chunk_id, knowledge_base_id, content_hash, model_id, model_version, dimensions, vector)
+               VALUES ('kc_44444444444444444444444444444444', 'kb_11111111111111111111111111111111',
+                 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                 'intfloat/multilingual-e5-small', '2026-04-02', 384, zeroblob(1536));
+             INSERT INTO knowledge_semantic_indexes
+               (knowledge_base_id, model_id, model_version, status)
+               VALUES ('kb_11111111111111111111111111111111',
+                 'intfloat/multilingual-e5-small', '2026-04-02', 'ready');
+             DROP TABLE knowledge_retrieval_settings;
+             DROP INDEX knowledge_chunk_embeddings_base_model;
+             ALTER TABLE knowledge_chunk_embeddings RENAME TO knowledge_chunk_embeddings_v16;
+             CREATE TABLE knowledge_chunk_embeddings (
+               chunk_id TEXT PRIMARY KEY REFERENCES knowledge_chunks(id) ON DELETE CASCADE,
+               knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+               content_hash TEXT NOT NULL, model_version TEXT NOT NULL,
+               dimensions INTEGER NOT NULL CHECK(dimensions = 384), vector BLOB NOT NULL,
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             ) STRICT;
+             INSERT INTO knowledge_chunk_embeddings
+               (chunk_id, knowledge_base_id, content_hash, model_version, dimensions, vector, updated_at)
+               SELECT chunk_id, knowledge_base_id, content_hash, model_version, dimensions, vector, updated_at
+                 FROM knowledge_chunk_embeddings_v16;
+             DROP TABLE knowledge_chunk_embeddings_v16;
+             CREATE INDEX knowledge_chunk_embeddings_base_model
+               ON knowledge_chunk_embeddings(knowledge_base_id, model_version);
+             DROP INDEX knowledge_semantic_indexes_model_status;
+             ALTER TABLE knowledge_semantic_indexes RENAME TO knowledge_semantic_indexes_v16;
+             CREATE TABLE knowledge_semantic_indexes (
+               knowledge_base_id TEXT PRIMARY KEY REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+               model_version TEXT NOT NULL,
+               status TEXT NOT NULL CHECK(status IN ('notIndexed','indexing','ready','error')),
+               error TEXT, updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             ) STRICT;
+             INSERT INTO knowledge_semantic_indexes
+               (knowledge_base_id, model_version, status, error, updated_at)
+               SELECT knowledge_base_id, model_version, status, error, updated_at
+                 FROM knowledge_semantic_indexes_v16;
+             DROP TABLE knowledge_semantic_indexes_v16;
+             ALTER TABLE knowledge_bases DROP COLUMN semantic_enabled;
+             PRAGMA user_version = 15;",
+        )
+        .expect("downgrade to v15 fixture");
+    drop(connection);
+
+    let mut store = Store::open(directory.path()).expect("migrate v15 store");
+    let settings = store
+        .knowledge_retrieval_settings()
+        .expect("retrieval settings");
+    assert_eq!(settings.strategy, "semantic");
+    assert_eq!(
+        settings.active_model_id.as_deref(),
+        Some("intfloat/multilingual-e5-small")
+    );
+    assert_eq!(settings.active_model_version.as_deref(), Some("2026-04-02"));
+    let connection = Connection::open(database_path).expect("migrated database");
+    let migrated: (String, String, i64, i64) = connection
+        .query_row(
+            "SELECT model_id, model_version, dimensions, length(vector)
+             FROM knowledge_chunk_embeddings",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("migrated embedding");
+    assert_eq!(
+        migrated,
+        (
+            "intfloat/multilingual-e5-small".to_owned(),
+            "2026-04-02".to_owned(),
+            384,
+            1_536,
+        )
+    );
+}
+
+#[test]
+fn retrieval_model_request_keeps_active_model_until_atomic_activation() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = Store::open(directory.path()).expect("store");
+    let initial = store
+        .knowledge_retrieval_settings()
+        .expect("initial settings");
+    assert_eq!(initial.strategy, "fullText");
+    assert_eq!(initial.selected_plan_id, "fullText");
+    assert!(initial.active_model_id.is_none());
+
+    store
+        .request_knowledge_retrieval_model("BAAI/bge-small-zh-v1.5", "bge-v1")
+        .expect("request BGE");
+    let pending = store
+        .knowledge_retrieval_settings()
+        .expect("pending settings");
+    assert_eq!(pending.strategy, "fullText");
+    assert_eq!(pending.selected_plan_id, "BAAI/bge-small-zh-v1.5");
+    assert_eq!(
+        pending.pending_model_id.as_deref(),
+        Some("BAAI/bge-small-zh-v1.5")
+    );
+    assert!(pending.active_model_id.is_none());
+
+    assert!(
+        store
+            .activate_pending_knowledge_retrieval_model("BAAI/bge-small-zh-v1.5", "bge-v1",)
+            .expect("activate BGE")
+    );
+    store
+        .request_knowledge_retrieval_model("intfloat/multilingual-e5-small", "e5-v1")
+        .expect("request E5");
+    let switching = store
+        .knowledge_retrieval_settings()
+        .expect("switching settings");
+    assert_eq!(switching.strategy, "semantic");
+    assert_eq!(
+        switching.active_model_id.as_deref(),
+        Some("BAAI/bge-small-zh-v1.5")
+    );
+    assert_eq!(
+        switching.pending_model_id.as_deref(),
+        Some("intfloat/multilingual-e5-small")
+    );
+    assert!(
+        store
+            .cancel_pending_knowledge_retrieval_model("intfloat/multilingual-e5-small", "e5-v1",)
+            .expect("cancel E5")
+    );
+    let restored = store
+        .knowledge_retrieval_settings()
+        .expect("restored settings");
+    assert_eq!(restored.selected_plan_id, "BAAI/bge-small-zh-v1.5");
+    assert!(restored.pending_model_id.is_none());
+    store
+        .set_semantic_index_paused(true)
+        .expect("pause semantic index");
+    drop(store);
+    let mut reopened = Store::open(directory.path()).expect("reopen store");
+    assert!(
+        reopened
+            .knowledge_retrieval_settings()
+            .expect("persisted pause")
+            .index_paused
+    );
 }

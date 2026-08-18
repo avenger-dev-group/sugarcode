@@ -41,10 +41,12 @@ import {
 import {
   isKnowledgeActionResult,
   isKnowledgeBaseDetail,
+  isKnowledgeEditableDocument,
   isKnowledgeInspection,
   isKnowledgeSearchResult,
   type KnowledgeActionResult,
   type KnowledgeBaseDetail,
+  type KnowledgeEditableDocument,
   type KnowledgeInspection,
   type KnowledgeSearchResult,
 } from '../shared/knowledge.ts';
@@ -126,6 +128,13 @@ export type RuntimeAssetDescriptor = Readonly<{
 
 export type RuntimeContentPart =
   | Readonly<{ type: 'text'; text: string }>
+  | Readonly<{
+      type: 'knowledgeReferences';
+      references: readonly Readonly<{
+        knowledgeBaseId: string;
+        name: string;
+      }>[];
+    }>
   | Readonly<{
       type: 'asset';
       asset: RuntimeAssetDescriptor;
@@ -671,6 +680,16 @@ export type RuntimeCommand =
       workspaceIds: readonly string[];
     }>
   | Readonly<{
+      type: 'knowledge.update';
+      requestId: string;
+      knowledgeBaseId: string;
+      name: string;
+      description: string;
+      workspaceIds: readonly string[];
+      ignoreRules: readonly string[];
+      semanticEnabled?: boolean;
+    }>
+  | Readonly<{
       type: 'knowledge.delete';
       requestId: string;
       knowledgeBaseId: string;
@@ -686,6 +705,41 @@ export type RuntimeCommand =
       requestId: string;
       knowledgeBaseId: string;
       path: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.text.create';
+      requestId: string;
+      knowledgeBaseId: string;
+      fileName: string;
+      content: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.text.read';
+      requestId: string;
+      sourceId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.text.update';
+      requestId: string;
+      sourceId: string;
+      expectedSha256: string;
+      content: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.source.delete';
+      requestId: string;
+      sourceId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.source.rescan';
+      requestId: string;
+      sourceId: string;
+      rebuild?: boolean;
+    }>
+  | Readonly<{
+      type: 'knowledge.index.cancel';
+      requestId: string;
+      jobId: string;
     }>
   | Readonly<{
       type: 'knowledge.detail';
@@ -710,6 +764,16 @@ export type RuntimeCommand =
   | Readonly<{
       type: 'knowledge.model.remove';
       requestId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.retrieval.select';
+      requestId: string;
+      planId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.semanticIndex.pause';
+      requestId: string;
+      paused: boolean;
     }>
   | Readonly<{ type: 'shutdown'; requestId: string }>;
 
@@ -1195,6 +1259,11 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'knowledge.textDocument';
+        document: KnowledgeEditableDocument;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'knowledge.searchResult';
         result: KnowledgeSearchResult;
       }>)
@@ -1399,6 +1468,22 @@ export const isRuntimeContentPart = (value: unknown): value is RuntimeContentPar
   }
   if (value.type === 'text') {
     return typeof value.text === 'string';
+  }
+  if (value.type === 'knowledgeReferences') {
+    return (
+      Array.isArray(value.references) &&
+      value.references.length > 0 &&
+      value.references.length <= 4 &&
+      value.references.every(
+        (reference) =>
+          isRecord(reference) &&
+          typeof reference.knowledgeBaseId === 'string' &&
+          /^kb_[0-9a-f]{32}$/u.test(reference.knowledgeBaseId) &&
+          typeof reference.name === 'string' &&
+          reference.name.length > 0 &&
+          reference.name.length <= 80,
+      )
+    );
   }
   return (
     value.type === 'asset' &&
@@ -1797,6 +1882,10 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
     case 'knowledge.model.cancel':
     case 'knowledge.model.remove':
       return true;
+    case 'knowledge.retrieval.select':
+      return typeof value.planId === 'string' && value.planId.length > 0 && value.planId.length <= 128;
+    case 'knowledge.semanticIndex.pause':
+      return typeof value.paused === 'boolean';
     case 'knowledge.create':
       return (
         typeof value.name === 'string' &&
@@ -1807,6 +1896,25 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         Array.isArray(value.workspaceIds) &&
         value.workspaceIds.length <= 64 &&
         value.workspaceIds.every((id) => typeof id === 'string')
+      );
+    case 'knowledge.update':
+      return (
+        typeof value.knowledgeBaseId === 'string' &&
+        /^kb_[0-9a-f]{32}$/u.test(value.knowledgeBaseId) &&
+        typeof value.name === 'string' &&
+        value.name.trim().length > 0 &&
+        value.name.length <= 256 &&
+        typeof value.description === 'string' &&
+        value.description.length <= 4_096 &&
+        Array.isArray(value.workspaceIds) &&
+        value.workspaceIds.length <= 64 &&
+        value.workspaceIds.every((id) => typeof id === 'string') &&
+        Array.isArray(value.ignoreRules) &&
+        value.ignoreRules.length <= 256 &&
+        value.ignoreRules.every(
+          (rule) => typeof rule === 'string' && rule.length > 0 && rule.length <= 1_024,
+        ) &&
+        (value.semanticEnabled === undefined || typeof value.semanticEnabled === 'boolean')
       );
     case 'knowledge.delete':
     case 'knowledge.detail':
@@ -1833,6 +1941,45 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.path.length > 0 &&
         value.path.length <= 16_384
       );
+    case 'knowledge.text.create':
+      return (
+        typeof value.knowledgeBaseId === 'string' &&
+        /^kb_[0-9a-f]{32}$/u.test(value.knowledgeBaseId) &&
+        typeof value.fileName === 'string' &&
+        value.fileName.length > 0 &&
+        value.fileName.length <= 255 &&
+        !value.fileName.includes('/') &&
+        !value.fileName.includes('\\') &&
+        ![...value.fileName].some((character) => {
+          const code = character.charCodeAt(0);
+          return code < 32 || code === 127;
+        }) &&
+        /\.(?:txt|md)$/iu.test(value.fileName) &&
+        typeof value.content === 'string' &&
+        value.content.trim().length > 0 &&
+        utf8ByteLength(value.content) <= 2 * 1_024 * 1_024
+      );
+    case 'knowledge.text.read':
+      return typeof value.sourceId === 'string' && /^ks_[0-9a-f]{32}$/u.test(value.sourceId);
+    case 'knowledge.text.update':
+      return (
+        typeof value.sourceId === 'string' &&
+        /^ks_[0-9a-f]{32}$/u.test(value.sourceId) &&
+        typeof value.expectedSha256 === 'string' &&
+        /^[0-9a-f]{64}$/u.test(value.expectedSha256) &&
+        typeof value.content === 'string' &&
+        value.content.trim().length > 0 &&
+        utf8ByteLength(value.content) <= 2 * 1_024 * 1_024
+      );
+    case 'knowledge.source.delete':
+    case 'knowledge.source.rescan':
+      return (
+        typeof value.sourceId === 'string' &&
+        /^ks_[0-9a-f]{32}$/u.test(value.sourceId) &&
+        (value.rebuild === undefined || typeof value.rebuild === 'boolean')
+      );
+    case 'knowledge.index.cancel':
+      return typeof value.jobId === 'string' && /^kj_[0-9a-f]{32}$/u.test(value.jobId);
     case 'knowledge.search':
       return (
         (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
@@ -2283,6 +2430,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       return isKnowledgeActionResult(value.action);
     case 'knowledge.detail':
       return isKnowledgeBaseDetail(value.detail);
+    case 'knowledge.textDocument':
+      return isKnowledgeEditableDocument(value.document);
     case 'knowledge.searchResult':
       return isKnowledgeSearchResult(value.result);
     case 'thread.listResult':

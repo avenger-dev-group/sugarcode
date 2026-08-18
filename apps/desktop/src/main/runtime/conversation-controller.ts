@@ -61,6 +61,11 @@ const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
 ): ConversationActionResult => ({ accepted: false, reason });
 
+const knowledgeReferencesFromParts = (content: readonly RuntimeContentPart[]) =>
+  content.flatMap((part) =>
+    part.type === 'knowledgeReferences' ? part.references : [],
+  );
+
 const withoutUserInputRequest = (turn: ConversationTurn): ConversationTurn => {
   const copy: {
     -readonly [Key in keyof ConversationTurn]: ConversationTurn[Key];
@@ -506,7 +511,9 @@ export class RuntimeConversationController {
     }
     const content: RuntimeContentPart[] = [
       ...initialTurnContent(input.input),
-      ...existing.content.filter((part) => part.type === 'asset'),
+      ...existing.content.filter(
+        (part) => part.type === 'asset' || part.type === 'knowledgeReferences',
+      ),
     ];
     const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
     try {
@@ -1258,6 +1265,7 @@ export class RuntimeConversationController {
         )
         .map((part) => part.text)
         .join('\n');
+      const knowledgeReferences = knowledgeReferencesFromParts(event.content);
       turns[replacedIndex] = {
         id: event.turnId,
         status: 'inProgress',
@@ -1270,6 +1278,7 @@ export class RuntimeConversationController {
             ...(previousUserMessage.attachments?.length
               ? { attachments: previousUserMessage.attachments }
               : {}),
+            ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
             status: 'inProgress',
           },
         ],
@@ -1304,10 +1313,36 @@ export class RuntimeConversationController {
         }
         break;
       case 'turn.userMessage':
+        {
+          const text = event.content
+            .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+              part.type === 'text')
+            .map((part) => part.text)
+            .join('\n');
+          const attachments = event.content.flatMap((part) =>
+            part.type === 'asset' ? [attachmentFromPart(part)] : []);
+          const knowledgeReferences = knowledgeReferencesFromParts(event.content);
+          const existingUser = turn.messages.find((message) => message.role === 'user');
+          const userMessage = {
+            id: existingUser?.id ?? event.itemId,
+            role: 'user' as const,
+            text: text || existingUser?.text || '',
+            ...(attachments.length > 0
+              ? { attachments }
+              : existingUser?.attachments?.length
+                ? { attachments: existingUser.attachments }
+                : {}),
+            ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
+            status: 'completed' as const,
+          };
         turns[index] = {
           ...turn,
-          messages: turn.messages.map((message) => message.role === 'user' ? { ...message, status: 'completed' } : message),
+          messages: [
+            userMessage,
+            ...turn.messages.filter((message) => message.role !== 'user'),
+          ],
         };
+        }
         break;
       case 'turn.textStarted':
         break;
@@ -2006,6 +2041,7 @@ export class RuntimeConversationController {
       .join('\n');
     const attachments = event.content.flatMap((part) =>
       part.type === 'asset' ? [attachmentFromPart(part)] : []);
+    const knowledgeReferences = knowledgeReferencesFromParts(event.content);
     turns[index] = {
       ...turn,
       messages: [
@@ -2015,6 +2051,7 @@ export class RuntimeConversationController {
           role: 'user',
           text,
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
           status: 'completed',
         },
       ],
@@ -2041,6 +2078,7 @@ export class RuntimeConversationController {
       .join('\n');
     const attachments = head.content.flatMap((part) =>
       part.type === 'asset' ? [attachmentFromPart(part)] : []);
+    const knowledgeReferences = knowledgeReferencesFromParts(head.content);
     this.turnsByThread.set(threadId, [
       ...(this.turnsByThread.get(threadId) ?? []),
       {
@@ -2052,6 +2090,7 @@ export class RuntimeConversationController {
             role: 'user',
             text,
             ...(attachments.length > 0 ? { attachments } : {}),
+            ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
             status: 'inProgress',
           },
         ],

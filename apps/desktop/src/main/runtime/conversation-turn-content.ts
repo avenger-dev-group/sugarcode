@@ -9,7 +9,7 @@ export const initialTurnContent = (input: string): RuntimeContentPart[] =>
   input.length > 0 ? [{ type: 'text', text: input }] : [];
 
 export const revisedTurnContent = (
-  userMessage: Pick<ConversationMessage, 'text' | 'attachments'>,
+  userMessage: Pick<ConversationMessage, 'text' | 'attachments' | 'knowledgeReferences'>,
   text: string,
 ): RuntimeContentPart[] | undefined => {
   const references = parseComposerSubmission(userMessage.text).references;
@@ -29,6 +29,12 @@ export const revisedTurnContent = (
   const content: RuntimeContentPart[] = revisedInput.length > 0
     ? [{ type: 'text', text: revisedInput }]
     : [];
+  if (userMessage.knowledgeReferences?.length) {
+    content.push({
+      type: 'knowledgeReferences',
+      references: userMessage.knowledgeReferences,
+    });
+  }
   for (const attachment of userMessage.attachments ?? []) {
     content.push({
       type: 'asset',

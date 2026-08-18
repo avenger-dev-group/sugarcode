@@ -16,6 +16,10 @@ export type ConversationMessage = Readonly<{
   role: 'user' | 'agent';
   text: string;
   attachments?: readonly ConversationAttachment[];
+  knowledgeReferences?: readonly Readonly<{
+    knowledgeBaseId: string;
+    name: string;
+  }>[];
   status: ConversationMessageStatus;
 }>;
 
@@ -118,6 +122,43 @@ export type ConversationWorkspaceSearchActivity = Readonly<{
     id: string;
     status: ConversationMessageStatus;
     outcome: ConversationWorkspaceSearchOutcome;
+  }>;
+}>;
+
+export type ConversationKnowledgeCitation = Readonly<{
+  citation: string;
+  knowledgeBaseId: string;
+  knowledgeBaseName: string;
+  documentId: string;
+  fileName: string;
+  relativePath: string;
+  heading?: string;
+  pageNumber?: number;
+  contentKind?: 'text' | 'code';
+  language?: string;
+  startLine?: number;
+  endLine?: number;
+  content: string;
+}>;
+
+export type ConversationKnowledgeActivity = Readonly<{
+  id: string;
+  callId: string;
+  operation: 'search' | 'listDocuments' | 'read';
+  query?: string;
+  callStatus: ConversationMessageStatus;
+  result?: Readonly<{
+    id: string;
+    status: ConversationMessageStatus;
+    outcome:
+      | Readonly<{
+          type: 'success';
+          mode: 'fullText' | 'hybrid' | 'documentList' | 'read';
+          matches: number;
+          knowledgeBases: readonly Readonly<{ id: string; name: string }>[];
+          citations?: readonly ConversationKnowledgeCitation[];
+        }>
+      | Readonly<{ type: 'error'; kind: string }>;
   }>;
 }>;
 
@@ -387,6 +428,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'workspaceSearch';
       activity: ConversationWorkspaceSearchActivity;
+    }>
+  | Readonly<{
+      type: 'knowledge';
+      activity: ConversationKnowledgeActivity;
     }>
   | Readonly<{
       type: 'skill';

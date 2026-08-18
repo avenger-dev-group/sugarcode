@@ -1,5 +1,6 @@
 import type {
   ConversationActivity,
+  ConversationKnowledgeCitation,
   ConversationUserInputDecision,
   ConversationUserInputQuestion,
   ConversationUserInputSubmission,
@@ -13,7 +14,14 @@ import type {
 
 type ProjectedToolActivity = Extract<
   ConversationActivity,
-  { type: 'skill' | 'workspaceRead' | 'workspaceList' | 'workspaceSearch' }
+  {
+    type:
+      | 'skill'
+      | 'workspaceRead'
+      | 'workspaceList'
+      | 'workspaceSearch'
+      | 'knowledge';
+  }
 >;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -299,6 +307,30 @@ const toolCallActivities = (
         }]
       : [];
   }
+  if (
+    name === 'knowledge_search' ||
+    name === 'knowledge_list_documents' ||
+    name === 'knowledge_read'
+  ) {
+    const operation = name === 'knowledge_search'
+      ? 'search' as const
+      : name === 'knowledge_list_documents'
+        ? 'listDocuments' as const
+        : 'read' as const;
+    const query = operation === 'search'
+      ? nonEmptyString(argumentsValue.query)
+      : undefined;
+    return [{
+      type: 'knowledge',
+      activity: {
+        id: itemId,
+        callId,
+        operation,
+        ...(query ? { query } : {}),
+        callStatus: 'inProgress',
+      },
+    }];
+  }
   return [];
 };
 
@@ -346,6 +378,11 @@ export const appendToolCallActivity = (
             activity.type === projected.type &&
             activity.activity.path === projected.activity.path
           );
+        case 'knowledge':
+          return (
+            activity.type === projected.type &&
+            activity.activity.operation === projected.activity.operation
+          );
       }
     });
     if (!duplicate) {
@@ -380,7 +417,8 @@ export const applyToolResultActivity = (
     (activity.type === 'skill' ||
       activity.type === 'workspaceRead' ||
       activity.type === 'workspaceList' ||
-      activity.type === 'workspaceSearch') &&
+      activity.type === 'workspaceSearch' ||
+      activity.type === 'knowledge') &&
     activity.activity.callId === callId
       ? [index]
       : [],
@@ -395,7 +433,8 @@ export const applyToolResultActivity = (
       entry?.type !== 'skill' &&
       entry?.type !== 'workspaceRead' &&
       entry?.type !== 'workspaceList' &&
-      entry?.type !== 'workspaceSearch'
+      entry?.type !== 'workspaceSearch' &&
+      entry?.type !== 'knowledge'
     ) {
       return;
     }
@@ -455,6 +494,106 @@ export const applyToolResultActivity = (
       const outcome = activityResult.ok === true && Array.isArray(activityResult.entries)
         ? { type: 'success' as const, entries: activityResult.entries.length }
         : { type: 'error' as const, kind: errorKind(activityResult) };
+      activities[activityIndex] = {
+        type: entry.type,
+        activity: {
+          ...entry.activity,
+          callStatus: 'completed',
+          result: { id: resultId, status: 'completed', outcome },
+        },
+      };
+      return;
+    }
+    if (entry.type === 'knowledge') {
+      const selectedKnowledgeBases = Array.isArray(activityResult.selectedKnowledgeBases)
+        ? activityResult.selectedKnowledgeBases.flatMap((candidate) =>
+            isRecord(candidate) &&
+            typeof candidate.id === 'string' &&
+            typeof candidate.name === 'string'
+              ? [{ id: candidate.id, name: candidate.name }]
+              : [],
+          )
+        : [];
+      const hits = Array.isArray(activityResult.hits)
+        ? activityResult.hits.filter(isRecord)
+        : [];
+      const citations: ConversationKnowledgeCitation[] = hits.flatMap((hit) =>
+        typeof hit.citation === 'string' &&
+        typeof hit.knowledgeBaseId === 'string' &&
+        typeof hit.knowledgeBaseName === 'string' &&
+        typeof hit.documentId === 'string' &&
+        typeof hit.fileName === 'string' &&
+        typeof hit.relativePath === 'string' &&
+        typeof hit.content === 'string'
+          ? [{
+              citation: hit.citation,
+              knowledgeBaseId: hit.knowledgeBaseId,
+              knowledgeBaseName: hit.knowledgeBaseName,
+              documentId: hit.documentId,
+              fileName: hit.fileName,
+              relativePath: hit.relativePath,
+              ...(typeof hit.heading === 'string' ? { heading: hit.heading } : {}),
+              ...(Number.isSafeInteger(hit.pageNumber)
+                ? { pageNumber: Number(hit.pageNumber) }
+                : {}),
+              ...(hit.contentKind === 'text' || hit.contentKind === 'code'
+                ? { contentKind: hit.contentKind }
+                : {}),
+              ...(typeof hit.language === 'string' ? { language: hit.language } : {}),
+              ...(Number.isSafeInteger(hit.startLine)
+                ? { startLine: Number(hit.startLine) }
+                : {}),
+              ...(Number.isSafeInteger(hit.endLine)
+                ? { endLine: Number(hit.endLine) }
+                : {}),
+              content: hit.content,
+            }]
+          : [],
+      );
+      const rawListedBases = Array.isArray(activityResult.knowledgeBases)
+        ? activityResult.knowledgeBases.filter(isRecord)
+        : [];
+      const listedBases = rawListedBases.flatMap((candidate) =>
+        isRecord(candidate) &&
+        typeof candidate.id === 'string' &&
+        typeof candidate.name === 'string'
+          ? [{ id: candidate.id, name: candidate.name }]
+          : [],
+      );
+      const knowledgeBases = selectedKnowledgeBases.length > 0
+        ? selectedKnowledgeBases
+        : listedBases;
+      const mode: 'fullText' | 'hybrid' | 'documentList' | 'read' =
+        entry.activity.operation === 'search'
+        ? activityResult.mode === 'hybrid'
+          ? 'hybrid'
+          : 'fullText'
+        : entry.activity.operation === 'listDocuments'
+          ? 'documentList'
+          : 'read';
+      const documents = rawListedBases.reduce(
+        (count, base) => count + (Array.isArray(base.documents)
+          ? base.documents.length
+          : 0),
+        0,
+      );
+      const chunks = Array.isArray(activityResult.chunks)
+        ? activityResult.chunks.length
+        : 0;
+      const matches = entry.activity.operation === 'search'
+        ? hits.length
+        : entry.activity.operation === 'listDocuments'
+          ? documents
+          : chunks;
+      const outcome = activityResult.ok === false || activityResult.error !== undefined
+        ? { type: 'error' as const, kind: errorKind(activityResult) }
+        : {
+            type: 'success' as const,
+            mode,
+            matches,
+            knowledgeBases,
+            ...(citations.length > 0 ? { citations } : {}),
+          };
       activities[activityIndex] = {
         type: entry.type,
         activity: {

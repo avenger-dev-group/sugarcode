@@ -86,6 +86,7 @@ import { resolveConversationTitle } from './conversation-title';
 import { EmptyThreadState } from './empty-thread-state';
 import { ProcessActivityGroup } from './process-activity-group';
 import { SkillActivity } from './skill-activity';
+import { KnowledgeActivity } from './knowledge-activity';
 import { ThreadNavigator } from './thread-navigator';
 import { isCompactToolActivity } from './tool-activity';
 import { ToolActivityGroup } from './tool-activity-group';
@@ -431,6 +432,8 @@ const TurnActivity = ({
       return <WorkspaceSearchActivity activity={entry.activity} />;
     case 'skill':
       return <SkillActivity activity={entry.activity} language={language} />;
+    case 'knowledge':
+      return <KnowledgeActivity activity={entry.activity} language={language} />;
     case 'fileChange':
       return <FileChangeReview review={entry.activity} />;
     case 'commandApproval':

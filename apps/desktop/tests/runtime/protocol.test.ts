@@ -17,6 +17,138 @@ test('private runtime validates shared semantic model lifecycle commands', () =>
       true,
     );
   }
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.retrieval.select',
+      requestId: 'request-retrieval-select',
+      planId: 'BAAI/bge-small-zh-v1.5',
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.retrieval.select',
+      requestId: 'request-retrieval-empty',
+      planId: '',
+    }),
+    false,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.semanticIndex.pause',
+      requestId: 'request-index-pause',
+      paused: true,
+    }),
+    true,
+  );
+});
+
+test('private runtime validates knowledge source maintenance commands', () => {
+  const knowledgeBaseId = `kb_${'1'.repeat(32)}`;
+  const sourceId = `ks_${'2'.repeat(32)}`;
+  const jobId = `kj_${'3'.repeat(32)}`;
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.update',
+      requestId: 'request-update',
+      knowledgeBaseId,
+      name: '产品规范',
+      description: '说明',
+      workspaceIds: [],
+      ignoreRules: ['drafts/**'],
+      semanticEnabled: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.source.rescan',
+      requestId: 'request-rescan',
+      sourceId,
+      rebuild: true,
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.source.delete',
+      requestId: 'request-source-delete',
+      sourceId,
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.index.cancel',
+      requestId: 'request-index-cancel',
+      jobId,
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'knowledge.update',
+      requestId: 'request-invalid-ignore',
+      knowledgeBaseId,
+      name: '产品规范',
+      description: '',
+      workspaceIds: [],
+      ignoreRules: [''],
+    }),
+    false,
+  );
+});
+
+test('private runtime validates bounded editable knowledge text commands and content', () => {
+  const knowledgeBaseId = `kb_${'1'.repeat(32)}`;
+  const sourceId = `ks_${'2'.repeat(32)}`;
+  assert.equal(isRuntimeCommand({
+    type: 'knowledge.text.create',
+    requestId: 'request-text-create',
+    knowledgeBaseId,
+    fileName: '公司信息.md',
+    content: '# 公司信息\n\n电话：10086',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'knowledge.text.read',
+    requestId: 'request-text-read',
+    sourceId,
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'knowledge.text.update',
+    requestId: 'request-text-update',
+    sourceId,
+    expectedSha256: 'a'.repeat(64),
+    content: '电话：12345',
+  }), true);
+  assert.equal(isRuntimeCommand({
+    type: 'knowledge.text.create',
+    requestId: 'request-text-escape',
+    knowledgeBaseId,
+    fileName: '../escape.md',
+    content: 'unsafe',
+  }), false);
+  assert.equal(isRuntimeCommand({
+    type: 'knowledge.text.create',
+    requestId: 'request-text-empty',
+    knowledgeBaseId,
+    fileName: 'empty.txt',
+    content: '   ',
+  }), false);
+  assert.equal(isRuntimeEvent({
+    type: 'knowledge.textDocument',
+    requestId: 'request-text-read',
+    sequence: 1,
+    document: {
+      sourceId,
+      knowledgeBaseId,
+      fileName: '公司信息.md',
+      format: 'markdown',
+      content: '# 公司信息',
+      sha256: 'b'.repeat(64),
+      sizeBytes: 14,
+    },
+  }), true);
 });
 
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';

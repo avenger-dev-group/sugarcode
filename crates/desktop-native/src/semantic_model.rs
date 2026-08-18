@@ -18,70 +18,14 @@ use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::persistence::{KnowledgeEmbeddingInput, Store};
+use crate::semantic_catalog::{
+    DEFAULT_SEMANTIC_MODEL_ID, MULTILINGUAL_E5_SMALL, PoolingStrategy, SemanticModelDefinition,
+    package_size as model_package_size, semantic_model,
+};
 
-const MODEL_ID: &str = "intfloat/multilingual-e5-small";
-const MODEL_REVISION: &str = "761b726dd34fb83930e26aab4e9ac3899aa1fa78";
-const MODEL_VERSION: &str = "2026-04-02";
-const MODEL_DIMENSIONS: u16 = 384;
+const MODEL: &SemanticModelDefinition = &MULTILINGUAL_E5_SMALL;
 const INDEX_DISK_BUDGET: u64 = 512 * 1024 * 1024;
 const MANIFEST_SCHEMA_VERSION: u8 = 1;
-
-#[derive(Clone, Copy)]
-struct ModelFile {
-    repository: &'static str,
-    revision: &'static str,
-    remote_path: &'static str,
-    local_name: &'static str,
-    size: u64,
-    sha256: &'static str,
-}
-
-const MODEL_FILES: &[ModelFile] = &[
-    ModelFile {
-        repository: "intfloat/multilingual-e5-small",
-        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
-        remote_path: "onnx/config.json",
-        local_name: "config.json",
-        size: 653,
-        sha256: "bbb7c1333fc4b3e27fbc9cd5d2070aabcc1d4dfb99917c3633e772f97545a6b6",
-    },
-    ModelFile {
-        repository: "Xenova/multilingual-e5-small",
-        revision: MODEL_REVISION,
-        remote_path: "onnx/model_quantized.onnx",
-        local_name: "model.onnx",
-        size: 118_308_185,
-        sha256: "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
-    },
-    ModelFile {
-        repository: "intfloat/multilingual-e5-small",
-        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
-        remote_path: "onnx/special_tokens_map.json",
-        local_name: "special_tokens_map.json",
-        size: 167,
-        sha256: "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7",
-    },
-    ModelFile {
-        repository: "intfloat/multilingual-e5-small",
-        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
-        remote_path: "onnx/tokenizer.json",
-        local_name: "tokenizer.json",
-        size: 17_082_730,
-        sha256: "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
-    },
-    ModelFile {
-        repository: "intfloat/multilingual-e5-small",
-        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
-        remote_path: "onnx/tokenizer_config.json",
-        local_name: "tokenizer_config.json",
-        size: 443,
-        sha256: "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
-    },
-];
-
-fn package_size() -> u64 {
-    MODEL_FILES.iter().map(|file| file.size).sum()
-}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,6 +91,8 @@ struct RuntimeState {
 
 struct LoadedModel {
     model: LocalEmbeddingModel,
+    model_id: &'static str,
+    model_version: &'static str,
     last_used_at: SystemTime,
 }
 
@@ -154,11 +100,14 @@ struct LocalEmbeddingModel {
     tokenizer: Tokenizer,
     session: Session,
     needs_token_type_ids: bool,
+    dimensions: usize,
+    pooling: PoolingStrategy,
 }
 
 #[derive(Clone)]
 pub struct SemanticModelManager {
     root: PathBuf,
+    active_model: Arc<Mutex<&'static SemanticModelDefinition>>,
     state: Arc<Mutex<RuntimeState>>,
     loaded: Arc<Mutex<Option<LoadedModel>>>,
 }
@@ -167,12 +116,14 @@ impl SemanticModelManager {
     pub fn open(data_directory: &Path) -> std::io::Result<Self> {
         let root = data_directory.join("models").join("semantic");
         std::fs::create_dir_all(&root)?;
-        let ready =
-            installed_manifest_path(&root).is_file() && validate_installed_layout(&root).is_ok();
+        migrate_legacy_default_layout(&root)?;
+        let model = semantic_model(DEFAULT_SEMANTIC_MODEL_ID).unwrap_or(MODEL);
+        let ready = installed_manifest_path(&root, model).is_file()
+            && validate_installed_layout(&root, model).is_ok();
         let downloaded_bytes = if ready {
-            package_size()
+            model_package_size(model)
         } else {
-            resumable_bytes(&root)
+            resumable_bytes(&root, model)
         };
         let loaded = Arc::new(Mutex::new(None::<LoadedModel>));
         let weak_loaded = Arc::downgrade(&loaded);
@@ -194,6 +145,7 @@ impl SemanticModelManager {
         });
         Ok(Self {
             root,
+            active_model: Arc::new(Mutex::new(model)),
             state: Arc::new(Mutex::new(RuntimeState {
                 phase: if ready { "ready" } else { "notInstalled" }.to_owned(),
                 downloaded_bytes,
@@ -205,6 +157,7 @@ impl SemanticModelManager {
     }
 
     pub fn inspect(&self) -> SemanticModelState {
+        let model = self.active_model();
         let state = self
             .state
             .lock()
@@ -213,22 +166,59 @@ impl SemanticModelManager {
         SemanticModelState {
             state: state.phase.clone(),
             enabled: ready,
-            model_id: MODEL_ID.to_owned(),
-            version: MODEL_VERSION.to_owned(),
-            revision: MODEL_REVISION.to_owned(),
-            dimensions: MODEL_DIMENSIONS,
+            model_id: model.id.to_owned(),
+            version: model.version.to_owned(),
+            revision: model.revision.to_owned(),
+            dimensions: model.dimensions,
             runtime: "ONNX Runtime CPU".to_owned(),
             variant: "INT8 优化".to_owned(),
-            downloaded_bytes: state.downloaded_bytes.min(package_size()),
-            total_bytes: package_size(),
-            installed_bytes: if ready { package_size() } else { 0 },
+            downloaded_bytes: state.downloaded_bytes.min(model_package_size(model)),
+            total_bytes: model_package_size(model),
+            installed_bytes: if ready { model_package_size(model) } else { 0 },
             error: state.error.clone(),
-            device: inspect_device(&self.root),
+            device: inspect_device(&self.root, model),
         }
     }
 
+    pub fn select_model(&self, model_id: &str) -> Result<(), String> {
+        let model = semantic_model(model_id).ok_or_else(|| "未知的语义模型。".to_owned())?;
+        {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.phase == "downloading" {
+                return Err("请先取消正在进行的模型下载。".to_owned());
+            }
+        }
+        *self
+            .active_model
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = model;
+        *self
+            .loaded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let ready = installed_manifest_path(&self.root, model).is_file()
+            && validate_installed_layout(&self.root, model).is_ok();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.phase = if ready { "ready" } else { "notInstalled" }.to_owned();
+        state.downloaded_bytes = if ready {
+            model_package_size(model)
+        } else {
+            resumable_bytes(&self.root, model)
+        };
+        state.error = None;
+        state.cancellation = None;
+        Ok(())
+    }
+
     pub async fn install(&self) -> Result<(), String> {
-        let device = inspect_device(&self.root);
+        let model = self.active_model();
+        let device = inspect_device(&self.root, model);
         if !device.supported {
             return Err("当前 CPU 架构不受共享语义模型支持。".to_owned());
         }
@@ -248,12 +238,12 @@ impl SemanticModelManager {
                 return Ok(());
             }
             state.phase = "downloading".to_owned();
-            state.downloaded_bytes = resumable_bytes(&self.root);
+            state.downloaded_bytes = resumable_bytes(&self.root, model);
             state.error = None;
             state.cancellation = Some(cancellation.clone());
         }
 
-        let result = download_and_install(&self.root, &self.state, &cancellation).await;
+        let result = download_and_install(&self.root, model, &self.state, &cancellation).await;
         let mut state = self
             .state
             .lock()
@@ -262,19 +252,19 @@ impl SemanticModelManager {
         match result {
             Ok(()) => {
                 state.phase = "ready".to_owned();
-                state.downloaded_bytes = package_size();
+                state.downloaded_bytes = model_package_size(model);
                 state.error = None;
                 Ok(())
             }
             Err(InstallError::Cancelled) => {
                 state.phase = "notInstalled".to_owned();
-                state.downloaded_bytes = resumable_bytes(&self.root);
+                state.downloaded_bytes = resumable_bytes(&self.root, model);
                 state.error = None;
                 Err("cancelled".to_owned())
             }
             Err(InstallError::Failure(message)) => {
                 state.phase = "error".to_owned();
-                state.downloaded_bytes = resumable_bytes(&self.root);
+                state.downloaded_bytes = resumable_bytes(&self.root, model);
                 state.error = Some(message.clone());
                 Err(message)
             }
@@ -296,6 +286,7 @@ impl SemanticModelManager {
     }
 
     pub fn remove(&self) -> Result<(), String> {
+        let model = self.active_model();
         {
             let state = self
                 .state
@@ -310,8 +301,8 @@ impl SemanticModelManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         for path in [
-            installed_directory(&self.root),
-            staging_directory(&self.root),
+            installed_directory(&self.root, model),
+            staging_directory(&self.root, model),
         ] {
             if path.exists() {
                 std::fs::remove_dir_all(&path).map_err(|error| error.to_string())?;
@@ -335,29 +326,58 @@ impl SemanticModelManager {
             == "ready"
     }
 
+    pub fn is_model_ready(&self, model_id: &str, model_version: &str) -> bool {
+        semantic_model(model_id).is_some_and(|model| {
+            model.version == model_version && validate_installed_layout(&self.root, model).is_ok()
+        })
+    }
+
+    pub fn model_id(&self) -> &'static str {
+        self.active_model().id
+    }
+
     pub fn model_version(&self) -> &'static str {
-        MODEL_VERSION
+        self.active_model().version
+    }
+
+    pub fn dimensions(&self) -> usize {
+        usize::from(self.active_model().dimensions)
     }
 
     pub fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
-        self.embed_with_prefix("passage: ", texts)
+        let model = self.active_model();
+        self.embed_with_prefix(model, model.passage_prefix, texts)
     }
 
-    pub fn embed_query(&self, query: &str) -> Result<Vec<f32>, String> {
-        self.embed_with_prefix("query: ", &[query.to_owned()])?
+    pub fn embed_query_for(
+        &self,
+        model_id: &str,
+        model_version: &str,
+        query: &str,
+    ) -> Result<Vec<f32>, String> {
+        let model = semantic_model(model_id).ok_or_else(|| "未知的语义模型。".to_owned())?;
+        if model.version != model_version {
+            return Err("语义模型版本与索引不匹配。".to_owned());
+        }
+        self.embed_with_prefix(model, model.query_prefix, &[query.to_owned()])?
             .into_iter()
             .next()
             .ok_or_else(|| "语义模型没有返回查询向量。".to_owned())
     }
 
-    fn embed_with_prefix(&self, prefix: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    fn embed_with_prefix(
+        &self,
+        definition: &'static SemanticModelDefinition,
+        prefix: &str,
+        texts: &[String],
+    ) -> Result<Vec<Vec<f32>>, String> {
         if texts.is_empty() || texts.len() > 16 {
             return Err("语义编码批次必须包含 1 到 16 条文本。".to_owned());
         }
-        if !self.is_ready() {
+        if validate_installed_layout(&self.root, definition).is_err() {
             return Err("共享语义模型尚未安装。".to_owned());
         }
-        let device = inspect_device(&self.root);
+        let device = inspect_device(&self.root, definition);
         if device.available_memory_bytes > 0 && device.available_memory_bytes < 1024 * 1024 * 1024 {
             return Err("当前可用内存不足，已回退全文检索。".to_owned());
         }
@@ -365,9 +385,13 @@ impl SemanticModelManager {
             .loaded
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if loaded.is_none() {
+        if loaded.as_ref().is_none_or(|loaded| {
+            loaded.model_id != definition.id || loaded.model_version != definition.version
+        }) {
             *loaded = Some(LoadedModel {
-                model: load_model(&self.root)?,
+                model: load_model(&self.root, definition)?,
+                model_id: definition.id,
+                model_version: definition.version,
                 last_used_at: SystemTime::now(),
             });
         }
@@ -383,11 +407,18 @@ impl SemanticModelManager {
         model.last_used_at = SystemTime::now();
         if embeddings
             .iter()
-            .any(|embedding| embedding.len() != MODEL_DIMENSIONS as usize)
+            .any(|embedding| embedding.len() != usize::from(definition.dimensions))
         {
             return Err("语义模型返回了不兼容的向量维度。".to_owned());
         }
         Ok(embeddings)
+    }
+
+    fn active_model(&self) -> &'static SemanticModelDefinition {
+        *self
+            .active_model
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -400,7 +431,7 @@ pub fn index_all_knowledge_bases(
     }
     let knowledge_base_ids = Store::open_worker(data_directory)
         .map_err(|error| error.to_string())?
-        .knowledge_base_ids()
+        .semantic_enabled_knowledge_base_ids()
         .map_err(|error| error.to_string())?;
     let mut indexed = 0usize;
     let mut first_error = None;
@@ -425,16 +456,62 @@ pub fn index_knowledge_base(
     if !manager.is_ready() {
         return Ok(0);
     }
+    let model_id = manager.model_id();
     let model_version = manager.model_version();
     let mut store = Store::open_worker(data_directory).map_err(|error| error.to_string())?;
     store
-        .set_knowledge_semantic_index_status(knowledge_base_id, model_version, "indexing", None)
+        .set_knowledge_semantic_index_status(
+            knowledge_base_id,
+            model_id,
+            model_version,
+            "indexing",
+            None,
+        )
         .map_err(|error| error.to_string())?;
     let result = (|| {
         let mut indexed = 0usize;
+        let mut paused = false;
         loop {
+            let manually_paused = store
+                .knowledge_retrieval_settings()
+                .map_err(|error| error.to_string())?
+                .index_paused;
+            if crate::knowledge::agent_active()
+                || manually_paused
+                || semantic_index_resources_busy()
+            {
+                if !paused {
+                    store
+                        .set_knowledge_semantic_index_status(
+                            knowledge_base_id,
+                            model_id,
+                            model_version,
+                            "paused",
+                            None,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    paused = true;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if !manager.is_ready() {
+                    return Ok(indexed);
+                }
+                continue;
+            }
+            if paused {
+                store
+                    .set_knowledge_semantic_index_status(
+                        knowledge_base_id,
+                        model_id,
+                        model_version,
+                        "indexing",
+                        None,
+                    )
+                    .map_err(|error| error.to_string())?;
+                paused = false;
+            }
             let chunks = store
-                .knowledge_chunks_needing_embeddings(knowledge_base_id, model_version, 16)
+                .knowledge_chunks_needing_embeddings(knowledge_base_id, model_id, model_version, 16)
                 .map_err(|error| error.to_string())?;
             if chunks.is_empty() {
                 break;
@@ -457,12 +534,24 @@ pub fn index_knowledge_base(
                 })
                 .collect::<Vec<_>>();
             store
-                .save_knowledge_embeddings(knowledge_base_id, model_version, &embeddings)
+                .save_knowledge_embeddings(
+                    knowledge_base_id,
+                    model_id,
+                    model_version,
+                    manager.dimensions(),
+                    &embeddings,
+                )
                 .map_err(|error| error.to_string())?;
             indexed = indexed.saturating_add(embeddings.len());
         }
         store
-            .set_knowledge_semantic_index_status(knowledge_base_id, model_version, "ready", None)
+            .set_knowledge_semantic_index_status(
+                knowledge_base_id,
+                model_id,
+                model_version,
+                "ready",
+                None,
+            )
             .map_err(|error| error.to_string())?;
         Ok(indexed)
     })();
@@ -470,12 +559,23 @@ pub fn index_knowledge_base(
         let message = error.chars().take(1_024).collect::<String>();
         let _ = store.set_knowledge_semantic_index_status(
             knowledge_base_id,
+            model_id,
             model_version,
             "error",
             Some(&message),
         );
     }
     result
+}
+
+fn semantic_index_resources_busy() -> bool {
+    let mut system = System::new();
+    system.refresh_memory();
+    if system.available_memory() > 0 && system.available_memory() < 768 * 1024 * 1024 {
+        return true;
+    }
+    let logical_cores = std::thread::available_parallelism().map_or(1, usize::from) as f64;
+    System::load_average().one > logical_cores * 1.25
 }
 
 impl LocalEmbeddingModel {
@@ -544,28 +644,38 @@ impl LocalEmbeddingModel {
             if shape.len() != 3
                 || shape[0] as usize != batch.len()
                 || shape[1] as usize != sequence_length
-                || shape[2] as usize != MODEL_DIMENSIONS as usize
+                || shape[2] as usize != self.dimensions
             {
                 return Err(format!("语义模型返回了不兼容的输出形状：{shape:?}"));
             }
-            let dimensions = MODEL_DIMENSIONS as usize;
+            let dimensions = self.dimensions;
             for batch_index in 0..batch.len() {
                 let mut embedding = vec![0.0_f32; dimensions];
-                let mut tokens = 0.0_f32;
-                for token_index in 0..sequence_length {
-                    if attention_mask_array[(batch_index, token_index)] == 0 {
-                        continue;
+                match self.pooling {
+                    PoolingStrategy::Cls => {
+                        let offset = batch_index
+                            .saturating_mul(sequence_length)
+                            .saturating_mul(dimensions);
+                        embedding.copy_from_slice(&values[offset..offset + dimensions]);
                     }
-                    tokens += 1.0;
-                    let offset =
-                        (batch_index * sequence_length + token_index).saturating_mul(dimensions);
-                    for dimension in 0..dimensions {
-                        embedding[dimension] += values[offset + dimension];
+                    PoolingStrategy::Mean => {
+                        let mut tokens = 0.0_f32;
+                        for token_index in 0..sequence_length {
+                            if attention_mask_array[(batch_index, token_index)] == 0 {
+                                continue;
+                            }
+                            tokens += 1.0;
+                            let offset = (batch_index * sequence_length + token_index)
+                                .saturating_mul(dimensions);
+                            for dimension in 0..dimensions {
+                                embedding[dimension] += values[offset + dimension];
+                            }
+                        }
+                        let divisor = tokens.max(1.0);
+                        for value in &mut embedding {
+                            *value /= divisor;
+                        }
                     }
-                }
-                let divisor = tokens.max(1.0);
-                for value in &mut embedding {
-                    *value /= divisor;
                 }
                 let norm = embedding
                     .iter()
@@ -583,9 +693,12 @@ impl LocalEmbeddingModel {
     }
 }
 
-fn load_model(root: &Path) -> Result<LocalEmbeddingModel, String> {
-    let installed = installed_directory(root);
-    validate_installed_layout(root)?;
+fn load_model(
+    root: &Path,
+    definition: &'static SemanticModelDefinition,
+) -> Result<LocalEmbeddingModel, String> {
+    let installed = installed_directory(root, definition);
+    validate_installed_layout(root, definition)?;
     let config: serde_json::Value = serde_json::from_slice(
         &std::fs::read(installed.join("config.json")).map_err(|error| error.to_string())?,
     )
@@ -637,6 +750,8 @@ fn load_model(root: &Path) -> Result<LocalEmbeddingModel, String> {
         tokenizer,
         session,
         needs_token_type_ids,
+        dimensions: usize::from(definition.dimensions),
+        pooling: definition.pooling,
     })
 }
 
@@ -662,10 +777,11 @@ enum InstallError {
 
 async fn download_and_install(
     root: &Path,
+    model: &'static SemanticModelDefinition,
     state: &Arc<Mutex<RuntimeState>>,
     cancellation: &CancellationToken,
 ) -> Result<(), InstallError> {
-    let staging = staging_directory(root);
+    let staging = staging_directory(root, model);
     tokio::fs::create_dir_all(&staging)
         .await
         .map_err(|error| InstallError::Failure(error.to_string()))?;
@@ -675,7 +791,7 @@ async fn download_and_install(
         .map_err(|error| InstallError::Failure(error.to_string()))?;
 
     let mut completed_before = 0_u64;
-    for file in MODEL_FILES {
+    for file in model.files {
         if cancellation.is_cancelled() {
             return Err(InstallError::Cancelled);
         }
@@ -688,7 +804,7 @@ async fn download_and_install(
                 .map_err(|error| InstallError::Failure(error.to_string()))?;
             if actual_hash == file.sha256 {
                 completed_before += file.size;
-                update_progress(state, completed_before);
+                update_progress(state, completed_before, model_package_size(model));
                 continue;
             }
             tokio::fs::remove_file(&final_path)
@@ -714,7 +830,7 @@ async fn download_and_install(
                     .await
                     .map_err(|error| InstallError::Failure(error.to_string()))?;
                 completed_before += file.size;
-                update_progress(state, completed_before);
+                update_progress(state, completed_before, model_package_size(model));
                 continue;
             }
             tokio::fs::remove_file(&part_path)
@@ -722,7 +838,11 @@ async fn download_and_install(
                 .map_err(|error| InstallError::Failure(error.to_string()))?;
             existing = 0;
         }
-        update_progress(state, completed_before + existing);
+        update_progress(
+            state,
+            completed_before + existing,
+            model_package_size(model),
+        );
         let url = format!(
             "https://huggingface.co/{}/resolve/{}/{}",
             file.repository, file.revision, file.remote_path
@@ -764,7 +884,11 @@ async fn download_and_install(
                         output.write_all(&bytes).await
                             .map_err(|error| InstallError::Failure(error.to_string()))?;
                         received = received.saturating_add(bytes.len() as u64);
-                        update_progress(state, completed_before + received.min(file.size));
+                        update_progress(
+                            state,
+                            completed_before + received.min(file.size),
+                            model_package_size(model),
+                        );
                     }
                     Some(Err(error)) => return Err(InstallError::Failure(error.to_string())),
                     None => break,
@@ -798,22 +922,23 @@ async fn download_and_install(
             .await
             .map_err(|error| InstallError::Failure(error.to_string()))?;
         completed_before += file.size;
-        update_progress(state, completed_before);
+        update_progress(state, completed_before, model_package_size(model));
     }
 
     let manifest = InstalledManifest {
         schema_version: MANIFEST_SCHEMA_VERSION,
-        model_id: MODEL_ID.to_owned(),
-        version: MODEL_VERSION.to_owned(),
-        revision: MODEL_REVISION.to_owned(),
-        dimensions: MODEL_DIMENSIONS,
+        model_id: model.id.to_owned(),
+        version: model.version.to_owned(),
+        revision: model.revision.to_owned(),
+        dimensions: model.dimensions,
         runtime: "onnxruntime-cpu".to_owned(),
         variant: "int8-optimized".to_owned(),
         installed_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs(),
-        files: MODEL_FILES
+        files: model
+            .files
             .iter()
             .map(|file| InstalledFile {
                 path: file.local_name.to_owned(),
@@ -828,8 +953,8 @@ async fn download_and_install(
         .await
         .map_err(|error| InstallError::Failure(error.to_string()))?;
 
-    let installed = installed_directory(root);
-    let backup = root.join(format!("{}.backup", MODEL_VERSION));
+    let installed = installed_directory(root, model);
+    let backup = model_root(root, model).join(format!("{}.backup", model.version));
     if backup.exists() {
         std::fs::remove_dir_all(&backup)
             .map_err(|error| InstallError::Failure(error.to_string()))?;
@@ -850,7 +975,7 @@ async fn download_and_install(
     Ok(())
 }
 
-fn inspect_device(root: &Path) -> DeviceInspection {
+fn inspect_device(root: &Path, model: &SemanticModelDefinition) -> DeviceInspection {
     let mut system = System::new();
     system.refresh_memory();
     let architecture = std::env::consts::ARCH.to_owned();
@@ -859,7 +984,7 @@ fn inspect_device(root: &Path) -> DeviceInspection {
     let total_memory_bytes = system.total_memory();
     let available_memory_bytes = system.available_memory();
     let available_disk_bytes = fs2::available_space(root).unwrap_or(0);
-    let required_disk_bytes = package_size()
+    let required_disk_bytes = model_package_size(model)
         .saturating_mul(2)
         .saturating_add(INDEX_DISK_BUDGET);
     let mut warnings = Vec::new();
@@ -894,51 +1019,82 @@ fn inspect_device(root: &Path) -> DeviceInspection {
     }
 }
 
-fn update_progress(state: &Arc<Mutex<RuntimeState>>, downloaded_bytes: u64) {
+fn update_progress(state: &Arc<Mutex<RuntimeState>>, downloaded_bytes: u64, package_size: u64) {
     let mut state = state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.downloaded_bytes = downloaded_bytes.min(package_size());
+    state.downloaded_bytes = downloaded_bytes.min(package_size);
 }
 
-fn installed_directory(root: &Path) -> PathBuf {
-    root.join(MODEL_VERSION)
+fn model_storage_key(model_id: &str) -> String {
+    let digest = Sha256::digest(model_id.as_bytes());
+    format!("model-{}", &format!("{digest:x}")[..24])
 }
 
-fn staging_directory(root: &Path) -> PathBuf {
-    root.join(format!("{}.download", MODEL_VERSION))
+fn migrate_legacy_default_layout(root: &Path) -> std::io::Result<()> {
+    let model = &MULTILINGUAL_E5_SMALL;
+    let destination_root = model_root(root, model);
+    for (legacy, destination) in [
+        (root.join(model.version), installed_directory(root, model)),
+        (
+            root.join(format!("{}.download", model.version)),
+            staging_directory(root, model),
+        ),
+    ] {
+        if legacy.exists() && !destination.exists() {
+            std::fs::create_dir_all(&destination_root)?;
+            std::fs::rename(legacy, destination)?;
+        }
+    }
+    Ok(())
 }
 
-fn installed_manifest_path(root: &Path) -> PathBuf {
-    installed_directory(root).join("manifest.json")
+fn model_root(root: &Path, model: &SemanticModelDefinition) -> PathBuf {
+    root.join(model_storage_key(model.id))
 }
 
-fn validate_installed_layout(root: &Path) -> Result<(), String> {
+fn installed_directory(root: &Path, model: &SemanticModelDefinition) -> PathBuf {
+    model_root(root, model).join(model.version)
+}
+
+fn staging_directory(root: &Path, model: &SemanticModelDefinition) -> PathBuf {
+    model_root(root, model).join(format!("{}.download", model.version))
+}
+
+fn installed_manifest_path(root: &Path, model: &SemanticModelDefinition) -> PathBuf {
+    installed_directory(root, model).join("manifest.json")
+}
+
+fn validate_installed_layout(root: &Path, model: &SemanticModelDefinition) -> Result<(), String> {
     let manifest_data =
-        std::fs::read(installed_manifest_path(root)).map_err(|error| error.to_string())?;
+        std::fs::read(installed_manifest_path(root, model)).map_err(|error| error.to_string())?;
     let manifest: InstalledManifest =
         serde_json::from_slice(&manifest_data).map_err(|error| error.to_string())?;
     if manifest.schema_version != MANIFEST_SCHEMA_VERSION
-        || manifest.model_id != MODEL_ID
-        || manifest.version != MODEL_VERSION
-        || manifest.revision != MODEL_REVISION
-        || manifest.dimensions != MODEL_DIMENSIONS
+        || manifest.model_id != model.id
+        || manifest.version != model.version
+        || manifest.revision != model.revision
+        || manifest.dimensions != model.dimensions
     {
         return Err("共享模型 manifest 与当前版本不兼容。".to_owned());
     }
-    for file in MODEL_FILES {
-        if !valid_file_size(&installed_directory(root).join(file.local_name), file.size) {
+    for file in model.files {
+        if !valid_file_size(
+            &installed_directory(root, model).join(file.local_name),
+            file.size,
+        ) {
             return Err(format!("共享模型文件缺失或大小不正确：{}", file.local_name));
         }
     }
     Ok(())
 }
 
-fn resumable_bytes(root: &Path) -> u64 {
-    MODEL_FILES
+fn resumable_bytes(root: &Path, model: &SemanticModelDefinition) -> u64 {
+    model
+        .files
         .iter()
         .map(|file| {
-            let staging = staging_directory(root);
+            let staging = staging_directory(root, model);
             if valid_file_size(&staging.join(file.local_name), file.size) {
                 file.size
             } else {
@@ -982,10 +1138,11 @@ mod tests {
 
     #[test]
     fn package_metadata_is_consistent() {
-        assert_eq!(package_size(), 135_392_178);
-        assert!(MODEL_FILES.iter().all(|file| file.sha256.len() == 64));
+        assert_eq!(model_package_size(MODEL), 135_392_178);
+        assert!(MODEL.files.iter().all(|file| file.sha256.len() == 64));
         assert!(
-            MODEL_FILES
+            MODEL
+                .files
                 .iter()
                 .all(|file| !file.local_name.contains('/'))
         );
@@ -995,7 +1152,7 @@ mod tests {
     fn partial_download_is_discovered_after_restart() {
         let directory = tempdir().expect("temporary directory");
         let root = directory.path().join("models").join("semantic");
-        let staging = staging_directory(&root);
+        let staging = staging_directory(&root, MODEL);
         std::fs::create_dir_all(&staging).expect("staging directory");
         std::fs::write(staging.join("model.onnx.part"), [0_u8; 128]).expect("partial model");
 
@@ -1006,26 +1163,46 @@ mod tests {
     }
 
     #[test]
+    fn legacy_default_model_layout_is_atomically_reused_in_model_namespace() {
+        let directory = tempdir().expect("temporary directory");
+        let root = directory.path().join("models").join("semantic");
+        let legacy_staging = root.join(format!("{}.download", MODEL.version));
+        std::fs::create_dir_all(&legacy_staging).expect("legacy staging directory");
+        std::fs::write(legacy_staging.join("model.onnx.part"), [0_u8; 256])
+            .expect("legacy partial model");
+
+        let manager = SemanticModelManager::open(directory.path()).expect("model manager");
+        assert_eq!(manager.inspect().downloaded_bytes, 256);
+        assert!(!legacy_staging.exists());
+        assert!(
+            staging_directory(&root, MODEL)
+                .join("model.onnx.part")
+                .is_file()
+        );
+    }
+
+    #[test]
     fn compatible_install_is_reused_without_touching_siblings() {
         let directory = tempdir().expect("temporary directory");
         let root = directory.path().join("models").join("semantic");
-        let installed = installed_directory(&root);
+        let installed = installed_directory(&root, MODEL);
         std::fs::create_dir_all(&installed).expect("installed directory");
-        for file in MODEL_FILES {
+        for file in MODEL.files {
             File::create(installed.join(file.local_name))
                 .and_then(|output| output.set_len(file.size))
                 .expect("sparse model file");
         }
         let manifest = InstalledManifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
-            model_id: MODEL_ID.to_owned(),
-            version: MODEL_VERSION.to_owned(),
-            revision: MODEL_REVISION.to_owned(),
-            dimensions: MODEL_DIMENSIONS,
+            model_id: MODEL.id.to_owned(),
+            version: MODEL.version.to_owned(),
+            revision: MODEL.revision.to_owned(),
+            dimensions: MODEL.dimensions,
             runtime: "onnxruntime-cpu".to_owned(),
             variant: "int8-optimized".to_owned(),
             installed_at: 1,
-            files: MODEL_FILES
+            files: MODEL
+                .files
                 .iter()
                 .map(|file| InstalledFile {
                     path: file.local_name.to_owned(),
@@ -1035,7 +1212,7 @@ mod tests {
                 .collect(),
         };
         std::fs::write(
-            installed_manifest_path(&root),
+            installed_manifest_path(&root, MODEL),
             serde_json::to_vec(&manifest).expect("manifest JSON"),
         )
         .expect("manifest");

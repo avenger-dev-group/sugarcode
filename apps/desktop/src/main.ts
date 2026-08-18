@@ -429,6 +429,7 @@ const startApplication = async (): Promise<void> => {
       dialog,
       getMainWindow: () => mainWindow,
       getWorkspace: workspaceController.getLaunchContext,
+      shell,
     }),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,

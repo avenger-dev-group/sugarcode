@@ -13,6 +13,7 @@ base64.workspace = true
 fs2 = "0.4.3"
 futures-util = "0.3.31"
 ndarray = "0.17.2"
+notify = "8.2.0"
 napi = { version = "3.4.0", features = ["napi9", "tokio_rt"] }
 napi-derive = "3.3.0"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["api-24", "download-binaries", "ndarray", "std", "tls-rustls"] }
@@ -39,4 +40,5 @@ napi-build = "2.2.3"
 
 [dev-dependencies]
 git2.workspace = true
+lopdf = "0.38.0"
 tempfile.workspace = true

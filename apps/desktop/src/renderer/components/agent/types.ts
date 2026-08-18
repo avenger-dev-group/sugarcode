@@ -1,4 +1,7 @@
-import type { ConversationCommandExecutionResultOutcome } from '@/shared/conversation';
+import type {
+  ConversationCommandExecutionResultOutcome,
+  ConversationKnowledgeCitation,
+} from '@/shared/conversation';
 import type { ReactNode } from 'react';
 
 export type AgentMessagePresentationState =
@@ -9,6 +12,7 @@ export type AgentMessageViewModel = Readonly<{
   text: string;
   state: AgentMessagePresentationState;
   verifiedFilePaths: readonly string[];
+  knowledgeCitations?: readonly ConversationKnowledgeCitation[];
 }>;
 
 export type AgentMessageProps = Readonly<{
@@ -120,6 +124,7 @@ export type AgentMarkdownProps = Readonly<{
   source: string;
   isStreaming: boolean;
   verifiedFilePaths?: readonly string[];
+  knowledgeCitations?: readonly ConversationKnowledgeCitation[];
 }>;
 
 export type FileReferenceResolution =

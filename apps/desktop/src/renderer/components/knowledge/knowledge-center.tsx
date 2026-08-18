@@ -2,15 +2,21 @@ import {
   AlertCircle,
   ArrowLeft,
   BookOpenText,
+  Check,
   Database,
   Download,
   FileStack,
+  FilePlus2,
   FileText,
   FolderPlus,
   HardDrive,
   LibraryBig,
   LoaderCircle,
+  Pause,
+  Pencil,
+  Play,
   Plus,
+  RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
@@ -33,21 +39,32 @@ import { Textarea } from '@/renderer/components/ui/textarea';
 import {
   addKnowledgeFiles,
   addKnowledgeFolder,
+  cancelKnowledgeIndexJob,
   cancelSemanticModelDownload,
   createKnowledgeBase,
+  createKnowledgeTextDocument,
+  deleteKnowledgeSource,
   deleteKnowledgeBase,
   getKnowledge,
   getKnowledgeBaseDetail,
   installSemanticModel,
+  readKnowledgeTextDocument,
   removeSemanticModel,
+  selectKnowledgeRetrievalPlan,
+  setSemanticIndexPaused,
+  rescanKnowledgeSource,
   searchKnowledge,
+  updateKnowledgeBase,
+  updateKnowledgeTextDocument,
 } from '@/renderer/services/knowledge';
 import type {
   KnowledgeActionResult,
   KnowledgeBaseDetail,
   KnowledgeBaseSummary,
+  KnowledgeEditableDocument,
   KnowledgeInspection,
   KnowledgeSearchResult,
+  KnowledgeUpdateRequest,
 } from '@/shared/knowledge';
 
 type DetailTab = 'overview' | 'content' | 'search' | 'settings';
@@ -169,7 +186,7 @@ export const KnowledgeCenter = ({
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {retrievalSettingsOpen ? (
         <RetrievalSettingsPage
-          model={inspection.semanticModel}
+          inspection={inspection}
           leadingInset={!navigatorOpen}
           onBack={() => setRetrievalSettingsOpen(false)}
           onChanged={refresh}
@@ -177,6 +194,7 @@ export const KnowledgeCenter = ({
       ) : selected ? (
         <KnowledgeDetail
           base={selected}
+          workspaceId={workspaceId}
           leadingInset={!navigatorOpen}
           onBack={() => setSelectedId(undefined)}
           onChanged={refresh}
@@ -186,7 +204,7 @@ export const KnowledgeCenter = ({
           <MainSurfaceHeader
             icon={<LibraryBig className="size-5" aria-hidden="true" />}
             title="本地知识库"
-            description="把分散的本地资料整理成可检索上下文，仅在你明确 @ 时参与当前回合。"
+            description="把分散的本地资料整理成可检索上下文，在会话中明确 @ 后持续参与后续问答。"
             leadingInset={!navigatorOpen}
           >
             <div className="window-no-drag mt-5 flex flex-wrap items-start gap-2">
@@ -545,11 +563,13 @@ const ChoiceButton = ({
 
 const KnowledgeDetail = ({
   base,
+  workspaceId,
   leadingInset,
   onBack,
   onChanged,
 }: {
   base: KnowledgeBaseSummary;
+  workspaceId?: string;
   leadingInset: boolean;
   onBack: () => void;
   onChanged: () => Promise<void>;
@@ -562,6 +582,9 @@ const KnowledgeDetail = ({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [textEditor, setTextEditor] = useState<
+    Readonly<{ mode: 'create' }> | Readonly<{ mode: 'edit'; sourceId: string }>
+  >();
 
   const refreshDetail = useCallback(async (): Promise<void> => {
     try {
@@ -578,6 +601,11 @@ const KnowledgeDetail = ({
     void refreshDetail();
   }, [refreshDetail]);
 
+  useEffect(() => {
+    const interval = window.setInterval((): void => void refreshDetail(), 2_000);
+    return () => window.clearInterval(interval);
+  }, [refreshDetail]);
+
   const addSource = async (kind: 'files' | 'folder'): Promise<void> => {
     setBusy(true);
     try {
@@ -589,6 +617,23 @@ const KnowledgeDetail = ({
         setError(actionError(result, '添加资料失败。'));
       }
       await Promise.all([refreshDetail(), onChanged()]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runSourceAction = async (
+    action: () => Promise<KnowledgeActionResult>,
+    fallback: string,
+  ): Promise<void> => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const result = await action();
+      if (!result.accepted) setError(actionError(result, fallback));
+      await Promise.all([refreshDetail(), onChanged()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : fallback);
     } finally {
       setBusy(false);
     }
@@ -624,6 +669,13 @@ const KnowledgeDetail = ({
             </div>
           </div>
           <div className="window-no-drag flex items-center gap-2">
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => setTextEditor({ mode: 'create' })}
+            >
+              <FilePlus2 />新建文档
+            </Button>
             <Button
               variant="outline"
               disabled={busy}
@@ -673,13 +725,40 @@ const KnowledgeDetail = ({
           </p>
         ) : null}
         {!loading && tab === 'overview' ? (
-          <Overview base={base} detail={detail} />
+          <Overview
+            base={base}
+            detail={detail}
+            busy={busy}
+            onDeleteSource={(id) =>
+              runSourceAction(() => deleteKnowledgeSource(id), '删除资料来源失败。')
+            }
+            onRescanSource={(id, rebuild) =>
+              runSourceAction(
+                () => rescanKnowledgeSource(id, rebuild),
+                rebuild ? '重建资料来源失败。' : '重新扫描失败。',
+              )
+            }
+          />
         ) : null}
-        {!loading && tab === 'content' ? <ContentList detail={detail} /> : null}
+        {!loading && tab === 'content' ? (
+          <ContentList
+            detail={detail}
+            onEdit={(sourceId) => setTextEditor({ mode: 'edit', sourceId })}
+          />
+        ) : null}
         {!loading && tab === 'search' ? <SearchTest base={base} /> : null}
         {!loading && tab === 'settings' ? (
           <SettingsPanel
             base={base}
+            detail={detail}
+            workspaceId={workspaceId}
+            busy={busy}
+            onSaved={async (request) => {
+              await runSourceAction(
+                () => updateKnowledgeBase(base.id, request),
+                '保存知识库设置失败。',
+              );
+            }}
             onDelete={async () => {
               if (
                 !window.confirm(
@@ -699,6 +778,18 @@ const KnowledgeDetail = ({
           />
         ) : null}
       </main>
+      <KnowledgeTextEditorDialog
+        key={textEditor?.mode === 'edit' ? textEditor.sourceId : textEditor?.mode}
+        open={textEditor !== undefined}
+        knowledgeBaseId={base.id}
+        sourceId={textEditor?.mode === 'edit' ? textEditor.sourceId : undefined}
+        onOpenChange={(open) => {
+          if (!open) setTextEditor(undefined);
+        }}
+        onSaved={async () => {
+          await Promise.all([refreshDetail(), onChanged()]);
+        }}
+      />
     </div>
   );
 };
@@ -706,9 +797,15 @@ const KnowledgeDetail = ({
 const Overview = ({
   base,
   detail,
+  busy,
+  onDeleteSource,
+  onRescanSource,
 }: {
   base: KnowledgeBaseSummary;
   detail: KnowledgeBaseDetail;
+  busy: boolean;
+  onDeleteSource: (id: string) => Promise<void>;
+  onRescanSource: (id: string, rebuild: boolean) => Promise<void>;
 }) => (
   <div className="mx-auto max-w-4xl space-y-5">
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -757,14 +854,149 @@ const Overview = ({
                   : '已复制到 SugarCode'}{' '}
                 · {source.path}
               </p>
+              {source.lastError ? (
+                <p className="mt-0.5 truncate text-[10px] text-destructive">
+                  {source.lastError}
+                </p>
+              ) : null}
             </div>
-            <span className="text-[11px] text-tertiary">
-              {source.documentCount} 个文档
-            </span>
+            <div className="flex shrink-0 items-center gap-1">
+              {source.status === 'scanning' ? (
+                <LoaderCircle className="mr-1 size-3.5 animate-spin text-brand" />
+              ) : source.status === 'disconnected' || source.status === 'error' ? (
+                <AlertCircle className="mr-1 size-3.5 text-destructive" />
+              ) : null}
+              <span className="mr-2 text-[11px] text-tertiary">
+                {source.documentCount} 个文档
+              </span>
+              {source.kind === 'linkedFolder' ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    title={source.status === 'disconnected' ? '恢复并扫描目录' : '重新扫描'}
+                    onClick={() => void onRescanSource(source.id, false)}
+                  >
+                    <RefreshCw />
+                    {source.status === 'disconnected' ? '恢复' : '扫描'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    title="重新解析此来源的全部文件"
+                    onClick={() => void onRescanSource(source.id, true)}
+                  >
+                    重建
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  title="重新解析托管文件"
+                  onClick={() => void onRescanSource(source.id, true)}
+                >
+                  重建
+                </Button>
+              )}
+              <Button
+                size="icon"
+                variant="ghost"
+                disabled={busy}
+                aria-label={`删除资料来源 ${source.displayName}`}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      source.kind === 'linkedFolder'
+                        ? `移除“${source.displayName}”的索引？原目录不会被删除。`
+                        : `删除托管文件“${source.displayName}”？`,
+                    )
+                  ) {
+                    void onDeleteSource(source.id);
+                  }
+                }}
+              >
+                <Trash2 />
+              </Button>
+            </div>
           </div>
         ))
       )}
     </section>
+    {(detail.indexJobs?.length ?? 0) > 0 ? (
+      <section className="rounded-xl border">
+        <div className="border-b px-4 py-3">
+          <h2 className="text-sm font-semibold">后台索引任务</h2>
+        </div>
+        {detail.indexJobs?.slice(0, 8).map((job) => {
+          const active = job.status === 'queued' || job.status === 'running';
+          const progress =
+            job.discoveredFiles > 0
+              ? Math.min(100, (job.processedFiles / job.discoveredFiles) * 100)
+              : 0;
+          return (
+            <div key={job.id} className="border-b px-4 py-3 last:border-b-0">
+              <div className="flex items-center gap-3 text-xs">
+                {active ? (
+                  <LoaderCircle className="size-3.5 animate-spin text-brand" />
+                ) : job.status === 'failed' ? (
+                  <AlertCircle className="size-3.5 text-destructive" />
+                ) : (
+                  <Database className="size-3.5 text-tertiary" />
+                )}
+                <span className="font-medium">
+                  {job.kind === 'initial'
+                    ? '首次索引'
+                    : job.kind === 'incremental'
+                      ? '增量更新'
+                      : job.kind === 'rebuild'
+                        ? '单来源重建'
+                        : '重新扫描'}
+                </span>
+                <span className="text-tertiary">
+                  {job.processedFiles}/{job.discoveredFiles} · 新增或更新 {job.indexedFiles} · 删除{' '}
+                  {job.deletedFiles} · 错误 {job.errorCount}
+                </span>
+                <span className="ml-auto text-[10px] text-tertiary">{job.status}</span>
+                {active ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void cancelKnowledgeIndexJob(job.id)}
+                  >
+                    取消
+                  </Button>
+                ) : (job.status === 'failed' || job.status === 'paused') && job.sourceId ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busy}
+                    onClick={() => {
+                      if (job.sourceId) {
+                        void onRescanSource(job.sourceId, job.kind === 'rebuild');
+                      }
+                    }}
+                  >
+                    重试
+                  </Button>
+                ) : null}
+              </div>
+              {active && job.discoveredFiles > 0 ? (
+                <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface">
+                  <div className="h-full bg-brand" style={{ width: `${progress}%` }} />
+                </div>
+              ) : null}
+              {job.lastError ? (
+                <p className="mt-1 text-[10px] text-destructive">{job.lastError}</p>
+              ) : null}
+            </div>
+          );
+        })}
+      </section>
+    ) : null}
     <p className="text-xs text-tertiary">
       最后更新于 {formatDate(base.updatedAt)}。全文索引不加载机器学习模型。
     </p>
@@ -793,13 +1025,20 @@ const Metric = ({
   </div>
 );
 
-const ContentList = ({ detail }: { detail: KnowledgeBaseDetail }) => (
+const ContentList = ({
+  detail,
+  onEdit,
+}: {
+  detail: KnowledgeBaseDetail;
+  onEdit: (sourceId: string) => void;
+}) => (
   <div className="mx-auto max-w-5xl overflow-hidden rounded-xl border">
-    <div className="grid grid-cols-[minmax(0,1fr)_7rem_6rem_6rem] gap-3 border-b bg-surface/50 px-4 py-2 text-[10px] font-medium uppercase tracking-wide text-tertiary">
+    <div className="grid grid-cols-[minmax(0,1fr)_7rem_5rem_5rem_4rem] gap-3 border-b bg-surface/50 px-4 py-2 text-[10px] font-medium uppercase tracking-wide text-tertiary">
       <span>文件</span>
       <span>类型</span>
       <span>片段</span>
       <span>状态</span>
+      <span className="text-right">操作</span>
     </div>
     {detail.documents.length === 0 ? (
       <p className="px-4 py-10 text-center text-xs text-tertiary">
@@ -809,7 +1048,7 @@ const ContentList = ({ detail }: { detail: KnowledgeBaseDetail }) => (
       detail.documents.map((document) => (
         <div
           key={document.id}
-          className="grid grid-cols-[minmax(0,1fr)_7rem_6rem_6rem] items-center gap-3 border-b px-4 py-3 text-xs last:border-b-0"
+          className="grid grid-cols-[minmax(0,1fr)_7rem_5rem_5rem_4rem] items-center gap-3 border-b px-4 py-3 text-xs last:border-b-0"
         >
           <div className="min-w-0">
             <p className="truncate font-medium">{document.relativePath}</p>
@@ -834,11 +1073,260 @@ const ContentList = ({ detail }: { detail: KnowledgeBaseDetail }) => (
           >
             {document.parseStatus === 'error' ? '有错误' : '已索引'}
           </span>
+          <div className="flex justify-end">
+            {detail.sources.some(
+              (source) =>
+                source.id === document.sourceId &&
+                source.kind === 'managedFile',
+            ) && /\.(?:txt|md)$/iu.test(document.fileName) ? (
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label={`编辑 ${document.fileName}`}
+                title="编辑托管文档"
+                onClick={() => onEdit(document.sourceId)}
+              >
+                <Pencil />
+              </Button>
+            ) : (
+              <span className="text-tertiary">—</span>
+            )}
+          </div>
         </div>
       ))
     )}
   </div>
 );
+
+const KnowledgeTextEditorDialog = ({
+  open,
+  knowledgeBaseId,
+  sourceId,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  knowledgeBaseId: string;
+  sourceId?: string;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => Promise<void>;
+}) => {
+  const [document, setDocument] = useState<KnowledgeEditableDocument>();
+  const [fileName, setFileName] = useState('新建文档.md');
+  const [content, setContent] = useState('');
+  const [originalContent, setOriginalContent] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!open) return;
+    setError(undefined);
+    if (!sourceId) {
+      setDocument(undefined);
+      setFileName('新建文档.md');
+      setContent('');
+      setOriginalContent('');
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    void readKnowledgeTextDocument(sourceId)
+      .then((next) => {
+        if (cancelled) return;
+        setDocument(next);
+        setFileName(next.fileName);
+        setContent(next.content);
+        setOriginalContent(next.content);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) {
+          setError(cause instanceof Error ? cause.message : '无法读取托管文档。');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, sourceId]);
+
+  const bytes = new TextEncoder().encode(content).length;
+  const dirty = sourceId
+    ? content !== originalContent
+    : content.length > 0 || fileName !== '新建文档.md';
+  const validFileName =
+    fileName.trim() === fileName &&
+    fileName.length > 0 &&
+    fileName.length <= 255 &&
+    !fileName.includes('/') &&
+    !fileName.includes('\\') &&
+    ![...fileName].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    }) &&
+    /\.(?:txt|md)$/iu.test(fileName);
+  const canSave =
+    !loading &&
+    !saving &&
+    validFileName &&
+    content.trim().length > 0 &&
+    bytes <= 2 * 1_024 * 1_024 &&
+    (!sourceId || dirty) &&
+    (!sourceId || document !== undefined);
+
+  const requestClose = (): void => {
+    if (saving) return;
+    if (dirty && !window.confirm('放弃尚未保存的文档修改？')) return;
+    onOpenChange(false);
+  };
+
+  const save = async (): Promise<void> => {
+    if (!canSave) return;
+    setSaving(true);
+    setError(undefined);
+    try {
+      const result = sourceId && document
+        ? await updateKnowledgeTextDocument(sourceId, {
+            expectedSha256: document.sha256,
+            content,
+          })
+        : await createKnowledgeTextDocument(knowledgeBaseId, { fileName, content });
+      if (!result.accepted) {
+        setError(actionError(result, sourceId ? '保存文档失败。' : '创建文档失败。'));
+        return;
+      }
+      setOriginalContent(content);
+      await onSaved();
+      onOpenChange(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : '文档保存失败。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const setFormat = (format: 'md' | 'txt'): void => {
+    setFileName((current) =>
+      /\.(?:txt|md)$/iu.test(current)
+        ? current.replace(/\.(?:txt|md)$/iu, `.${format}`)
+        : `${current}.${format}`,
+    );
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) requestClose();
+      }}
+    >
+      <DialogContent className="flex max-h-[88vh] max-w-4xl flex-col overflow-hidden p-0">
+        <div className="border-b px-5 py-4">
+          <DialogTitle className="text-base font-semibold">
+            {sourceId ? '编辑知识文档' : '新建知识文档'}
+          </DialogTitle>
+          <DialogDescription className="mt-1 text-xs leading-5 text-secondary">
+            保存后立即更新本地全文索引；语义索引会在后台继续处理。
+          </DialogDescription>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {sourceId ? (
+            <div className="mb-3 flex items-center gap-2 rounded-lg border bg-surface/40 px-3 py-2 text-xs">
+              <FileText className="size-4 text-brand" />
+              <span className="min-w-0 flex-1 truncate font-medium">{fileName}</span>
+              <span className="text-tertiary">托管文档</span>
+            </div>
+          ) : (
+            <div className="mb-3 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <label className="block text-xs font-medium">
+                文件名
+                <Input
+                  className="mt-1.5"
+                  value={fileName}
+                  maxLength={255}
+                  onChange={(event) => setFileName(event.target.value)}
+                  placeholder="例如：公司信息.md"
+                />
+              </label>
+              <fieldset>
+                <legend className="text-xs font-medium">格式</legend>
+                <div className="mt-1.5 flex rounded-lg border p-1">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={fileName.toLowerCase().endsWith('.md') ? 'secondary' : 'ghost'}
+                    onClick={() => setFormat('md')}
+                  >
+                    Markdown
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={fileName.toLowerCase().endsWith('.txt') ? 'secondary' : 'ghost'}
+                    onClick={() => setFormat('txt')}
+                  >
+                    纯文本
+                  </Button>
+                </div>
+              </fieldset>
+            </div>
+          )}
+          {loading ? (
+            <div className="grid min-h-80 place-items-center text-xs text-tertiary">
+              <span className="flex items-center gap-2">
+                <LoaderCircle className="size-4 animate-spin" />读取文档内容
+              </span>
+            </div>
+          ) : (
+            <label className="block text-xs font-medium">
+              内容
+              <Textarea
+                className="mt-1.5 min-h-[24rem] resize-y whitespace-pre-wrap font-mono text-[13px] leading-6"
+                value={content}
+                autoFocus={!sourceId}
+                spellCheck={false}
+                onChange={(event) => setContent(event.target.value)}
+                placeholder={
+                  fileName.toLowerCase().endsWith('.md')
+                    ? '# 标题\n\n输入需要检索的知识内容…'
+                    : '输入需要检索的知识内容…'
+                }
+              />
+            </label>
+          )}
+          <div className="mt-2 flex items-center justify-between text-[10px] text-tertiary">
+            <span>{content.split('\n').length} 行</span>
+            <span className={bytes > 2 * 1_024 * 1_024 ? 'text-destructive' : ''}>
+              {formatBytes(bytes)} / 2 MB
+            </span>
+          </div>
+          {!validFileName && !sourceId ? (
+            <p className="mt-2 text-xs text-destructive">
+              文件名只能是当前目录中的 `.txt` 或 `.md` 文件。
+            </p>
+          ) : null}
+          {error ? (
+            <p className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+          <Button variant="ghost" disabled={saving} onClick={requestClose}>
+            取消
+          </Button>
+          <Button disabled={!canSave} onClick={() => void save()}>
+            {saving ? <LoaderCircle className="animate-spin" /> : <Check />}
+            {sourceId ? '保存并更新索引' : '创建并索引'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+};
 
 const SearchTest = ({ base }: { base: KnowledgeBaseSummary }) => {
   const [query, setQuery] = useState('');
@@ -901,6 +1389,14 @@ const SearchTest = ({ base }: { base: KnowledgeBaseSummary }) => {
                   {hit.heading ? (
                     <span className="truncate text-tertiary">/ {hit.heading}</span>
                   ) : null}
+                  {hit.pageNumber ? (
+                    <span className="shrink-0 text-tertiary">第 {hit.pageNumber} 页</span>
+                  ) : hit.startLine ? (
+                    <span className="shrink-0 text-tertiary">
+                      行 {hit.startLine}
+                      {hit.endLine && hit.endLine !== hit.startLine ? `–${hit.endLine}` : ''}
+                    </span>
+                  ) : null}
                 </div>
                 <p className="mt-3 whitespace-pre-wrap text-xs leading-5 text-secondary">
                   {hit.content}
@@ -924,17 +1420,22 @@ const modelStateLabel = (
 };
 
 const RetrievalSettingsPage = ({
-  model,
+  inspection,
   leadingInset,
   onBack,
   onChanged,
 }: {
-  model: KnowledgeInspection['semanticModel'];
+  inspection: KnowledgeInspection;
   leadingInset: boolean;
   onBack: () => void;
   onChanged: () => Promise<void>;
 }) => {
-  const [operation, setOperation] = useState<'install' | 'cancel' | 'remove'>();
+  const model = inspection.semanticModel;
+  const plans = inspection.retrievalPlans ?? [];
+  const selectedPlanId = inspection.retrievalSettings?.selectedPlanId ?? model.modelId;
+  const [operation, setOperation] = useState<
+    'install' | 'cancel' | 'remove' | 'select' | 'pause'
+  >();
   const [actionMessage, setActionMessage] = useState<string>();
   const progress =
     model.totalBytes > 0
@@ -945,6 +1446,7 @@ const RetrievalSettingsPage = ({
     const semanticWorkPending =
       model.state === 'ready' &&
       (model.semanticIndex.state === 'indexing' ||
+        model.semanticIndex.state === 'paused' ||
         model.semanticIndex.indexedChunks < model.semanticIndex.totalChunks);
     if (
       model.state !== 'downloading' &&
@@ -965,7 +1467,7 @@ const RetrievalSettingsPage = ({
   }, [model.semanticIndex, model.state, onChanged, operation]);
 
   const run = async (
-    kind: 'install' | 'cancel' | 'remove',
+    kind: 'install' | 'cancel' | 'remove' | 'select' | 'pause',
     action: () => Promise<KnowledgeActionResult>,
   ): Promise<void> => {
     setOperation(kind);
@@ -1015,6 +1517,70 @@ const RetrievalSettingsPage = ({
 
       <main className="min-h-0 flex-1 overflow-y-auto px-6 py-6 sm:px-8">
         <div className="mx-auto max-w-3xl space-y-5">
+          <section className="rounded-xl border p-5">
+            <div className="flex items-start gap-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
+                <Search className="size-4" aria-hidden="true" />
+              </span>
+              <div>
+                <h2 className="text-sm font-semibold">全局检索方案</h2>
+                <p className="mt-1 text-xs leading-5 text-secondary">
+                  全局一次只选择一个语义模型；知识库内部只决定是否使用当前共享模型。
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {plans.map((plan) => {
+                const selected = plan.id === selectedPlanId;
+                const pending = inspection.retrievalSettings?.pendingModelId === plan.id;
+                return (
+                  <div
+                    key={plan.id}
+                    className={`rounded-xl border p-4 transition-colors ${
+                      selected ? 'border-brand/50 bg-brand/5' : 'bg-background'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">{plan.name}</p>
+                        <p className="mt-1 text-[11px] leading-5 text-secondary">
+                          {plan.description}
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-surface px-2 py-1 text-[10px] text-tertiary">
+                        {plan.downloadBytes === 0 ? '零下载' : formatBytes(plan.downloadBytes)}
+                      </span>
+                    </div>
+                    {plan.model ? (
+                      <p className="mt-3 text-[10px] text-tertiary">
+                        {plan.model.dimensions} 维 · INT8 · 最低 SugarCode {plan.model.minimumAppVersion}
+                      </p>
+                    ) : null}
+                    <Button
+                      className="mt-3 w-full"
+                      size="sm"
+                      variant={selected ? 'outline' : 'default'}
+                      disabled={operation !== undefined || selected}
+                      onClick={() =>
+                        void run('select', () => selectKnowledgeRetrievalPlan(plan.id))
+                      }
+                    >
+                      {operation === 'select' && !selected ? (
+                        <LoaderCircle className="animate-spin" aria-hidden="true" />
+                      ) : selected ? (
+                        <Check aria-hidden="true" />
+                      ) : (
+                        <Sparkles aria-hidden="true" />
+                      )}
+                      {pending ? '切换准备中' : selected ? '当前选择' : '选择此方案'}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {selectedPlanId !== 'fullText' ? (
           <section className="rounded-xl border p-5">
           <div className="flex items-start gap-3">
             <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand">
@@ -1110,6 +1676,26 @@ const RetrievalSettingsPage = ({
                     重试语义索引
                   </Button>
                 ) : null}
+                {model.semanticIndex.totalChunks > 0 ? (
+                  <Button
+                    variant="outline"
+                    disabled={operation !== undefined}
+                    onClick={() =>
+                      void run('pause', () =>
+                        setSemanticIndexPaused(
+                          !(inspection.retrievalSettings?.indexPaused ?? false),
+                        ),
+                      )
+                    }
+                  >
+                    {inspection.retrievalSettings?.indexPaused ? (
+                      <Play aria-hidden="true" />
+                    ) : (
+                      <Pause aria-hidden="true" />
+                    )}
+                    {inspection.retrievalSettings?.indexPaused ? '恢复语义索引' : '暂停语义索引'}
+                  </Button>
+                ) : null}
                 <Button
                   variant="outline"
                   disabled={operation !== undefined}
@@ -1150,6 +1736,7 @@ const RetrievalSettingsPage = ({
             )}
           </div>
           </section>
+          ) : null}
 
           <section className="rounded-xl border p-4">
           <h2 className="text-sm font-semibold">检索方式</h2>
@@ -1175,6 +1762,8 @@ const RetrievalSettingsPage = ({
               <span className="rounded-full bg-surface px-2 py-1 text-[10px] text-tertiary">
                 {model.semanticIndex.state === 'indexing'
                   ? `正在索引 ${model.semanticIndex.indexedChunks}/${model.semanticIndex.totalChunks}`
+                  : model.semanticIndex.state === 'paused'
+                    ? '索引已暂停，全文检索继续可用'
                   : model.semanticIndex.state === 'ready'
                     ? '混合检索可用'
                     : model.state === 'ready'
@@ -1197,31 +1786,151 @@ const RetrievalSettingsPage = ({
 
 const SettingsPanel = ({
   base,
+  detail,
+  workspaceId,
+  busy,
+  onSaved,
   onDelete,
 }: {
   base: KnowledgeBaseSummary;
+  detail: KnowledgeBaseDetail;
+  workspaceId?: string;
+  busy: boolean;
+  onSaved: (request: KnowledgeUpdateRequest) => Promise<void>;
   onDelete: () => Promise<void>;
-}) => (
-  <div className="mx-auto max-w-3xl space-y-5">
-    <section className="rounded-xl border p-5">
-      <h2 className="text-sm font-semibold">范围与忽略规则</h2>
-      <p className="mt-2 text-xs leading-5 text-secondary">
-        当前为{base.scope === 'global' ? '全局可见' : '指定项目可见'}。目录索引默认忽略
-        .git、node_modules、构建目录、缓存、临时文件、.env* 和符号链接。
-      </p>
-    </section>
-    <section className="rounded-xl border border-destructive/20 p-5">
-      <h2 className="text-sm font-semibold">删除知识库</h2>
-      <p className="mt-2 text-xs leading-5 text-secondary">
-        删除索引和 SugarCode 托管副本；链接目录中的原文件不会被删除。
-      </p>
-      <Button
-        variant="destructive"
-        className="mt-4"
-        onClick={() => void onDelete()}
-      >
-        <Trash2 />删除知识库
-      </Button>
-    </section>
-  </div>
-);
+}) => {
+  const [name, setName] = useState(base.name);
+  const [description, setDescription] = useState(base.description);
+  const [projectScoped, setProjectScoped] = useState(base.scope === 'project');
+  const [ignoreRules, setIgnoreRules] = useState((detail.ignoreRules ?? []).join('\n'));
+  const [semanticEnabled, setSemanticEnabled] = useState(
+    detail.semanticEnabled ?? base.semanticEnabled ?? false,
+  );
+
+  const save = (): void => {
+    const workspaceIds = projectScoped
+      ? base.workspaceIds.length > 0
+        ? base.workspaceIds
+        : workspaceId
+          ? [workspaceId]
+          : []
+      : [];
+    void onSaved({
+      name: name.trim(),
+      description: description.trim(),
+      workspaceIds,
+      ignoreRules: ignoreRules
+        .split(/\r?\n/u)
+        .map((rule) => rule.trim())
+        .filter(Boolean),
+      semanticEnabled,
+    });
+  };
+
+  return (
+    <div className="mx-auto max-w-3xl space-y-5">
+      <section className="rounded-xl border p-5">
+        <h2 className="text-sm font-semibold">基本信息与范围</h2>
+        <div className="mt-4 grid gap-4">
+          <label className="text-xs font-medium">
+            名称
+            <Input
+              className="mt-1.5"
+              value={name}
+              maxLength={80}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </label>
+          <label className="text-xs font-medium">
+            说明
+            <div className="mt-1.5 rounded-lg border bg-background">
+              <Textarea
+                value={description}
+                maxLength={1_024}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </div>
+          </label>
+          <fieldset>
+            <legend className="text-xs font-medium">可见范围</legend>
+            <div className="mt-1.5 grid grid-cols-2 gap-2">
+              <ChoiceButton
+                active={!projectScoped}
+                title="全局可见"
+                description="所有项目和普通聊天均可 @"
+                onClick={() => setProjectScoped(false)}
+              />
+              <ChoiceButton
+                active={projectScoped}
+                disabled={!workspaceId && base.workspaceIds.length === 0}
+                title="项目范围"
+                description={
+                  base.workspaceIds.length > 0
+                    ? `保留现有 ${base.workspaceIds.length} 个项目范围`
+                    : workspaceId
+                      ? '仅限当前项目'
+                      : '请先打开一个项目'
+                }
+                onClick={() => setProjectScoped(true)}
+              />
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend className="text-xs font-medium">当前知识库检索方式</legend>
+            <div className="mt-1.5 grid grid-cols-2 gap-2">
+              <ChoiceButton
+                active={!semanticEnabled}
+                title="仅全文检索"
+                description="零模型依赖，内容变化后立即可检索"
+                onClick={() => setSemanticEnabled(false)}
+              />
+              <ChoiceButton
+                active={semanticEnabled}
+                title="使用共享语义模型"
+                description="只使用外层检索设置当前选择的模型"
+                onClick={() => setSemanticEnabled(true)}
+              />
+            </div>
+          </fieldset>
+        </div>
+      </section>
+      <section className="rounded-xl border p-5">
+        <h2 className="text-sm font-semibold">自定义忽略规则</h2>
+        <p className="mt-2 text-xs leading-5 text-secondary">
+          每行一条 glob 规则，例如 <code>drafts/**</code> 或 <code>*.secret.md</code>。
+          规则在下次自动更新或手动扫描时生效；以 ! 开头可重新包含。
+        </p>
+        <div className="mt-3 rounded-lg border bg-background">
+          <Textarea
+            className="min-h-32 font-mono text-xs"
+            value={ignoreRules}
+            maxLength={32_768}
+            placeholder={'drafts/**\n*.secret.md'}
+            onChange={(event) => setIgnoreRules(event.target.value)}
+          />
+        </div>
+        <p className="mt-2 text-[10px] leading-4 text-tertiary">
+          始终忽略 .git、node_modules、构建目录、缓存、临时文件、.env* 与符号链接。
+        </p>
+        <Button className="mt-4" disabled={busy || !name.trim()} onClick={save}>
+          {busy ? <LoaderCircle className="animate-spin" /> : <Settings2 />}
+          保存设置
+        </Button>
+      </section>
+      <section className="rounded-xl border border-destructive/20 p-5">
+        <h2 className="text-sm font-semibold">删除知识库</h2>
+        <p className="mt-2 text-xs leading-5 text-secondary">
+          删除索引和不再被其他知识库引用的 SugarCode 托管副本；链接目录中的原文件不会被删除。
+        </p>
+        <Button
+          variant="destructive"
+          className="mt-4"
+          disabled={busy}
+          onClick={() => void onDelete()}
+        >
+          <Trash2 />删除知识库
+        </Button>
+      </section>
+    </div>
+  );
+};
