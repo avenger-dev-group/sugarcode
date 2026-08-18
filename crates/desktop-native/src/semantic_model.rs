@@ -728,9 +728,7 @@ fn load_model(
             ..Default::default()
         }))
         .map_err(|error| format!("配置本地分词器失败：{error}"))?;
-    let builder_error = |error: ort::Error<ort::session::builder::SessionBuilder>| {
-        format!("加载本地语义模型失败：{error}")
-    };
+    let builder_error = |error: ort::Error| format!("加载本地语义模型失败：{error}");
     let session = Session::builder()
         .map_err(|error| error.to_string())?
         .with_optimization_level(GraphOptimizationLevel::Disable)
@@ -744,9 +742,9 @@ fn load_model(
         .commit_from_file(installed.join("model.onnx"))
         .map_err(|error| format!("加载本地语义模型失败：{error}"))?;
     let needs_token_type_ids = session
-        .inputs()
+        .inputs
         .iter()
-        .any(|input| input.name() == "token_type_ids");
+        .any(|input| input.name == "token_type_ids");
     Ok(LocalEmbeddingModel {
         tokenizer,
         session,

@@ -12,11 +12,13 @@ crate-type = ["cdylib", "rlib"]
 base64.workspace = true
 fs2 = "0.4.3"
 futures-util = "0.3.31"
-ndarray = "0.17.2"
+ndarray = "0.16.1"
 notify = "8.2.0"
 napi = { version = "3.4.0", features = ["napi9", "tokio_rt"] }
 napi-derive = "3.3.0"
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["api-24", "download-binaries", "ndarray", "std", "tls-rustls"] }
+# rc.11 and newer do not publish x86_64-apple-darwin binaries, which are
+# required by the desktop release matrix.
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "ndarray", "std"] }
 reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls", "stream"] }
 rusqlite.workspace = true
 jieba-rs = "0.8.1"
