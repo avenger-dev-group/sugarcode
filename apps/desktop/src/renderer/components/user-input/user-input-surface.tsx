@@ -123,7 +123,7 @@ const UserInputOption = ({
       <span
         className={`grid size-7 shrink-0 place-items-center rounded-full border text-xs tabular-nums ${
           selected
-            ? 'border-primary bg-primary text-primary-foreground'
+            ? 'border-brand bg-brand text-brand-foreground'
             : 'border-border bg-surface text-secondary'
         }`}
         aria-hidden="true"

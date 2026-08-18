@@ -49,6 +49,8 @@ import {
   type ConversationMessageStatus,
   type ConversationCommandApprovalActivity,
   type ConversationMcpActivity,
+  type ConversationKnowledgeActivity,
+  type ConversationKnowledgeCitation,
   type ConversationPhase,
   type ConversationSkillActivity,
   type ConversationStateSnapshot,
@@ -59,7 +61,6 @@ import {
   type ConversationWorkspaceReadActivity,
   type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
-import { parseComposerSubmission } from '@/shared/composer';
 
 import type {
   AgentMessagePresentationState,
@@ -83,6 +84,7 @@ import type {
   ThreadNavigatorViewModel,
   ThreadViewModel,
   DraftAttachmentViewModel,
+  KnowledgeActivityPresentationState,
   SkillActivityPresentationState,
   TranscriptFollow,
   TranscriptMessageViewModel,
@@ -116,6 +118,11 @@ import {
   toActiveTurnProgress,
 } from './turn-progress';
 import { collectTurnVerifiedFilePaths } from './verified-file-paths';
+import {
+  collectTurnKnowledgeCitations,
+  mergeConversationKnowledgeCitations,
+} from './knowledge-citations';
+import { knowledgeMessagePresentation } from './knowledge-message-references';
 
 export const useActivityDisclosureStore = (
   groupId: string,
@@ -270,6 +277,30 @@ const toWorkspaceSearchPresentationState = (
   }
 };
 
+const toKnowledgeActivityPresentationState = (
+  phase: ConversationPhase,
+  turnStatus: ConversationTurnStatus,
+  activity: ConversationKnowledgeActivity,
+): KnowledgeActivityPresentationState => {
+  if (activity.result?.status === 'completed') {
+    return activity.result.outcome.type === 'success' ? 'succeeded' : 'failed';
+  }
+  if (turnStatus === 'interrupted') return 'interrupted';
+  if (turnStatus !== 'inProgress') {
+    throw new Error('A terminal knowledge activity has no durable result.');
+  }
+  switch (phase) {
+    case 'inProgress':
+      return 'running';
+    case 'stopping':
+      return 'stopping';
+    case 'unavailable':
+      return 'uncertain';
+    default:
+      throw new Error('Knowledge activity did not match its Turn phase.');
+  }
+};
+
 const toSkillPresentationState = (
   phase: ConversationPhase,
   turnStatus: ConversationTurnStatus,
@@ -395,6 +426,7 @@ export const toThreadViewModel = (
   const previousTurns = new Map(
     previous?.turns.map((turn) => [turn.id, turn]) ?? [],
   );
+  let conversationKnowledgeCitations: readonly ConversationKnowledgeCitation[] = [];
   const turns = snapshot.turns.map((turn): TurnViewModel => {
     const previousTurn = previousTurns.get(turn.id);
     const nextVerifiedFilePaths = collectTurnVerifiedFilePaths(turn);
@@ -415,18 +447,29 @@ export const toThreadViewModel = (
           wireApi: turn.model.wireApi,
         }
       : undefined;
+    conversationKnowledgeCitations = mergeConversationKnowledgeCitations(
+      conversationKnowledgeCitations,
+      collectTurnKnowledgeCitations(turn.activities ?? []),
+    );
+    const nextKnowledgeCitations = conversationKnowledgeCitations;
+    const knowledgeCitations =
+      JSON.stringify(previousTurn?.messages.find((entry) => entry.role === 'agent')?.message.knowledgeCitations) ===
+      JSON.stringify(nextKnowledgeCitations)
+        ? previousTurn?.messages.find((entry) => entry.role === 'agent')?.message.knowledgeCitations ?? nextKnowledgeCitations
+        : nextKnowledgeCitations;
     const messages = turn.messages.map(
       (message): TranscriptMessageViewModel => {
         const previousMessage = previousTurn?.messages.find(
           (entry) => entry.message.id === message.id,
         );
         if (message.role === 'user') {
-          const submission = parseComposerSubmission(message.text);
+          const submission = knowledgeMessagePresentation(message);
+          const references = submission.references;
           if (
             previousMessage?.role === 'user' &&
             previousMessage.message.text === submission.text &&
             JSON.stringify(previousMessage.message.references) ===
-              JSON.stringify(submission.references) &&
+              JSON.stringify(references) &&
             JSON.stringify(previousMessage.message.attachments) ===
               JSON.stringify(message.attachments ?? [])
           ) {
@@ -437,7 +480,7 @@ export const toThreadViewModel = (
             message: {
               id: message.id,
               text: submission.text,
-              references: submission.references,
+              references,
               attachments: message.attachments ?? [],
             },
           };
@@ -450,7 +493,8 @@ export const toThreadViewModel = (
           previousMessage?.role === 'agent' &&
           previousMessage.message.text === message.text &&
           previousMessage.message.state === state &&
-          previousMessage.message.verifiedFilePaths === verifiedFilePaths
+          previousMessage.message.verifiedFilePaths === verifiedFilePaths &&
+          previousMessage.message.knowledgeCitations === knowledgeCitations
         ) {
           return previousMessage;
         }
@@ -461,6 +505,7 @@ export const toThreadViewModel = (
             text: message.text,
             state,
             verifiedFilePaths,
+            ...(knowledgeCitations.length > 0 ? { knowledgeCitations } : {}),
           },
         };
       },
@@ -478,6 +523,7 @@ export const toThreadViewModel = (
       text: output.text,
       state: 'streaming' as const,
       verifiedFilePaths,
+      ...(knowledgeCitations.length > 0 ? { knowledgeCitations } : {}),
     }));
     const pendingAgentOutputs =
       JSON.stringify(previousTurn?.pendingAgentOutputs) ===
@@ -784,6 +830,31 @@ export const toThreadViewModel = (
                     truncated: outcome.truncated,
                   }
                 : {}),
+              ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
+            },
+          } as const;
+        }
+        case 'knowledge': {
+          const outcome = entry.activity.result?.outcome;
+          return {
+            type: entry.type,
+            activity: {
+              id: entry.activity.id,
+              operation: entry.activity.operation,
+              ...(entry.activity.query ? { query: entry.activity.query } : {}),
+              state: toKnowledgeActivityPresentationState(
+                snapshot.phase,
+                turn.status,
+                entry.activity,
+              ),
+              ...(outcome?.type === 'success'
+                ? {
+                    mode: outcome.mode,
+                    matches: outcome.matches,
+                    knowledgeBases: outcome.knowledgeBases,
+                    citations: outcome.citations ?? [],
+                  }
+                : { knowledgeBases: [], citations: [] }),
               ...(outcome?.type === 'error' ? { errorKind: outcome.kind } : {}),
             },
           } as const;

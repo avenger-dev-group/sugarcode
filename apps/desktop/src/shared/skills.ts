@@ -3,8 +3,9 @@ export const SKILLS_CONTENT_CHANNEL = 'skills:content';
 export const SKILLS_SET_ENABLED_CHANNEL = 'skills:set-enabled';
 export const SKILLS_IMPORT_CHANNEL = 'skills:import';
 export const SKILLS_EXPORT_CHANNEL = 'skills:export';
+export const SKILLS_IMPORT_ZIP_CHANNEL = 'skills:import-zip';
+export const SKILLS_EXPORT_ZIP_CHANNEL = 'skills:export-zip';
 
-export type SkillScope = 'user' | 'project';
 export type SkillSource = 'user' | 'project';
 
 export type SkillSummary = Readonly<{
@@ -107,6 +108,8 @@ export type SkillsApi = Readonly<{
     id: string,
     enabled: boolean,
   ) => Promise<SkillsActionResult>;
-  importSkill: (scope: SkillScope) => Promise<SkillsActionResult>;
+  importSkill: () => Promise<SkillsActionResult>;
   exportSkill: (id: string) => Promise<SkillsActionResult>;
+  importSkillZip: () => Promise<SkillsActionResult>;
+  exportSkillZip: (id: string) => Promise<SkillsActionResult>;
 }>;

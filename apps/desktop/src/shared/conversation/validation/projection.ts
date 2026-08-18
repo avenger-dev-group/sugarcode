@@ -25,6 +25,7 @@ import {
   isConversationAttachment,
   isFileChangeActivity,
   isMcpActivity,
+  isKnowledgeActivity,
   isMessage,
   isTurnError,
   isUserInputRequest,
@@ -173,6 +174,15 @@ const isTurn = (value: unknown): value is ConversationTurn => {
             typeof output.text === 'string' &&
             output.text.length > 0 &&
             new TextEncoder().encode(output.text).byteLength <= 512 * 1024,
+        ))) ||
+    (Object.hasOwn(value, 'activities') &&
+      (!Array.isArray(value.activities) ||
+        value.activities.length > 1_024 ||
+        value.activities.some(
+          (entry) =>
+            isRecord(entry) &&
+            entry.type === 'knowledge' &&
+            !isKnowledgeActivity(entry.activity),
         ))) ||
     (Object.hasOwn(value, 'workspaceRead') &&
       !isWorkspaceReadActivity(value.workspaceRead)) ||

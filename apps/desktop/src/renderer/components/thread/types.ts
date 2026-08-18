@@ -9,6 +9,7 @@ import type {
 
 import type {
   ConversationAttachment,
+  ConversationKnowledgeCitation,
   ConversationPhase,
   ConversationTerminalTurnStatus,
   ConversationTurnError,
@@ -122,6 +123,26 @@ export type SkillActivityViewModel = Readonly<{
   errorKind?: string;
 }>;
 
+export type KnowledgeActivityPresentationState =
+  | 'running'
+  | 'stopping'
+  | 'uncertain'
+  | 'succeeded'
+  | 'failed'
+  | 'interrupted';
+
+export type KnowledgeActivityViewModel = Readonly<{
+  id: string;
+  operation: 'search' | 'listDocuments' | 'read';
+  query?: string;
+  state: KnowledgeActivityPresentationState;
+  mode?: 'fullText' | 'hybrid' | 'documentList' | 'read';
+  matches?: number;
+  knowledgeBases: readonly Readonly<{ id: string; name: string }>[];
+  citations: readonly ConversationKnowledgeCitation[];
+  errorKind?: string;
+}>;
+
 export type SkillActivityProps = Readonly<{
   activity: SkillActivityViewModel;
   language: ProcessLanguage;
@@ -158,6 +179,7 @@ export type TurnActivityViewModel =
       activity: WorkspaceSearchActivityViewModel;
     }>
   | Readonly<{ type: 'skill'; activity: SkillActivityViewModel }>
+  | Readonly<{ type: 'knowledge'; activity: KnowledgeActivityViewModel }>
   | Readonly<{ type: 'fileChange'; activity: FileChangeReviewViewModel }>
   | Readonly<{
       type: 'commandApproval';
@@ -353,6 +375,12 @@ export type ThreadWorkbenchViewProps = Readonly<{
   permissionControl?: ReactNode;
   approvalSurface?: ReactNode;
   approvalThreadIds?: readonly string[];
+  mainSurface?: ReactNode;
+  navigatorSurface?: import('../foundation/types').AppSurface;
+  onOpenSearch?: () => void;
+  onOpenKnowledge?: () => void;
+  onOpenSkills?: () => void;
+  onOpenWorkbench?: () => void;
 }>;
 
 export type TranscriptTurnProps = Readonly<{

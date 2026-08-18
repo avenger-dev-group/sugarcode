@@ -5,6 +5,8 @@ import {
   SKILLS_EXPORT_CHANNEL,
   SKILLS_GET_CHANNEL,
   SKILLS_IMPORT_CHANNEL,
+  SKILLS_IMPORT_ZIP_CHANNEL,
+  SKILLS_EXPORT_ZIP_CHANNEL,
   SKILLS_SET_ENABLED_CHANNEL,
 } from '@/shared/skills';
 import type { RuntimeSkillsController } from '@/main/runtime/skills-controller';
@@ -41,13 +43,21 @@ export const registerSkillsIpc = (options: SkillsIpcOptions): (() => void) => {
       return options.controller.setEnabled(skillId, enabled);
     },
   );
-  ipcMain.handle(SKILLS_IMPORT_CHANNEL, (event, scope: unknown) => {
+  ipcMain.handle(SKILLS_IMPORT_CHANNEL, (event) => {
     trusted(event);
-    return options.controller.import(scope);
+    return options.controller.import();
   });
   ipcMain.handle(SKILLS_EXPORT_CHANNEL, (event, skillId: unknown) => {
     trusted(event);
     return options.controller.export(skillId);
+  });
+  ipcMain.handle(SKILLS_IMPORT_ZIP_CHANNEL, (event) => {
+    trusted(event);
+    return options.controller.importZip();
+  });
+  ipcMain.handle(SKILLS_EXPORT_ZIP_CHANNEL, (event, skillId: unknown) => {
+    trusted(event);
+    return options.controller.exportZip(skillId);
   });
   return () => {
     for (const channel of [
@@ -56,6 +66,8 @@ export const registerSkillsIpc = (options: SkillsIpcOptions): (() => void) => {
       SKILLS_SET_ENABLED_CHANNEL,
       SKILLS_IMPORT_CHANNEL,
       SKILLS_EXPORT_CHANNEL,
+      SKILLS_IMPORT_ZIP_CHANNEL,
+      SKILLS_EXPORT_ZIP_CHANNEL,
     ]) {
       ipcMain.removeHandler(channel);
     }

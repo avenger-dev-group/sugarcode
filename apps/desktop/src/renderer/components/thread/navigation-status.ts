@@ -13,8 +13,8 @@ export const resolveDisplayedThreadId = ({
   selectedThreadId: string | null;
   threadIds: readonly string[];
 }>): string | null => {
-  if (pendingThreadId && threadIds.includes(pendingThreadId)) {
-    return pendingThreadId;
+  if (pendingThreadId) {
+    return threadIds.includes(pendingThreadId) ? pendingThreadId : null;
   }
   return active ? selectedThreadId : null;
 };

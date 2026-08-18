@@ -1,4 +1,4 @@
-import type { SkillContent, SkillScope, SkillSummary } from '@/shared/skills';
+import type { SkillContent, SkillSummary } from '@/shared/skills';
 import type { RefObject } from 'react';
 
 export type SkillsStatus = 'idle' | 'loading' | 'ready' | 'error';
@@ -8,7 +8,6 @@ export type SkillsStore = Readonly<{
   status: SkillsStatus;
   error: string | null;
   notice: string | null;
-  workspaceAvailable: boolean;
   selectedSkill: SkillSummary | null;
   content: SkillContent | null;
   contentLoading: boolean;
@@ -22,12 +21,16 @@ export type SkillsStore = Readonly<{
   toggle: (skill: SkillSummary) => Promise<void>;
   openSkill: (skill: SkillSummary) => Promise<void>;
   closeSkill: () => void;
-  importDirectory: (scope: SkillScope) => Promise<void>;
+  importDirectory: () => Promise<void>;
+  importArchive: () => Promise<void>;
   exportDirectory: (skill: SkillSummary) => Promise<void>;
+  exportArchive: (skill: SkillSummary) => Promise<void>;
 }>;
 
 export type SkillsSettingsPanelProps = Readonly<{
-  active: boolean;
+  store: SkillsStore;
+  initialSkillId?: string;
+  onInitialSkillHandled?: () => void;
 }>;
 
 export type SkillDocumentProps = Readonly<{

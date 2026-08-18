@@ -171,6 +171,82 @@ test('conversation snapshots accept an optimistic Turn while runtime startup is 
   );
 });
 
+test('conversation snapshots validate optional durable knowledge citations', () => {
+  const knowledgeActivity = {
+    type: 'knowledge',
+    activity: {
+      id: 'knowledge-call',
+      callId: 'knowledge-call-id',
+      operation: 'search',
+      query: '原子切换',
+      callStatus: 'completed',
+      result: {
+        id: 'knowledge-result',
+        status: 'completed',
+        outcome: {
+          type: 'success',
+          mode: 'hybrid',
+          matches: 1,
+          knowledgeBases: [{
+            id: `kb_${'1'.repeat(32)}`,
+            name: '产品规范',
+          }],
+          citations: [{
+            citation: 'K1',
+            knowledgeBaseId: `kb_${'1'.repeat(32)}`,
+            knowledgeBaseName: '产品规范',
+            documentId: `kd_${'2'.repeat(32)}`,
+            fileName: 'retrieval.md',
+            relativePath: 'spec/retrieval.md',
+            heading: '模型切换',
+            pageNumber: 3,
+            content: '新索引完成后原子切换。',
+          }],
+        },
+      },
+    },
+  } as const;
+  const withActivity = {
+    ...snapshot('completed'),
+    phase: 'ready',
+    workspaceId: 'workspace-fixture',
+    threadId: THREAD_WEB,
+    turns: [{
+      id: TURN_REVIEW,
+      status: 'completed',
+      messages: [],
+      activities: [knowledgeActivity],
+    }],
+  } as const;
+
+  assert.equal(isConversationStateSnapshot(withActivity), true);
+  assert.equal(
+    isConversationStateSnapshot({
+      ...withActivity,
+      turns: [{
+        ...withActivity.turns[0],
+        activities: [{
+          ...knowledgeActivity,
+          activity: {
+            ...knowledgeActivity.activity,
+            result: {
+              ...knowledgeActivity.activity.result,
+              outcome: {
+                ...knowledgeActivity.activity.result.outcome,
+                citations: [{
+                  ...knowledgeActivity.activity.result.outcome.citations[0],
+                  documentId: '../../outside',
+                }],
+              },
+            },
+          },
+        }],
+      }],
+    }),
+    false,
+  );
+});
+
 test('conversation snapshots and responses preserve bounded user questions', () => {
   const userInputRequest = {
     id: 'input-fixture',

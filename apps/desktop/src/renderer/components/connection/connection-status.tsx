@@ -52,7 +52,7 @@ export const ConnectionStatusView = ({
   >
     <div
       className={`absolute inset-y-0 left-0 w-0.5 ${
-        connection.tone === 'danger' ? 'bg-destructive' : 'bg-primary'
+        connection.tone === 'danger' ? 'bg-destructive' : 'bg-brand'
       }`}
       aria-hidden="true"
     />

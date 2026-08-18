@@ -85,6 +85,7 @@ import {
   workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
 import { createTurnSkills, type TurnSkills } from './skills.ts';
+import { createTurnKnowledge, resolveKnowledgeReferences } from './knowledge.ts';
 import {
   toolFailureRecoveryKey,
   toolResultFailed,
@@ -108,6 +109,13 @@ import type {
   SkillsActionResult,
   SkillsInspection,
 } from '../shared/skills.ts';
+import type {
+  KnowledgeActionResult,
+  KnowledgeBaseDetail,
+  KnowledgeEditableDocument,
+  KnowledgeInspection,
+  KnowledgeSearchResult,
+} from '../shared/knowledge.ts';
 import type {
   CommandEnvironmentActionResult,
   CommandEnvironmentStatus,
@@ -882,11 +890,19 @@ export class RuntimeHost {
         break;
       case 'queue.messageCreate': {
         this.requireReady(command.requestId);
+        const content = this.nativeRuntime
+          ? resolveKnowledgeReferences(
+              this.nativeRuntime,
+              command.workspaceId,
+              command.content,
+              command.threadId,
+            )
+          : command.content;
         const queue = this.parseNativeJson<RuntimeThreadQueue>(
           this.requireQueueNative().createQueuedMessageJson(
             command.threadId,
             command.queueItemId,
-            JSON.stringify(command.content),
+            JSON.stringify(content),
             command.modelProfileId,
           ),
         );
@@ -901,12 +917,20 @@ export class RuntimeHost {
       }
       case 'queue.messageUpdate': {
         this.requireReady(command.requestId);
+        const content = this.nativeRuntime
+          ? resolveKnowledgeReferences(
+              this.nativeRuntime,
+              command.workspaceId,
+              command.content,
+              command.threadId,
+            )
+          : command.content;
         const queue = this.parseNativeJson<RuntimeThreadQueue>(
           this.requireQueueNative().updateQueuedMessageJson(
             command.threadId,
             command.queueItemId,
             command.expectedRevision,
-            JSON.stringify(command.content),
+            JSON.stringify(content),
             command.modelProfileId,
           ),
         );
@@ -1282,7 +1306,6 @@ export class RuntimeHost {
           this.requireNative().importSkillJson(
             command.workspaceId,
             command.sourcePath,
-            command.scope,
           ),
         );
         this.emit({
@@ -1303,6 +1326,220 @@ export class RuntimeHost {
         );
         const action: SkillsActionResult = { accepted: true, path: result.path };
         this.emit({ type: 'skills.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'skills.importZip': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.importSkillZipJson) throw new Error('Skill ZIP import is unavailable.');
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          native.importSkillZipJson(command.workspaceId, command.archivePath),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
+      case 'skills.exportZip': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.exportSkillZipJson) throw new Error('Skill ZIP export is unavailable.');
+        const result = this.parseNativeJson<{ path: string }>(
+          native.exportSkillZipJson(command.workspaceId, command.skillId, command.destinationPath),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, path: result.path },
+        });
+        break;
+      }
+      case 'knowledge.inspect': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.inspectKnowledgeJson) throw new Error('Knowledge runtime is unavailable.');
+        const inspection = this.parseNativeJson<KnowledgeInspection>(
+          native.inspectKnowledgeJson(command.workspaceId),
+        );
+        this.emit({ type: 'knowledge.inspection', requestId: command.requestId, inspection });
+        break;
+      }
+      case 'knowledge.create': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.createKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.createKnowledgeBaseJson(
+            command.name,
+            command.description,
+            JSON.stringify(command.workspaceIds),
+          ),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.update': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.updateKnowledgeBaseJson) {
+          throw new Error('Knowledge settings are unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.updateKnowledgeBaseJson(
+            command.knowledgeBaseId,
+            command.name,
+            command.description,
+            JSON.stringify(command.workspaceIds),
+            JSON.stringify(command.ignoreRules),
+            command.semanticEnabled,
+          ),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.delete': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.deleteKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.deleteKnowledgeBaseJson(command.knowledgeBaseId),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.addFiles': {
+        this.requireReady(command.requestId);
+        void this.addKnowledgeFiles(command);
+        break;
+      }
+      case 'knowledge.addFolder': {
+        this.requireReady(command.requestId);
+        void this.addKnowledgeFolder(command);
+        break;
+      }
+      case 'knowledge.text.create': {
+        this.requireReady(command.requestId);
+        void this.mutateKnowledgeText(command);
+        break;
+      }
+      case 'knowledge.text.read': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.readKnowledgeTextDocumentJson) {
+          throw new Error('Knowledge text editing is unavailable.');
+        }
+        const document = this.parseNativeJson<KnowledgeEditableDocument>(
+          native.readKnowledgeTextDocumentJson(command.sourceId),
+        );
+        this.emit({
+          type: 'knowledge.textDocument',
+          requestId: command.requestId,
+          document,
+        });
+        break;
+      }
+      case 'knowledge.text.update': {
+        this.requireReady(command.requestId);
+        void this.mutateKnowledgeText(command);
+        break;
+      }
+      case 'knowledge.source.delete': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.deleteKnowledgeSourceJson) {
+          throw new Error('Knowledge source deletion is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.deleteKnowledgeSourceJson(command.sourceId),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.source.rescan': {
+        this.requireReady(command.requestId);
+        void this.rescanKnowledgeSource(command);
+        break;
+      }
+      case 'knowledge.index.cancel': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.cancelKnowledgeIndexJobJson) {
+          throw new Error('Knowledge indexing control is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.cancelKnowledgeIndexJobJson(command.jobId),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.detail': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.inspectKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        const detail = this.parseNativeJson<KnowledgeBaseDetail>(
+          native.inspectKnowledgeBaseJson(command.knowledgeBaseId),
+        );
+        this.emit({ type: 'knowledge.detail', requestId: command.requestId, detail });
+        break;
+      }
+      case 'knowledge.search': {
+        this.requireReady(command.requestId);
+        void this.searchKnowledge(command);
+        break;
+      }
+      case 'knowledge.model.install': {
+        this.requireReady(command.requestId);
+        void this.installSemanticModel(command);
+        break;
+      }
+      case 'knowledge.model.cancel': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.cancelSemanticModelDownloadJson) {
+          throw new Error('Semantic model download control is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.cancelSemanticModelDownloadJson(),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.model.remove': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.removeSemanticModelJson) {
+          throw new Error('Semantic model removal is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.removeSemanticModelJson(),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.retrieval.select': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.selectKnowledgeRetrievalPlanJson) {
+          throw new Error('Knowledge retrieval selection is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.selectKnowledgeRetrievalPlanJson(command.planId),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.semanticIndex.pause': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.setSemanticIndexPausedJson) {
+          throw new Error('Semantic index pause control is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.setSemanticIndexPausedJson(command.paused),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
         break;
       }
       case 'thread.list':
@@ -1511,11 +1748,214 @@ export class RuntimeHost {
         }
         this.activeTurns.clear();
         this.activeTurnThreads.clear();
+        this.nativeRuntime?.setKnowledgeAgentActive?.(false);
         for (const sessionId of [...this.terminals.keys()]) {
           this.closeTerminal(sessionId);
         }
         void this.mcp.close();
         break;
+    }
+  };
+
+  private addKnowledgeFiles = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.addFiles' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.addKnowledgeFilesJson) throw new Error('Knowledge runtime is unavailable.');
+      const result = this.parseNativeJson<{ indexed: number; skipped: number; errors: number }>(
+        await native.addKnowledgeFilesJson(command.knowledgeBaseId, JSON.stringify(command.paths)),
+      );
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: { accepted: true, ...result },
+      });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message: error instanceof Error ? error.message : 'Knowledge indexing failed.',
+        },
+      });
+    }
+  };
+
+  private mutateKnowledgeText = async (
+    command: Extract<
+      RuntimeCommand,
+      { type: 'knowledge.text.create' | 'knowledge.text.update' }
+    >,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      const result = command.type === 'knowledge.text.create'
+        ? await (() => {
+            if (!native.createKnowledgeTextDocumentJson) {
+              throw new Error('Knowledge text creation is unavailable.');
+            }
+            return native.createKnowledgeTextDocumentJson(
+              command.knowledgeBaseId,
+              command.fileName,
+              command.content,
+            );
+          })()
+        : await (() => {
+            if (!native.updateKnowledgeTextDocumentJson) {
+              throw new Error('Knowledge text editing is unavailable.');
+            }
+            return native.updateKnowledgeTextDocumentJson(
+              command.sourceId,
+              command.expectedSha256,
+              command.content,
+            );
+          })();
+      const indexed = this.parseNativeJson<{
+        indexed: number;
+        skipped: number;
+        errors: number;
+        deleted?: number;
+        jobId?: string;
+      }>(result);
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: { accepted: true, ...indexed },
+      });
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Knowledge document could not be saved.';
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: /changed|already exists|UNIQUE|collision/u.test(message)
+            ? 'conflict'
+            : /invalid|empty|exceeds|\.txt|\.md/u.test(message)
+              ? 'invalid'
+              : 'unavailable',
+          message,
+        },
+      });
+    }
+  };
+
+  private installSemanticModel = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.model.install' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.installSemanticModelJson) {
+        throw new Error('Semantic model installation is unavailable.');
+      }
+      const action = this.parseNativeJson<KnowledgeActionResult>(
+        await native.installSemanticModelJson(),
+      );
+      this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Semantic model installation failed.',
+        },
+      });
+    }
+  };
+
+  private searchKnowledge = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.search' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.searchKnowledgeJson) {
+        throw new Error('Knowledge runtime is unavailable.');
+      }
+      const result = this.parseNativeJson<KnowledgeSearchResult>(
+        await native.searchKnowledgeJson(
+          command.workspaceId,
+          JSON.stringify(command.knowledgeBaseIds),
+          command.query,
+        ),
+      );
+      this.emit({ type: 'knowledge.searchResult', requestId: command.requestId, result });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message: error instanceof Error ? error.message : 'Knowledge search failed.',
+      });
+    }
+  };
+
+  private addKnowledgeFolder = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.addFolder' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.addKnowledgeFolderJson) throw new Error('Knowledge runtime is unavailable.');
+      const result = this.parseNativeJson<{ indexed: number; skipped: number; errors: number }>(
+        await native.addKnowledgeFolderJson(command.knowledgeBaseId, command.path),
+      );
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: { accepted: true, ...result },
+      });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message: error instanceof Error ? error.message : 'Knowledge indexing failed.',
+        },
+      });
+    }
+  };
+
+  private rescanKnowledgeSource = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.source.rescan' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.rescanKnowledgeSourceJson) {
+        throw new Error('Knowledge source rescanning is unavailable.');
+      }
+      const result = this.parseNativeJson<{
+        indexed: number;
+        skipped: number;
+        errors: number;
+        deleted?: number;
+        jobId?: string;
+      }>(await native.rescanKnowledgeSourceJson(command.sourceId, command.rebuild));
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: { accepted: true, ...result },
+      });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message: error instanceof Error ? error.message : 'Knowledge rescanning failed.',
+        },
+      });
     }
   };
 
@@ -1954,6 +2394,9 @@ export class RuntimeHost {
       if (part.type === 'text') {
         return [{ text: composerModelText(part.text) }];
       }
+      if (part.type === 'knowledgeReferences') {
+        return [];
+      }
       const stored = this.parseNativeJson<StoredAssetContent>(
         this.requireNative().readAssetJson(part.asset.assetId),
       );
@@ -2348,6 +2791,7 @@ export class RuntimeHost {
 
   private invalidArgumentsTool = (
     guard: InvalidArgumentGuard,
+    knowledgeSelected: boolean,
   ): FunctionTool<Schema> =>
     new FunctionTool({
       name: INVALID_TOOL_ARGUMENTS_TOOL_NAME,
@@ -2364,6 +2808,17 @@ export class RuntimeHost {
           : '';
         const key = JSON.stringify({ toolName, argumentsText });
         guard.repeats.set(key, (guard.repeats.get(key) ?? 0) + 1);
+        if (toolName.startsWith('knowledge_') && !knowledgeSelected) {
+          return {
+            ok: false,
+            error: {
+              kind: 'knowledgeBaseNotSelected',
+              message:
+                'No local knowledge base has been selected in this conversation. ' +
+                'Do not retry this tool or substitute workspace search. Ask the user to select one with @知识库名称.',
+            },
+          };
+        }
         return {
           ok: false,
           error: {
@@ -2895,9 +3350,19 @@ export class RuntimeHost {
     }
     const controller = new AbortController();
     let revisionCommitted = false;
-    let turnContent = command.type === 'turn.startQueued' ? [] : command.content;
+    let turnContent = command.type === 'turn.startQueued'
+      ? []
+      : this.nativeRuntime
+        ? resolveKnowledgeReferences(
+            this.nativeRuntime,
+            command.workspaceId,
+            command.content,
+            command.threadId,
+          )
+        : command.content;
     this.activeTurns.set(command.turnId, controller);
     this.activeTurnThreads.set(command.turnId, command.threadId);
+    this.nativeRuntime?.setKnowledgeAgentActive?.(true);
     try {
       const resolved = (() => {
         try {
@@ -2928,7 +3393,7 @@ export class RuntimeHost {
       ) ?? false;
       let queuedTurnSkills: TurnSkills | undefined;
       if (command.type === 'turn.startQueued') {
-        this.contentFromParts(command.content, resolved.selection);
+        this.contentFromParts(turnContent, resolved.selection);
         if (this.nativeRuntime && !queuedCompaction) {
           queuedTurnSkills = createTurnSkills(
             this.nativeRuntime,
@@ -2957,7 +3422,7 @@ export class RuntimeHost {
             command.requestId,
             resolved.provider.wireApi,
             resolved.provider.model,
-            JSON.stringify(command.content),
+            JSON.stringify(turnContent),
           ));
         this.emitTransient({
           type: 'turn.revised',
@@ -2967,7 +3432,7 @@ export class RuntimeHost {
           turnId: command.turnId,
           replacedTurnId: command.replacedTurnId,
           model: resolved.selection,
-          content: command.content,
+          content: turnContent,
         });
         revisionCommitted = true;
         await this.sessions.deleteSession({
@@ -3003,7 +3468,14 @@ export class RuntimeHost {
           threadId: command.threadId,
           queue: promoted.queue,
         });
-        turnContent = promoted.message.content;
+        turnContent = this.nativeRuntime
+          ? resolveKnowledgeReferences(
+              this.nativeRuntime,
+              command.workspaceId,
+              promoted.message.content,
+              command.threadId,
+            )
+          : promoted.message.content;
       } else {
         withDurableStateWrite(() =>
           this.nativeRuntime?.ensureThread(
@@ -3097,7 +3569,7 @@ export class RuntimeHost {
                 });
               },
               executeTask: (context) =>
-                this.executeAgentTask(command, resolved, context),
+                this.executeAgentTask(command, resolved, context, turnContent),
             },
             controller.signal,
           )
@@ -3130,6 +3602,14 @@ export class RuntimeHost {
             steeringInstruction: () => '',
           });
       this.activeTurnSkills.set(command.turnId, turnSkills);
+      const turnKnowledge = this.nativeRuntime
+        ? createTurnKnowledge(this.nativeRuntime, command.workspaceId, turnContent)
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          };
       const takePendingSteers = (): readonly Content[] => {
         const queued = this.pendingSteersByTurn.get(command.turnId) ?? [];
         this.pendingSteersByTurn.delete(command.turnId);
@@ -3137,7 +3617,8 @@ export class RuntimeHost {
           const modelContent = this.contentFromParts(content, resolved.selection);
           const composerInstruction = composerIntentInstruction(content);
           const skillInstruction = turnSkills.steeringInstruction(content);
-          const metadata = [composerInstruction, skillInstruction]
+          const knowledgeInstruction = turnKnowledge.steeringInstruction(content);
+          const metadata = [composerInstruction, skillInstruction, knowledgeInstruction]
             .filter(Boolean)
             .join('\n\n');
           return metadata
@@ -3167,7 +3648,7 @@ export class RuntimeHost {
       });
       let recoveryCompaction = false;
       const mainTools = [
-        this.invalidArgumentsTool(invalidArgumentGuard),
+        this.invalidArgumentsTool(invalidArgumentGuard, turnKnowledge.tools.length > 0),
         this.requestUserInputTool(
           command,
           userInputFinalGuard,
@@ -3211,6 +3692,7 @@ export class RuntimeHost {
               )
               : []),
             ...turnSkills.tools,
+            ...turnKnowledge.tools,
             ...collaborationTools,
           ]
           : []),
@@ -3226,7 +3708,9 @@ export class RuntimeHost {
           availableTools: mainTools.map((tool) => tool.name),
           collaborationEnabled: collaborationTools.length > 0,
           composerInstruction,
-          skillInstruction: turnSkills.instruction,
+          skillInstruction: [turnSkills.instruction, turnKnowledge.instruction]
+            .filter(Boolean)
+            .join('\n\n'),
         }),
         model: turnModel,
         generateContentConfig: {
@@ -3466,6 +3950,9 @@ export class RuntimeHost {
       this.cancelTurnUserInputs(command.turnId);
       this.activeTurns.delete(command.turnId);
       this.activeTurnThreads.delete(command.turnId);
+      if (this.activeTurns.size === 0) {
+        this.nativeRuntime?.setKnowledgeAgentActive?.(false);
+      }
       this.activeTurnSelections.delete(command.turnId);
       this.activeTurnSkills.delete(command.turnId);
       this.pendingSteersByTurn.delete(command.turnId);
@@ -3592,6 +4079,7 @@ export class RuntimeHost {
     const controller = new AbortController();
     this.activeTurns.set(command.turnId, controller);
     this.activeTurnThreads.set(command.turnId, command.threadId);
+    this.nativeRuntime?.setKnowledgeAgentActive?.(true);
     try {
       const resolved = this.resolveProfile(command);
       withDurableStateWrite(() =>
@@ -3710,6 +4198,9 @@ export class RuntimeHost {
     } finally {
       this.activeTurns.delete(command.turnId);
       this.activeTurnThreads.delete(command.turnId);
+      if (this.activeTurns.size === 0) {
+        this.nativeRuntime?.setKnowledgeAgentActive?.(false);
+      }
       this.cancellationSources.delete(command.turnId);
     }
   };
@@ -3760,6 +4251,7 @@ export class RuntimeHost {
     command: TurnExecutionCommand,
     resolved: ResolvedProfile,
     context: AgentTaskExecutionContext,
+    turnContent: readonly RuntimeContentPart[],
   ): Promise<{
     status: 'completed' | 'failed' | 'interrupted';
     summaryMarkdown: string;
@@ -3896,7 +4388,7 @@ export class RuntimeHost {
         ? createTurnSkills(
             this.nativeRuntime,
             nativeWorkspaceId,
-            command.content,
+            turnContent,
           )
         : {
             instruction: '',
@@ -3904,10 +4396,19 @@ export class RuntimeHost {
             validateSteering: (): void => undefined,
             steeringInstruction: () => '',
           };
+      const turnKnowledge = this.nativeRuntime
+        ? createTurnKnowledge(this.nativeRuntime, command.workspaceId, turnContent)
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          };
       const agentTools = [
-        this.invalidArgumentsTool(invalidArgumentGuard),
+        this.invalidArgumentsTool(invalidArgumentGuard, turnKnowledge.tools.length > 0),
         ...tools,
         ...turnSkills.tools,
+        ...turnKnowledge.tools,
       ];
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
@@ -3918,7 +4419,9 @@ export class RuntimeHost {
           platform: process.platform,
           availableTools: agentTools.map((tool) => tool.name),
           collaborationEnabled: false,
-          skillInstruction: turnSkills.instruction,
+          skillInstruction: [turnSkills.instruction, turnKnowledge.instruction]
+            .filter(Boolean)
+            .join('\n\n'),
         }),
         model: this.createModel(resolved.provider),
         generateContentConfig: {

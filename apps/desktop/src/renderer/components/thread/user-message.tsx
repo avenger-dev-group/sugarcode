@@ -69,6 +69,8 @@ const MessageReferences = ({ message }: Readonly<{ message: UserMessageView }>) 
               ? '命令'
               : reference.kind === 'skill'
                 ? 'Skill'
+                : reference.kind === 'knowledge'
+                  ? '知识库'
                 : '文件'}
           </span>
           <span className="truncate font-medium">{reference.value}</span>

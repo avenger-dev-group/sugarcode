@@ -1,11 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { getSkills } from '@/renderer/services/skills';
+import { getKnowledge } from '@/renderer/services/knowledge';
 import {
   listWorkspace,
   searchWorkspacePaths,
 } from '@/renderer/services/workspace';
 import type { SkillSummary } from '@/shared/skills';
+import type { KnowledgeBaseSummary } from '@/shared/knowledge';
 
 import {
   commandSuggestions,
@@ -38,11 +40,25 @@ const fileSuggestion = (path: string): ComposerSuggestion => ({
   insertion: path.includes(' ') ? `@\`${path}\`` : `@${path}`,
 });
 
+const knowledgeSuggestion = (
+  knowledgeBase: KnowledgeBaseSummary,
+): ComposerSuggestion => ({
+  id: knowledgeBase.id,
+  kind: 'knowledge',
+  label: knowledgeBase.name,
+  description: knowledgeBase.description || `${knowledgeBase.documentCount} 个文档`,
+  detail: knowledgeBase.scope === 'global' ? '全局知识库' : '当前项目知识库',
+  insertion: /\s/u.test(knowledgeBase.name)
+    ? `@知识库\`${knowledgeBase.name}\``
+    : `@知识库${knowledgeBase.name}`,
+});
+
 export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const mirrorRef = useRef<HTMLDivElement | null>(null);
   const requestId = useRef<number>(0);
   const skillCache = useRef<readonly SkillSummary[] | null>(null);
+  const knowledgeCache = useRef<readonly KnowledgeBaseSummary[] | null>(null);
   const [token, setToken] = useState<ComposerToken | null>(null);
   const [remoteSuggestions, setRemoteSuggestions] = useState<
     readonly ComposerSuggestion[]
@@ -65,7 +81,10 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
   useEffect(() => {
     if (!token || token.trigger === '/') {
       requestId.current += 1;
-      if (!token) skillCache.current = null;
+      if (!token) {
+        skillCache.current = null;
+        knowledgeCache.current = null;
+      }
       setRemoteSuggestions([]);
       setStatus(token ? 'ready' : 'idle');
       setMessage(null);
@@ -110,38 +129,57 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
       return undefined;
     }
 
-    if (!props.workspaceReady) {
-      setRemoteSuggestions([]);
-      setStatus('ready');
-      setMessage('选择项目后可使用 @ 引用工作区文件。');
-      return undefined;
-    }
-
     const timer = window.setTimeout(() => {
       const query = token.query.trim();
-      const load = query
-        ? searchWorkspacePaths({
-            generation: props.workspaceGeneration,
-            query,
-          }).then((result) => {
-            if (result.accepted === false) throw new Error(result.reason);
-            return result.paths;
-          })
-        : listWorkspace({
-            generation: props.workspaceGeneration,
-            path: '',
-          }).then((result) => {
-            if (result.accepted === false) throw new Error(result.reason);
-            return result.entries
-              .filter((entry) => entry.kind === 'file')
-              .map((entry) => entry.path);
+      const knowledgeLoad = knowledgeCache.current
+        ? Promise.resolve(knowledgeCache.current)
+        : getKnowledge().then((inspection) => {
+            knowledgeCache.current = inspection.knowledgeBases;
+            return inspection.knowledgeBases;
           });
-      void load
-        .then((paths) => {
+      const fileLoad = !props.workspaceReady
+        ? Promise.resolve([] as readonly string[])
+        : query
+          ? searchWorkspacePaths({
+              generation: props.workspaceGeneration,
+              query,
+            }).then((result) => {
+              if (result.accepted === false) throw new Error(result.reason);
+              return result.paths;
+            })
+          : listWorkspace({
+              generation: props.workspaceGeneration,
+              path: '',
+            }).then((result) => {
+              if (result.accepted === false) throw new Error(result.reason);
+              return result.entries
+                .filter((entry) => entry.kind === 'file')
+                .map((entry) => entry.path);
+            });
+      void Promise.all([knowledgeLoad, fileLoad])
+        .then(([knowledgeBases, paths]) => {
           if (requestId.current !== currentRequest) return;
-          setRemoteSuggestions(paths.slice(0, 12).map(fileSuggestion));
+          const normalized = query.toLocaleLowerCase();
+          const knowledge = knowledgeBases
+            .filter((base) =>
+              `${base.name} ${base.description}`
+                .toLocaleLowerCase()
+                .includes(normalized),
+            )
+            .slice(0, 6)
+            .map(knowledgeSuggestion);
+          setRemoteSuggestions([
+            ...knowledge,
+            ...paths.slice(0, Math.max(0, 12 - knowledge.length)).map(fileSuggestion),
+          ]);
           setStatus('ready');
-          setMessage(paths.length === 0 ? '没有找到匹配的工作区文件。' : null);
+          setMessage(
+            knowledge.length === 0 && paths.length === 0
+              ? props.workspaceReady
+                ? '没有找到匹配的知识库或工作区文件。'
+                : '没有找到匹配的全局知识库。'
+              : null,
+          );
         })
         .catch(() => {
           if (requestId.current !== currentRequest) return;

@@ -1,4 +1,4 @@
-export type SettingsSection = 'general' | 'model' | 'skills' | 'about';
+export type SettingsSection = 'general' | 'model' | 'about';
 
 export type SettingsStore = Readonly<{
   open: boolean;
@@ -13,4 +13,6 @@ export type SettingsDialogProps = Readonly<{
   toggleTheme: () => void;
   workspaceId?: string;
   threadId?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }>;

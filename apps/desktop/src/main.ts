@@ -13,6 +13,7 @@ import { registerGitIpc } from '@/main/ipc/git';
 import { registerMcpIpc } from '@/main/ipc/mcp';
 import { registerModelConfigIpc } from '@/main/ipc/model-config';
 import { registerSkillsIpc } from '@/main/ipc/skills';
+import { registerKnowledgeIpc } from '@/main/ipc/knowledge';
 import { registerWorkspaceIpc } from '@/main/ipc/workspace';
 import { GitController } from '@/main/git/controller';
 import { McpSessionController } from '@/main/mcp/session-controller';
@@ -32,9 +33,19 @@ import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
 import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
 import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
 import { RuntimeSkillsController } from '@/main/runtime/skills-controller';
+import { RuntimeKnowledgeController } from '@/main/runtime/knowledge-controller';
 import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 import { UpdateController } from '@/main/update/controller';
 import { registerUpdateIpc } from '@/main/update/ipc';
+import { runDesktopE2EProbe } from '@/main/e2e-probe';
+
+const processStartedAtMs = Date.now();
+const e2eRoot = process.env.SUGARCODE_E2E_PROBE === '1'
+  ? process.env.SUGARCODE_E2E_ROOT
+  : undefined;
+if (e2eRoot) {
+  app.setPath('userData', path.join(e2eRoot, 'user-data'));
+}
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -48,6 +59,7 @@ let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeSkillsIpc: (() => void) | null = null;
+let disposeKnowledgeIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
@@ -183,9 +195,15 @@ const createWindow = (): void => {
 
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
     void window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-    window.webContents.openDevTools();
+    if (!e2eRoot) window.webContents.openDevTools();
   } else {
     void window.loadFile(rendererFilePath);
+  }
+  const reportPath = e2eRoot ? process.env.SUGARCODE_E2E_REPORT : undefined;
+  if (reportPath) {
+    window.webContents.once('did-finish-load', () => {
+      void runDesktopE2EProbe(window, reportPath, processStartedAtMs);
+    });
   }
 };
 
@@ -261,7 +279,9 @@ const startApplication = async (): Promise<void> => {
   await app.whenReady();
   runtimeSupervisor = new RuntimeSupervisor({
     runtimePath: path.join(__dirname, 'runtime.mjs'),
-    dataDirectory: path.join(app.getPath('home'), '.sugarcode', 'v3'),
+    dataDirectory: e2eRoot
+      ? path.join(e2eRoot, 'data')
+      : path.join(app.getPath('home'), '.sugarcode', 'v3'),
     nativeModulePath: app.isPackaged
       ? path.join(process.resourcesPath, 'sugarcode-desktop-native.node')
       : path.join(app.getAppPath(), 'native', 'sugarcode-desktop-native.node'),
@@ -414,7 +434,17 @@ const startApplication = async (): Promise<void> => {
       dialog,
       getMainWindow: () => mainWindow,
       getWorkspace: workspaceController.getLaunchContext,
-      getWorkspaceState: workspaceController.getSnapshot,
+    }),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  disposeKnowledgeIpc = registerKnowledgeIpc({
+    controller: new RuntimeKnowledgeController({
+      runtime: runtimeSupervisor,
+      dialog,
+      getMainWindow: () => mainWindow,
+      getWorkspace: workspaceController.getLaunchContext,
+      shell,
     }),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
@@ -596,6 +626,8 @@ if (started) {
     disposeModelConfigIpc = null;
     disposeSkillsIpc?.();
     disposeSkillsIpc = null;
+    disposeKnowledgeIpc?.();
+    disposeKnowledgeIpc = null;
     disposeCommandEnvironmentIpc?.();
     disposeCommandEnvironmentIpc = null;
     disposeWorkspaceIpc?.();

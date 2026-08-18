@@ -15,6 +15,8 @@ import type {
   ConversationFileChangeResultOutcome,
   ConversationMcpActivity,
   ConversationMcpResultReceipt,
+  ConversationKnowledgeActivity,
+  ConversationKnowledgeCitation,
   ConversationMessage,
   ConversationMessageStatus,
   ConversationTurnError,
@@ -259,7 +261,20 @@ export const isMessage = (value: unknown): value is ConversationMessage =>
   (value.attachments === undefined ||
     (Array.isArray(value.attachments) &&
       value.attachments.length <= MAX_CONVERSATION_ATTACHMENTS &&
-      value.attachments.every(isConversationAttachment)));
+      value.attachments.every(isConversationAttachment))) &&
+  (value.knowledgeReferences === undefined ||
+    (Array.isArray(value.knowledgeReferences) &&
+      value.knowledgeReferences.length > 0 &&
+      value.knowledgeReferences.length <= 4 &&
+      value.knowledgeReferences.every(
+        (reference) =>
+          isRecord(reference) &&
+          typeof reference.knowledgeBaseId === 'string' &&
+          /^kb_[0-9a-f]{32}$/u.test(reference.knowledgeBaseId) &&
+          typeof reference.name === 'string' &&
+          reference.name.length > 0 &&
+          reference.name.length <= 80,
+      )));
 
 export const isConversationAttachment = (
   value: unknown,
@@ -430,6 +445,87 @@ export const isWorkspaceSearchActivity = (
     typeof value.result.status === 'string' &&
     MESSAGE_STATUSES.has(value.result.status as ConversationMessageStatus) &&
     isWorkspaceSearchOutcome(value.result.outcome)
+  );
+};
+
+const isKnowledgeCitation = (
+  value: unknown,
+): value is ConversationKnowledgeCitation =>
+  isRecord(value) &&
+  typeof value.citation === 'string' &&
+  /^K[1-8]$/u.test(value.citation) &&
+  typeof value.knowledgeBaseId === 'string' &&
+  /^kb_[0-9a-f]{32}$/u.test(value.knowledgeBaseId) &&
+  hasBoundedText(value.knowledgeBaseName, 256) &&
+  typeof value.documentId === 'string' &&
+  /^kd_[0-9a-f]{32}$/u.test(value.documentId) &&
+  hasBoundedText(value.fileName, 4_096) &&
+  hasBoundedText(value.relativePath, 16 * 1_024) &&
+  (value.heading === undefined || hasBoundedText(value.heading, 4_096)) &&
+  (value.pageNumber === undefined ||
+    (Number.isSafeInteger(value.pageNumber) && Number(value.pageNumber) > 0)) &&
+  (value.contentKind === undefined ||
+    value.contentKind === 'text' || value.contentKind === 'code') &&
+  (value.language === undefined || hasBoundedText(value.language, 128)) &&
+  (value.startLine === undefined ||
+    (Number.isSafeInteger(value.startLine) && Number(value.startLine) > 0)) &&
+  (value.endLine === undefined ||
+    (Number.isSafeInteger(value.endLine) &&
+      Number(value.endLine) >= Number(value.startLine ?? 1))) &&
+  typeof value.content === 'string' &&
+  value.content.length > 0 &&
+  new TextEncoder().encode(value.content).byteLength <= 48 * 1_024 &&
+  !value.content.includes('\0');
+
+export const isKnowledgeActivity = (
+  value: unknown,
+): value is ConversationKnowledgeActivity => {
+  if (
+    !isRecord(value) ||
+    !isId(value.id) ||
+    !isId(value.callId) ||
+    !['search', 'listDocuments', 'read'].includes(String(value.operation)) ||
+    (value.query !== undefined || value.operation === 'search') &&
+      !hasBoundedText(value.query, 4_000) ||
+    typeof value.callStatus !== 'string' ||
+    !MESSAGE_STATUSES.has(value.callStatus as ConversationMessageStatus)
+  ) {
+    return false;
+  }
+  if (value.result === undefined) return value.callStatus === 'inProgress';
+  if (
+    value.callStatus !== 'completed' ||
+    !isRecord(value.result) ||
+    !isId(value.result.id) ||
+    value.result.id === value.id ||
+    value.result.status !== 'completed' ||
+    !isRecord(value.result.outcome)
+  ) {
+    return false;
+  }
+  const outcome = value.result.outcome;
+  if (outcome.type === 'error') {
+    return hasBoundedText(outcome.kind, 1_024);
+  }
+  return (
+    outcome.type === 'success' &&
+    ['fullText', 'hybrid', 'documentList', 'read'].includes(String(outcome.mode)) &&
+    Number.isSafeInteger(outcome.matches) &&
+    Number(outcome.matches) >= 0 &&
+    Number(outcome.matches) <= 400 &&
+    Array.isArray(outcome.knowledgeBases) &&
+    outcome.knowledgeBases.length <= 4 &&
+    outcome.knowledgeBases.every(
+      (base) =>
+        isRecord(base) &&
+        typeof base.id === 'string' &&
+        /^kb_[0-9a-f]{32}$/u.test(base.id) &&
+        hasBoundedText(base.name, 256),
+    ) &&
+    (outcome.citations === undefined ||
+      (Array.isArray(outcome.citations) &&
+        outcome.citations.length <= 8 &&
+        outcome.citations.every(isKnowledgeCitation)))
   );
 };
 

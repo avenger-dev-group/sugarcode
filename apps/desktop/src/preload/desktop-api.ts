@@ -20,6 +20,43 @@ import {
 } from '@/shared/connection';
 import type { DesktopApi } from '@/shared/desktop-api';
 import {
+  KNOWLEDGE_ADD_FILES_CHANNEL,
+  KNOWLEDGE_ADD_FOLDER_CHANNEL,
+  KNOWLEDGE_TEXT_CREATE_CHANNEL,
+  KNOWLEDGE_TEXT_READ_CHANNEL,
+  KNOWLEDGE_TEXT_UPDATE_CHANNEL,
+  KNOWLEDGE_CREATE_CHANNEL,
+  KNOWLEDGE_UPDATE_CHANNEL,
+  KNOWLEDGE_DELETE_CHANNEL,
+  KNOWLEDGE_DETAIL_CHANNEL,
+  KNOWLEDGE_DOCUMENT_OPEN_CHANNEL,
+  KNOWLEDGE_DOCUMENT_REVEAL_CHANNEL,
+  KNOWLEDGE_GET_CHANNEL,
+  KNOWLEDGE_INDEX_CANCEL_CHANNEL,
+  KNOWLEDGE_MODEL_CANCEL_CHANNEL,
+  KNOWLEDGE_MODEL_INSTALL_CHANNEL,
+  KNOWLEDGE_MODEL_REMOVE_CHANNEL,
+  KNOWLEDGE_RETRIEVAL_SELECT_CHANNEL,
+  KNOWLEDGE_SEMANTIC_INDEX_PAUSE_CHANNEL,
+  KNOWLEDGE_SEARCH_CHANNEL,
+  KNOWLEDGE_SOURCE_DELETE_CHANNEL,
+  KNOWLEDGE_SOURCE_RESCAN_CHANNEL,
+  isKnowledgeActionResult,
+  isKnowledgeBaseDetail,
+  isKnowledgeEditableDocument,
+  isKnowledgeInspection,
+  isKnowledgeSearchResult,
+  type KnowledgeActionResult,
+  type KnowledgeBaseDetail,
+  type KnowledgeCreateRequest,
+  type KnowledgeEditableDocument,
+  type KnowledgeInspection,
+  type KnowledgeSearchResult,
+  type KnowledgeTextCreateRequest,
+  type KnowledgeTextUpdateRequest,
+  type KnowledgeUpdateRequest,
+} from '@/shared/knowledge';
+import {
   COMMAND_ENVIRONMENT_GET_CHANNEL,
   COMMAND_ENVIRONMENT_PROFILE_CHANNEL,
   COMMAND_ENVIRONMENT_REFRESH_CHANNEL,
@@ -138,11 +175,12 @@ import {
   isSkillsInspection,
   SKILLS_CONTENT_CHANNEL,
   SKILLS_EXPORT_CHANNEL,
+  SKILLS_EXPORT_ZIP_CHANNEL,
   SKILLS_GET_CHANNEL,
   SKILLS_IMPORT_CHANNEL,
+  SKILLS_IMPORT_ZIP_CHANNEL,
   SKILLS_SET_ENABLED_CHANNEL,
   type SkillContent,
-  type SkillScope,
   type SkillsActionResult,
   type SkillsInspection,
 } from '@/shared/skills';
@@ -346,8 +384,8 @@ export const createDesktopApi = (
     }
     return result;
   },
-  importSkill: async (scope: SkillScope): Promise<SkillsActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_CHANNEL, scope);
+  importSkill: async (): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_CHANNEL);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill import action.');
     }
@@ -357,6 +395,212 @@ export const createDesktopApi = (
     const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_CHANNEL, id);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill export action.');
+    }
+    return result;
+  },
+  importSkillZip: async (): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_ZIP_CHANNEL);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill ZIP import action.');
+    }
+    return result;
+  },
+  exportSkillZip: async (id: string): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_ZIP_CHANNEL, id);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill ZIP export action.');
+    }
+    return result;
+  },
+  getKnowledge: async (): Promise<KnowledgeInspection> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_GET_CHANNEL);
+    if (!isKnowledgeInspection(result)) {
+      throw new Error('Main returned an invalid knowledge inventory.');
+    }
+    return result;
+  },
+  createKnowledgeBase: async (
+    request: KnowledgeCreateRequest,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_CREATE_CHANNEL, request);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge create result.');
+    }
+    return result;
+  },
+  updateKnowledgeBase: async (
+    id: string,
+    request: KnowledgeUpdateRequest,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_UPDATE_CHANNEL, id, request);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge update result.');
+    }
+    return result;
+  },
+  deleteKnowledgeBase: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_DELETE_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge delete result.');
+    }
+    return result;
+  },
+  addKnowledgeFiles: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_ADD_FILES_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge file result.');
+    }
+    return result;
+  },
+  addKnowledgeFolder: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_ADD_FOLDER_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge folder result.');
+    }
+    return result;
+  },
+  createKnowledgeTextDocument: async (
+    id: string,
+    request: KnowledgeTextCreateRequest,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_TEXT_CREATE_CHANNEL,
+      id,
+      request,
+    );
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge text create result.');
+    }
+    return result;
+  },
+  readKnowledgeTextDocument: async (
+    id: string,
+  ): Promise<KnowledgeEditableDocument> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_TEXT_READ_CHANNEL, id);
+    if (!isKnowledgeEditableDocument(result)) {
+      throw new Error('Main returned invalid editable knowledge content.');
+    }
+    return result;
+  },
+  updateKnowledgeTextDocument: async (
+    id: string,
+    request: KnowledgeTextUpdateRequest,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_TEXT_UPDATE_CHANNEL,
+      id,
+      request,
+    );
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge text update result.');
+    }
+    return result;
+  },
+  deleteKnowledgeSource: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SOURCE_DELETE_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge source delete result.');
+    }
+    return result;
+  },
+  rescanKnowledgeSource: async (
+    id: string,
+    rebuild?: boolean,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_SOURCE_RESCAN_CHANNEL,
+      id,
+      rebuild,
+    );
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge source rescan result.');
+    }
+    return result;
+  },
+  cancelKnowledgeIndexJob: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_INDEX_CANCEL_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge index cancel result.');
+    }
+    return result;
+  },
+  getKnowledgeBaseDetail: async (id: string): Promise<KnowledgeBaseDetail> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_DETAIL_CHANNEL, id);
+    if (!isKnowledgeBaseDetail(result)) {
+      throw new Error('Main returned invalid knowledge base details.');
+    }
+    return result;
+  },
+  searchKnowledge: async (
+    ids: readonly string[],
+    query: string,
+  ): Promise<KnowledgeSearchResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SEARCH_CHANNEL, ids, query);
+    if (!isKnowledgeSearchResult(result)) {
+      throw new Error('Main returned an invalid knowledge search result.');
+    }
+    return result;
+  },
+  openKnowledgeDocument: async (
+    knowledgeBaseId: string,
+    documentId: string,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_DOCUMENT_OPEN_CHANNEL,
+      knowledgeBaseId,
+      documentId,
+    );
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge document open result.');
+    }
+    return result;
+  },
+  revealKnowledgeDocument: async (
+    knowledgeBaseId: string,
+    documentId: string,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_DOCUMENT_REVEAL_CHANNEL,
+      knowledgeBaseId,
+      documentId,
+    );
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge document reveal result.');
+    }
+    return result;
+  },
+  installSemanticModel: async (): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_INSTALL_CHANNEL);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic model install result.');
+    }
+    return result;
+  },
+  cancelSemanticModelDownload: async (): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_CANCEL_CHANNEL);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic model cancel result.');
+    }
+    return result;
+  },
+  removeSemanticModel: async (): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_REMOVE_CHANNEL);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic model remove result.');
+    }
+    return result;
+  },
+  selectKnowledgeRetrievalPlan: async (planId: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_RETRIEVAL_SELECT_CHANNEL, planId);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid retrieval selection result.');
+    }
+    return result;
+  },
+  setSemanticIndexPaused: async (paused: boolean): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SEMANTIC_INDEX_PAUSE_CHANNEL, paused);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic index pause result.');
     }
     return result;
   },

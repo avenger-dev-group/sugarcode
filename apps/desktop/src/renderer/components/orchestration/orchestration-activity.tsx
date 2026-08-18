@@ -178,7 +178,7 @@ const AgentTaskCard = ({
         onClick={() => onSelect(task)}
         className={cn(
           'group/task flex min-h-24 w-full min-w-0 flex-col rounded-lg border bg-background p-2.5 text-left transition-[border-color,background-color,box-shadow] hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-          selected && 'border-primary bg-surface shadow-sm',
+          selected && 'border-brand/40 bg-brand/10 shadow-sm',
           !selected && task.status === 'failed' && 'border-destructive',
         )}
         aria-label={`${ROLE_LABELS[task.role]} ${task.title}, ${STATUS_LABELS[task.status]}`}
@@ -450,7 +450,7 @@ export const AgentTaskDock = ({
               aria-hidden="true"
             >
               <span
-                className="block h-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+                className="block h-full bg-brand transition-[width] duration-300 motion-reduce:transition-none"
                 style={{ width: `${progress}%` }}
               />
             </span>
@@ -496,7 +496,7 @@ export const AgentTaskDock = ({
               aria-valuenow={progress}
             >
               <div
-                className="h-full rounded-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+                className="h-full rounded-full bg-brand transition-[width] duration-300 motion-reduce:transition-none"
                 style={{ width: `${progress}%` }}
               />
             </div>
@@ -613,7 +613,7 @@ export const OrchestrationActivity = ({
           aria-valuenow={progress}
         >
           <div
-            className="h-full rounded-full bg-primary transition-[width] duration-300 motion-reduce:transition-none"
+            className="h-full rounded-full bg-brand transition-[width] duration-300 motion-reduce:transition-none"
             style={{ width: `${progress}%` }}
           />
         </div>

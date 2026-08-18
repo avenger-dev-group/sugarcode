@@ -17,7 +17,7 @@ export type ComposerToken = Readonly<{
 
 export type ComposerSuggestion = Readonly<{
   id: string;
-  kind: 'command' | 'skill' | 'file';
+  kind: 'command' | 'skill' | 'knowledge' | 'file';
   label: string;
   alias?: string;
   description: string;
@@ -26,7 +26,7 @@ export type ComposerSuggestion = Readonly<{
 }>;
 
 export type ComposerDisplaySegment = Readonly<{
-  kind: 'text' | 'command' | 'skill' | 'file';
+  kind: 'text' | 'command' | 'skill' | 'knowledge' | 'file';
   text: string;
 }>;
 

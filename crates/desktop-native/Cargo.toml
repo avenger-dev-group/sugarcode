@@ -10,22 +10,35 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64.workspace = true
+fs2 = "0.4.3"
+futures-util = "0.3.31"
+ndarray = "0.17.2"
+notify = "8.2.0"
 napi = { version = "3.4.0", features = ["napi9", "tokio_rt"] }
 napi-derive = "3.3.0"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["api-24", "download-binaries", "ndarray", "std", "tls-rustls"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["rustls-tls", "stream"] }
 rusqlite.workspace = true
+jieba-rs = "0.8.1"
+pdf-extract = "0.10.0"
+quick-xml = "0.38.3"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sysinfo = "0.37.2"
 sugarcode-state = { path = "../state" }
 sugarcode-terminal = { path = "../terminal" }
 sugarcode-tools = { path = "../tools" }
 tokio.workspace = true
 tokio-util.workspace = true
+tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
 uuid.workspace = true
+zip = { version = "4.6.1", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 napi-build = "2.2.3"
 
 [dev-dependencies]
 git2.workspace = true
+lopdf = "0.38.0"
 tempfile.workspace = true

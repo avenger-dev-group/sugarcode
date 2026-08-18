@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 
 export type NativeRuntimeBinding = Readonly<{
+  setKnowledgeAgentActive?: (active: boolean) => void;
   inspectMcpConfigJson: () => string;
   inspectSkillsJson: (workspaceId?: string) => string;
   skillsContextJson: (workspaceId: string) => string;
@@ -17,13 +18,75 @@ export type NativeRuntimeBinding = Readonly<{
   importSkillJson: (
     workspaceId: string | undefined,
     sourcePath: string,
-    scope: 'user' | 'project',
   ) => string;
   exportSkillJson: (
     workspaceId: string | undefined,
     skillId: string,
     destinationPath: string,
   ) => string;
+  importSkillZipJson?: (
+    workspaceId: string | undefined,
+    archivePath: string,
+  ) => string;
+  exportSkillZipJson?: (
+    workspaceId: string | undefined,
+    skillId: string,
+    destinationPath: string,
+  ) => string;
+  inspectKnowledgeJson?: (workspaceId?: string) => string;
+  createKnowledgeBaseJson?: (
+    name: string,
+    description: string,
+    workspaceIdsJson: string,
+  ) => string;
+  updateKnowledgeBaseJson?: (
+    knowledgeBaseId: string,
+    name: string,
+    description: string,
+    workspaceIdsJson: string,
+    ignoreRulesJson: string,
+    semanticEnabled?: boolean,
+  ) => string;
+  deleteKnowledgeBaseJson?: (knowledgeBaseId: string) => string;
+  addKnowledgeFilesJson?: (
+    knowledgeBaseId: string,
+    pathsJson: string,
+  ) => Promise<string>;
+  createKnowledgeTextDocumentJson?: (
+    knowledgeBaseId: string,
+    fileName: string,
+    content: string,
+  ) => Promise<string>;
+  readKnowledgeTextDocumentJson?: (sourceId: string) => string;
+  updateKnowledgeTextDocumentJson?: (
+    sourceId: string,
+    expectedSha256: string,
+    content: string,
+  ) => Promise<string>;
+  addKnowledgeFolderJson?: (
+    knowledgeBaseId: string,
+    path: string,
+  ) => Promise<string>;
+  rescanKnowledgeSourceJson?: (sourceId: string, rebuild?: boolean) => Promise<string>;
+  cancelKnowledgeIndexJobJson?: (jobId: string) => string;
+  deleteKnowledgeSourceJson?: (sourceId: string) => string;
+  inspectKnowledgeBaseJson?: (knowledgeBaseId: string) => string;
+  searchKnowledgeJson?: (
+    workspaceId: string | undefined,
+    knowledgeBaseIdsJson: string,
+    query: string,
+  ) => Promise<string>;
+  readKnowledgeJson?: (
+    workspaceId: string | undefined,
+    knowledgeBaseIdsJson: string,
+    documentId: string,
+    startOrdinal: number,
+  ) => string;
+  installSemanticModelJson?: () => Promise<string>;
+  cancelSemanticModelDownloadJson?: () => string;
+  removeSemanticModelJson?: () => string;
+  selectKnowledgeRetrievalPlanJson?: (planId: string) => string;
+  setSemanticIndexPausedJson?: (paused: boolean) => string;
   saveMcpConfigJson: (expectedRevision: string, serversJson: string) => string;
   importAssetJson: (
     fileName: string,

@@ -24,6 +24,9 @@
     "lint": "pnpm --filter @sugarcode/desktop lint",
     "typecheck": "pnpm --filter @sugarcode/desktop typecheck",
     "test:scripts": "node --test \"scripts/tests/**/*.test.mjs\"",
+    "test:performance": "cargo test -p sugarcode-desktop-native benchmark_ --locked -- --ignored --nocapture && cargo test -p sugarcode-desktop-native int8_vector_storage_evaluation_preserves_cosine_scores --locked -- --nocapture",
+    "test:semantic-models:live": "cargo test -p sugarcode-desktop-native live_catalog_models_download_load_and_remove --locked -- --ignored --nocapture",
+    "test:e2e": "pnpm build:native:dev && node scripts/run-desktop-e2e.mjs",
     "check:rust": "cargo metadata --locked --no-deps --format-version 1",
     "check": "pnpm --filter @sugarcode/desktop check && pnpm test:scripts && pnpm check:rust"
   },

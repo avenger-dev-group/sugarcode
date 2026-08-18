@@ -233,12 +233,35 @@ const messageFromContent = (
         ? [attachmentFromPart(part as Extract<RuntimeContentPart, { type: 'asset' }>)]
         : [],
   );
-  return text || attachments.length > 0
+  const knowledgeReferences = content.flatMap((part) => {
+    if (
+      !isRecord(part) ||
+      part.type !== 'knowledgeReferences' ||
+      !Array.isArray(part.references)
+    ) {
+      return [];
+    }
+    return part.references.flatMap((reference) =>
+      isRecord(reference) &&
+      typeof reference.knowledgeBaseId === 'string' &&
+      /^kb_[0-9a-f]{32}$/u.test(reference.knowledgeBaseId) &&
+      typeof reference.name === 'string' &&
+      reference.name.length > 0 &&
+      reference.name.length <= 80
+        ? [{
+            knowledgeBaseId: reference.knowledgeBaseId,
+            name: reference.name,
+          }]
+        : [],
+    );
+  });
+  return text || attachments.length > 0 || knowledgeReferences.length > 0
     ? {
         id,
         role: 'user',
         text,
         ...(attachments.length > 0 ? { attachments } : {}),
+        ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
         status: 'completed',
       }
     : undefined;

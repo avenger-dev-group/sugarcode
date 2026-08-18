@@ -8,6 +8,9 @@ import {
   LoaderCircle,
   PanelLeftClose,
   Plus,
+  Search,
+  LibraryBig,
+  Sparkles,
   ShieldQuestion,
   Trash2,
 } from 'lucide-react';
@@ -59,12 +62,18 @@ import {
   toThreadNavigationStatus,
 } from './navigation-status';
 import type { ThreadNavigationStatus, ThreadStore } from './types';
+import type { AppSurface } from '../foundation/types';
 
 type ThreadNavigatorProps = Readonly<{
   store: ThreadStore;
   footer?: ReactNode;
   onToggleNavigator?: () => void;
   approvalThreadIds?: readonly string[];
+  surface?: AppSurface;
+  onOpenSearch?: () => void;
+  onOpenKnowledge?: () => void;
+  onOpenSkills?: () => void;
+  onOpenWorkbench?: () => void;
 }>;
 
 type DeleteRequest =
@@ -128,7 +137,15 @@ export const ThreadNavigator = ({
   footer,
   onToggleNavigator,
   approvalThreadIds = [],
+  surface = 'workbench',
+  onOpenSearch,
+  onOpenKnowledge,
+  onOpenSkills,
+  onOpenWorkbench,
 }: ThreadNavigatorProps) => {
+  const searchShortcut = navigator.platform.toLocaleLowerCase().includes('mac')
+    ? '⌘K'
+    : 'Ctrl K';
   const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(
     null,
   );
@@ -268,6 +285,7 @@ export const ThreadNavigator = ({
   }, [store.expandedProjectIds]);
 
   const startProjectTask = async (projectId?: string): Promise<void> => {
+    onOpenWorkbench?.();
     const activated =
       projectActive &&
       (!projectId || workspace.state.activeProjectId === projectId)
@@ -295,6 +313,7 @@ export const ThreadNavigator = ({
   };
 
   const startChat = async (): Promise<void> => {
+    onOpenWorkbench?.();
     if (await activateChat()) {
       await store.startNewThread();
     }
@@ -327,11 +346,15 @@ export const ThreadNavigator = ({
     _projectId: string,
     threadId: string,
   ): Promise<void> => {
-    await workspace.focusTask(threadId);
+    const focus = workspace.focusTask(threadId);
+    onOpenWorkbench?.();
+    await focus;
   };
 
   const selectChatThread = async (threadId: string): Promise<void> => {
-    await workspace.focusTask(threadId);
+    const focus = workspace.focusTask(threadId);
+    onOpenWorkbench?.();
+    await focus;
   };
 
   const renderThreadList = (
@@ -369,7 +392,7 @@ export const ThreadNavigator = ({
               threadTitles[threadId] ??
               workspace.state.chatTitles?.[threadId]
             }
-            current={threadId === displayedThreadId}
+            current={surface === 'workbench' && threadId === displayedThreadId}
             status={toThreadNavigationStatus({
               inputRequired:
                 store.navigator.inputRequiredThreadIds.includes(threadId),
@@ -480,6 +503,32 @@ export const ThreadNavigator = ({
             ? ` · ${store.navigator.mutationNotice}`
             : ''}
         </p>
+
+        <div className="px-2 pb-2">
+          <button
+            type="button"
+            className="window-no-drag flex h-9 w-full items-center gap-2 rounded-lg border border-border/80 bg-background/80 px-2.5 text-left text-sm text-tertiary shadow-sm transition-colors hover:border-input hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onOpenSearch}
+          >
+            <Search className="size-4" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">搜索或运行…</span>
+            <kbd className="rounded border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-tertiary">{searchShortcut}</kbd>
+          </button>
+          <div className="mt-1.5 space-y-0.5">
+            <NavigatorSurfaceButton
+              active={surface === 'knowledge'}
+              icon={LibraryBig}
+              label="本地知识库"
+              onClick={onOpenKnowledge}
+            />
+            <NavigatorSurfaceButton
+              active={surface === 'skills'}
+              icon={Sparkles}
+              label="技能"
+              onClick={onOpenSkills}
+            />
+          </div>
+        </div>
 
         <ScrollArea className="min-h-0 flex-1">
           <div
@@ -805,6 +854,32 @@ export const ThreadNavigator = ({
     </>
   );
 };
+
+const NavigatorSurfaceButton = ({
+  active,
+  icon: Icon,
+  label,
+  onClick,
+}: Readonly<{
+  active: boolean;
+  icon: typeof LibraryBig;
+  label: string;
+  onClick?: () => void;
+}>) => (
+  <button
+    type="button"
+    aria-current={active ? 'page' : undefined}
+    className={`flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      active
+        ? 'bg-link/10 font-medium text-link'
+        : 'text-navigation hover:bg-surface hover:text-foreground'
+    }`}
+    onClick={onClick}
+  >
+    <Icon className="size-4" aria-hidden="true" />
+    <span>{label}</span>
+  </button>
+);
 
 type SectionHeadingProps = Readonly<{
   id: string;

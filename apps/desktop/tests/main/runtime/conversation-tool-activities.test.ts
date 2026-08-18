@@ -32,6 +32,86 @@ test('workspace_read projection preserves every requested path', () => {
   );
 });
 
+test('knowledge search projects selected bases, mode, hit count, and citation metadata', () => {
+  const knowledgeBaseId = `kb_${'1'.repeat(32)}`;
+  const documentId = `kd_${'2'.repeat(32)}`;
+  const items: readonly RuntimeTurnItemRecord[] = [
+    {
+      id: 'item-knowledge-call',
+      turnId: 'turn-fixture',
+      sequence: 1,
+      kind: 'turn.toolCall',
+      payload: {
+        itemId: 'item-knowledge-call',
+        callId: 'call-knowledge',
+        name: 'knowledge_search',
+        arguments: { query: '原子切换' },
+      },
+    },
+    {
+      id: 'item-knowledge-result',
+      turnId: 'turn-fixture',
+      sequence: 2,
+      kind: 'turn.toolResult',
+      payload: {
+        itemId: 'item-knowledge-result',
+        callId: 'call-knowledge',
+        result: {
+          query: '原子切换',
+          mode: 'hybrid',
+          selectedKnowledgeBases: [{ id: knowledgeBaseId, name: '产品规范' }],
+          hits: [{
+            citation: 'K1',
+            knowledgeBaseId,
+            knowledgeBaseName: '产品规范',
+            documentId,
+            fileName: 'retrieval.md',
+            relativePath: 'spec/retrieval.md',
+            heading: '模型切换',
+            pageNumber: 3,
+            contentKind: 'text',
+            content: '新索引完成后原子切换。',
+            score: 0.9,
+          }],
+        },
+      },
+    },
+  ];
+
+  assert.deepEqual(projectTurnActivities(items), [{
+    type: 'knowledge',
+    activity: {
+      id: 'item-knowledge-call',
+      callId: 'call-knowledge',
+      operation: 'search',
+      query: '原子切换',
+      callStatus: 'completed',
+      result: {
+        id: 'item-knowledge-result:result:item-knowledge-call',
+        status: 'completed',
+        outcome: {
+          type: 'success',
+          mode: 'hybrid',
+          matches: 1,
+          knowledgeBases: [{ id: knowledgeBaseId, name: '产品规范' }],
+          citations: [{
+            citation: 'K1',
+            knowledgeBaseId,
+            knowledgeBaseName: '产品规范',
+            documentId,
+            fileName: 'retrieval.md',
+            relativePath: 'spec/retrieval.md',
+            heading: '模型切换',
+            pageNumber: 3,
+            contentKind: 'text',
+            content: '新索引完成后原子切换。',
+          }],
+        },
+      },
+    },
+  }]);
+});
+
 test('load_skill projects a durable activity without the invocation marker', () => {
   const content = '---\nname: frontend-design\n---\n\nDesign carefully.\n';
   const items: readonly RuntimeTurnItemRecord[] = [

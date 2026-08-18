@@ -13,7 +13,7 @@ import {
   updateContextRailVisibility,
 } from './layout-state';
 import type { StoredLayout } from './layout-state';
-import type { FoundationStore, Theme } from './types';
+import type { AppSurface, FoundationStore, Theme } from './types';
 
 const LAYOUT_STORAGE_KEY = 'sugarcode.desktop.layout.v1';
 
@@ -29,6 +29,8 @@ export const useStore = (
   contextRailScopeKey: string | null = null,
 ): FoundationStore => {
   const [theme, setTheme] = useState<Theme>('light');
+  const [surface, setSurface] = useState<AppSurface>('workbench');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [layout, setLayout] = useState<StoredLayout>(loadLayout);
   const [contextRailVisibility, setContextRailVisibility] = useState<
     ReadonlyMap<string, boolean>
@@ -150,7 +152,12 @@ export const useStore = (
     navigatorResize,
     contextRailOpen,
     contextRailResize,
+    surface,
+    searchOpen,
     openContextRail,
+    openSearch: () => setSearchOpen(true),
+    closeSearch: () => setSearchOpen(false),
+    setSurface,
     themeLabel: isDark ? '使用浅色主题' : '使用深色主题',
     toggleNavigator,
     toggleContextRail,

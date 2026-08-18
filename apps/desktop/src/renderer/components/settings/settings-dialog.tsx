@@ -5,14 +5,12 @@ import {
   Moon,
   PlugZap,
   Settings,
-  Sparkles,
   Sun,
   X,
 } from 'lucide-react';
 
 import { ConnectionStatus } from '@/renderer/components/connection/connection-status';
 import { ModelConfigSettingsPanel } from '@/renderer/components/model-config/model-config-workbench';
-import { SkillsSettingsPanel } from '@/renderer/components/skills/skills-settings-panel';
 import { Button } from '@/renderer/components/ui/button';
 import {
   Dialog,
@@ -40,7 +38,6 @@ const SETTINGS_SECTIONS: readonly Readonly<{
 }>[] = [
   { id: 'general', label: '通用', icon: Monitor },
   { id: 'model', label: '模型', icon: Cpu },
-  { id: 'skills', label: '技能', icon: Sparkles },
   {
     id: 'mcp',
     label: 'MCP',
@@ -146,11 +143,20 @@ export const SettingsDialog = ({
   toggleTheme,
   workspaceId,
   threadId,
+  open,
+  onOpenChange,
 }: SettingsDialogProps) => {
   const store = useStore();
+  const actualOpen = open ?? store.open;
 
   return (
-    <Dialog open={store.open} onOpenChange={store.setOpen}>
+    <Dialog
+      open={actualOpen}
+      onOpenChange={(nextOpen) => {
+        store.setOpen(nextOpen);
+        onOpenChange?.(nextOpen);
+      }}
+    >
       <DialogTrigger asChild>
         <Button
           type="button"
@@ -168,8 +174,7 @@ export const SettingsDialog = ({
             设置
           </DialogTitle>
           <DialogDescription className="sr-only">
-            配置 SugarCode 桌面端、模型连接、工作区技能、MCP
-            服务、软件更新和应用信息。
+            配置 SugarCode 桌面端、模型连接、MCP 服务和应用信息。
           </DialogDescription>
           <DialogClose asChild>
             <Button
@@ -189,7 +194,7 @@ export const SettingsDialog = ({
             className="border-b bg-surface/45 p-2 sm:border-r sm:border-b-0"
             aria-label="设置分类"
           >
-            <div className="grid grid-cols-5 gap-1 sm:block sm:space-y-1">
+            <div className="grid grid-cols-4 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const Icon = section.icon;
                 const current =
@@ -209,7 +214,7 @@ export const SettingsDialog = ({
                       section.disabled
                         ? 'cursor-not-allowed border-transparent text-tertiary'
                         : current
-                        ? 'border-border bg-background text-foreground shadow-sm'
+                        ? 'border-brand/25 bg-brand/10 text-brand'
                         : 'border-transparent text-secondary hover:bg-surface-hover hover:text-foreground'
                     }`}
                   >
@@ -228,12 +233,7 @@ export const SettingsDialog = ({
             </div>
           </nav>
 
-          <section
-            className={`relative min-h-0 ${
-              store.section === 'skills' ? 'overflow-hidden' : 'overflow-y-auto'
-            }`}
-            aria-live="polite"
-          >
+          <section className="relative min-h-0 overflow-y-auto" aria-live="polite">
             {store.section === 'general' ? (
               <GeneralSettings
                 isDark={isDark}
@@ -244,10 +244,7 @@ export const SettingsDialog = ({
               />
             ) : null}
             {store.section === 'model' ? (
-              <ModelConfigSettingsPanel active={store.open} />
-            ) : null}
-            {store.section === 'skills' ? (
-              <SkillsSettingsPanel active={store.open} />
+              <ModelConfigSettingsPanel active={actualOpen} />
             ) : null}
             {store.section === 'about' ? <AboutSettings /> : null}
           </section>

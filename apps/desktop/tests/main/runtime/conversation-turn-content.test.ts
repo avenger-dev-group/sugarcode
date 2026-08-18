@@ -48,6 +48,32 @@ test('revised turn content preserves references and durable attachment fields', 
   ]);
 });
 
+test('revised turn content preserves stable knowledge IDs as optional metadata', () => {
+  assert.deepEqual(
+    revisedTurnContent(
+      {
+        text: '@知识库产品规范\nOriginal request',
+        attachments: [],
+        knowledgeReferences: [{
+          knowledgeBaseId: `kb_${'1'.repeat(32)}`,
+          name: '产品规范',
+        }],
+      },
+      'Revised request',
+    ),
+    [
+      { type: 'text', text: '@知识库产品规范\nRevised request' },
+      {
+        type: 'knowledgeReferences',
+        references: [{
+          knowledgeBaseId: `kb_${'1'.repeat(32)}`,
+          name: '产品规范',
+        }],
+      },
+    ],
+  );
+});
+
 test('revised turn content rejects the complete restored input over the limit', () => {
   assert.equal(
     revisedTurnContent(

@@ -14,6 +14,9 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-foreground: var(--brand-foreground);
   --color-navigation-background: var(--navigation-background);
   --color-surface: var(--surface);
   --color-surface-hover: var(--surface-hover);
@@ -63,6 +66,9 @@
   --radius: 0.625rem;
   --background: #ffffff;
   --primary: #1a1c1f;
+  --brand: #0969da;
+  --brand-hover: #0550ae;
+  --brand-foreground: #ffffff;
   --navigation-background: #f9f9f9;
   --navigation: rgb(from var(--primary) r g b / 85%);
   --navigation-heading: rgb(from var(--primary) r g b / 35%);
@@ -70,8 +76,8 @@
   --destructive: oklch(0.577 0.245 27.325);
   --success: oklch(0.627 0.194 149.214);
   --warning: #a66b00;
-  --link: #0969da;
-  --link-hover: #0550ae;
+  --link: var(--brand);
+  --link-hover: var(--brand-hover);
   --syntax-attribute: #116329;
   --syntax-comment: #57606a;
   --syntax-deletion: #82071e;
@@ -86,6 +92,9 @@
   color-scheme: dark;
   --background: #181818;
   --primary: #ffffff;
+  --brand: #58a6ff;
+  --brand-hover: #79c0ff;
+  --brand-foreground: #0d1117;
   --navigation-background: #202020;
   --navigation: rgb(from var(--primary) r g b / 85%);
   --navigation-heading: rgb(from var(--primary) r g b / 50%);
@@ -93,8 +102,8 @@
   --destructive: oklch(0.704 0.191 22.216);
   --success: oklch(0.792 0.209 151.711);
   --warning: #f2bd45;
-  --link: #58a6ff;
-  --link-hover: #79c0ff;
+  --link: var(--brand);
+  --link-hover: var(--brand-hover);
   --syntax-attribute: #7ee787;
   --syntax-comment: #8b949e;
   --syntax-deletion: #ffdcd7;
@@ -126,7 +135,7 @@
   --border: rgb(from var(--primary) r g b / 12%);
   --border-subtle: rgb(from var(--primary) r g b / 7%);
   --input: rgb(from var(--primary) r g b / 16%);
-  --ring: var(--primary);
+  --ring: var(--brand);
   --link-muted: rgb(from var(--link) r g b / 55%);
   --shadow-soft: rgb(from var(--primary) r g b / 8%);
 }
@@ -179,6 +188,11 @@
   -webkit-app-region: no-drag;
 }
 
+[data-layout='main-surface'],
+[data-layout='main-surface'] * {
+  -webkit-app-region: no-drag;
+}
+
 .window-leading-toggle {
   left: var(--window-leading-toggle-x);
 }
@@ -189,6 +203,16 @@
 
 .window-titlebar-trailing-safe {
   padding-right: calc(1.25rem + var(--window-titlebar-controls-width));
+}
+
+.window-main-surface-header {
+  padding-right: calc(1.5rem + var(--window-titlebar-controls-width));
+}
+
+@media (min-width: 40rem) {
+  .window-main-surface-header {
+    padding-right: calc(2rem + var(--window-titlebar-controls-width));
+  }
 }
 
 .window-context-titlebar {

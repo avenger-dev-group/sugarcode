@@ -57,6 +57,7 @@ const AgentMessageView = ({
           source={visibleText}
           isStreaming={isStreaming}
           verifiedFilePaths={message.verifiedFilePaths}
+          knowledgeCitations={message.knowledgeCitations}
         />
       ) : (
         <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px] text-foreground">

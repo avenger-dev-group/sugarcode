@@ -13,6 +13,8 @@ import { workspaceProjectionStore } from '@/renderer/stores/workspace-projection
 
 import { AgentCodeBlock } from './code-block/code-block';
 import { FileReferenceLink } from './file-reference-link';
+import { KnowledgeCitation } from './knowledge-citation';
+import { splitKnowledgeCitationText } from './knowledge-citation-text';
 import { useOrchestrationActions } from '../orchestration/use-store';
 import { createVerifiedWorkspaceFileReferenceResolver } from '../workspace/file-reference';
 import {
@@ -49,6 +51,7 @@ const renderTokens = (
   workspaceReady: boolean,
   resolveVerifiedFileReference: (value: string) => string | null,
   fileDisplayLabels: ReadonlyMap<string, string>,
+  knowledgeCitations: ReadonlyMap<string, NonNullable<AgentMarkdownProps['knowledgeCitations']>[number]>,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
@@ -63,7 +66,22 @@ const renderTokens = (
         workspaceReady,
         resolveVerifiedFileReference,
         fileDisplayLabels,
+        knowledgeCitations,
       );
+
+    const citationText = (text: string): ReactNode[] => {
+      return splitKnowledgeCitationText(text, knowledgeCitations)
+        .map((segment, segmentIndex) => {
+          if (segment.type === 'text') return segment.value;
+          const citation = knowledgeCitations.get(segment.label);
+          return citation ? (
+            <KnowledgeCitation
+              key={`${key}:citation:${segment.label}:${segmentIndex}`}
+              citation={citation}
+            />
+          ) : `[${segment.label}]`;
+        });
+    };
 
     switch (token.type) {
       case 'space':
@@ -350,7 +368,7 @@ const renderTokens = (
       case 'text':
         return [
           <Fragment key={key}>
-            {token.tokens ? children(token.tokens) : token.text}
+            {token.tokens ? children(token.tokens) : citationText(token.text)}
           </Fragment>,
         ];
       case 'escape':
@@ -376,6 +394,7 @@ const AgentMarkdownView = ({
   source,
   isStreaming,
   verifiedFilePaths = [],
+  knowledgeCitations = [],
 }: AgentMarkdownProps): ReactElement => {
   const { openFile } = useOrchestrationActions();
   const workspaceGeneration = useZustandStore(
@@ -408,6 +427,13 @@ const AgentMarkdownView = ({
       ),
     [projection.tokens, resolveVerifiedFileReference],
   );
+  const citationByLabel = useMemo(() => {
+    const result = new Map<string, (typeof knowledgeCitations)[number]>();
+    for (const citation of knowledgeCitations) {
+      result.set(citation.citation, citation);
+    }
+    return result;
+  }, [knowledgeCitations]);
 
   return (
     <div className="min-w-0 max-w-full break-words font-normal text-foreground">
@@ -419,6 +445,7 @@ const AgentMarkdownView = ({
         workspaceReady,
         resolveVerifiedFileReference,
         fileDisplayLabels,
+        citationByLabel,
       )}
     </div>
   );
