@@ -1,4 +1,6 @@
+mod knowledge;
 mod persistence;
+mod semantic_model;
 mod skills;
 
 use base64::Engine;
@@ -9,6 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use napi::Error;
 use napi::bindgen_prelude::Result;
@@ -72,7 +75,7 @@ use persistence::TaskWorkspaceRow;
 
 #[napi]
 pub struct NativeRuntime {
-    store: Mutex<Store>,
+    store: Arc<Mutex<Store>>,
     content_store: ContentStore,
     workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
     task_workspaces: Mutex<HashMap<String, Arc<WorkspaceTool>>>,
@@ -83,6 +86,12 @@ pub struct NativeRuntime {
         Mutex<HashMap<String, Arc<AsyncMutex<Option<ProjectTaskEnvironment>>>>>,
     terminals: Mutex<HashMap<String, EmbeddedTerminal>>,
     skills_root: PathBuf,
+    knowledge_root: PathBuf,
+    semantic_model: semantic_model::SemanticModelManager,
+    data_directory: PathBuf,
+    knowledge_index_gate: Arc<AsyncMutex<()>>,
+    semantic_index_gate: Arc<Mutex<()>>,
+    semantic_index_scheduled: Arc<AtomicBool>,
     task_worktrees_root: PathBuf,
 }
 
@@ -117,14 +126,20 @@ impl NativeRuntime {
     #[napi(constructor)]
     pub fn open(data_directory: String) -> Result<Self> {
         let store = Store::open(&data_directory).map_err(native_error)?;
+        let data_directory_path = PathBuf::from(&data_directory);
         let content_store = ContentStore::open_at(Path::new(&data_directory))
             .map_err(|error| Error::from_reason(error.to_string()))?;
         let skills_root = Path::new(&data_directory).join("skills");
+        let knowledge_root = Path::new(&data_directory).join("knowledge");
+        let semantic_model = semantic_model::SemanticModelManager::open(&data_directory_path)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         let task_worktrees_root = Path::new(&data_directory).join("worktrees");
         std::fs::create_dir_all(&skills_root)
             .map_err(|error| Error::from_reason(error.to_string()))?;
+        std::fs::create_dir_all(&knowledge_root)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
         Ok(Self {
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
             content_store,
             workspaces: Mutex::new(HashMap::new()),
             task_workspaces: Mutex::new(HashMap::new()),
@@ -134,8 +149,279 @@ impl NativeRuntime {
             project_environment_gates: Mutex::new(HashMap::new()),
             terminals: Mutex::new(HashMap::new()),
             skills_root,
+            knowledge_root,
+            semantic_model,
+            data_directory: data_directory_path,
+            knowledge_index_gate: Arc::new(AsyncMutex::new(())),
+            semantic_index_gate: Arc::new(Mutex::new(())),
+            semantic_index_scheduled: Arc::new(AtomicBool::new(false)),
             task_worktrees_root,
         })
+    }
+
+    #[napi]
+    pub fn inspect_knowledge_json(&self, workspace_id: Option<String>) -> Result<String> {
+        let (knowledge_bases, semantic_index) = self.with_store(|store| {
+            Ok((
+                store.knowledge_bases(workspace_id.as_deref())?,
+                store.semantic_index_summary(self.semantic_model.model_version())?,
+            ))
+        })?;
+        let mut semantic_model =
+            serde_json::to_value(self.semantic_model.inspect()).map_err(native_error_message)?;
+        if self.semantic_model.is_ready()
+            && semantic_index.total_chunks > semantic_index.indexed_chunks
+            && semantic_index.state == "notIndexed"
+        {
+            self.schedule_semantic_index(None);
+        }
+        semantic_model["semanticIndex"] =
+            serde_json::to_value(semantic_index).map_err(native_error_message)?;
+        serde_json::to_string(&json!({
+            "knowledgeBases": knowledge_bases,
+            "semanticModel": semantic_model
+        }))
+        .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub async fn install_semantic_model_json(&self) -> Result<String> {
+        match self.semantic_model.install().await {
+            Ok(()) => {
+                self.schedule_semantic_index(None);
+                serde_json::to_string(&json!({ "accepted": true })).map_err(native_error_message)
+            }
+            Err(message) if message == "cancelled" => serde_json::to_string(&json!({
+                "accepted": false, "reason": "cancelled"
+            }))
+            .map_err(native_error_message),
+            Err(message) => serde_json::to_string(&json!({
+                "accepted": false, "reason": "unavailable", "message": message
+            }))
+            .map_err(native_error_message),
+        }
+    }
+
+    #[napi]
+    pub fn cancel_semantic_model_download_json(&self) -> Result<String> {
+        let cancelled = self.semantic_model.cancel();
+        serde_json::to_string(&if cancelled {
+            json!({ "accepted": true })
+        } else {
+            json!({
+                "accepted": false,
+                "reason": "conflict",
+                "message": "当前没有正在进行的模型下载。"
+            })
+        })
+        .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub fn remove_semantic_model_json(&self) -> Result<String> {
+        match self.semantic_model.remove() {
+            Ok(()) => {
+                // Removing the loaded model first makes an active indexer stop at its
+                // next batch. Wait for that batch to finish before clearing vectors so
+                // it cannot write stale rows back after the clear.
+                let _semantic_guard = self
+                    .semantic_index_gate
+                    .lock()
+                    .map_err(|_| Error::from_reason("Semantic index lock was poisoned."))?;
+                self.with_store(Store::clear_knowledge_semantic_indexes)?;
+                serde_json::to_string(&json!({ "accepted": true })).map_err(native_error_message)
+            }
+            Err(message) => serde_json::to_string(&json!({
+                "accepted": false, "reason": "conflict", "message": message
+            }))
+            .map_err(native_error_message),
+        }
+    }
+
+    #[napi]
+    pub fn create_knowledge_base_json(
+        &self,
+        name: String,
+        description: String,
+        workspace_ids_json: String,
+    ) -> Result<String> {
+        let workspace_ids: Vec<String> =
+            serde_json::from_str(&workspace_ids_json).map_err(native_error_message)?;
+        let id = self
+            .with_store(|store| store.create_knowledge_base(&name, &description, &workspace_ids))?;
+        serde_json::to_string(&json!({ "accepted": true, "knowledgeBaseId": id }))
+            .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub fn delete_knowledge_base_json(&self, knowledge_base_id: String) -> Result<String> {
+        let managed_paths = self.with_store(|store| {
+            Ok(store
+                .knowledge_sources(&knowledge_base_id)?
+                .into_iter()
+                .filter(|source| source.kind == "managedFile")
+                .map(|source| source.path)
+                .collect::<Vec<_>>())
+        })?;
+        let deleted = self.with_store(|store| store.delete_knowledge_base(&knowledge_base_id))?;
+        if deleted {
+            for path in managed_paths {
+                let path = PathBuf::from(path);
+                let _ = std::fs::remove_file(&path);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
+        }
+        serde_json::to_string(&json!({ "accepted": deleted })).map_err(native_error_message)
+    }
+
+    #[napi]
+    pub async fn add_knowledge_files_json(
+        &self,
+        knowledge_base_id: String,
+        paths_json: String,
+    ) -> Result<String> {
+        let paths: Vec<String> = serde_json::from_str(&paths_json).map_err(native_error_message)?;
+        let _index_guard = self.knowledge_index_gate.lock().await;
+        let data_directory = self.data_directory.clone();
+        let knowledge_root = self.knowledge_root.clone();
+        let knowledge_base_id_for_index = knowledge_base_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut store = Store::open_worker(data_directory).map_err(native_error)?;
+            let result = knowledge::add_managed_files(
+                &mut store,
+                &knowledge_root,
+                &knowledge_base_id,
+                &paths,
+            )
+            .map_err(native_error)?;
+            serde_json::to_string(&result).map_err(native_error_message)
+        })
+        .await
+        .map_err(native_error_message)??;
+        self.schedule_semantic_index(Some(knowledge_base_id_for_index));
+        Ok(result)
+    }
+
+    #[napi]
+    pub async fn add_knowledge_folder_json(
+        &self,
+        knowledge_base_id: String,
+        path: String,
+    ) -> Result<String> {
+        let _index_guard = self.knowledge_index_gate.lock().await;
+        let data_directory = self.data_directory.clone();
+        let knowledge_base_id_for_index = knowledge_base_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut store = Store::open_worker(data_directory).map_err(native_error)?;
+            let result = knowledge::add_linked_folder(&mut store, &knowledge_base_id, &path)
+                .map_err(native_error)?;
+            serde_json::to_string(&result).map_err(native_error_message)
+        })
+        .await
+        .map_err(native_error_message)??;
+        self.schedule_semantic_index(Some(knowledge_base_id_for_index));
+        Ok(result)
+    }
+
+    #[napi]
+    pub fn inspect_knowledge_base_json(&self, knowledge_base_id: String) -> Result<String> {
+        let (sources, documents) = self.with_store(|store| {
+            Ok((
+                store.knowledge_sources(&knowledge_base_id)?,
+                store.knowledge_documents(&knowledge_base_id)?,
+            ))
+        })?;
+        serde_json::to_string(&json!({ "sources": sources, "documents": documents }))
+            .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub async fn search_knowledge_json(
+        &self,
+        workspace_id: Option<String>,
+        knowledge_base_ids_json: String,
+        query: String,
+    ) -> Result<String> {
+        let knowledge_base_ids: Vec<String> =
+            serde_json::from_str(&knowledge_base_ids_json).map_err(native_error_message)?;
+        let data_directory = self.data_directory.clone();
+        let semantic_model = self.semantic_model.clone();
+        tokio::task::spawn_blocking(move || {
+            let fts_query = knowledge::search_query(&query).map_err(native_error)?;
+            let mut store = Store::open_worker(data_directory).map_err(native_error)?;
+            let hybrid_ready = semantic_model.is_ready()
+                && store
+                    .semantic_indexes_ready(&knowledge_base_ids, semantic_model.model_version())
+                    .map_err(native_error)?;
+            let (mode, hits) = if hybrid_ready {
+                match semantic_model.embed_query(&query) {
+                    Ok(vector) => (
+                        "hybrid",
+                        store
+                            .search_knowledge_hybrid(
+                                &knowledge_base_ids,
+                                workspace_id.as_deref(),
+                                &fts_query,
+                                &vector,
+                                semantic_model.model_version(),
+                                8,
+                            )
+                            .map_err(native_error)?,
+                    ),
+                    Err(_) => (
+                        "fullText",
+                        store
+                            .search_knowledge(
+                                &knowledge_base_ids,
+                                workspace_id.as_deref(),
+                                &fts_query,
+                                8,
+                            )
+                            .map_err(native_error)?,
+                    ),
+                }
+            } else {
+                (
+                    "fullText",
+                    store
+                        .search_knowledge(
+                            &knowledge_base_ids,
+                            workspace_id.as_deref(),
+                            &fts_query,
+                            8,
+                        )
+                        .map_err(native_error)?,
+                )
+            };
+            serde_json::to_string(&json!({ "query": query, "mode": mode, "hits": hits }))
+                .map_err(native_error_message)
+        })
+        .await
+        .map_err(native_error_message)?
+    }
+
+    #[napi]
+    pub fn read_knowledge_json(
+        &self,
+        workspace_id: Option<String>,
+        knowledge_base_ids_json: String,
+        document_id: String,
+        start_ordinal: i64,
+    ) -> Result<String> {
+        let knowledge_base_ids: Vec<String> =
+            serde_json::from_str(&knowledge_base_ids_json).map_err(native_error_message)?;
+        let chunks = self.with_store(|store| {
+            store.read_knowledge_document(
+                &knowledge_base_ids,
+                workspace_id.as_deref(),
+                &document_id,
+                start_ordinal,
+            )
+        })?;
+        serde_json::to_string(&json!({ "documentId": document_id, "chunks": chunks }))
+            .map_err(native_error_message)
     }
 
     #[napi]
@@ -232,6 +518,27 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn import_skill_zip_json(
+        &self,
+        workspace_id: Option<String>,
+        archive_path: String,
+        scope: String,
+    ) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        skills::import_skill_zip(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            Path::new(&archive_path),
+            &scope,
+        )
+        .map_err(native_error_message)?;
+        self.inspect_skills_json(workspace_id)
+    }
+
+    #[napi]
     pub fn export_skill_json(
         &self,
         workspace_id: Option<String>,
@@ -244,6 +551,29 @@ impl NativeRuntime {
             .transpose()?;
         let preferences = self.with_store(Store::skill_preferences)?;
         skills::export_skill(
+            &self.skills_root,
+            workspace.as_deref().map(WorkspaceTool::canonical_root),
+            &preferences,
+            &skill_id,
+            Path::new(&destination_path),
+        )
+        .map(|value| value.to_string())
+        .map_err(native_error_message)
+    }
+
+    #[napi]
+    pub fn export_skill_zip_json(
+        &self,
+        workspace_id: Option<String>,
+        skill_id: String,
+        destination_path: String,
+    ) -> Result<String> {
+        let workspace = workspace_id
+            .as_deref()
+            .map(|workspace_id| self.workspace(workspace_id))
+            .transpose()?;
+        let preferences = self.with_store(Store::skill_preferences)?;
+        skills::export_skill_zip(
             &self.skills_root,
             workspace.as_deref().map(WorkspaceTool::canonical_root),
             &preferences,
@@ -1939,6 +2269,35 @@ impl NativeRuntime {
             .map_err(|_| Error::from_reason("Native runtime database lock was poisoned."))?;
         operation(&mut store).map_err(native_error)
     }
+
+    fn schedule_semantic_index(&self, knowledge_base_id: Option<String>) {
+        if !self.semantic_model.is_ready() {
+            return;
+        }
+        if self
+            .semantic_index_scheduled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let gate = self.semantic_index_gate.clone();
+        let scheduled = self.semantic_index_scheduled.clone();
+        let data_directory = self.data_directory.clone();
+        let semantic_model = self.semantic_model.clone();
+        std::thread::spawn(move || {
+            let _guard = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = match knowledge_base_id {
+                Some(knowledge_base_id) => semantic_model::index_knowledge_base(
+                    &data_directory,
+                    &semantic_model,
+                    &knowledge_base_id,
+                ),
+                None => semantic_model::index_all_knowledge_bases(&data_directory, &semantic_model),
+            };
+            scheduled.store(false, Ordering::Release);
+        });
+    }
 }
 
 async fn read_project_environment_content(workspace: &WorkspaceTool) -> Result<Option<String>> {
@@ -2192,6 +2551,10 @@ mod project_environment_tests;
 #[cfg(test)]
 #[path = "tests/skills.rs"]
 mod skills_tests;
+
+#[cfg(test)]
+#[path = "tests/knowledge.rs"]
+mod knowledge_tests;
 
 #[cfg(test)]
 #[path = "tests/workspace.rs"]

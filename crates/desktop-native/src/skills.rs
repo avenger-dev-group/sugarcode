@@ -3,11 +3,16 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use sugarcode_tools::{
     MAX_WORKSPACE_SKILL_BYTES, MAX_WORKSPACE_SKILL_COUNT, MAX_WORKSPACE_SKILL_SNAPSHOT_BYTES,
     parse_workspace_skill_definition,
 };
+use uuid::Uuid;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const MAX_ROOT_ENTRIES: usize = 256;
 const MAX_IMPORT_FILES: usize = 512;
@@ -134,6 +139,136 @@ pub(super) fn import_skill(
     copy_tree(&source, &destination).inspect_err(|_| {
         let _ = fs::remove_dir_all(&destination);
     })
+}
+
+pub(super) fn import_skill_zip(
+    user_root: &Path,
+    workspace_root: Option<&Path>,
+    archive_path: &Path,
+    scope: &str,
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(archive_path).map_err(|error| error.to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_IMPORT_BYTES
+    {
+        return Err("Skill ZIP must be a regular archive no larger than 16 MiB.".to_owned());
+    }
+    let file = File::open(archive_path).map_err(|error| error.to_string())?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| format!("Invalid Skill ZIP: {error}"))?;
+    if archive.len() > MAX_IMPORT_FILES {
+        return Err("Skill ZIP contains too many entries.".to_owned());
+    }
+    let mut definition_roots = Vec::new();
+    let mut total_size = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or_else(|| "Skill ZIP contains an unsafe path.".to_owned())?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("Skill ZIP cannot contain symbolic links.".to_owned());
+        }
+        total_size = total_size
+            .checked_add(entry.size())
+            .ok_or_else(|| "Skill ZIP is too large.".to_owned())?;
+        if total_size > MAX_IMPORT_BYTES {
+            return Err("Skill ZIP expands beyond the 16 MiB limit.".to_owned());
+        }
+        if enclosed.file_name().is_some_and(|name| name == "SKILL.md") {
+            definition_roots.push(enclosed.parent().unwrap_or(Path::new("")).to_path_buf());
+        }
+    }
+    if definition_roots.len() != 1 {
+        return Err("Skill ZIP must contain exactly one SKILL.md.".to_owned());
+    }
+    let definition_root = definition_roots.remove(0);
+    let staging_root = user_root.join(format!(".import-{}", Uuid::now_v7().simple()));
+    fs::create_dir(&staging_root).map_err(|error| error.to_string())?;
+    let extracted = (|| -> Result<(), String> {
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+            let enclosed = entry
+                .enclosed_name()
+                .ok_or_else(|| "Skill ZIP contains an unsafe path.".to_owned())?;
+            let Ok(relative) = enclosed.strip_prefix(&definition_root) else {
+                continue;
+            };
+            if relative.as_os_str().is_empty() {
+                continue;
+            }
+            let destination = staging_root.join(relative);
+            if entry.is_dir() {
+                fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
+            } else {
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+                }
+                let mut output = File::create(&destination).map_err(|error| error.to_string())?;
+                std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
+            }
+        }
+        import_skill(user_root, workspace_root, &staging_root, scope)
+    })();
+    let _ = fs::remove_dir_all(&staging_root);
+    extracted
+}
+
+pub(super) fn export_skill_zip(
+    user_root: &Path,
+    workspace_root: Option<&Path>,
+    preferences: &HashMap<String, bool>,
+    skill_id: &str,
+    destination: &Path,
+) -> Result<serde_json::Value, String> {
+    let skill = require_skill(user_root, workspace_root, preferences, skill_id)?;
+    if destination.exists() {
+        return Err("The export ZIP already exists.".to_owned());
+    }
+    validate_copy_tree(&skill.source_directory)?;
+    let file = File::create(destination).map_err(|error| error.to_string())?;
+    let mut writer = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    let mut pending = vec![skill.source_directory.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|error| error.to_string())?;
+            if file_type.is_symlink() {
+                return Err("Skill directories cannot contain symbolic links.".to_owned());
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&skill.source_directory)
+                .map_err(|error| error.to_string())?;
+            let archive_name = format!(
+                "{}/{}",
+                skill.name,
+                relative.to_string_lossy().replace('\\', "/")
+            );
+            writer
+                .start_file(archive_name, options)
+                .map_err(|error| error.to_string())?;
+            let mut source = File::open(&path).map_err(|error| error.to_string())?;
+            let mut buffer = Vec::new();
+            source
+                .read_to_end(&mut buffer)
+                .map_err(|error| error.to_string())?;
+            writer
+                .write_all(&buffer)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    writer.finish().map_err(|error| error.to_string())?;
+    Ok(json!({ "path": destination.to_string_lossy() }))
 }
 
 pub(super) fn export_skill(

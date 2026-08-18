@@ -13,6 +13,7 @@ import { registerGitIpc } from '@/main/ipc/git';
 import { registerMcpIpc } from '@/main/ipc/mcp';
 import { registerModelConfigIpc } from '@/main/ipc/model-config';
 import { registerSkillsIpc } from '@/main/ipc/skills';
+import { registerKnowledgeIpc } from '@/main/ipc/knowledge';
 import { registerWorkspaceIpc } from '@/main/ipc/workspace';
 import { GitController } from '@/main/git/controller';
 import { McpSessionController } from '@/main/mcp/session-controller';
@@ -32,6 +33,7 @@ import { RuntimeGitAdapter } from '@/main/runtime/git-adapter';
 import { RuntimeMcpConfigController } from '@/main/runtime/mcp-config-controller';
 import { RuntimeMcpApprovalController } from '@/main/runtime/mcp-approval-controller';
 import { RuntimeSkillsController } from '@/main/runtime/skills-controller';
+import { RuntimeKnowledgeController } from '@/main/runtime/knowledge-controller';
 import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace-adapter';
 import { UpdateController } from '@/main/update/controller';
 import { registerUpdateIpc } from '@/main/update/ipc';
@@ -48,6 +50,7 @@ let disposeConversationIpc: (() => void) | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeSkillsIpc: (() => void) | null = null;
+let disposeKnowledgeIpc: (() => void) | null = null;
 let disposeWorkspaceIpc: (() => void) | null = null;
 let disposeGitIpc: (() => void) | null = null;
 let previewController: PreviewController | null = null;
@@ -415,6 +418,17 @@ const startApplication = async (): Promise<void> => {
       getMainWindow: () => mainWindow,
       getWorkspace: workspaceController.getLaunchContext,
       getWorkspaceState: workspaceController.getSnapshot,
+      tempDirectory: app.getPath('temp'),
+    }),
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  disposeKnowledgeIpc = registerKnowledgeIpc({
+    controller: new RuntimeKnowledgeController({
+      runtime: runtimeSupervisor,
+      dialog,
+      getMainWindow: () => mainWindow,
+      getWorkspace: workspaceController.getLaunchContext,
     }),
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
@@ -596,6 +610,8 @@ if (started) {
     disposeModelConfigIpc = null;
     disposeSkillsIpc?.();
     disposeSkillsIpc = null;
+    disposeKnowledgeIpc?.();
+    disposeKnowledgeIpc = null;
     disposeCommandEnvironmentIpc?.();
     disposeCommandEnvironmentIpc = null;
     disposeWorkspaceIpc?.();

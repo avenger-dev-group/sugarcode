@@ -85,6 +85,7 @@ import {
   workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
 import { createTurnSkills, type TurnSkills } from './skills.ts';
+import { createTurnKnowledge } from './knowledge.ts';
 import {
   toolFailureRecoveryKey,
   toolResultFailed,
@@ -108,6 +109,12 @@ import type {
   SkillsActionResult,
   SkillsInspection,
 } from '../shared/skills.ts';
+import type {
+  KnowledgeActionResult,
+  KnowledgeBaseDetail,
+  KnowledgeInspection,
+  KnowledgeSearchResult,
+} from '../shared/knowledge.ts';
 import type {
   CommandEnvironmentActionResult,
   CommandEnvironmentStatus,
@@ -1305,6 +1312,122 @@ export class RuntimeHost {
         this.emit({ type: 'skills.action', requestId: command.requestId, action });
         break;
       }
+      case 'skills.importZip': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.importSkillZipJson) throw new Error('Skill ZIP import is unavailable.');
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          native.importSkillZipJson(command.workspaceId, command.archivePath, command.scope),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
+      case 'skills.exportZip': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.exportSkillZipJson) throw new Error('Skill ZIP export is unavailable.');
+        const result = this.parseNativeJson<{ path: string }>(
+          native.exportSkillZipJson(command.workspaceId, command.skillId, command.destinationPath),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, path: result.path },
+        });
+        break;
+      }
+      case 'knowledge.inspect': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.inspectKnowledgeJson) throw new Error('Knowledge runtime is unavailable.');
+        const inspection = this.parseNativeJson<KnowledgeInspection>(
+          native.inspectKnowledgeJson(command.workspaceId),
+        );
+        this.emit({ type: 'knowledge.inspection', requestId: command.requestId, inspection });
+        break;
+      }
+      case 'knowledge.create': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.createKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.createKnowledgeBaseJson(
+            command.name,
+            command.description,
+            JSON.stringify(command.workspaceIds),
+          ),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.delete': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.deleteKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.deleteKnowledgeBaseJson(command.knowledgeBaseId),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.addFiles': {
+        this.requireReady(command.requestId);
+        void this.addKnowledgeFiles(command);
+        break;
+      }
+      case 'knowledge.addFolder': {
+        this.requireReady(command.requestId);
+        void this.addKnowledgeFolder(command);
+        break;
+      }
+      case 'knowledge.detail': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.inspectKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        const detail = this.parseNativeJson<KnowledgeBaseDetail>(
+          native.inspectKnowledgeBaseJson(command.knowledgeBaseId),
+        );
+        this.emit({ type: 'knowledge.detail', requestId: command.requestId, detail });
+        break;
+      }
+      case 'knowledge.search': {
+        this.requireReady(command.requestId);
+        void this.searchKnowledge(command);
+        break;
+      }
+      case 'knowledge.model.install': {
+        this.requireReady(command.requestId);
+        void this.installSemanticModel(command);
+        break;
+      }
+      case 'knowledge.model.cancel': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.cancelSemanticModelDownloadJson) {
+          throw new Error('Semantic model download control is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.cancelSemanticModelDownloadJson(),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
+      case 'knowledge.model.remove': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.removeSemanticModelJson) {
+          throw new Error('Semantic model removal is unavailable.');
+        }
+        const action = this.parseNativeJson<KnowledgeActionResult>(
+          native.removeSemanticModelJson(),
+        );
+        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        break;
+      }
       case 'thread.list':
         this.requireReady(command.requestId);
         this.emit({
@@ -1516,6 +1639,114 @@ export class RuntimeHost {
         }
         void this.mcp.close();
         break;
+    }
+  };
+
+  private addKnowledgeFiles = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.addFiles' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.addKnowledgeFilesJson) throw new Error('Knowledge runtime is unavailable.');
+      const result = this.parseNativeJson<{ indexed: number; skipped: number; errors: number }>(
+        await native.addKnowledgeFilesJson(command.knowledgeBaseId, JSON.stringify(command.paths)),
+      );
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: { accepted: true, ...result },
+      });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message: error instanceof Error ? error.message : 'Knowledge indexing failed.',
+        },
+      });
+    }
+  };
+
+  private installSemanticModel = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.model.install' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.installSemanticModelJson) {
+        throw new Error('Semantic model installation is unavailable.');
+      }
+      const action = this.parseNativeJson<KnowledgeActionResult>(
+        await native.installSemanticModelJson(),
+      );
+      this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Semantic model installation failed.',
+        },
+      });
+    }
+  };
+
+  private searchKnowledge = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.search' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.searchKnowledgeJson) {
+        throw new Error('Knowledge runtime is unavailable.');
+      }
+      const result = this.parseNativeJson<KnowledgeSearchResult>(
+        await native.searchKnowledgeJson(
+          command.workspaceId,
+          JSON.stringify(command.knowledgeBaseIds),
+          command.query,
+        ),
+      );
+      this.emit({ type: 'knowledge.searchResult', requestId: command.requestId, result });
+    } catch (error) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'error',
+        message: error instanceof Error ? error.message : 'Knowledge search failed.',
+      });
+    }
+  };
+
+  private addKnowledgeFolder = async (
+    command: Extract<RuntimeCommand, { type: 'knowledge.addFolder' }>,
+  ): Promise<void> => {
+    try {
+      const native = this.requireNative();
+      if (!native.addKnowledgeFolderJson) throw new Error('Knowledge runtime is unavailable.');
+      const result = this.parseNativeJson<{ indexed: number; skipped: number; errors: number }>(
+        await native.addKnowledgeFolderJson(command.knowledgeBaseId, command.path),
+      );
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: { accepted: true, ...result },
+      });
+    } catch (error) {
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action: {
+          accepted: false,
+          reason: 'unavailable',
+          message: error instanceof Error ? error.message : 'Knowledge indexing failed.',
+        },
+      });
     }
   };
 
@@ -3130,6 +3361,14 @@ export class RuntimeHost {
             steeringInstruction: () => '',
           });
       this.activeTurnSkills.set(command.turnId, turnSkills);
+      const turnKnowledge = this.nativeRuntime
+        ? createTurnKnowledge(this.nativeRuntime, command.workspaceId, turnContent)
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          };
       const takePendingSteers = (): readonly Content[] => {
         const queued = this.pendingSteersByTurn.get(command.turnId) ?? [];
         this.pendingSteersByTurn.delete(command.turnId);
@@ -3137,7 +3376,8 @@ export class RuntimeHost {
           const modelContent = this.contentFromParts(content, resolved.selection);
           const composerInstruction = composerIntentInstruction(content);
           const skillInstruction = turnSkills.steeringInstruction(content);
-          const metadata = [composerInstruction, skillInstruction]
+          const knowledgeInstruction = turnKnowledge.steeringInstruction(content);
+          const metadata = [composerInstruction, skillInstruction, knowledgeInstruction]
             .filter(Boolean)
             .join('\n\n');
           return metadata
@@ -3211,6 +3451,7 @@ export class RuntimeHost {
               )
               : []),
             ...turnSkills.tools,
+            ...turnKnowledge.tools,
             ...collaborationTools,
           ]
           : []),
@@ -3226,7 +3467,9 @@ export class RuntimeHost {
           availableTools: mainTools.map((tool) => tool.name),
           collaborationEnabled: collaborationTools.length > 0,
           composerInstruction,
-          skillInstruction: turnSkills.instruction,
+          skillInstruction: [turnSkills.instruction, turnKnowledge.instruction]
+            .filter(Boolean)
+            .join('\n\n'),
         }),
         model: turnModel,
         generateContentConfig: {
@@ -3904,10 +4147,19 @@ export class RuntimeHost {
             validateSteering: (): void => undefined,
             steeringInstruction: () => '',
           };
+      const turnKnowledge = this.nativeRuntime
+        ? createTurnKnowledge(this.nativeRuntime, command.workspaceId, command.content)
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          };
       const agentTools = [
         this.invalidArgumentsTool(invalidArgumentGuard),
         ...tools,
         ...turnSkills.tools,
+        ...turnKnowledge.tools,
       ];
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
@@ -3918,7 +4170,9 @@ export class RuntimeHost {
           platform: process.platform,
           availableTools: agentTools.map((tool) => tool.name),
           collaborationEnabled: false,
-          skillInstruction: turnSkills.instruction,
+          skillInstruction: [turnSkills.instruction, turnKnowledge.instruction]
+            .filter(Boolean)
+            .join('\n\n'),
         }),
         model: this.createModel(resolved.provider),
         generateContentConfig: {

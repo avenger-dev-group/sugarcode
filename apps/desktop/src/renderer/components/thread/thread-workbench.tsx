@@ -719,6 +719,12 @@ export const ThreadWorkbenchView = ({
   permissionControl,
   approvalSurface,
   approvalThreadIds = [],
+  mainSurface,
+  navigatorSurface = 'workbench',
+  onOpenSearch,
+  onOpenKnowledge,
+  onOpenSkills,
+  onOpenWorkbench,
 }: ThreadWorkbenchViewProps) => {
   const agentTaskActivity = currentOrchestrationActivity(store);
   const {
@@ -789,6 +795,11 @@ export const ThreadWorkbenchView = ({
               footer={navigationFooter}
               onToggleNavigator={onToggleNavigator}
               approvalThreadIds={approvalThreadIds}
+              surface={navigatorSurface}
+              onOpenSearch={onOpenSearch}
+              onOpenKnowledge={onOpenKnowledge}
+              onOpenSkills={onOpenSkills}
+              onOpenWorkbench={onOpenWorkbench}
             />
           </div>
         </aside>
@@ -815,8 +826,18 @@ export const ThreadWorkbenchView = ({
           store.thread.isEmpty ? 'empty-thread-workbench' : ''
         }`}
       >
+        {mainSurface ? (
+          <div
+            className="window-no-drag absolute inset-0 z-20 flex min-h-0 flex-col bg-background"
+            data-layout="main-surface"
+          >
+            {mainSurface}
+          </div>
+        ) : null}
         <header
-          className={`window-drag-region relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
+          className={`${
+            mainSurface ? 'window-no-drag' : 'window-drag-region'
+          } relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
             navigatorOpen ? 'pl-5' : 'window-collapsed-header'
           } ${contextRailOpen ? 'pr-5' : 'window-titlebar-trailing-safe'}`}
         >

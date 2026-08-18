@@ -5,9 +5,12 @@ import {
   SKILLS_EXPORT_CHANNEL,
   SKILLS_GET_CHANNEL,
   SKILLS_IMPORT_CHANNEL,
+  SKILLS_IMPORT_ZIP_CHANNEL,
+  SKILLS_EXPORT_ZIP_CHANNEL,
   SKILLS_SET_ENABLED_CHANNEL,
 } from '@/shared/skills';
 import type { RuntimeSkillsController } from '@/main/runtime/skills-controller';
+import { SKILLS_MARKET_INSTALL_CHANNEL } from '@/shared/skill-market';
 
 import {
   isTrustedIpcSender,
@@ -49,6 +52,18 @@ export const registerSkillsIpc = (options: SkillsIpcOptions): (() => void) => {
     trusted(event);
     return options.controller.export(skillId);
   });
+  ipcMain.handle(SKILLS_IMPORT_ZIP_CHANNEL, (event, scope: unknown) => {
+    trusted(event);
+    return options.controller.importZip(scope);
+  });
+  ipcMain.handle(SKILLS_EXPORT_ZIP_CHANNEL, (event, skillId: unknown) => {
+    trusted(event);
+    return options.controller.exportZip(skillId);
+  });
+  ipcMain.handle(SKILLS_MARKET_INSTALL_CHANNEL, (event, catalogId: unknown) => {
+    trusted(event);
+    return options.controller.installCurated(catalogId);
+  });
   return () => {
     for (const channel of [
       SKILLS_GET_CHANNEL,
@@ -56,6 +71,9 @@ export const registerSkillsIpc = (options: SkillsIpcOptions): (() => void) => {
       SKILLS_SET_ENABLED_CHANNEL,
       SKILLS_IMPORT_CHANNEL,
       SKILLS_EXPORT_CHANNEL,
+      SKILLS_IMPORT_ZIP_CHANNEL,
+      SKILLS_EXPORT_ZIP_CHANNEL,
+      SKILLS_MARKET_INSTALL_CHANNEL,
     ]) {
       ipcMain.removeHandler(channel);
     }

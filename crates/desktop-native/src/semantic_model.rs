@@ -1,0 +1,1054 @@
+use futures_util::StreamExt;
+use ndarray::Array2;
+use ort::{
+    session::{Session, builder::GraphOptimizationLevel},
+    value::Value,
+};
+use reqwest::header::RANGE;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs::File;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use sysinfo::System;
+use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
+use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
+
+use crate::persistence::{KnowledgeEmbeddingInput, Store};
+
+const MODEL_ID: &str = "intfloat/multilingual-e5-small";
+const MODEL_REVISION: &str = "761b726dd34fb83930e26aab4e9ac3899aa1fa78";
+const MODEL_VERSION: &str = "2026-04-02";
+const MODEL_DIMENSIONS: u16 = 384;
+const INDEX_DISK_BUDGET: u64 = 512 * 1024 * 1024;
+const MANIFEST_SCHEMA_VERSION: u8 = 1;
+
+#[derive(Clone, Copy)]
+struct ModelFile {
+    repository: &'static str,
+    revision: &'static str,
+    remote_path: &'static str,
+    local_name: &'static str,
+    size: u64,
+    sha256: &'static str,
+}
+
+const MODEL_FILES: &[ModelFile] = &[
+    ModelFile {
+        repository: "intfloat/multilingual-e5-small",
+        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+        remote_path: "onnx/config.json",
+        local_name: "config.json",
+        size: 653,
+        sha256: "bbb7c1333fc4b3e27fbc9cd5d2070aabcc1d4dfb99917c3633e772f97545a6b6",
+    },
+    ModelFile {
+        repository: "Xenova/multilingual-e5-small",
+        revision: MODEL_REVISION,
+        remote_path: "onnx/model_quantized.onnx",
+        local_name: "model.onnx",
+        size: 118_308_185,
+        sha256: "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
+    },
+    ModelFile {
+        repository: "intfloat/multilingual-e5-small",
+        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+        remote_path: "onnx/special_tokens_map.json",
+        local_name: "special_tokens_map.json",
+        size: 167,
+        sha256: "d05497f1da52c5e09554c0cd874037a083e1dc1b9cfd48034d1c717f1afc07a7",
+    },
+    ModelFile {
+        repository: "intfloat/multilingual-e5-small",
+        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+        remote_path: "onnx/tokenizer.json",
+        local_name: "tokenizer.json",
+        size: 17_082_730,
+        sha256: "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+    },
+    ModelFile {
+        repository: "intfloat/multilingual-e5-small",
+        revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+        remote_path: "onnx/tokenizer_config.json",
+        local_name: "tokenizer_config.json",
+        size: 443,
+        sha256: "a1d6bc8734a6f635dc158508bef000f8e2e5a759c7d92f984b2c86e5ff53425b",
+    },
+];
+
+fn package_size() -> u64 {
+    MODEL_FILES.iter().map(|file| file.size).sum()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceInspection {
+    architecture: String,
+    logical_cores: usize,
+    total_memory_bytes: u64,
+    available_memory_bytes: u64,
+    available_disk_bytes: u64,
+    required_disk_bytes: u64,
+    supported: bool,
+    recommended: bool,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticModelState {
+    state: String,
+    enabled: bool,
+    model_id: String,
+    version: String,
+    revision: String,
+    dimensions: u16,
+    runtime: String,
+    variant: String,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    installed_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    device: DeviceInspection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledManifest {
+    schema_version: u8,
+    model_id: String,
+    version: String,
+    revision: String,
+    dimensions: u16,
+    runtime: String,
+    variant: String,
+    installed_at: u64,
+    files: Vec<InstalledFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledFile {
+    path: String,
+    size: u64,
+    sha256: String,
+}
+
+struct RuntimeState {
+    phase: String,
+    downloaded_bytes: u64,
+    error: Option<String>,
+    cancellation: Option<CancellationToken>,
+}
+
+struct LoadedModel {
+    model: LocalEmbeddingModel,
+    last_used_at: SystemTime,
+}
+
+struct LocalEmbeddingModel {
+    tokenizer: Tokenizer,
+    session: Session,
+    needs_token_type_ids: bool,
+}
+
+#[derive(Clone)]
+pub struct SemanticModelManager {
+    root: PathBuf,
+    state: Arc<Mutex<RuntimeState>>,
+    loaded: Arc<Mutex<Option<LoadedModel>>>,
+}
+
+impl SemanticModelManager {
+    pub fn open(data_directory: &Path) -> std::io::Result<Self> {
+        let root = data_directory.join("models").join("semantic");
+        std::fs::create_dir_all(&root)?;
+        let ready =
+            installed_manifest_path(&root).is_file() && validate_installed_layout(&root).is_ok();
+        let downloaded_bytes = if ready {
+            package_size()
+        } else {
+            resumable_bytes(&root)
+        };
+        let loaded = Arc::new(Mutex::new(None::<LoadedModel>));
+        let weak_loaded = Arc::downgrade(&loaded);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let Some(loaded) = weak_loaded.upgrade() else {
+                    break;
+                };
+                let mut guard = loaded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if guard.as_ref().is_some_and(|model| {
+                    model.last_used_at.elapsed().unwrap_or_default().as_secs() >= 5 * 60
+                }) {
+                    *guard = None;
+                }
+            }
+        });
+        Ok(Self {
+            root,
+            state: Arc::new(Mutex::new(RuntimeState {
+                phase: if ready { "ready" } else { "notInstalled" }.to_owned(),
+                downloaded_bytes,
+                error: None,
+                cancellation: None,
+            })),
+            loaded,
+        })
+    }
+
+    pub fn inspect(&self) -> SemanticModelState {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let ready = state.phase == "ready";
+        SemanticModelState {
+            state: state.phase.clone(),
+            enabled: ready,
+            model_id: MODEL_ID.to_owned(),
+            version: MODEL_VERSION.to_owned(),
+            revision: MODEL_REVISION.to_owned(),
+            dimensions: MODEL_DIMENSIONS,
+            runtime: "ONNX Runtime CPU".to_owned(),
+            variant: "INT8 优化".to_owned(),
+            downloaded_bytes: state.downloaded_bytes.min(package_size()),
+            total_bytes: package_size(),
+            installed_bytes: if ready { package_size() } else { 0 },
+            error: state.error.clone(),
+            device: inspect_device(&self.root),
+        }
+    }
+
+    pub async fn install(&self) -> Result<(), String> {
+        let device = inspect_device(&self.root);
+        if !device.supported {
+            return Err("当前 CPU 架构不受共享语义模型支持。".to_owned());
+        }
+        if device.available_disk_bytes < device.required_disk_bytes {
+            return Err("可用磁盘空间不足，无法安全下载并校验共享模型。".to_owned());
+        }
+        let cancellation = CancellationToken::new();
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.phase == "downloading" {
+                return Err("共享模型已经在下载。".to_owned());
+            }
+            if state.phase == "ready" {
+                return Ok(());
+            }
+            state.phase = "downloading".to_owned();
+            state.downloaded_bytes = resumable_bytes(&self.root);
+            state.error = None;
+            state.cancellation = Some(cancellation.clone());
+        }
+
+        let result = download_and_install(&self.root, &self.state, &cancellation).await;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.cancellation = None;
+        match result {
+            Ok(()) => {
+                state.phase = "ready".to_owned();
+                state.downloaded_bytes = package_size();
+                state.error = None;
+                Ok(())
+            }
+            Err(InstallError::Cancelled) => {
+                state.phase = "notInstalled".to_owned();
+                state.downloaded_bytes = resumable_bytes(&self.root);
+                state.error = None;
+                Err("cancelled".to_owned())
+            }
+            Err(InstallError::Failure(message)) => {
+                state.phase = "error".to_owned();
+                state.downloaded_bytes = resumable_bytes(&self.root);
+                state.error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    pub fn cancel(&self) -> bool {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match &state.cancellation {
+            Some(cancellation) => {
+                cancellation.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn remove(&self) -> Result<(), String> {
+        {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.phase == "downloading" {
+                return Err("请先取消正在进行的模型下载。".to_owned());
+            }
+        }
+        *self
+            .loaded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        for path in [
+            installed_directory(&self.root),
+            staging_directory(&self.root),
+        ] {
+            if path.exists() {
+                std::fs::remove_dir_all(&path).map_err(|error| error.to_string())?;
+            }
+        }
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.phase = "notInstalled".to_owned();
+        state.downloaded_bytes = 0;
+        state.error = None;
+        Ok(())
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .phase
+            == "ready"
+    }
+
+    pub fn model_version(&self) -> &'static str {
+        MODEL_VERSION
+    }
+
+    pub fn embed_passages(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        self.embed_with_prefix("passage: ", texts)
+    }
+
+    pub fn embed_query(&self, query: &str) -> Result<Vec<f32>, String> {
+        self.embed_with_prefix("query: ", &[query.to_owned()])?
+            .into_iter()
+            .next()
+            .ok_or_else(|| "语义模型没有返回查询向量。".to_owned())
+    }
+
+    fn embed_with_prefix(&self, prefix: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() || texts.len() > 16 {
+            return Err("语义编码批次必须包含 1 到 16 条文本。".to_owned());
+        }
+        if !self.is_ready() {
+            return Err("共享语义模型尚未安装。".to_owned());
+        }
+        let device = inspect_device(&self.root);
+        if device.available_memory_bytes > 0 && device.available_memory_bytes < 1024 * 1024 * 1024 {
+            return Err("当前可用内存不足，已回退全文检索。".to_owned());
+        }
+        let mut loaded = self
+            .loaded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if loaded.is_none() {
+            *loaded = Some(LoadedModel {
+                model: load_model(&self.root)?,
+                last_used_at: SystemTime::now(),
+            });
+        }
+        let model = loaded.as_mut().expect("loaded model must exist");
+        let inputs = texts
+            .iter()
+            .map(|text| format!("{prefix}{text}"))
+            .collect::<Vec<_>>();
+        let embeddings = model
+            .model
+            .embed(&inputs, adaptive_batch_size())
+            .map_err(|error| format!("本地语义编码失败：{error}"))?;
+        model.last_used_at = SystemTime::now();
+        if embeddings
+            .iter()
+            .any(|embedding| embedding.len() != MODEL_DIMENSIONS as usize)
+        {
+            return Err("语义模型返回了不兼容的向量维度。".to_owned());
+        }
+        Ok(embeddings)
+    }
+}
+
+pub fn index_all_knowledge_bases(
+    data_directory: &Path,
+    manager: &SemanticModelManager,
+) -> Result<usize, String> {
+    if !manager.is_ready() {
+        return Ok(0);
+    }
+    let knowledge_base_ids = Store::open_worker(data_directory)
+        .map_err(|error| error.to_string())?
+        .knowledge_base_ids()
+        .map_err(|error| error.to_string())?;
+    let mut indexed = 0usize;
+    let mut first_error = None;
+    for knowledge_base_id in knowledge_base_ids {
+        match index_knowledge_base(data_directory, manager, &knowledge_base_id) {
+            Ok(count) => indexed = indexed.saturating_add(count),
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(indexed)
+}
+
+pub fn index_knowledge_base(
+    data_directory: &Path,
+    manager: &SemanticModelManager,
+    knowledge_base_id: &str,
+) -> Result<usize, String> {
+    if !manager.is_ready() {
+        return Ok(0);
+    }
+    let model_version = manager.model_version();
+    let mut store = Store::open_worker(data_directory).map_err(|error| error.to_string())?;
+    store
+        .set_knowledge_semantic_index_status(knowledge_base_id, model_version, "indexing", None)
+        .map_err(|error| error.to_string())?;
+    let result = (|| {
+        let mut indexed = 0usize;
+        loop {
+            let chunks = store
+                .knowledge_chunks_needing_embeddings(knowledge_base_id, model_version, 16)
+                .map_err(|error| error.to_string())?;
+            if chunks.is_empty() {
+                break;
+            }
+            let texts = chunks
+                .iter()
+                .map(|chunk| chunk.content.clone())
+                .collect::<Vec<_>>();
+            let vectors = manager.embed_passages(&texts)?;
+            if vectors.len() != chunks.len() {
+                return Err("语义模型返回的向量数量不匹配。".to_owned());
+            }
+            let embeddings = chunks
+                .into_iter()
+                .zip(vectors)
+                .map(|(chunk, vector)| KnowledgeEmbeddingInput {
+                    chunk_id: chunk.id,
+                    content_hash: chunk.content_hash,
+                    vector,
+                })
+                .collect::<Vec<_>>();
+            store
+                .save_knowledge_embeddings(knowledge_base_id, model_version, &embeddings)
+                .map_err(|error| error.to_string())?;
+            indexed = indexed.saturating_add(embeddings.len());
+        }
+        store
+            .set_knowledge_semantic_index_status(knowledge_base_id, model_version, "ready", None)
+            .map_err(|error| error.to_string())?;
+        Ok(indexed)
+    })();
+    if let Err(error) = &result {
+        let message = error.chars().take(1_024).collect::<String>();
+        let _ = store.set_knowledge_semantic_index_status(
+            knowledge_base_id,
+            model_version,
+            "error",
+            Some(&message),
+        );
+    }
+    result
+}
+
+impl LocalEmbeddingModel {
+    fn embed(&mut self, texts: &[String], batch_size: usize) -> Result<Vec<Vec<f32>>, String> {
+        let mut embeddings = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(batch_size.max(1)) {
+            let inputs = batch.iter().map(String::as_str).collect::<Vec<_>>();
+            let encodings = self
+                .tokenizer
+                .encode_batch(inputs, true)
+                .map_err(|error| format!("文本分词失败：{error}"))?;
+            let sequence_length = encodings
+                .first()
+                .map(|encoding| encoding.len())
+                .ok_or_else(|| "分词器没有返回输入。".to_owned())?;
+            let value_count = batch.len().saturating_mul(sequence_length);
+            let mut input_ids = Vec::with_capacity(value_count);
+            let mut attention_mask = Vec::with_capacity(value_count);
+            let mut token_type_ids = Vec::with_capacity(value_count);
+            for encoding in &encodings {
+                input_ids.extend(encoding.get_ids().iter().map(|value| i64::from(*value)));
+                attention_mask.extend(
+                    encoding
+                        .get_attention_mask()
+                        .iter()
+                        .map(|value| i64::from(*value)),
+                );
+                token_type_ids.extend(
+                    encoding
+                        .get_type_ids()
+                        .iter()
+                        .map(|value| i64::from(*value)),
+                );
+            }
+            let input_ids = Array2::from_shape_vec((batch.len(), sequence_length), input_ids)
+                .map_err(|error| error.to_string())?;
+            let attention_mask_array =
+                Array2::from_shape_vec((batch.len(), sequence_length), attention_mask)
+                    .map_err(|error| error.to_string())?;
+            let token_type_ids =
+                Array2::from_shape_vec((batch.len(), sequence_length), token_type_ids)
+                    .map_err(|error| error.to_string())?;
+            let mut session_inputs = ort::inputs![
+                "input_ids" => Value::from_array(input_ids).map_err(|error| error.to_string())?,
+                "attention_mask" => Value::from_array(attention_mask_array.clone())
+                    .map_err(|error| error.to_string())?,
+            ];
+            if self.needs_token_type_ids {
+                session_inputs.push((
+                    "token_type_ids".into(),
+                    Value::from_array(token_type_ids)
+                        .map_err(|error| error.to_string())?
+                        .into(),
+                ));
+            }
+            let outputs = self
+                .session
+                .run(session_inputs)
+                .map_err(|error| error.to_string())?;
+            let output = outputs
+                .get("last_hidden_state")
+                .unwrap_or_else(|| &outputs[0]);
+            let (shape, values) = output
+                .try_extract_tensor::<f32>()
+                .map_err(|error| error.to_string())?;
+            if shape.len() != 3
+                || shape[0] as usize != batch.len()
+                || shape[1] as usize != sequence_length
+                || shape[2] as usize != MODEL_DIMENSIONS as usize
+            {
+                return Err(format!("语义模型返回了不兼容的输出形状：{shape:?}"));
+            }
+            let dimensions = MODEL_DIMENSIONS as usize;
+            for batch_index in 0..batch.len() {
+                let mut embedding = vec![0.0_f32; dimensions];
+                let mut tokens = 0.0_f32;
+                for token_index in 0..sequence_length {
+                    if attention_mask_array[(batch_index, token_index)] == 0 {
+                        continue;
+                    }
+                    tokens += 1.0;
+                    let offset =
+                        (batch_index * sequence_length + token_index).saturating_mul(dimensions);
+                    for dimension in 0..dimensions {
+                        embedding[dimension] += values[offset + dimension];
+                    }
+                }
+                let divisor = tokens.max(1.0);
+                for value in &mut embedding {
+                    *value /= divisor;
+                }
+                let norm = embedding
+                    .iter()
+                    .map(|value| value * value)
+                    .sum::<f32>()
+                    .sqrt()
+                    .max(f32::EPSILON);
+                for value in &mut embedding {
+                    *value /= norm;
+                }
+                embeddings.push(embedding);
+            }
+        }
+        Ok(embeddings)
+    }
+}
+
+fn load_model(root: &Path) -> Result<LocalEmbeddingModel, String> {
+    let installed = installed_directory(root);
+    validate_installed_layout(root)?;
+    let config: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(installed.join("config.json")).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let tokenizer_config: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(installed.join("tokenizer_config.json"))
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    let pad_id = config["pad_token_id"].as_u64().unwrap_or(0) as u32;
+    let pad_token = tokenizer_config["pad_token"]
+        .as_str()
+        .unwrap_or("<pad>")
+        .to_owned();
+    let mut tokenizer = Tokenizer::from_file(installed.join("tokenizer.json"))
+        .map_err(|error| format!("加载本地分词器失败：{error}"))?;
+    tokenizer.with_padding(Some(PaddingParams {
+        strategy: PaddingStrategy::BatchLongest,
+        pad_id,
+        pad_token,
+        ..Default::default()
+    }));
+    tokenizer
+        .with_truncation(Some(TruncationParams {
+            max_length: 512,
+            ..Default::default()
+        }))
+        .map_err(|error| format!("配置本地分词器失败：{error}"))?;
+    let builder_error = |error: ort::Error<ort::session::builder::SessionBuilder>| {
+        format!("加载本地语义模型失败：{error}")
+    };
+    let session = Session::builder()
+        .map_err(|error| error.to_string())?
+        .with_optimization_level(GraphOptimizationLevel::Disable)
+        .map_err(builder_error)?
+        .with_prepacking(false)
+        .map_err(builder_error)?
+        .with_memory_pattern(false)
+        .map_err(builder_error)?
+        .with_intra_threads(adaptive_intra_threads())
+        .map_err(builder_error)?
+        .commit_from_file(installed.join("model.onnx"))
+        .map_err(|error| format!("加载本地语义模型失败：{error}"))?;
+    let needs_token_type_ids = session
+        .inputs()
+        .iter()
+        .any(|input| input.name() == "token_type_ids");
+    Ok(LocalEmbeddingModel {
+        tokenizer,
+        session,
+        needs_token_type_ids,
+    })
+}
+
+fn adaptive_batch_size() -> usize {
+    match std::thread::available_parallelism().map_or(1, usize::from) {
+        0..=2 => 4,
+        3..=6 => 8,
+        _ => 16,
+    }
+}
+
+fn adaptive_intra_threads() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .div_ceil(2)
+        .clamp(1, 4)
+}
+
+enum InstallError {
+    Cancelled,
+    Failure(String),
+}
+
+async fn download_and_install(
+    root: &Path,
+    state: &Arc<Mutex<RuntimeState>>,
+    cancellation: &CancellationToken,
+) -> Result<(), InstallError> {
+    let staging = staging_directory(root);
+    tokio::fs::create_dir_all(&staging)
+        .await
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+    let client = reqwest::Client::builder()
+        .user_agent("SugarCode/semantic-model")
+        .build()
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+
+    let mut completed_before = 0_u64;
+    for file in MODEL_FILES {
+        if cancellation.is_cancelled() {
+            return Err(InstallError::Cancelled);
+        }
+        let final_path = staging.join(file.local_name);
+        if valid_file_size(&final_path, file.size) {
+            let verification_path = final_path.clone();
+            let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&verification_path))
+                .await
+                .map_err(|error| InstallError::Failure(error.to_string()))?
+                .map_err(|error| InstallError::Failure(error.to_string()))?;
+            if actual_hash == file.sha256 {
+                completed_before += file.size;
+                update_progress(state, completed_before);
+                continue;
+            }
+            tokio::fs::remove_file(&final_path)
+                .await
+                .map_err(|error| InstallError::Failure(error.to_string()))?;
+        }
+        let part_path = staging.join(format!("{}.part", file.local_name));
+        let mut existing = file_size(&part_path).unwrap_or(0);
+        if existing > file.size {
+            tokio::fs::remove_file(&part_path)
+                .await
+                .map_err(|error| InstallError::Failure(error.to_string()))?;
+            existing = 0;
+        }
+        if existing == file.size {
+            let verification_path = part_path.clone();
+            let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&verification_path))
+                .await
+                .map_err(|error| InstallError::Failure(error.to_string()))?
+                .map_err(|error| InstallError::Failure(error.to_string()))?;
+            if actual_hash == file.sha256 {
+                tokio::fs::rename(&part_path, &final_path)
+                    .await
+                    .map_err(|error| InstallError::Failure(error.to_string()))?;
+                completed_before += file.size;
+                update_progress(state, completed_before);
+                continue;
+            }
+            tokio::fs::remove_file(&part_path)
+                .await
+                .map_err(|error| InstallError::Failure(error.to_string()))?;
+            existing = 0;
+        }
+        update_progress(state, completed_before + existing);
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            file.repository, file.revision, file.remote_path
+        );
+        let mut request = client.get(url);
+        if existing > 0 {
+            request = request.header(RANGE, format!("bytes={existing}-"));
+        }
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
+            result = request.send() => result
+                .map_err(|error| InstallError::Failure(error.to_string()))?,
+        };
+        if !response.status().is_success() {
+            return Err(InstallError::Failure(format!(
+                "模型文件下载失败：HTTP {}",
+                response.status()
+            )));
+        }
+        let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        if existing > 0 && !resumed {
+            existing = 0;
+        }
+        let mut output = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(resumed)
+            .truncate(!resumed)
+            .open(&part_path)
+            .await
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        let mut received = existing;
+        let mut stream = response.bytes_stream();
+        loop {
+            tokio::select! {
+                _ = cancellation.cancelled() => return Err(InstallError::Cancelled),
+                chunk = stream.next() => match chunk {
+                    Some(Ok(bytes)) => {
+                        output.write_all(&bytes).await
+                            .map_err(|error| InstallError::Failure(error.to_string()))?;
+                        received = received.saturating_add(bytes.len() as u64);
+                        update_progress(state, completed_before + received.min(file.size));
+                    }
+                    Some(Err(error)) => return Err(InstallError::Failure(error.to_string())),
+                    None => break,
+                }
+            }
+        }
+        output
+            .flush()
+            .await
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        drop(output);
+        if file_size(&part_path) != Some(file.size) {
+            return Err(InstallError::Failure(format!(
+                "模型文件大小校验失败：{}",
+                file.local_name
+            )));
+        }
+        let hash_path = part_path.clone();
+        let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&hash_path))
+            .await
+            .map_err(|error| InstallError::Failure(error.to_string()))?
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        if actual_hash != file.sha256 {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(InstallError::Failure(format!(
+                "模型文件完整性校验失败：{}",
+                file.local_name
+            )));
+        }
+        tokio::fs::rename(&part_path, &final_path)
+            .await
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+        completed_before += file.size;
+        update_progress(state, completed_before);
+    }
+
+    let manifest = InstalledManifest {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        model_id: MODEL_ID.to_owned(),
+        version: MODEL_VERSION.to_owned(),
+        revision: MODEL_REVISION.to_owned(),
+        dimensions: MODEL_DIMENSIONS,
+        runtime: "onnxruntime-cpu".to_owned(),
+        variant: "int8-optimized".to_owned(),
+        installed_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        files: MODEL_FILES
+            .iter()
+            .map(|file| InstalledFile {
+                path: file.local_name.to_owned(),
+                size: file.size,
+                sha256: file.sha256.to_owned(),
+            })
+            .collect(),
+    };
+    let manifest_json = serde_json::to_vec_pretty(&manifest)
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+    tokio::fs::write(staging.join("manifest.json"), manifest_json)
+        .await
+        .map_err(|error| InstallError::Failure(error.to_string()))?;
+
+    let installed = installed_directory(root);
+    let backup = root.join(format!("{}.backup", MODEL_VERSION));
+    if backup.exists() {
+        std::fs::remove_dir_all(&backup)
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+    }
+    if installed.exists() {
+        std::fs::rename(&installed, &backup)
+            .map_err(|error| InstallError::Failure(error.to_string()))?;
+    }
+    if let Err(error) = std::fs::rename(&staging, &installed) {
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &installed);
+        }
+        return Err(InstallError::Failure(error.to_string()));
+    }
+    if backup.exists() {
+        let _ = std::fs::remove_dir_all(backup);
+    }
+    Ok(())
+}
+
+fn inspect_device(root: &Path) -> DeviceInspection {
+    let mut system = System::new();
+    system.refresh_memory();
+    let architecture = std::env::consts::ARCH.to_owned();
+    let supported = matches!(architecture.as_str(), "x86_64" | "aarch64");
+    let logical_cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let total_memory_bytes = system.total_memory();
+    let available_memory_bytes = system.available_memory();
+    let available_disk_bytes = fs2::available_space(root).unwrap_or(0);
+    let required_disk_bytes = package_size()
+        .saturating_mul(2)
+        .saturating_add(INDEX_DISK_BUDGET);
+    let mut warnings = Vec::new();
+    if !supported {
+        warnings.push("当前 CPU 架构不受支持，建议继续使用全文检索。".to_owned());
+    }
+    if total_memory_bytes < 8 * 1024 * 1024 * 1024 {
+        warnings.push("设备内存低于 8GB，建议仅使用全文检索。".to_owned());
+    }
+    if logical_cores <= 2 {
+        warnings.push("CPU 逻辑核心较少，建立语义索引可能较慢。".to_owned());
+    }
+    if available_memory_bytes > 0 && available_memory_bytes < 1024 * 1024 * 1024 {
+        warnings.push("当前可用内存较少，模型加载时会自动退回全文检索。".to_owned());
+    }
+    if available_disk_bytes < required_disk_bytes {
+        warnings.push("可用磁盘空间不足，暂时无法安装共享模型。".to_owned());
+    }
+    DeviceInspection {
+        architecture,
+        logical_cores,
+        total_memory_bytes,
+        available_memory_bytes,
+        available_disk_bytes,
+        required_disk_bytes,
+        supported,
+        recommended: supported
+            && total_memory_bytes >= 8 * 1024 * 1024 * 1024
+            && logical_cores > 2
+            && available_disk_bytes >= required_disk_bytes,
+        warnings,
+    }
+}
+
+fn update_progress(state: &Arc<Mutex<RuntimeState>>, downloaded_bytes: u64) {
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.downloaded_bytes = downloaded_bytes.min(package_size());
+}
+
+fn installed_directory(root: &Path) -> PathBuf {
+    root.join(MODEL_VERSION)
+}
+
+fn staging_directory(root: &Path) -> PathBuf {
+    root.join(format!("{}.download", MODEL_VERSION))
+}
+
+fn installed_manifest_path(root: &Path) -> PathBuf {
+    installed_directory(root).join("manifest.json")
+}
+
+fn validate_installed_layout(root: &Path) -> Result<(), String> {
+    let manifest_data =
+        std::fs::read(installed_manifest_path(root)).map_err(|error| error.to_string())?;
+    let manifest: InstalledManifest =
+        serde_json::from_slice(&manifest_data).map_err(|error| error.to_string())?;
+    if manifest.schema_version != MANIFEST_SCHEMA_VERSION
+        || manifest.model_id != MODEL_ID
+        || manifest.version != MODEL_VERSION
+        || manifest.revision != MODEL_REVISION
+        || manifest.dimensions != MODEL_DIMENSIONS
+    {
+        return Err("共享模型 manifest 与当前版本不兼容。".to_owned());
+    }
+    for file in MODEL_FILES {
+        if !valid_file_size(&installed_directory(root).join(file.local_name), file.size) {
+            return Err(format!("共享模型文件缺失或大小不正确：{}", file.local_name));
+        }
+    }
+    Ok(())
+}
+
+fn resumable_bytes(root: &Path) -> u64 {
+    MODEL_FILES
+        .iter()
+        .map(|file| {
+            let staging = staging_directory(root);
+            if valid_file_size(&staging.join(file.local_name), file.size) {
+                file.size
+            } else {
+                file_size(&staging.join(format!("{}.part", file.local_name)))
+                    .unwrap_or(0)
+                    .min(file.size)
+            }
+        })
+        .sum()
+}
+
+fn valid_file_size(path: &Path, expected: u64) -> bool {
+    file_size(path) == Some(expected)
+}
+
+fn file_size(path: &Path) -> Option<u64> {
+    path.metadata()
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut input = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn package_metadata_is_consistent() {
+        assert_eq!(package_size(), 135_392_178);
+        assert!(MODEL_FILES.iter().all(|file| file.sha256.len() == 64));
+        assert!(
+            MODEL_FILES
+                .iter()
+                .all(|file| !file.local_name.contains('/'))
+        );
+    }
+
+    #[test]
+    fn partial_download_is_discovered_after_restart() {
+        let directory = tempdir().expect("temporary directory");
+        let root = directory.path().join("models").join("semantic");
+        let staging = staging_directory(&root);
+        std::fs::create_dir_all(&staging).expect("staging directory");
+        std::fs::write(staging.join("model.onnx.part"), [0_u8; 128]).expect("partial model");
+
+        let manager = SemanticModelManager::open(directory.path()).expect("model manager");
+        let inspection = manager.inspect();
+        assert_eq!(inspection.state, "notInstalled");
+        assert_eq!(inspection.downloaded_bytes, 128);
+    }
+
+    #[test]
+    fn compatible_install_is_reused_without_touching_siblings() {
+        let directory = tempdir().expect("temporary directory");
+        let root = directory.path().join("models").join("semantic");
+        let installed = installed_directory(&root);
+        std::fs::create_dir_all(&installed).expect("installed directory");
+        for file in MODEL_FILES {
+            File::create(installed.join(file.local_name))
+                .and_then(|output| output.set_len(file.size))
+                .expect("sparse model file");
+        }
+        let manifest = InstalledManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            model_id: MODEL_ID.to_owned(),
+            version: MODEL_VERSION.to_owned(),
+            revision: MODEL_REVISION.to_owned(),
+            dimensions: MODEL_DIMENSIONS,
+            runtime: "onnxruntime-cpu".to_owned(),
+            variant: "int8-optimized".to_owned(),
+            installed_at: 1,
+            files: MODEL_FILES
+                .iter()
+                .map(|file| InstalledFile {
+                    path: file.local_name.to_owned(),
+                    size: file.size,
+                    sha256: file.sha256.to_owned(),
+                })
+                .collect(),
+        };
+        std::fs::write(
+            installed_manifest_path(&root),
+            serde_json::to_vec(&manifest).expect("manifest JSON"),
+        )
+        .expect("manifest");
+        let sibling = directory.path().join("keep-me");
+        std::fs::write(&sibling, "untouched").expect("sibling marker");
+
+        let manager = SemanticModelManager::open(directory.path()).expect("model manager");
+        assert_eq!(manager.inspect().state, "ready");
+        manager.remove().expect("remove model");
+        assert_eq!(
+            std::fs::read_to_string(sibling).expect("sibling marker"),
+            "untouched"
+        );
+        assert_eq!(manager.inspect().state, "notInstalled");
+    }
+}

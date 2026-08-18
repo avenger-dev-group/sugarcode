@@ -5,6 +5,8 @@ import {
   getSkillContent,
   getSkills,
   importSkill,
+  importSkillZip,
+  exportSkillZip,
   setSkillEnabled,
 } from '@/renderer/services/skills';
 import type {
@@ -224,6 +226,47 @@ export const useStore = (active: boolean): SkillsStore => {
     [],
   );
 
+  const importArchive = useCallback(
+    async (scope: SkillScope): Promise<void> => {
+      setImportMenuOpen(false);
+      setActionPending(true);
+      setError(null);
+      setNotice(null);
+      try {
+        const result = await importSkillZip(scope);
+        if (result.accepted === false) {
+          if (result.reason !== 'cancelled') setError(result.message ?? '无法导入 Skill ZIP。');
+          return;
+        }
+        if (result.inspection) acceptInspection(result.inspection);
+        setNotice(scope === 'project' ? '已从 ZIP 导入当前项目。' : '已从 ZIP 导入个人 Skills。');
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '无法导入 Skill ZIP。');
+      } finally {
+        setActionPending(false);
+      }
+    },
+    [acceptInspection],
+  );
+
+  const exportArchive = useCallback(async (skill: SkillSummary): Promise<void> => {
+    setActionPending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await exportSkillZip(skill.id);
+      if (result.accepted === false) {
+        if (result.reason !== 'cancelled') setError(result.message ?? '无法导出 Skill ZIP。');
+        return;
+      }
+      setNotice(result.path ? `已导出 ZIP 到 ${result.path}` : 'Skill ZIP 已导出。');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法导出 Skill ZIP。');
+    } finally {
+      setActionPending(false);
+    }
+  }, []);
+
   return {
     skills,
     status,
@@ -244,6 +287,8 @@ export const useStore = (active: boolean): SkillsStore => {
     openSkill,
     closeSkill,
     importDirectory,
+    importArchive,
     exportDirectory,
+    exportArchive,
   };
 };

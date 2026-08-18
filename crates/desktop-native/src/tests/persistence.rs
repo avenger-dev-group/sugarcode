@@ -1024,6 +1024,16 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     connection
         .execute_batch(
             "PRAGMA foreign_keys = OFF;
+             DROP TABLE knowledge_semantic_indexes;
+             DROP TABLE knowledge_chunk_embeddings;
+             DROP TABLE skill_update_history;
+             DROP TABLE skill_market_sources;
+             DROP TABLE knowledge_chunks_fts;
+             DROP TABLE knowledge_chunks;
+             DROP TABLE knowledge_documents;
+             DROP TABLE knowledge_sources;
+             DROP TABLE knowledge_base_workspaces;
+             DROP TABLE knowledge_bases;
              DROP TABLE model_credentials;
              DROP TABLE model_config;
              DROP TABLE content_assets;
@@ -1062,5 +1072,5 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 11);
+    assert_eq!(version, 14);
 }

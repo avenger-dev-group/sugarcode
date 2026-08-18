@@ -39,6 +39,16 @@ import {
   type SkillsInspection,
 } from '../shared/skills.ts';
 import {
+  isKnowledgeActionResult,
+  isKnowledgeBaseDetail,
+  isKnowledgeInspection,
+  isKnowledgeSearchResult,
+  type KnowledgeActionResult,
+  type KnowledgeBaseDetail,
+  type KnowledgeInspection,
+  type KnowledgeSearchResult,
+} from '../shared/knowledge.ts';
+import {
   isCommandEnvironmentActionResult,
   isCommandEnvironmentStatus,
   isTaskWorkspaceActionResult,
@@ -49,7 +59,7 @@ import {
   type TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 5 as const;
+export const RUNTIME_PROTOCOL_VERSION = 6 as const;
 
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
@@ -634,6 +644,73 @@ export type RuntimeCommand =
       skillId: string;
       destinationPath: string;
     }>
+  | Readonly<{
+      type: 'skills.importZip';
+      requestId: string;
+      workspaceId?: string;
+      archivePath: string;
+      scope: 'user' | 'project';
+    }>
+  | Readonly<{
+      type: 'skills.exportZip';
+      requestId: string;
+      workspaceId?: string;
+      skillId: string;
+      destinationPath: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.inspect';
+      requestId: string;
+      workspaceId?: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.create';
+      requestId: string;
+      name: string;
+      description: string;
+      workspaceIds: readonly string[];
+    }>
+  | Readonly<{
+      type: 'knowledge.delete';
+      requestId: string;
+      knowledgeBaseId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.addFiles';
+      requestId: string;
+      knowledgeBaseId: string;
+      paths: readonly string[];
+    }>
+  | Readonly<{
+      type: 'knowledge.addFolder';
+      requestId: string;
+      knowledgeBaseId: string;
+      path: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.detail';
+      requestId: string;
+      knowledgeBaseId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.search';
+      requestId: string;
+      workspaceId?: string;
+      knowledgeBaseIds: readonly string[];
+      query: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.model.install';
+      requestId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.model.cancel';
+      requestId: string;
+    }>
+  | Readonly<{
+      type: 'knowledge.model.remove';
+      requestId: string;
+    }>
   | Readonly<{ type: 'shutdown'; requestId: string }>;
 
 export type RuntimeUsage = Readonly<{
@@ -1100,6 +1177,26 @@ export type RuntimeEvent =
       Readonly<{
         type: 'skills.action';
         action: SkillsActionResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'knowledge.inspection';
+        inspection: KnowledgeInspection;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'knowledge.action';
+        action: KnowledgeActionResult;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'knowledge.detail';
+        detail: KnowledgeBaseDetail;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'knowledge.searchResult';
+        result: KnowledgeSearchResult;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1678,6 +1775,77 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.destinationPath.length > 0 &&
         value.destinationPath.length <= 4_096
       );
+    case 'skills.importZip':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        typeof value.archivePath === 'string' &&
+        value.archivePath.length > 0 &&
+        value.archivePath.length <= 4_096 &&
+        (value.scope === 'user' || value.scope === 'project')
+      );
+    case 'skills.exportZip':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        isSkillId(value.skillId) &&
+        typeof value.destinationPath === 'string' &&
+        value.destinationPath.length > 0 &&
+        value.destinationPath.length <= 4_096
+      );
+    case 'knowledge.inspect':
+      return value.workspaceId === undefined || typeof value.workspaceId === 'string';
+    case 'knowledge.model.install':
+    case 'knowledge.model.cancel':
+    case 'knowledge.model.remove':
+      return true;
+    case 'knowledge.create':
+      return (
+        typeof value.name === 'string' &&
+        value.name.trim().length > 0 &&
+        value.name.length <= 256 &&
+        typeof value.description === 'string' &&
+        value.description.length <= 4_096 &&
+        Array.isArray(value.workspaceIds) &&
+        value.workspaceIds.length <= 64 &&
+        value.workspaceIds.every((id) => typeof id === 'string')
+      );
+    case 'knowledge.delete':
+    case 'knowledge.detail':
+      return (
+        typeof value.knowledgeBaseId === 'string' &&
+        /^kb_[0-9a-f]{32}$/u.test(value.knowledgeBaseId)
+      );
+    case 'knowledge.addFiles':
+      return (
+        typeof value.knowledgeBaseId === 'string' &&
+        /^kb_[0-9a-f]{32}$/u.test(value.knowledgeBaseId) &&
+        Array.isArray(value.paths) &&
+        value.paths.length > 0 &&
+        value.paths.length <= 256 &&
+        value.paths.every(
+          (path) => typeof path === 'string' && path.length > 0 && path.length <= 16_384,
+        )
+      );
+    case 'knowledge.addFolder':
+      return (
+        typeof value.knowledgeBaseId === 'string' &&
+        /^kb_[0-9a-f]{32}$/u.test(value.knowledgeBaseId) &&
+        typeof value.path === 'string' &&
+        value.path.length > 0 &&
+        value.path.length <= 16_384
+      );
+    case 'knowledge.search':
+      return (
+        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        Array.isArray(value.knowledgeBaseIds) &&
+        value.knowledgeBaseIds.length > 0 &&
+        value.knowledgeBaseIds.length <= 4 &&
+        value.knowledgeBaseIds.every(
+          (id) => typeof id === 'string' && /^kb_[0-9a-f]{32}$/u.test(id),
+        ) &&
+        typeof value.query === 'string' &&
+        value.query.trim().length > 0 &&
+        value.query.length <= 4_000
+      );
     case 'shutdown':
       return true;
     default:
@@ -2109,6 +2277,14 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       return isSkillContent(value.content);
     case 'skills.action':
       return isSkillsActionResult(value.action);
+    case 'knowledge.inspection':
+      return isKnowledgeInspection(value.inspection);
+    case 'knowledge.action':
+      return isKnowledgeActionResult(value.action);
+    case 'knowledge.detail':
+      return isKnowledgeBaseDetail(value.detail);
+    case 'knowledge.searchResult':
+      return isKnowledgeSearchResult(value.result);
     case 'thread.listResult':
       return (
         typeof value.workspaceId === 'string' &&

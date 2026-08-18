@@ -7,6 +7,7 @@ import {
   RefreshCw,
   Sparkles,
   Upload,
+  FileArchive,
   UserRound,
   X,
 } from 'lucide-react';
@@ -66,12 +67,41 @@ export const SkillsSettingsPanel = ({ active }: SkillsSettingsPanelProps) => {
                 type="button"
                 variant="ghost"
                 className="h-auto w-full justify-start px-2.5 py-2 text-left"
+                onClick={() => void store.importArchive('user')}
+              >
+                <FileArchive aria-hidden="true" />
+                <span>
+                  <span className="block text-sm">个人 Skill ZIP</span>
+                  <span className="block text-xs font-normal text-tertiary">
+                    安全校验后导入
+                  </span>
+                </span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-auto w-full justify-start px-2.5 py-2 text-left"
                 disabled={!store.workspaceAvailable}
                 onClick={() => void store.importDirectory('project')}
               >
                 <FolderDown aria-hidden="true" />
                 <span>
                   <span className="block text-sm">当前项目</span>
+                  <span className="block text-xs font-normal text-tertiary">
+                    只在当前项目中可用
+                  </span>
+                </span>
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-auto w-full justify-start px-2.5 py-2 text-left"
+                disabled={!store.workspaceAvailable}
+                onClick={() => void store.importArchive('project')}
+              >
+                <FileArchive aria-hidden="true" />
+                <span>
+                  <span className="block text-sm">项目 Skill ZIP</span>
                   <span className="block text-xs font-normal text-tertiary">
                     只在当前项目中可用
                   </span>
@@ -236,6 +266,17 @@ export const SkillsSettingsPanel = ({ active }: SkillsSettingsPanelProps) => {
               >
                 <Download aria-hidden="true" />
                 导出
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={store.actionPending}
+                onClick={() => {
+                  if (store.selectedSkill) void store.exportArchive(store.selectedSkill);
+                }}
+              >
+                <FileArchive aria-hidden="true" />
+                ZIP
               </Button>
               <Button
                 type="button"

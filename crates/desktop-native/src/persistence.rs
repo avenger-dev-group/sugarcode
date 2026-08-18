@@ -14,7 +14,7 @@ use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 14;
 const MAX_QUEUED_MESSAGES: i64 = 10;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
@@ -85,6 +85,113 @@ pub(super) struct TaskWorkspaceRow {
     pub(super) branch: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KnowledgeBaseRow {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) description: String,
+    pub(super) scope: String,
+    pub(super) workspace_ids: Vec<String>,
+    pub(super) source_count: i64,
+    pub(super) document_count: i64,
+    pub(super) chunk_count: i64,
+    pub(super) error_count: i64,
+    pub(super) size_bytes: i64,
+    pub(super) status: String,
+    pub(super) updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KnowledgeSourceRow {
+    pub(super) id: String,
+    pub(super) knowledge_base_id: String,
+    pub(super) kind: String,
+    pub(super) path: String,
+    pub(super) display_name: String,
+    pub(super) document_count: i64,
+    pub(super) error_count: i64,
+    pub(super) updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KnowledgeDocumentRow {
+    pub(super) id: String,
+    pub(super) knowledge_base_id: String,
+    pub(super) source_id: String,
+    pub(super) relative_path: String,
+    pub(super) file_name: String,
+    pub(super) media_type: String,
+    pub(super) size_bytes: i64,
+    pub(super) modified_at: i64,
+    pub(super) sha256: String,
+    pub(super) parse_status: String,
+    pub(super) parse_error: Option<String>,
+    pub(super) chunk_count: i64,
+    pub(super) updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct KnowledgeChunkInput {
+    pub(super) ordinal: i64,
+    pub(super) heading: Option<String>,
+    pub(super) page_number: Option<i64>,
+    pub(super) content: String,
+    pub(super) search_text: String,
+    pub(super) content_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct KnowledgeEmbeddingChunk {
+    pub(super) id: String,
+    pub(super) content: String,
+    pub(super) content_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct KnowledgeEmbeddingInput {
+    pub(super) chunk_id: String,
+    pub(super) content_hash: String,
+    pub(super) vector: Vec<f32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KnowledgeSemanticIndexSummary {
+    pub(super) state: String,
+    pub(super) indexed_chunks: i64,
+    pub(super) total_chunks: i64,
+    pub(super) error_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KnowledgeSearchHit {
+    #[serde(skip)]
+    pub(super) chunk_id: String,
+    pub(super) citation: String,
+    pub(super) knowledge_base_id: String,
+    pub(super) knowledge_base_name: String,
+    pub(super) document_id: String,
+    pub(super) file_name: String,
+    pub(super) relative_path: String,
+    pub(super) heading: Option<String>,
+    pub(super) page_number: Option<i64>,
+    pub(super) content: String,
+    pub(super) score: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct KnowledgeReadChunk {
+    pub(super) ordinal: i64,
+    pub(super) heading: Option<String>,
+    pub(super) page_number: Option<i64>,
+    pub(super) content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct QueuedMessageRow {
@@ -137,6 +244,16 @@ impl Store {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         migrate(&mut connection)?;
         recover_interrupted_work(&mut connection)?;
+        Ok(Self { connection })
+    }
+
+    pub(super) fn open_worker(data_directory: impl AsRef<Path>) -> Result<Self> {
+        let database_path = data_directory.as_ref().join(DATABASE_FILE);
+        let mut connection = Connection::open(&database_path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        migrate(&mut connection)?;
         Ok(Self { connection })
     }
 
@@ -1788,6 +1905,769 @@ impl Store {
     }
 }
 
+fn finalize_knowledge_hits(hits: Vec<KnowledgeSearchHit>, limit: usize) -> Vec<KnowledgeSearchHit> {
+    let mut bytes = 0usize;
+    let mut finalized = Vec::new();
+    for mut hit in hits.into_iter().take(limit.min(8)) {
+        if bytes.saturating_add(hit.content.len()) > 48 * 1_024 {
+            break;
+        }
+        bytes += hit.content.len();
+        hit.citation = format!("K{}", finalized.len() + 1);
+        finalized.push(hit);
+    }
+    finalized
+}
+
+fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
+    vector
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
+}
+
+fn dot_product_blob(blob: &[u8], query: &[f32]) -> Option<f64> {
+    if blob.len() != query.len() * std::mem::size_of::<f32>() || query.len() != 384 {
+        return None;
+    }
+    let mut score = 0.0_f64;
+    for (bytes, query_value) in blob.chunks_exact(4).zip(query) {
+        let value = f32::from_le_bytes(bytes.try_into().ok()?);
+        score += f64::from(value) * f64::from(*query_value);
+    }
+    Some(score)
+}
+
+impl Store {
+    pub(super) fn knowledge_bases(
+        &mut self,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<KnowledgeBaseRow>> {
+        if let Some(workspace_id) = workspace_id {
+            validate_id("workspace_id", workspace_id)?;
+        }
+        let mut statement = self.connection.prepare(
+            "SELECT kb.id, kb.name, kb.description, kb.scope, kb.status, kb.updated_at, \
+               (SELECT COUNT(*) FROM knowledge_sources source WHERE source.knowledge_base_id = kb.id), \
+               (SELECT COUNT(*) FROM knowledge_documents document WHERE document.knowledge_base_id = kb.id), \
+               (SELECT COUNT(*) FROM knowledge_chunks chunk WHERE chunk.knowledge_base_id = kb.id), \
+               (SELECT COUNT(*) FROM knowledge_documents document WHERE document.knowledge_base_id = kb.id AND document.parse_status = 'error'), \
+               COALESCE((SELECT SUM(document.size_bytes) FROM knowledge_documents document WHERE document.knowledge_base_id = kb.id), 0) \
+             FROM knowledge_bases kb \
+             WHERE kb.scope = 'global' OR EXISTS(SELECT 1 FROM knowledge_base_workspaces scope \
+               WHERE scope.knowledge_base_id = kb.id AND scope.workspace_id = ?1) \
+             ORDER BY kb.updated_at DESC, kb.name COLLATE NOCASE",
+        )?;
+        let mut bases = statement
+            .query_map([workspace_id], |row| {
+                Ok(KnowledgeBaseRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    scope: row.get(3)?,
+                    workspace_ids: Vec::new(),
+                    status: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    source_count: row.get(6)?,
+                    document_count: row.get(7)?,
+                    chunk_count: row.get(8)?,
+                    error_count: row.get(9)?,
+                    size_bytes: row.get(10)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut workspace_statement = self.connection.prepare(
+            "SELECT workspace_id FROM knowledge_base_workspaces WHERE knowledge_base_id = ?1 ORDER BY workspace_id",
+        )?;
+        for base in &mut bases {
+            base.workspace_ids = workspace_statement
+                .query_map([&base.id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+        }
+        Ok(bases)
+    }
+
+    pub(super) fn create_knowledge_base(
+        &mut self,
+        name: &str,
+        description: &str,
+        workspace_ids: &[String],
+    ) -> Result<String> {
+        let name = name.trim();
+        let description = description.trim();
+        if name.is_empty() || name.chars().count() > 80 || description.chars().count() > 1_024 {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge base name or description is invalid".to_owned(),
+            ));
+        }
+        if workspace_ids.len() > 64 {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge base has too many project scopes".to_owned(),
+            ));
+        }
+        for workspace_id in workspace_ids {
+            validate_id("workspace_id", workspace_id)?;
+        }
+        let id = format!("kb_{}", Uuid::now_v7().simple());
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO knowledge_bases (id, name, description, scope, status) VALUES (?1, ?2, ?3, ?4, 'ready')",
+            params![id, name, description, if workspace_ids.is_empty() { "global" } else { "project" }],
+        )?;
+        for workspace_id in workspace_ids {
+            transaction.execute(
+                "INSERT INTO knowledge_base_workspaces (knowledge_base_id, workspace_id) VALUES (?1, ?2)",
+                params![id, workspace_id],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(id)
+    }
+
+    pub(super) fn delete_knowledge_base(&mut self, id: &str) -> Result<bool> {
+        validate_id("knowledge_base_id", id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "DELETE FROM knowledge_chunks_fts WHERE knowledge_base_id = ?1",
+            [id],
+        )?;
+        let deleted = transaction.execute("DELETE FROM knowledge_bases WHERE id = ?1", [id])? > 0;
+        transaction.commit()?;
+        Ok(deleted)
+    }
+
+    pub(super) fn create_knowledge_source(
+        &mut self,
+        knowledge_base_id: &str,
+        kind: &str,
+        path: &str,
+        display_name: &str,
+    ) -> Result<String> {
+        validate_id("knowledge_base_id", knowledge_base_id)?;
+        if !matches!(kind, "managedFile" | "linkedFolder")
+            || path.is_empty()
+            || path.len() > 16 * 1_024
+            || display_name.is_empty()
+            || display_name.len() > 1_024
+        {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge source is invalid".to_owned(),
+            ));
+        }
+        let exists: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_bases WHERE id = ?1)",
+            [knowledge_base_id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge base does not exist".to_owned(),
+            ));
+        }
+        let id = format!("ks_{}", Uuid::now_v7().simple());
+        self.connection.execute(
+            "INSERT INTO knowledge_sources (id, knowledge_base_id, kind, path, display_name) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, knowledge_base_id, kind, path, display_name],
+        )?;
+        self.set_knowledge_status(knowledge_base_id, "indexing")?;
+        Ok(id)
+    }
+
+    pub(super) fn knowledge_sources(
+        &mut self,
+        knowledge_base_id: &str,
+    ) -> Result<Vec<KnowledgeSourceRow>> {
+        validate_id("knowledge_base_id", knowledge_base_id)?;
+        let mut statement = self.connection.prepare(
+            "SELECT source.id, source.knowledge_base_id, source.kind, source.path, source.display_name, source.updated_at, \
+               COUNT(document.id), COALESCE(SUM(CASE WHEN document.parse_status = 'error' THEN 1 ELSE 0 END), 0) \
+             FROM knowledge_sources source LEFT JOIN knowledge_documents document ON document.source_id = source.id \
+             WHERE source.knowledge_base_id = ?1 GROUP BY source.id ORDER BY source.created_at, source.id",
+        )?;
+        statement
+            .query_map([knowledge_base_id], |row| {
+                Ok(KnowledgeSourceRow {
+                    id: row.get(0)?,
+                    knowledge_base_id: row.get(1)?,
+                    kind: row.get(2)?,
+                    path: row.get(3)?,
+                    display_name: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    document_count: row.get(6)?,
+                    error_count: row.get(7)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn replace_knowledge_document(
+        &mut self,
+        knowledge_base_id: &str,
+        source_id: &str,
+        relative_path: &str,
+        file_name: &str,
+        media_type: &str,
+        size_bytes: i64,
+        modified_at: i64,
+        sha256: &str,
+        parse_error: Option<&str>,
+        chunks: &[KnowledgeChunkInput],
+    ) -> Result<()> {
+        if relative_path.is_empty()
+            || relative_path.len() > 16 * 1_024
+            || file_name.is_empty()
+            || file_name.len() > 1_024
+            || size_bytes < 0
+            || sha256.len() != 64
+        {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge document metadata is invalid".to_owned(),
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing_id: Option<String> = transaction
+            .query_row(
+                "SELECT id FROM knowledge_documents WHERE source_id = ?1 AND relative_path = ?2",
+                params![source_id, relative_path],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(existing_id) = existing_id {
+            transaction.execute(
+                "DELETE FROM knowledge_chunks_fts WHERE chunk_id IN (SELECT id FROM knowledge_chunks WHERE document_id = ?1)",
+                [&existing_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM knowledge_documents WHERE id = ?1",
+                [&existing_id],
+            )?;
+        }
+        let document_id = format!("kd_{}", Uuid::now_v7().simple());
+        let parse_status = if parse_error.is_some() {
+            "error"
+        } else {
+            "ready"
+        };
+        transaction.execute(
+            "INSERT INTO knowledge_documents (id, knowledge_base_id, source_id, relative_path, file_name, media_type, size_bytes, modified_at, sha256, parse_status, parse_error, chunk_count) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![document_id, knowledge_base_id, source_id, relative_path, file_name, media_type, size_bytes, modified_at, sha256, parse_status, parse_error, i64::try_from(chunks.len()).unwrap_or(i64::MAX)],
+        )?;
+        for chunk in chunks {
+            let chunk_id = format!("kc_{}", Uuid::now_v7().simple());
+            transaction.execute(
+                "INSERT INTO knowledge_chunks (id, knowledge_base_id, document_id, ordinal, heading, page_number, content, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![chunk_id, knowledge_base_id, document_id, chunk.ordinal, chunk.heading, chunk.page_number, chunk.content, chunk.content_hash],
+            )?;
+            transaction.execute(
+                "INSERT INTO knowledge_chunks_fts (chunk_id, knowledge_base_id, relative_path, heading, search_text) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![chunk_id, knowledge_base_id, relative_path, chunk.heading, chunk.search_text],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE knowledge_sources SET updated_at = unixepoch() WHERE id = ?1",
+            [source_id],
+        )?;
+        transaction.execute(
+            "UPDATE knowledge_bases SET updated_at = unixepoch() WHERE id = ?1",
+            [knowledge_base_id],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn knowledge_documents(
+        &mut self,
+        knowledge_base_id: &str,
+    ) -> Result<Vec<KnowledgeDocumentRow>> {
+        validate_id("knowledge_base_id", knowledge_base_id)?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, knowledge_base_id, source_id, relative_path, file_name, media_type, size_bytes, modified_at, sha256, parse_status, parse_error, chunk_count, updated_at \
+             FROM knowledge_documents WHERE knowledge_base_id = ?1 ORDER BY relative_path COLLATE NOCASE",
+        )?;
+        statement
+            .query_map([knowledge_base_id], |row| {
+                Ok(KnowledgeDocumentRow {
+                    id: row.get(0)?,
+                    knowledge_base_id: row.get(1)?,
+                    source_id: row.get(2)?,
+                    relative_path: row.get(3)?,
+                    file_name: row.get(4)?,
+                    media_type: row.get(5)?,
+                    size_bytes: row.get(6)?,
+                    modified_at: row.get(7)?,
+                    sha256: row.get(8)?,
+                    parse_status: row.get(9)?,
+                    parse_error: row.get(10)?,
+                    chunk_count: row.get(11)?,
+                    updated_at: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn search_knowledge(
+        &mut self,
+        knowledge_base_ids: &[String],
+        workspace_id: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeSearchHit>> {
+        let hits = self.search_knowledge_candidates(
+            knowledge_base_ids,
+            workspace_id,
+            query,
+            limit.min(8),
+        )?;
+        Ok(finalize_knowledge_hits(hits, limit.min(8)))
+    }
+
+    pub(super) fn search_knowledge_hybrid(
+        &mut self,
+        knowledge_base_ids: &[String],
+        workspace_id: Option<&str>,
+        query: &str,
+        query_vector: &[f32],
+        model_version: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeSearchHit>> {
+        if query_vector.len() != 384 || model_version.is_empty() {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge semantic search request is invalid".to_owned(),
+            ));
+        }
+        let lexical =
+            self.search_knowledge_candidates(knowledge_base_ids, workspace_id, query, 30)?;
+        let semantic = self.search_knowledge_vector_candidates(
+            knowledge_base_ids,
+            workspace_id,
+            query_vector,
+            model_version,
+            30,
+        )?;
+        let mut fused = std::collections::HashMap::<String, (KnowledgeSearchHit, f64)>::new();
+        for (rank, hit) in lexical.into_iter().enumerate() {
+            let score = 1.0 / (60.0 + rank as f64 + 1.0);
+            let entry = fused
+                .entry(hit.chunk_id.clone())
+                .or_insert_with(|| (hit, 0.0));
+            entry.1 += score;
+        }
+        for (rank, hit) in semantic.into_iter().enumerate() {
+            let score = 1.0 / (60.0 + rank as f64 + 1.0);
+            let entry = fused
+                .entry(hit.chunk_id.clone())
+                .or_insert_with(|| (hit, 0.0));
+            entry.1 += score;
+        }
+        let mut hits = fused
+            .into_values()
+            .map(|(mut hit, score)| {
+                hit.score = score;
+                hit
+            })
+            .collect::<Vec<_>>();
+        hits.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.chunk_id.cmp(&right.chunk_id))
+        });
+        Ok(finalize_knowledge_hits(hits, limit.min(8)))
+    }
+
+    fn search_knowledge_candidates(
+        &mut self,
+        knowledge_base_ids: &[String],
+        workspace_id: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeSearchHit>> {
+        if knowledge_base_ids.is_empty() || knowledge_base_ids.len() > 4 || query.is_empty() {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge search request is invalid".to_owned(),
+            ));
+        }
+        let ids_json = serde_json::to_string(knowledge_base_ids)?;
+        let mut statement = self.connection.prepare(
+            "SELECT chunk.id, chunk.knowledge_base_id, kb.name, chunk.document_id, document.file_name, document.relative_path, \
+               chunk.heading, chunk.page_number, chunk.content, bm25(knowledge_chunks_fts) \
+             FROM knowledge_chunks_fts \
+             JOIN knowledge_chunks chunk ON chunk.id = knowledge_chunks_fts.chunk_id \
+             JOIN knowledge_documents document ON document.id = chunk.document_id \
+             JOIN knowledge_bases kb ON kb.id = chunk.knowledge_base_id \
+             WHERE knowledge_chunks_fts MATCH ?2 AND chunk.knowledge_base_id IN (SELECT value FROM json_each(?1)) \
+               AND (kb.scope = 'global' OR EXISTS(SELECT 1 FROM knowledge_base_workspaces scope \
+                 WHERE scope.knowledge_base_id = kb.id AND scope.workspace_id = ?3)) \
+             ORDER BY bm25(knowledge_chunks_fts), chunk.ordinal LIMIT ?4",
+        )?;
+        let mut hits = Vec::new();
+        for row in statement.query_map(
+            params![
+                ids_json,
+                query,
+                workspace_id.unwrap_or_default(),
+                i64::try_from(limit.min(30)).unwrap_or(30)
+            ],
+            |row| {
+                Ok(KnowledgeSearchHit {
+                    chunk_id: row.get(0)?,
+                    citation: String::new(),
+                    knowledge_base_id: row.get(1)?,
+                    knowledge_base_name: row.get(2)?,
+                    document_id: row.get(3)?,
+                    file_name: row.get(4)?,
+                    relative_path: row.get(5)?,
+                    heading: row.get(6)?,
+                    page_number: row.get(7)?,
+                    content: row.get(8)?,
+                    score: row.get(9)?,
+                })
+            },
+        )? {
+            hits.push(row?);
+        }
+        Ok(hits)
+    }
+
+    fn search_knowledge_vector_candidates(
+        &mut self,
+        knowledge_base_ids: &[String],
+        workspace_id: Option<&str>,
+        query_vector: &[f32],
+        model_version: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeSearchHit>> {
+        let ids_json = serde_json::to_string(knowledge_base_ids)?;
+        let mut statement = self.connection.prepare(
+            "SELECT embedding.chunk_id, embedding.vector \
+             FROM knowledge_chunk_embeddings embedding \
+             JOIN knowledge_bases kb ON kb.id = embedding.knowledge_base_id \
+             WHERE embedding.model_version = ?2 \
+               AND embedding.knowledge_base_id IN (SELECT value FROM json_each(?1)) \
+               AND (kb.scope = 'global' OR EXISTS(SELECT 1 FROM knowledge_base_workspaces scope \
+                 WHERE scope.knowledge_base_id = kb.id AND scope.workspace_id = ?3))",
+        )?;
+        let candidate_limit = limit.min(30);
+        let rows = statement.query_map(
+            params![ids_json, model_version, workspace_id.unwrap_or_default()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )?;
+        let mut scores = Vec::<(String, f64)>::with_capacity(candidate_limit);
+        for row in rows {
+            let (chunk_id, blob) = row?;
+            let Some(score) = dot_product_blob(&blob, query_vector) else {
+                continue;
+            };
+            if scores.len() < candidate_limit {
+                scores.push((chunk_id, score));
+                continue;
+            }
+            let Some((minimum_index, minimum)) = scores
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| left.1.total_cmp(&right.1))
+            else {
+                continue;
+            };
+            if score > minimum.1 {
+                scores[minimum_index] = (chunk_id, score);
+            }
+        }
+        drop(statement);
+        scores.sort_by(|left, right| {
+            right
+                .1
+                .partial_cmp(&left.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut hits = Vec::new();
+        for (chunk_id, score) in scores {
+            if let Some(mut hit) = self.knowledge_hit_by_chunk_id(&chunk_id)? {
+                hit.score = score;
+                hits.push(hit);
+            }
+        }
+        Ok(hits)
+    }
+
+    fn knowledge_hit_by_chunk_id(&mut self, chunk_id: &str) -> Result<Option<KnowledgeSearchHit>> {
+        self.connection
+            .query_row(
+                "SELECT chunk.id, chunk.knowledge_base_id, kb.name, chunk.document_id, document.file_name, \
+                   document.relative_path, chunk.heading, chunk.page_number, chunk.content \
+                 FROM knowledge_chunks chunk \
+                 JOIN knowledge_documents document ON document.id = chunk.document_id \
+                 JOIN knowledge_bases kb ON kb.id = chunk.knowledge_base_id WHERE chunk.id = ?1",
+                [chunk_id],
+                |row| {
+                    Ok(KnowledgeSearchHit {
+                        chunk_id: row.get(0)?,
+                        citation: String::new(),
+                        knowledge_base_id: row.get(1)?,
+                        knowledge_base_name: row.get(2)?,
+                        document_id: row.get(3)?,
+                        file_name: row.get(4)?,
+                        relative_path: row.get(5)?,
+                        heading: row.get(6)?,
+                        page_number: row.get(7)?,
+                        content: row.get(8)?,
+                        score: 0.0,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn knowledge_base_ids(&mut self) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM knowledge_bases ORDER BY created_at")?;
+        statement
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn knowledge_chunks_needing_embeddings(
+        &mut self,
+        knowledge_base_id: &str,
+        model_version: &str,
+        limit: usize,
+    ) -> Result<Vec<KnowledgeEmbeddingChunk>> {
+        validate_id("knowledge_base_id", knowledge_base_id)?;
+        let mut statement = self.connection.prepare(
+            "SELECT chunk.id, chunk.content, chunk.content_hash FROM knowledge_chunks chunk \
+             LEFT JOIN knowledge_chunk_embeddings embedding ON embedding.chunk_id = chunk.id \
+             WHERE chunk.knowledge_base_id = ?1 AND (embedding.chunk_id IS NULL \
+               OR embedding.model_version != ?2 OR embedding.content_hash != chunk.content_hash) \
+             ORDER BY chunk.document_id, chunk.ordinal LIMIT ?3",
+        )?;
+        statement
+            .query_map(
+                params![
+                    knowledge_base_id,
+                    model_version,
+                    i64::try_from(limit.min(16)).unwrap_or(16)
+                ],
+                |row| {
+                    Ok(KnowledgeEmbeddingChunk {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        content_hash: row.get(2)?,
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn save_knowledge_embeddings(
+        &mut self,
+        knowledge_base_id: &str,
+        model_version: &str,
+        embeddings: &[KnowledgeEmbeddingInput],
+    ) -> Result<()> {
+        validate_id("knowledge_base_id", knowledge_base_id)?;
+        if model_version.is_empty()
+            || embeddings.is_empty()
+            || embeddings.len() > 16
+            || embeddings
+                .iter()
+                .any(|embedding| embedding.vector.len() != 384)
+        {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge embedding batch is invalid".to_owned(),
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for embedding in embeddings {
+            transaction.execute(
+                "INSERT INTO knowledge_chunk_embeddings \
+                   (chunk_id, knowledge_base_id, content_hash, model_version, dimensions, vector, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, 384, ?5, unixepoch()) \
+                 ON CONFLICT(chunk_id) DO UPDATE SET knowledge_base_id = excluded.knowledge_base_id, \
+                   content_hash = excluded.content_hash, model_version = excluded.model_version, \
+                   dimensions = excluded.dimensions, vector = excluded.vector, updated_at = unixepoch()",
+                params![
+                    embedding.chunk_id,
+                    knowledge_base_id,
+                    embedding.content_hash,
+                    model_version,
+                    vector_to_blob(&embedding.vector)
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn set_knowledge_semantic_index_status(
+        &mut self,
+        knowledge_base_id: &str,
+        model_version: &str,
+        status: &str,
+        error: Option<&str>,
+    ) -> Result<()> {
+        if !matches!(status, "notIndexed" | "indexing" | "ready" | "error") {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge semantic index status is invalid".to_owned(),
+            ));
+        }
+        self.connection.execute(
+            "INSERT INTO knowledge_semantic_indexes \
+               (knowledge_base_id, model_version, status, error, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, unixepoch()) \
+             ON CONFLICT(knowledge_base_id) DO UPDATE SET model_version = excluded.model_version, \
+               status = excluded.status, error = excluded.error, updated_at = unixepoch()",
+            params![knowledge_base_id, model_version, status, error],
+        )?;
+        self.connection.execute(
+            "UPDATE knowledge_bases SET semantic_model_version = ?2 WHERE id = ?1",
+            params![knowledge_base_id, model_version],
+        )?;
+        Ok(())
+    }
+
+    pub(super) fn semantic_indexes_ready(
+        &mut self,
+        knowledge_base_ids: &[String],
+        model_version: &str,
+    ) -> Result<bool> {
+        let ids_json = serde_json::to_string(knowledge_base_ids)?;
+        let ready: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM knowledge_semantic_indexes \
+             WHERE knowledge_base_id IN (SELECT value FROM json_each(?1)) \
+               AND model_version = ?2 AND status = 'ready'",
+            params![ids_json, model_version],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(ready).unwrap_or(0) == knowledge_base_ids.len())
+    }
+
+    pub(super) fn semantic_index_summary(
+        &mut self,
+        model_version: &str,
+    ) -> Result<KnowledgeSemanticIndexSummary> {
+        let (total_chunks, indexed_chunks): (i64, i64) = self.connection.query_row(
+            "SELECT (SELECT COUNT(*) FROM knowledge_chunks), \
+               (SELECT COUNT(*) FROM knowledge_chunk_embeddings WHERE model_version = ?1)",
+            [model_version],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let (indexing, errors): (i64, i64) = self.connection.query_row(
+            "SELECT COALESCE(SUM(status = 'indexing'), 0), COALESCE(SUM(status = 'error'), 0) \
+             FROM knowledge_semantic_indexes WHERE model_version = ?1",
+            [model_version],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(KnowledgeSemanticIndexSummary {
+            state: if indexing > 0 {
+                "indexing"
+            } else if errors > 0 {
+                "error"
+            } else if total_chunks > 0 && indexed_chunks >= total_chunks {
+                "ready"
+            } else {
+                "notIndexed"
+            }
+            .to_owned(),
+            indexed_chunks,
+            total_chunks,
+            error_count: errors,
+        })
+    }
+
+    pub(super) fn clear_knowledge_semantic_indexes(&mut self) -> Result<()> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute("DELETE FROM knowledge_chunk_embeddings", [])?;
+        transaction.execute("DELETE FROM knowledge_semantic_indexes", [])?;
+        transaction.execute(
+            "UPDATE knowledge_bases SET semantic_model_version = NULL",
+            [],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(super) fn read_knowledge_document(
+        &mut self,
+        knowledge_base_ids: &[String],
+        workspace_id: Option<&str>,
+        document_id: &str,
+        start_ordinal: i64,
+    ) -> Result<Vec<KnowledgeReadChunk>> {
+        if knowledge_base_ids.is_empty() || knowledge_base_ids.len() > 4 || start_ordinal < 0 {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge read request is invalid".to_owned(),
+            ));
+        }
+        let ids_json = serde_json::to_string(knowledge_base_ids)?;
+        let mut statement = self.connection.prepare(
+            "SELECT chunk.ordinal, chunk.heading, chunk.page_number, chunk.content \
+             FROM knowledge_chunks chunk JOIN knowledge_bases kb ON kb.id = chunk.knowledge_base_id \
+             WHERE chunk.document_id = ?2 AND chunk.knowledge_base_id IN (SELECT value FROM json_each(?1)) \
+               AND chunk.ordinal >= ?4 AND (kb.scope = 'global' OR EXISTS(SELECT 1 FROM knowledge_base_workspaces scope \
+                 WHERE scope.knowledge_base_id = kb.id AND scope.workspace_id = ?3)) \
+             ORDER BY chunk.ordinal LIMIT 12",
+        )?;
+        let mut bytes = 0usize;
+        let mut chunks = Vec::new();
+        for row in statement.query_map(
+            params![
+                ids_json,
+                document_id,
+                workspace_id.unwrap_or_default(),
+                start_ordinal
+            ],
+            |row| {
+                Ok(KnowledgeReadChunk {
+                    ordinal: row.get(0)?,
+                    heading: row.get(1)?,
+                    page_number: row.get(2)?,
+                    content: row.get(3)?,
+                })
+            },
+        )? {
+            let chunk = row?;
+            if bytes.saturating_add(chunk.content.len()) > 48 * 1_024 {
+                break;
+            }
+            bytes += chunk.content.len();
+            chunks.push(chunk);
+        }
+        Ok(chunks)
+    }
+
+    pub(super) fn set_knowledge_status(&mut self, id: &str, status: &str) -> Result<()> {
+        if !matches!(status, "ready" | "indexing" | "error") {
+            return Err(PersistenceError::InvalidInput(
+                "knowledge base status is invalid".to_owned(),
+            ));
+        }
+        self.connection.execute(
+            "UPDATE knowledge_bases SET status = ?2, updated_at = unixepoch() WHERE id = ?1",
+            params![id, status],
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 fn restrict_database_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -2320,6 +3200,94 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 11;",
         )?;
         transaction.commit()?;
+        version = 11;
+    }
+    if version == 11 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE knowledge_bases (\
+               id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, description TEXT NOT NULL DEFAULT '',\
+               scope TEXT NOT NULL CHECK(scope IN ('global','project')),\
+               status TEXT NOT NULL DEFAULT 'ready' CHECK(status IN ('ready','indexing','error')),\
+               ignore_rules_json TEXT NOT NULL DEFAULT '[]', semantic_model_version TEXT,\
+               created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             CREATE TABLE knowledge_base_workspaces (\
+               knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,\
+               workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,\
+               PRIMARY KEY(knowledge_base_id, workspace_id)\
+             ) STRICT;\
+             CREATE TABLE knowledge_sources (\
+               id TEXT PRIMARY KEY, knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,\
+               kind TEXT NOT NULL CHECK(kind IN ('managedFile','linkedFolder')), path TEXT NOT NULL, display_name TEXT NOT NULL,\
+               created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               UNIQUE(knowledge_base_id, path)\
+             ) STRICT;\
+             CREATE TABLE knowledge_documents (\
+               id TEXT PRIMARY KEY, knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,\
+               source_id TEXT NOT NULL REFERENCES knowledge_sources(id) ON DELETE CASCADE, relative_path TEXT NOT NULL,\
+               file_name TEXT NOT NULL, media_type TEXT NOT NULL, size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),\
+               modified_at INTEGER NOT NULL, sha256 TEXT NOT NULL,\
+               parse_status TEXT NOT NULL CHECK(parse_status IN ('ready','error')), parse_error TEXT,\
+               chunk_count INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               UNIQUE(source_id, relative_path)\
+             ) STRICT;\
+             CREATE INDEX knowledge_documents_base_path ON knowledge_documents(knowledge_base_id, relative_path);\
+             CREATE TABLE knowledge_chunks (\
+               id TEXT PRIMARY KEY, knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,\
+               document_id TEXT NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE, ordinal INTEGER NOT NULL,\
+               heading TEXT, page_number INTEGER, content TEXT NOT NULL, content_hash TEXT NOT NULL,\
+               UNIQUE(document_id, ordinal)\
+             ) STRICT;\
+             CREATE INDEX knowledge_chunks_document_ordinal ON knowledge_chunks(document_id, ordinal);\
+             CREATE VIRTUAL TABLE knowledge_chunks_fts USING fts5(\
+               chunk_id UNINDEXED, knowledge_base_id UNINDEXED, relative_path, heading, search_text,\
+               tokenize = 'unicode61 remove_diacritics 2'\
+             );\
+             PRAGMA user_version = 12;",
+        )?;
+        transaction.commit()?;
+        version = 12;
+    }
+    if version == 12 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE skill_market_sources (\
+               skill_id TEXT PRIMARY KEY, catalog_source TEXT NOT NULL, version TEXT NOT NULL,\
+               installed_sha256 TEXT NOT NULL, directory_sha256 TEXT NOT NULL,\
+               checked_at INTEGER, updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             CREATE TABLE skill_update_history (\
+               id TEXT PRIMARY KEY, skill_id TEXT NOT NULL, from_version TEXT, to_version TEXT NOT NULL,\
+               state TEXT NOT NULL CHECK(state IN ('installed','updated','failed')),\
+               details_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 13;",
+        )?;
+        transaction.commit()?;
+        version = 13;
+    }
+    if version == 13 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE knowledge_chunk_embeddings (\
+               chunk_id TEXT PRIMARY KEY REFERENCES knowledge_chunks(id) ON DELETE CASCADE,\
+               knowledge_base_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,\
+               content_hash TEXT NOT NULL, model_version TEXT NOT NULL,\
+               dimensions INTEGER NOT NULL CHECK(dimensions = 384), vector BLOB NOT NULL,\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             CREATE INDEX knowledge_chunk_embeddings_base_model \
+               ON knowledge_chunk_embeddings(knowledge_base_id, model_version);\
+             CREATE TABLE knowledge_semantic_indexes (\
+               knowledge_base_id TEXT PRIMARY KEY REFERENCES knowledge_bases(id) ON DELETE CASCADE,\
+               model_version TEXT NOT NULL,\
+               status TEXT NOT NULL CHECK(status IN ('notIndexed','indexing','ready','error')),\
+               error TEXT, updated_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT;\
+             PRAGMA user_version = 14;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -2347,6 +3315,11 @@ fn recover_interrupted_work(connection: &mut Connection) -> Result<()> {
         "UPDATE operations SET status = 'failed', updated_at = unixepoch(),\
          result_json = '{\"kind\":\"runtimeRestart\",\"retryable\":true}'\
          WHERE status IN ('approved', 'executing')",
+        [],
+    )?;
+    transaction.execute(
+        "UPDATE knowledge_semantic_indexes SET status = 'notIndexed', error = NULL, \
+           updated_at = unixepoch() WHERE status = 'indexing'",
         [],
     )?;
     transaction.commit()?;

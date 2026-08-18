@@ -186,11 +186,11 @@ export const CommandApprovalView = ({
             {isSubmitting ? '正在信任…' : '信任此配置'}
           </Button>
         ) : (
-        <div className="flex items-center rounded-lg bg-primary text-primary-foreground">
+        <div className="flex items-center rounded-lg bg-brand text-brand-foreground">
           <Button
             type="button"
             size="sm"
-            className="rounded-r-none border-r border-primary-foreground/20 px-3 hover:bg-primary/80"
+            className="rounded-r-none border-r border-brand-foreground/20 px-3 hover:bg-brand-hover"
             disabled={!canAct}
             onClick={() => void store.approve(request)}
           >
@@ -208,7 +208,7 @@ export const CommandApprovalView = ({
             }}
           >
             <SelectTrigger
-              className="h-7 w-8 justify-center gap-0 rounded-l-none border-0 border-l border-primary-foreground/20 bg-primary p-0 text-primary-foreground shadow-none hover:bg-primary/80 focus-visible:ring-primary-foreground/40 [&>svg]:m-0 [&>svg]:size-3.5 [&>svg]:text-primary-foreground"
+              className="h-7 w-8 justify-center gap-0 rounded-l-none border-0 border-l border-brand-foreground/20 bg-brand p-0 text-brand-foreground shadow-none hover:bg-brand-hover focus-visible:ring-brand-foreground/40 [&>svg]:m-0 [&>svg]:size-3.5 [&>svg]:text-brand-foreground"
               aria-label="选择授权范围"
               title="选择授权范围"
             />

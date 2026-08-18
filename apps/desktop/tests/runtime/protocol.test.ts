@@ -6,6 +6,19 @@ import {
   isRuntimeEvent,
 } from '../../src/runtime/protocol.ts';
 
+test('private runtime validates shared semantic model lifecycle commands', () => {
+  for (const type of [
+    'knowledge.model.install',
+    'knowledge.model.cancel',
+    'knowledge.model.remove',
+  ] as const) {
+    assert.equal(
+      isRuntimeCommand({ type, requestId: `request-${type}` }),
+      true,
+    );
+  }
+});
+
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
 test('private runtime validates lazy task-bound command environments', () => {
@@ -87,7 +100,7 @@ test('private runtime records an explicit user Stop source', () => {
   assert.equal(isRuntimeCommand(command), false);
 });
 
-test('private runtime v5 validates durable queue mutations and steering guards', () => {
+test('private runtime v6 validates durable queue mutations and steering guards', () => {
   const create = {
     type: 'queue.messageCreate',
     requestId: 'request-queue-create',

@@ -52,7 +52,7 @@ test('opening takes precedence over a projected running state', () => {
   assert.equal(status({ pending: true, running: true }), 'opening');
 });
 
-test('pending selection is displayed before its workspace becomes active', () => {
+test('pending selection is displayed early and suppresses the old active project', () => {
   assert.equal(
     resolveDisplayedThreadId({
       active: false,
@@ -64,7 +64,7 @@ test('pending selection is displayed before its workspace becomes active', () =>
   );
   assert.equal(
     resolveDisplayedThreadId({
-      active: false,
+      active: true,
       pendingThreadId: 'thread-b',
       selectedThreadId: 'thread-a',
       threadIds: ['thread-a'],

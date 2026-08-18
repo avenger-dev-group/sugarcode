@@ -86,7 +86,7 @@ const McpSessionPanelContent = ({
                 onClick={() => void store.toggleServer(server.id)}
                 className={`flex w-full min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 ${
                   selected
-                    ? 'border-primary/30 bg-primary/10 text-foreground'
+                    ? 'border-brand/30 bg-brand/10 text-brand'
                     : 'border-border bg-surface text-secondary hover:text-foreground'
                 }`}
               >

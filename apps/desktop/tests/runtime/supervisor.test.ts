@@ -85,7 +85,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(first.messages[1]?.type, 'workspace.open');
@@ -124,7 +124,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(second?.messages[1]?.type, 'workspace.open');
@@ -147,7 +147,7 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   const response = supervisor.request(
     { type: 'model.inspect', requestId: 'request-model-inspect' },
@@ -183,7 +183,7 @@ test('RuntimeSupervisor rejects pending requests when an invalid event stops the
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   const response = supervisor.request(
     {
@@ -226,7 +226,7 @@ test('RuntimeSupervisor tracks a promoted queued Turn through a runtime crash', 
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   supervisor.send({
     type: 'turn.startQueued',
@@ -263,7 +263,7 @@ test('RuntimeSupervisor rejects an unconfirmed revision when its Turn ends', asy
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   const response = supervisor.request(
     {
@@ -318,7 +318,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   supervisor.send({
     type: 'mcp.sessionSet',
@@ -360,7 +360,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 5,
+    protocolVersion: 6,
   });
   assert.equal(second.messages[1]?.type, 'mcp.sessionSet');
   assert.deepEqual(

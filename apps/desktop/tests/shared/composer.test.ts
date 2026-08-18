@@ -66,3 +66,33 @@ test('/draw is parsed as an executable diagram command', () => {
     target,
   })), [{ kind: 'command', target: 'draw' }]);
 });
+
+test('knowledge references remain structured and are removed from reference-only lines', () => {
+  const submission = parseComposerSubmission(
+    '@知识库:`产品规范 2026`\n请总结登录流程',
+  );
+  assert.equal(submission.text, '请总结登录流程');
+  assert.deepEqual(
+    submission.references.map(({ kind, value, target }) => ({
+      kind,
+      value,
+      target,
+    })),
+    [
+      {
+        kind: 'knowledge',
+        value: '@知识库:`产品规范 2026`',
+        target: '产品规范 2026',
+      },
+    ],
+  );
+});
+
+test('legacy knowledge references with a colon remain readable', () => {
+  const submission = parseComposerSubmission('@知识库:产品规范\n请总结');
+  assert.equal(submission.text, '请总结');
+  assert.deepEqual(
+    submission.references.map(({ kind, target }) => ({ kind, target })),
+    [{ kind: 'knowledge', target: '产品规范' }],
+  );
+});

@@ -23,7 +23,9 @@ export type SkillsStore = Readonly<{
   openSkill: (skill: SkillSummary) => Promise<void>;
   closeSkill: () => void;
   importDirectory: (scope: SkillScope) => Promise<void>;
+  importArchive: (scope: SkillScope) => Promise<void>;
   exportDirectory: (skill: SkillSummary) => Promise<void>;
+  exportArchive: (skill: SkillSummary) => Promise<void>;
 }>;
 
 export type SkillsSettingsPanelProps = Readonly<{

@@ -1,4 +1,4 @@
-import { AtSign, Box, File, LoaderCircle } from 'lucide-react';
+import { AtSign, BookOpenText, Box, File, LoaderCircle } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
 import { Textarea } from '@/renderer/components/ui/textarea';
@@ -9,6 +9,7 @@ import { useStore } from './use-store';
 
 const SuggestionIcon = ({ suggestion }: Readonly<{ suggestion: ComposerSuggestion }>) => {
   if (suggestion.kind === 'skill') return <Box className="size-3.5" aria-hidden="true" />;
+  if (suggestion.kind === 'knowledge') return <BookOpenText className="size-3.5" aria-hidden="true" />;
   if (suggestion.kind === 'file') return <File className="size-3.5" aria-hidden="true" />;
   return null;
 };
@@ -22,7 +23,7 @@ export const ComposerInput = (props: ComposerInputProps) => {
     store.token?.trigger === '$'
       ? 'Skills'
       : store.token?.trigger === '@'
-        ? '工作区文件'
+        ? '知识库与工作区文件'
         : '命令';
 
   return (
@@ -73,7 +74,7 @@ export const ComposerInput = (props: ComposerInputProps) => {
                   </span>
                 ) : null}
                 <span className="max-w-44 shrink-0 truncate font-medium text-primary">
-                  {suggestion.kind === 'skill' ? '$' : ''}{suggestion.label}
+                  {suggestion.kind === 'skill' ? '$' : suggestion.kind === 'knowledge' ? '@' : ''}{suggestion.label}
                 </span>
                 {suggestion.alias ? (
                   <code className="shrink-0 font-mono text-[11px] text-tertiary">
@@ -126,7 +127,7 @@ export const ComposerInput = (props: ComposerInputProps) => {
           aria-controls={store.token ? store.listboxId : undefined}
           aria-expanded={Boolean(store.token)}
           aria-activedescendant={activeId}
-          placeholder="描述任务，输入 / 使用命令、$ 使用 Skill、@ 引用文件…"
+          placeholder="描述任务，输入 / 使用命令、$ 使用 Skill、@ 引用知识库或文件…"
           autoFocus
           className="relative min-h-16 max-h-64 overflow-y-auto px-4 pt-3 pb-2 text-transparent caret-primary selection:bg-link/20 [field-sizing:content] [scrollbar-gutter:stable]"
         />

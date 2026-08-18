@@ -20,6 +20,27 @@ import {
 } from '@/shared/connection';
 import type { DesktopApi } from '@/shared/desktop-api';
 import {
+  KNOWLEDGE_ADD_FILES_CHANNEL,
+  KNOWLEDGE_ADD_FOLDER_CHANNEL,
+  KNOWLEDGE_CREATE_CHANNEL,
+  KNOWLEDGE_DELETE_CHANNEL,
+  KNOWLEDGE_DETAIL_CHANNEL,
+  KNOWLEDGE_GET_CHANNEL,
+  KNOWLEDGE_MODEL_CANCEL_CHANNEL,
+  KNOWLEDGE_MODEL_INSTALL_CHANNEL,
+  KNOWLEDGE_MODEL_REMOVE_CHANNEL,
+  KNOWLEDGE_SEARCH_CHANNEL,
+  isKnowledgeActionResult,
+  isKnowledgeBaseDetail,
+  isKnowledgeInspection,
+  isKnowledgeSearchResult,
+  type KnowledgeActionResult,
+  type KnowledgeBaseDetail,
+  type KnowledgeCreateRequest,
+  type KnowledgeInspection,
+  type KnowledgeSearchResult,
+} from '@/shared/knowledge';
+import {
   COMMAND_ENVIRONMENT_GET_CHANNEL,
   COMMAND_ENVIRONMENT_PROFILE_CHANNEL,
   COMMAND_ENVIRONMENT_REFRESH_CHANNEL,
@@ -138,14 +159,17 @@ import {
   isSkillsInspection,
   SKILLS_CONTENT_CHANNEL,
   SKILLS_EXPORT_CHANNEL,
+  SKILLS_EXPORT_ZIP_CHANNEL,
   SKILLS_GET_CHANNEL,
   SKILLS_IMPORT_CHANNEL,
+  SKILLS_IMPORT_ZIP_CHANNEL,
   SKILLS_SET_ENABLED_CHANNEL,
   type SkillContent,
   type SkillScope,
   type SkillsActionResult,
   type SkillsInspection,
 } from '@/shared/skills';
+import { SKILLS_MARKET_INSTALL_CHANNEL } from '@/shared/skill-market';
 import {
   isWorkspaceInspectResult,
   isWorkspaceListResult,
@@ -357,6 +381,105 @@ export const createDesktopApi = (
     const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_CHANNEL, id);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill export action.');
+    }
+    return result;
+  },
+  importSkillZip: async (scope: SkillScope): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_ZIP_CHANNEL, scope);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill ZIP import action.');
+    }
+    return result;
+  },
+  exportSkillZip: async (id: string): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_ZIP_CHANNEL, id);
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid Skill ZIP export action.');
+    }
+    return result;
+  },
+  installCuratedSkill: async (catalogId: string): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      SKILLS_MARKET_INSTALL_CHANNEL,
+      catalogId,
+    );
+    if (!isSkillsActionResult(result)) {
+      throw new Error('Main returned an invalid curated Skill install action.');
+    }
+    return result;
+  },
+  getKnowledge: async (): Promise<KnowledgeInspection> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_GET_CHANNEL);
+    if (!isKnowledgeInspection(result)) {
+      throw new Error('Main returned an invalid knowledge inventory.');
+    }
+    return result;
+  },
+  createKnowledgeBase: async (
+    request: KnowledgeCreateRequest,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_CREATE_CHANNEL, request);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge create result.');
+    }
+    return result;
+  },
+  deleteKnowledgeBase: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_DELETE_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge delete result.');
+    }
+    return result;
+  },
+  addKnowledgeFiles: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_ADD_FILES_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge file result.');
+    }
+    return result;
+  },
+  addKnowledgeFolder: async (id: string): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_ADD_FOLDER_CHANNEL, id);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid knowledge folder result.');
+    }
+    return result;
+  },
+  getKnowledgeBaseDetail: async (id: string): Promise<KnowledgeBaseDetail> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_DETAIL_CHANNEL, id);
+    if (!isKnowledgeBaseDetail(result)) {
+      throw new Error('Main returned invalid knowledge base details.');
+    }
+    return result;
+  },
+  searchKnowledge: async (
+    ids: readonly string[],
+    query: string,
+  ): Promise<KnowledgeSearchResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SEARCH_CHANNEL, ids, query);
+    if (!isKnowledgeSearchResult(result)) {
+      throw new Error('Main returned an invalid knowledge search result.');
+    }
+    return result;
+  },
+  installSemanticModel: async (): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_INSTALL_CHANNEL);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic model install result.');
+    }
+    return result;
+  },
+  cancelSemanticModelDownload: async (): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_CANCEL_CHANNEL);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic model cancel result.');
+    }
+    return result;
+  },
+  removeSemanticModel: async (): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_REMOVE_CHANNEL);
+    if (!isKnowledgeActionResult(result)) {
+      throw new Error('Main returned an invalid semantic model remove result.');
     }
     return result;
   },

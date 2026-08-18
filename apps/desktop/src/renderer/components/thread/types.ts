@@ -353,6 +353,12 @@ export type ThreadWorkbenchViewProps = Readonly<{
   permissionControl?: ReactNode;
   approvalSurface?: ReactNode;
   approvalThreadIds?: readonly string[];
+  mainSurface?: ReactNode;
+  navigatorSurface?: import('../foundation/types').AppSurface;
+  onOpenSearch?: () => void;
+  onOpenKnowledge?: () => void;
+  onOpenSkills?: () => void;
+  onOpenWorkbench?: () => void;
 }>;
 
 export type TranscriptTurnProps = Readonly<{

@@ -77,6 +77,13 @@ test('completed commands, Skills, and files become reference display segments', 
       { kind: 'command', text: '/review' },
     ],
   );
+  assert.deepEqual(
+    composerDisplaySegments('@知识库产品规范 请检查', null),
+    [
+      { kind: 'knowledge', text: '@知识库产品规范' },
+      { kind: 'text', text: ' 请检查' },
+    ],
+  );
 });
 
 test('the token being edited stays regular text until selection completes', () => {

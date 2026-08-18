@@ -24,3 +24,13 @@ export const importSkill = (scope: SkillScope): Promise<SkillsActionResult> =>
 
 export const exportSkill = (id: string): Promise<SkillsActionResult> =>
   window.sugarcode.exportSkill(id);
+
+export const importSkillZip = (scope: SkillScope): Promise<SkillsActionResult> =>
+  window.sugarcode.importSkillZip(scope);
+
+export const exportSkillZip = (id: string): Promise<SkillsActionResult> =>
+  window.sugarcode.exportSkillZip(id);
+
+export const installCuratedSkill = (
+  catalogId: string,
+): Promise<SkillsActionResult> => window.sugarcode.installCuratedSkill(catalogId);

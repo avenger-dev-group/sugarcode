@@ -1,4 +1,4 @@
-export type ComposerReferenceKind = 'command' | 'skill' | 'file';
+export type ComposerReferenceKind = 'command' | 'skill' | 'knowledge' | 'file';
 
 export type ComposerReference = Readonly<{
   kind: ComposerReferenceKind;
@@ -14,7 +14,7 @@ export type ComposerSubmission = Readonly<{
 }>;
 
 const REFERENCE_PATTERN =
-  /\/(?:plan|review|fix|test|explain|init|draw|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@`[^`\r\n]+`|@[^\s@$]+/gu;
+  /\/(?:plan|review|fix|test|explain|init|draw|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@知识库(?::)?`[^`\r\n]+`|@知识库:[^\s@$]+|@知识库[^\s@$:`]+|@`[^`\r\n]+`|@[^\s@$]+/gu;
 
 export const isComposerLineLeading = (
   value: string,
@@ -54,6 +54,16 @@ const referenceFromMatch = (
   }
   if (!value.startsWith('@')) {
     return null;
+  }
+  if (value.startsWith('@知识库')) {
+    const rawTarget = value.slice('@知识库'.length).replace(/^:/u, '');
+    return {
+      kind: 'knowledge',
+      value,
+      target: rawTarget.startsWith('`') ? rawTarget.slice(1, -1) : rawTarget,
+      start,
+      end: start + value.length,
+    };
   }
   return {
     kind: 'file',

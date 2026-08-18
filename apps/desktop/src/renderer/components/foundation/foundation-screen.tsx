@@ -11,11 +11,16 @@ import { useStore as useThreadStore } from '@/renderer/components/thread/use-sto
 import { OrchestrationStoreProvider } from '@/renderer/components/orchestration/use-store';
 import { UpdateAction } from '@/renderer/components/update/update-action';
 import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
+import { SkillsCenter } from '@/renderer/components/capabilities/capability-center';
+import { KnowledgeCenter } from '@/renderer/components/knowledge/knowledge-center';
+import { GlobalSearch } from '@/renderer/components/search/global-search';
+import { useEffect, useState } from 'react';
 
 import { ContextRail } from './context-rail';
 import { useStore } from './use-store';
 
 export const FoundationScreen = () => {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const threadStore = useThreadStore();
   const activeThreadId = threadStore.thread.threadIdentity;
   const foundation = useStore(activeThreadId ?? null);
@@ -37,6 +42,20 @@ export const FoundationScreen = () => {
     threadStore.thread.phase === 'starting' ||
     threadStore.thread.phase === 'inProgress' ||
     threadStore.thread.phase === 'stopping';
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === 'k') {
+        event.preventDefault();
+        foundation.openSearch();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [foundation.openSearch]);
+
+  const openKnowledge = (): void => foundation.setSurface('knowledge');
+  const openSkills = (): void => foundation.setSurface('skills');
 
   return (
     <div
@@ -82,6 +101,8 @@ export const FoundationScreen = () => {
                   toggleTheme={foundation.toggleTheme}
                   workspaceId={threadStore.thread.workspaceIdentity}
                   threadId={threadStore.thread.threadIdentity}
+                  open={settingsOpen}
+                  onOpenChange={setSettingsOpen}
                 />
               </div>
             }
@@ -92,12 +113,35 @@ export const FoundationScreen = () => {
               />
             }
             approvalThreadIds={approvalThreadIds}
+            navigatorSurface={foundation.surface}
+            onOpenSearch={foundation.openSearch}
+            onOpenKnowledge={openKnowledge}
+            onOpenSkills={openSkills}
+            onOpenWorkbench={() => foundation.setSurface('workbench')}
+            mainSurface={
+              foundation.surface === 'knowledge' ? (
+                <KnowledgeCenter
+                  workspaceId={threadStore.thread.workspaceIdentity}
+                  navigatorOpen={foundation.navigatorOpen}
+                />
+              ) : foundation.surface === 'skills' ? (
+                <SkillsCenter />
+              ) : undefined
+            }
           />
         </main>
       </OrchestrationStoreProvider>
       <McpApprovalSurface
         store={mcpStore}
         activeThreadId={activeThreadId}
+      />
+      <GlobalSearch
+        open={foundation.searchOpen}
+        onOpenChange={(open) => open ? foundation.openSearch() : foundation.closeSearch()}
+        onOpenKnowledge={openKnowledge}
+        onOpenSkills={openSkills}
+        onOpenWorkbench={() => foundation.setSurface('workbench')}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
     </div>
   );

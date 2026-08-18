@@ -24,6 +24,46 @@ export type NativeRuntimeBinding = Readonly<{
     skillId: string,
     destinationPath: string,
   ) => string;
+  importSkillZipJson?: (
+    workspaceId: string | undefined,
+    archivePath: string,
+    scope: 'user' | 'project',
+  ) => string;
+  exportSkillZipJson?: (
+    workspaceId: string | undefined,
+    skillId: string,
+    destinationPath: string,
+  ) => string;
+  inspectKnowledgeJson?: (workspaceId?: string) => string;
+  createKnowledgeBaseJson?: (
+    name: string,
+    description: string,
+    workspaceIdsJson: string,
+  ) => string;
+  deleteKnowledgeBaseJson?: (knowledgeBaseId: string) => string;
+  addKnowledgeFilesJson?: (
+    knowledgeBaseId: string,
+    pathsJson: string,
+  ) => Promise<string>;
+  addKnowledgeFolderJson?: (
+    knowledgeBaseId: string,
+    path: string,
+  ) => Promise<string>;
+  inspectKnowledgeBaseJson?: (knowledgeBaseId: string) => string;
+  searchKnowledgeJson?: (
+    workspaceId: string | undefined,
+    knowledgeBaseIdsJson: string,
+    query: string,
+  ) => Promise<string>;
+  readKnowledgeJson?: (
+    workspaceId: string | undefined,
+    knowledgeBaseIdsJson: string,
+    documentId: string,
+    startOrdinal: number,
+  ) => string;
+  installSemanticModelJson?: () => Promise<string>;
+  cancelSemanticModelDownloadJson?: () => string;
+  removeSemanticModelJson?: () => string;
   saveMcpConfigJson: (expectedRevision: string, serversJson: string) => string;
   importAssetJson: (
     fileName: string,
