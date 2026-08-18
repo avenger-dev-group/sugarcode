@@ -151,6 +151,21 @@ test('private runtime validates bounded editable knowledge text commands and con
   }), true);
 });
 
+test('private runtime validates hash-bound Skill market provenance commands', () => {
+  const command = {
+    type: 'skills.marketRecord',
+    requestId: 'request-skill-market-record',
+    skillId: `skl_${'a'.repeat(64)}`,
+    catalogId: 'openai-verification-before-completion',
+    version: '2026.08.18',
+    installedSha256: 'b'.repeat(64),
+    directorySha256: 'c'.repeat(64),
+  } as const;
+  assert.equal(isRuntimeCommand(command), true);
+  assert.equal(isRuntimeCommand({ ...command, directorySha256: 'unsafe' }), false);
+  assert.equal(isRuntimeCommand({ ...command, catalogId: '../escape' }), false);
+});
+
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
 
 test('private runtime validates lazy task-bound command environments', () => {

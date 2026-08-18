@@ -780,10 +780,12 @@ impl NativeRuntime {
             .map(|workspace_id| self.workspace(workspace_id))
             .transpose()?;
         let preferences = self.with_store(Store::skill_preferences)?;
+        let market_sources = self.with_store(Store::skill_market_sources)?;
         skills::inspect_skills_json(
             &self.skills_root,
             workspace.as_deref().map(WorkspaceTool::canonical_root),
             &preferences,
+            &market_sources,
         )
         .map_err(native_error_message)
     }
@@ -842,6 +844,35 @@ impl NativeRuntime {
         )
         .map_err(native_error_message)?;
         self.with_store(|store| store.set_skill_enabled(&skill_id, enabled))?;
+        self.inspect_skills_json(workspace_id)
+    }
+
+    #[napi]
+    pub fn record_skill_market_install_json(
+        &self,
+        workspace_id: Option<String>,
+        skill_id: String,
+        catalog_id: String,
+        version: String,
+        installed_sha256: String,
+        directory_sha256: String,
+    ) -> Result<String> {
+        skills::verify_market_skill(
+            &self.skills_root,
+            &skill_id,
+            &installed_sha256,
+            &directory_sha256,
+        )
+        .map_err(native_error_message)?;
+        self.with_store(|store| {
+            store.record_skill_market_install(
+                &skill_id,
+                &catalog_id,
+                &version,
+                &installed_sha256,
+                &directory_sha256,
+            )
+        })?;
         self.inspect_skills_json(workspace_id)
     }
 

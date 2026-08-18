@@ -76,6 +76,15 @@ pub(super) struct AssetRow {
     pub(super) pdf_pages: Option<u32>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct SkillMarketSourceRow {
+    pub(super) catalog_id: String,
+    pub(super) version: String,
+    pub(super) installed_sha256: String,
+    pub(super) directory_sha256: String,
+    pub(super) checked_at: Option<i64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct TaskWorkspaceRow {
@@ -549,6 +558,96 @@ impl Store {
              ON CONFLICT(skill_id) DO UPDATE SET enabled = excluded.enabled, updated_at = unixepoch()",
             params![skill_id, enabled],
         )?;
+        Ok(())
+    }
+
+    pub(super) fn skill_market_sources(
+        &mut self,
+    ) -> Result<std::collections::HashMap<String, SkillMarketSourceRow>> {
+        let mut statement = self.connection.prepare(
+            "SELECT skill_id, catalog_source, version, installed_sha256, directory_sha256, checked_at \
+             FROM skill_market_sources",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                SkillMarketSourceRow {
+                    catalog_id: row.get(1)?,
+                    version: row.get(2)?,
+                    installed_sha256: row.get(3)?,
+                    directory_sha256: row.get(4)?,
+                    checked_at: row.get(5)?,
+                },
+            ))
+        })?;
+        rows.collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub(super) fn record_skill_market_install(
+        &mut self,
+        skill_id: &str,
+        catalog_id: &str,
+        version: &str,
+        installed_sha256: &str,
+        directory_sha256: &str,
+    ) -> Result<()> {
+        validate_skill_id(skill_id)?;
+        if catalog_id.is_empty()
+            || catalog_id.len() > 128
+            || !catalog_id
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        {
+            return Err(PersistenceError::InvalidInput(
+                "Skill catalog identifier is invalid".to_owned(),
+            ));
+        }
+        if version.is_empty() || version.len() > 64 || version.chars().any(char::is_whitespace) {
+            return Err(PersistenceError::InvalidInput(
+                "Skill catalog version is invalid".to_owned(),
+            ));
+        }
+        validate_sha256("installed_sha256", installed_sha256)?;
+        validate_sha256("directory_sha256", directory_sha256)?;
+        let previous_version = self
+            .connection
+            .query_row(
+                "SELECT version FROM skill_market_sources WHERE skill_id = ?1",
+                [skill_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO skill_market_sources \
+             (skill_id, catalog_source, version, installed_sha256, directory_sha256, checked_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), unixepoch()) \
+             ON CONFLICT(skill_id) DO UPDATE SET catalog_source = excluded.catalog_source, \
+             version = excluded.version, installed_sha256 = excluded.installed_sha256, \
+             directory_sha256 = excluded.directory_sha256, checked_at = unixepoch(), updated_at = unixepoch()",
+            params![skill_id, catalog_id, version, installed_sha256, directory_sha256],
+        )?;
+        transaction.execute(
+            "INSERT INTO skill_update_history \
+             (id, skill_id, from_version, to_version, state, details_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                format!("suh_{}", Uuid::now_v7().simple()),
+                skill_id,
+                previous_version,
+                version,
+                if previous_version.is_some() {
+                    "updated"
+                } else {
+                    "installed"
+                },
+                serde_json::json!({ "catalogId": catalog_id }).to_string(),
+            ],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -3660,6 +3759,35 @@ fn validate_id(name: &str, value: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn validate_skill_id(value: &str) -> Result<()> {
+    if value.len() == 68
+        && value.starts_with("skl_")
+        && value[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(PersistenceError::InvalidInput(
+            "Skill identifier is invalid".to_owned(),
+        ))
+    }
+}
+
+fn validate_sha256(name: &str, value: &str) -> Result<()> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(PersistenceError::InvalidInput(format!(
+            "{name} must be a lowercase SHA-256 digest"
+        )))
+    }
 }
 
 fn validate_project_environment_trust(canonical_root: &str, config_hash: &str) -> Result<()> {

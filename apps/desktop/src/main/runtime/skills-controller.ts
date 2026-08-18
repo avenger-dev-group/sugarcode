@@ -274,6 +274,14 @@ export class RuntimeSkillsController {
     }
     let stagingRoot: string | undefined;
     try {
+      const current = await this.inspect();
+      if (current.skills.some((skill) => skill.name === entry.name)) {
+        return {
+          accepted: false,
+          reason: 'conflict',
+          message: '同名 Skill 已存在；SugarCode 不会覆盖本地或项目内容。',
+        };
+      }
       stagingRoot = await mkdtemp(path.join(this.options.tempDirectory, 'sugarcode-skill-'));
       await this.runGit(['init', '--quiet', stagingRoot]);
       await this.runGit(['-C', stagingRoot, 'remote', 'add', 'origin', entry.repository]);
@@ -298,7 +306,28 @@ export class RuntimeSkillsController {
         },
         'skills.action',
       );
-      return this.normalizeAction(event.action);
+      const imported = this.normalizeAction(event.action);
+      if (!imported.accepted || !imported.inspection) return imported;
+      const installed = imported.inspection.skills.find(
+        (skill) => skill.source === 'user' && skill.name === entry.name,
+      );
+      if (!installed) {
+        throw new Error('精选 Skill 已复制，但无法确认安装后的安全状态。');
+      }
+      const recorded = await this.options.runtime.request(
+        {
+          type: 'skills.marketRecord',
+          requestId: randomUUID(),
+          workspaceId: this.workspaceId(),
+          skillId: installed.id,
+          catalogId: entry.id,
+          version: entry.version,
+          installedSha256: entry.skillSha256,
+          directorySha256: entry.directorySha256,
+        },
+        'skills.action',
+      );
+      return this.normalizeAction(recorded.action);
     } catch (error) {
       return failed(error);
     } finally {

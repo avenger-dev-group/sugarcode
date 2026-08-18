@@ -15,6 +15,14 @@ export type NativeRuntimeBinding = Readonly<{
     skillId: string,
     enabled: boolean,
   ) => string;
+  recordSkillMarketInstallJson?: (
+    workspaceId: string | undefined,
+    skillId: string,
+    catalogId: string,
+    version: string,
+    installedSha256: string,
+    directorySha256: string,
+  ) => string;
   importSkillJson: (
     workspaceId: string | undefined,
     sourcePath: string,

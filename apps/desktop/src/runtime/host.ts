@@ -1300,6 +1300,29 @@ export class RuntimeHost {
         });
         break;
       }
+      case 'skills.marketRecord': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.recordSkillMarketInstallJson) {
+          throw new Error('Skill market provenance is unavailable.');
+        }
+        const inspection = this.parseNativeJson<SkillsInspection>(
+          native.recordSkillMarketInstallJson(
+            command.workspaceId,
+            command.skillId,
+            command.catalogId,
+            command.version,
+            command.installedSha256,
+            command.directorySha256,
+          ),
+        );
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action: { accepted: true, inspection },
+        });
+        break;
+      }
       case 'skills.import': {
         this.requireReady(command.requestId);
         const inspection = this.parseNativeJson<SkillsInspection>(
