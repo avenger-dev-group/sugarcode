@@ -11,7 +11,6 @@ import {
 } from '@/renderer/services/skills';
 import type {
   SkillContent,
-  SkillScope,
   SkillSummary,
   SkillsInspection,
 } from '@/shared/skills';
@@ -23,7 +22,6 @@ export const useStore = (active: boolean): SkillsStore => {
   const [status, setStatus] = useState<SkillsStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [workspaceAvailable, setWorkspaceAvailable] = useState<boolean>(false);
   const [selectedSkill, setSelectedSkill] = useState<SkillSummary | null>(null);
   const [content, setContent] = useState<SkillContent | null>(null);
   const [contentLoading, setContentLoading] = useState<boolean>(false);
@@ -37,7 +35,6 @@ export const useStore = (active: boolean): SkillsStore => {
 
   const acceptInspection = useCallback((inspection: SkillsInspection): void => {
     setSkills(inspection.skills);
-    setWorkspaceAvailable(inspection.workspaceAvailable);
     setStatus('ready');
     setSelectedSkill((current) =>
       current
@@ -175,13 +172,13 @@ export const useStore = (active: boolean): SkillsStore => {
   );
 
   const importDirectory = useCallback(
-    async (scope: SkillScope): Promise<void> => {
+    async (): Promise<void> => {
       setImportMenuOpen(false);
       setActionPending(true);
       setError(null);
       setNotice(null);
       try {
-        const result = await importSkill(scope);
+        const result = await importSkill();
         if (result.accepted === false) {
           if (result.reason !== 'cancelled') {
             setError(result.message ?? '无法导入 Skill。');
@@ -191,9 +188,7 @@ export const useStore = (active: boolean): SkillsStore => {
         if (result.inspection) {
           acceptInspection(result.inspection);
         }
-        setNotice(
-          scope === 'project' ? '已导入到当前项目。' : '已导入到个人 Skills。',
-        );
+        setNotice('已导入到个人 Skills。');
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '无法导入 Skill。');
       } finally {
@@ -227,19 +222,19 @@ export const useStore = (active: boolean): SkillsStore => {
   );
 
   const importArchive = useCallback(
-    async (scope: SkillScope): Promise<void> => {
+    async (): Promise<void> => {
       setImportMenuOpen(false);
       setActionPending(true);
       setError(null);
       setNotice(null);
       try {
-        const result = await importSkillZip(scope);
+        const result = await importSkillZip();
         if (result.accepted === false) {
           if (result.reason !== 'cancelled') setError(result.message ?? '无法导入 Skill ZIP。');
           return;
         }
         if (result.inspection) acceptInspection(result.inspection);
-        setNotice(scope === 'project' ? '已从 ZIP 导入当前项目。' : '已从 ZIP 导入个人 Skills。');
+        setNotice('已从 ZIP 导入个人 Skills。');
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '无法导入 Skill ZIP。');
       } finally {
@@ -272,7 +267,6 @@ export const useStore = (active: boolean): SkillsStore => {
     status,
     error,
     notice,
-    workspaceAvailable,
     selectedSkill,
     content,
     contentLoading,

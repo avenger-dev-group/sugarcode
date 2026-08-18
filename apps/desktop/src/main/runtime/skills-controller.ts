@@ -4,11 +4,7 @@ import type {
   OpenDialogOptions,
   SaveDialogOptions,
 } from 'electron';
-import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm, lstat } from 'node:fs/promises';
-import path from 'node:path';
-import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 
 import {
   isSkillId,
@@ -16,11 +12,6 @@ import {
   type SkillsActionResult,
   type SkillsInspection,
 } from '../../shared/skills.ts';
-import type { WorkspaceStateSnapshot } from '../../shared/workspace.ts';
-import {
-  appVersionSatisfies,
-  CURATED_SKILLS,
-} from '../../shared/skill-market.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
 type SkillsWorkspace = Readonly<{
@@ -33,12 +24,7 @@ type RuntimeSkillsControllerOptions = Readonly<{
     Partial<Pick<Dialog, 'showSaveDialog'>>;
   getMainWindow: () => BrowserWindow | null;
   getWorkspace: () => SkillsWorkspace | null;
-  getWorkspaceState: () => WorkspaceStateSnapshot;
-  tempDirectory?: string;
-  getAppVersion?: () => string;
 }>;
-
-const execFileAsync = promisify(execFile);
 
 const failed = (error: unknown): SkillsActionResult => ({
   accepted: false,
@@ -50,11 +36,6 @@ const failed = (error: unknown): SkillsActionResult => ({
   message: error instanceof Error ? error.message : 'Skills are unavailable.',
 });
 
-const normalizeInspection = (
-  inspection: SkillsInspection,
-  workspaceAvailable: boolean,
-): SkillsInspection => ({ ...inspection, workspaceAvailable });
-
 export class RuntimeSkillsController {
   private readonly options: RuntimeSkillsControllerOptions;
 
@@ -65,21 +46,6 @@ export class RuntimeSkillsController {
   private workspaceId = (): string | undefined =>
     this.options.getWorkspace()?.workspaceId;
 
-  private projectAvailable = (): boolean =>
-    this.options.getWorkspaceState().kind === 'project' &&
-    Boolean(this.workspaceId());
-
-  private normalizeAction = (action: SkillsActionResult): SkillsActionResult =>
-    action.accepted && action.inspection
-      ? {
-          ...action,
-          inspection: normalizeInspection(
-            action.inspection,
-            this.projectAvailable(),
-          ),
-        }
-      : action;
-
   inspect = async (): Promise<SkillsInspection> => {
     const event = await this.options.runtime.request(
       {
@@ -89,7 +55,7 @@ export class RuntimeSkillsController {
       },
       'skills.inspection',
     );
-    return normalizeInspection(event.inspection, this.projectAvailable());
+    return event.inspection;
   };
 
   content = async (
@@ -134,23 +100,13 @@ export class RuntimeSkillsController {
         },
         'skills.action',
       );
-      return this.normalizeAction(event.action);
+      return event.action;
     } catch (error) {
       return failed(error);
     }
   };
 
-  import = async (scope: unknown): Promise<SkillsActionResult> => {
-    if (scope !== 'user' && scope !== 'project') {
-      return { accepted: false, reason: 'invalid' };
-    }
-    if (scope === 'project' && !this.projectAvailable()) {
-      return {
-        accepted: false,
-        reason: 'unavailable',
-        message: 'Open a project before importing a project Skill.',
-      };
-    }
+  import = async (): Promise<SkillsActionResult> => {
     const selected = await this.pickDirectory({
       title: '选择包含 SKILL.md 的 Skill 目录',
       buttonLabel: '导入 Skill',
@@ -166,11 +122,10 @@ export class RuntimeSkillsController {
           requestId: randomUUID(),
           workspaceId: this.workspaceId(),
           sourcePath: selected,
-          scope,
         },
         'skills.action',
       );
-      return this.normalizeAction(event.action);
+      return event.action;
     } catch (error) {
       return failed(error);
     }
@@ -205,17 +160,7 @@ export class RuntimeSkillsController {
     }
   };
 
-  importZip = async (scope: unknown): Promise<SkillsActionResult> => {
-    if (scope !== 'user' && scope !== 'project') {
-      return { accepted: false, reason: 'invalid' };
-    }
-    if (scope === 'project' && !this.projectAvailable()) {
-      return {
-        accepted: false,
-        reason: 'unavailable',
-        message: 'Open a project before importing a project Skill.',
-      };
-    }
+  importZip = async (): Promise<SkillsActionResult> => {
     const selected = await this.pickDirectory({
       title: '选择 Skill ZIP',
       buttonLabel: '导入 Skill',
@@ -230,11 +175,10 @@ export class RuntimeSkillsController {
           requestId: randomUUID(),
           workspaceId: this.workspaceId(),
           archivePath: selected,
-          scope,
         },
         'skills.action',
       );
-      return this.normalizeAction(event.action);
+      return event.action;
     } catch (error) {
       return failed(error);
     }
@@ -269,63 +213,6 @@ export class RuntimeSkillsController {
     }
   };
 
-  installCurated = async (entryId: unknown): Promise<SkillsActionResult> => {
-    if (typeof entryId !== 'string') return { accepted: false, reason: 'invalid' };
-    const entry = CURATED_SKILLS.find((candidate) => candidate.id === entryId);
-    if (!entry) return { accepted: false, reason: 'invalid' };
-    const currentVersion = this.options.getAppVersion?.() ?? '0.0.0';
-    if (!appVersionSatisfies(currentVersion, entry.minimumAppVersion)) {
-      return {
-        accepted: false,
-        reason: 'unavailable',
-        message: `此 Skill 需要 SugarCode ${entry.minimumAppVersion} 或更高版本；当前版本为 ${currentVersion}。`,
-      };
-    }
-    if (!this.options.tempDirectory) {
-      return { accepted: false, reason: 'unavailable', message: '临时目录不可用。' };
-    }
-    let stagingRoot: string | undefined;
-    try {
-      const current = await this.inspect();
-      if (current.skills.some((skill) => skill.name === entry.name)) {
-        return {
-          accepted: false,
-          reason: 'conflict',
-          message: '同名 Skill 已存在；SugarCode 不会覆盖本地或项目内容。',
-        };
-      }
-      stagingRoot = await mkdtemp(path.join(this.options.tempDirectory, 'sugarcode-skill-'));
-      await this.runGit(['init', '--quiet', stagingRoot]);
-      await this.runGit(['-C', stagingRoot, 'remote', 'add', 'origin', entry.repository]);
-      await this.runGit(['-C', stagingRoot, 'sparse-checkout', 'init', '--cone']);
-      await this.runGit(['-C', stagingRoot, 'sparse-checkout', 'set', entry.path]);
-      await this.runGit([
-        '-C', stagingRoot, 'fetch', '--quiet', '--depth', '1', 'origin', entry.commit,
-      ]);
-      await this.runGit(['-C', stagingRoot, 'checkout', '--quiet', '--detach', 'FETCH_HEAD']);
-      const sourcePath = path.join(stagingRoot, ...entry.path.split('/'));
-      const actualHash = await this.directorySha256(sourcePath);
-      if (actualHash !== entry.directorySha256) {
-        throw new Error('精选 Skill 的内容哈希与内置目录不一致，已停止安装。');
-      }
-      const event = await this.options.runtime.request(
-        {
-          type: 'skills.import',
-          requestId: randomUUID(),
-          workspaceId: this.workspaceId(),
-          sourcePath,
-          scope: 'user',
-        },
-        'skills.action',
-      );
-      return this.normalizeAction(event.action);
-    } catch (error) {
-      return failed(error);
-    } finally {
-      if (stagingRoot) await rm(stagingRoot, { recursive: true, force: true });
-    }
-  };
-
   private pickDirectory = async (
     options: OpenDialogOptions,
   ): Promise<string | null> => {
@@ -346,41 +233,4 @@ export class RuntimeSkillsController {
     return result.canceled || !result.filePath ? null : result.filePath;
   };
 
-  private runGit = async (argumentsValue: readonly string[]): Promise<void> => {
-    await execFileAsync('git', [...argumentsValue], {
-      timeout: 60_000,
-      maxBuffer: 1024 * 1024,
-      windowsHide: true,
-    });
-  };
-
-  private directorySha256 = async (root: string): Promise<string> => {
-    const files: string[] = [];
-    const pending = [root];
-    while (pending.length > 0) {
-      const directory = pending.pop();
-      if (!directory) break;
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        const entryPath = path.join(directory, entry.name);
-        const metadata = await lstat(entryPath);
-        if (metadata.isSymbolicLink()) {
-          throw new Error('精选 Skill 包含符号链接，已停止安装。');
-        }
-        if (metadata.isDirectory()) pending.push(entryPath);
-        else if (metadata.isFile()) files.push(entryPath);
-        else throw new Error('精选 Skill 包含特殊文件，已停止安装。');
-      }
-    }
-    if (files.length === 0 || files.length > 512) {
-      throw new Error('精选 Skill 文件数量无效。');
-    }
-    const hash = createHash('sha256');
-    for (const file of files.sort()) {
-      hash.update(path.relative(root, file).split(path.sep).join('/'));
-      hash.update('\0');
-      hash.update(await readFile(file));
-      hash.update('\0');
-    }
-    return hash.digest('hex');
-  };
 }

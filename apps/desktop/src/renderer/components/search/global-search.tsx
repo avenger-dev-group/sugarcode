@@ -159,11 +159,11 @@ export const GlobalSearch = ({
       {
         id: 'action:import-skill', group: '快捷操作', label: '导入 Skill',
         description: '从本地目录导入个人 Skill', keywords: ['capability'], icon: Import,
-        activate: closeAnd(async () => { await importSkill('user'); onOpenSkills(); }),
+        activate: closeAnd(async () => { await importSkill(); onOpenSkills(); }),
       },
       {
         id: 'action:skills', group: '快捷操作', label: '打开技能',
-        description: '浏览精选 Skill 和管理本地 Skill', keywords: ['capabilities'], icon: Zap,
+        description: '查看和管理本地 Skills', keywords: ['import', 'export'], icon: Zap,
         activate: closeAnd(() => onOpenSkills()),
       },
     ];

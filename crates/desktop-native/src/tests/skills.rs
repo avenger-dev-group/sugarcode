@@ -118,9 +118,8 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
             .import_skill_json(
                 Some("workspace-1".to_owned()),
                 imported.path().to_string_lossy().into_owned(),
-                "project".to_owned(),
             )
-            .expect("import project Skill"),
+            .expect("import personal Skill"),
     );
     let imported_id = after_import["skills"]
         .as_array()
@@ -128,12 +127,7 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
         .and_then(|skill| skill["id"].as_str())
         .expect("imported Skill id")
         .to_owned();
-    assert!(
-        workspace
-            .path()
-            .join(".sugarcode/skills/imported/SKILL.md")
-            .is_file()
-    );
+    assert!(data.path().join("skills/imported/SKILL.md").is_file());
 
     let destination = tempfile::tempdir().expect("export destination");
     let exported = json(
@@ -206,11 +200,7 @@ fn native_skill_zip_rejects_path_traversal_before_extraction() {
         NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
 
     let error = runtime
-        .import_skill_zip_json(
-            None,
-            archive_path.to_string_lossy().into_owned(),
-            "user".to_owned(),
-        )
+        .import_skill_zip_json(None, archive_path.to_string_lossy().into_owned())
         .expect_err("path traversal must be rejected");
     assert!(error.to_string().contains("unsafe path"));
     assert!(!data.path().join("SKILL.md").exists());
@@ -239,11 +229,7 @@ fn native_skill_zip_rejects_highly_compressed_expansion_bombs() {
         NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
 
     let error = runtime
-        .import_skill_zip_json(
-            None,
-            archive_path.to_string_lossy().into_owned(),
-            "user".to_owned(),
-        )
+        .import_skill_zip_json(None, archive_path.to_string_lossy().into_owned())
         .expect_err("expansion bomb must be rejected");
     assert!(error.to_string().contains("expands beyond"));
     assert!(!data.path().join("skills/bomb").exists());

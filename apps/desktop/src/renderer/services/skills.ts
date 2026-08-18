@@ -1,6 +1,5 @@
 import type {
   SkillContent,
-  SkillScope,
   SkillsActionResult,
   SkillsInspection,
 } from '@/shared/skills';
@@ -19,18 +18,14 @@ export const setSkillEnabled = (
   enabled: boolean,
 ): Promise<SkillsActionResult> => window.sugarcode.setSkillEnabled(id, enabled);
 
-export const importSkill = (scope: SkillScope): Promise<SkillsActionResult> =>
-  window.sugarcode.importSkill(scope);
+export const importSkill = (): Promise<SkillsActionResult> =>
+  window.sugarcode.importSkill();
 
 export const exportSkill = (id: string): Promise<SkillsActionResult> =>
   window.sugarcode.exportSkill(id);
 
-export const importSkillZip = (scope: SkillScope): Promise<SkillsActionResult> =>
-  window.sugarcode.importSkillZip(scope);
+export const importSkillZip = (): Promise<SkillsActionResult> =>
+  window.sugarcode.importSkillZip();
 
 export const exportSkillZip = (id: string): Promise<SkillsActionResult> =>
   window.sugarcode.exportSkillZip(id);
-
-export const installCuratedSkill = (
-  catalogId: string,
-): Promise<SkillsActionResult> => window.sugarcode.installCuratedSkill(catalogId);

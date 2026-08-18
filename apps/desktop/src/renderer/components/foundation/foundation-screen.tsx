@@ -11,7 +11,7 @@ import { useStore as useThreadStore } from '@/renderer/components/thread/use-sto
 import { OrchestrationStoreProvider } from '@/renderer/components/orchestration/use-store';
 import { UpdateAction } from '@/renderer/components/update/update-action';
 import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
-import { SkillsCenter } from '@/renderer/components/capabilities/capability-center';
+import { SkillsCenter } from '@/renderer/components/skills/skills-center';
 import { KnowledgeCenter } from '@/renderer/components/knowledge/knowledge-center';
 import { GlobalSearch } from '@/renderer/components/search/global-search';
 import { useEffect, useState } from 'react';

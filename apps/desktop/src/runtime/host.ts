@@ -1306,7 +1306,6 @@ export class RuntimeHost {
           this.requireNative().importSkillJson(
             command.workspaceId,
             command.sourcePath,
-            command.scope,
           ),
         );
         this.emit({
@@ -1334,7 +1333,7 @@ export class RuntimeHost {
         const native = this.requireNative();
         if (!native.importSkillZipJson) throw new Error('Skill ZIP import is unavailable.');
         const inspection = this.parseNativeJson<SkillsInspection>(
-          native.importSkillZipJson(command.workspaceId, command.archivePath, command.scope),
+          native.importSkillZipJson(command.workspaceId, command.archivePath),
         );
         this.emit({
           type: 'skills.action',

@@ -3,12 +3,9 @@ import {
   CircleAlert,
   Download,
   FileText,
-  FolderDown,
   RefreshCw,
   Sparkles,
-  Upload,
   FileArchive,
-  UserRound,
   X,
 } from 'lucide-react';
 import { useEffect } from 'react';
@@ -16,23 +13,15 @@ import { useEffect } from 'react';
 import { AgentMarkdown } from '@/renderer/components/agent/agent-markdown';
 import { Button } from '@/renderer/components/ui/button';
 import { Checkbox } from '@/renderer/components/ui/checkbox';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/renderer/components/ui/popover';
 import { ScrollArea } from '@/renderer/components/ui/scroll-area';
 
 import type { SkillsSettingsPanelProps } from './types';
-import { useStore } from './use-store';
 
 export const SkillsSettingsPanel = ({
-  active,
+  store,
   initialSkillId,
   onInitialSkillHandled,
 }: SkillsSettingsPanelProps) => {
-  const store = useStore(active);
-
   useEffect(() => {
     if (!initialSkillId || store.status !== 'ready') return;
     const skill = store.skills.find((candidate) => candidate.id === initialSkillId);
@@ -42,102 +31,6 @@ export const SkillsSettingsPanel = ({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
-      <header className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
-        <Sparkles className="size-4 text-secondary" aria-hidden="true" />
-        <h2 className="text-sm font-medium">技能</h2>
-        <div className="ml-auto flex items-center gap-2">
-          <Popover
-            open={store.importMenuOpen}
-            onOpenChange={store.setImportMenuOpen}
-          >
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={store.actionPending}
-              >
-                <Upload aria-hidden="true" />
-                导入目录
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-56 p-1.5">
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto w-full justify-start px-2.5 py-2 text-left"
-                onClick={() => void store.importDirectory('user')}
-              >
-                <UserRound aria-hidden="true" />
-                <span>
-                  <span className="block text-sm">个人 Skills</span>
-                  <span className="block text-xs font-normal text-tertiary">
-                    在所有项目中可用
-                  </span>
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto w-full justify-start px-2.5 py-2 text-left"
-                onClick={() => void store.importArchive('user')}
-              >
-                <FileArchive aria-hidden="true" />
-                <span>
-                  <span className="block text-sm">个人 Skill ZIP</span>
-                  <span className="block text-xs font-normal text-tertiary">
-                    安全校验后导入
-                  </span>
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto w-full justify-start px-2.5 py-2 text-left"
-                disabled={!store.workspaceAvailable}
-                onClick={() => void store.importDirectory('project')}
-              >
-                <FolderDown aria-hidden="true" />
-                <span>
-                  <span className="block text-sm">当前项目</span>
-                  <span className="block text-xs font-normal text-tertiary">
-                    只在当前项目中可用
-                  </span>
-                </span>
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-auto w-full justify-start px-2.5 py-2 text-left"
-                disabled={!store.workspaceAvailable}
-                onClick={() => void store.importArchive('project')}
-              >
-                <FileArchive aria-hidden="true" />
-                <span>
-                  <span className="block text-sm">项目 Skill ZIP</span>
-                  <span className="block text-xs font-normal text-tertiary">
-                    只在当前项目中可用
-                  </span>
-                </span>
-              </Button>
-            </PopoverContent>
-          </Popover>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={store.status === 'loading' || store.actionPending}
-            onClick={() => void store.refresh()}
-          >
-            <RefreshCw
-              className={
-                store.status === 'loading' ? 'animate-spin' : undefined
-              }
-              aria-hidden="true"
-            />
-            刷新扫描
-          </Button>
-        </div>
-      </header>
-
       <ScrollArea className="min-h-0 flex-1">
         <div className="p-6">
           <p className="mb-4 max-w-2xl text-sm font-normal leading-[22px] text-secondary">
@@ -277,7 +170,7 @@ export const SkillsSettingsPanel = ({
                 }}
               >
                 <Download aria-hidden="true" />
-                导出
+                导出目录
               </Button>
               <Button
                 type="button"
@@ -288,7 +181,7 @@ export const SkillsSettingsPanel = ({
                 }}
               >
                 <FileArchive aria-hidden="true" />
-                ZIP
+                导出 ZIP
               </Button>
               <Button
                 type="button"

@@ -644,7 +644,6 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId?: string;
       sourcePath: string;
-      scope: 'user' | 'project';
     }>
   | Readonly<{
       type: 'skills.export';
@@ -658,7 +657,6 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId?: string;
       archivePath: string;
-      scope: 'user' | 'project';
     }>
   | Readonly<{
       type: 'skills.exportZip';
@@ -1849,8 +1847,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
         typeof value.sourcePath === 'string' &&
         value.sourcePath.length > 0 &&
-        value.sourcePath.length <= 4_096 &&
-        (value.scope === 'user' || value.scope === 'project')
+        value.sourcePath.length <= 4_096
       );
     case 'skills.export':
       return (
@@ -1865,8 +1862,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
         typeof value.archivePath === 'string' &&
         value.archivePath.length > 0 &&
-        value.archivePath.length <= 4_096 &&
-        (value.scope === 'user' || value.scope === 'project')
+        value.archivePath.length <= 4_096
       );
     case 'skills.exportZip':
       return (

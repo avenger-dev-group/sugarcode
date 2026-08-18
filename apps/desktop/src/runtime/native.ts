@@ -18,7 +18,6 @@ export type NativeRuntimeBinding = Readonly<{
   importSkillJson: (
     workspaceId: string | undefined,
     sourcePath: string,
-    scope: 'user' | 'project',
   ) => string;
   exportSkillJson: (
     workspaceId: string | undefined,
@@ -28,7 +27,6 @@ export type NativeRuntimeBinding = Readonly<{
   importSkillZipJson?: (
     workspaceId: string | undefined,
     archivePath: string,
-    scope: 'user' | 'project',
   ) => string;
   exportSkillZipJson?: (
     workspaceId: string | undefined,

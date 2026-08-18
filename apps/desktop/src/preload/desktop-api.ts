@@ -181,11 +181,9 @@ import {
   SKILLS_IMPORT_ZIP_CHANNEL,
   SKILLS_SET_ENABLED_CHANNEL,
   type SkillContent,
-  type SkillScope,
   type SkillsActionResult,
   type SkillsInspection,
 } from '@/shared/skills';
-import { SKILLS_MARKET_INSTALL_CHANNEL } from '@/shared/skill-market';
 import {
   isWorkspaceInspectResult,
   isWorkspaceListResult,
@@ -386,8 +384,8 @@ export const createDesktopApi = (
     }
     return result;
   },
-  importSkill: async (scope: SkillScope): Promise<SkillsActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_CHANNEL, scope);
+  importSkill: async (): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_CHANNEL);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill import action.');
     }
@@ -400,8 +398,8 @@ export const createDesktopApi = (
     }
     return result;
   },
-  importSkillZip: async (scope: SkillScope): Promise<SkillsActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_ZIP_CHANNEL, scope);
+  importSkillZip: async (): Promise<SkillsActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(SKILLS_IMPORT_ZIP_CHANNEL);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill ZIP import action.');
     }
@@ -411,16 +409,6 @@ export const createDesktopApi = (
     const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_ZIP_CHANNEL, id);
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill ZIP export action.');
-    }
-    return result;
-  },
-  installCuratedSkill: async (catalogId: string): Promise<SkillsActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(
-      SKILLS_MARKET_INSTALL_CHANNEL,
-      catalogId,
-    );
-    if (!isSkillsActionResult(result)) {
-      throw new Error('Main returned an invalid curated Skill install action.');
     }
     return result;
   },

@@ -758,7 +758,6 @@ test('private Skills protocol bounds native inventory and directory requests', (
       requestId: 'request-skill-import',
       workspaceId: 'workspace-fixture',
       sourcePath: '/tmp/code-review',
-      scope: 'project',
     }),
     true,
   );

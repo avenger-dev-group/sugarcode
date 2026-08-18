@@ -20,9 +20,12 @@ This local fixture verifies exact Skill navigation without network access.
 `);
 
 const output = [];
+const packagedExecutable = process.env.SUGARCODE_E2E_EXECUTABLE?.trim();
 const child = spawn(
-  'pnpm',
-  ['--filter', '@sugarcode/desktop', 'exec', 'electron-forge', 'start'],
+  packagedExecutable || 'pnpm',
+  packagedExecutable
+    ? []
+    : ['--filter', '@sugarcode/desktop', 'exec', 'electron-forge', 'start'],
   {
     cwd: repository,
     env: {

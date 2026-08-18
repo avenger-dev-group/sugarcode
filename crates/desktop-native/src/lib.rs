@@ -851,19 +851,9 @@ impl NativeRuntime {
         &self,
         workspace_id: Option<String>,
         source_path: String,
-        scope: String,
     ) -> Result<String> {
-        let workspace = workspace_id
-            .as_deref()
-            .map(|workspace_id| self.workspace(workspace_id))
-            .transpose()?;
-        skills::import_skill(
-            &self.skills_root,
-            workspace.as_deref().map(WorkspaceTool::canonical_root),
-            Path::new(&source_path),
-            &scope,
-        )
-        .map_err(native_error_message)?;
+        skills::import_skill(&self.skills_root, Path::new(&source_path))
+            .map_err(native_error_message)?;
         self.inspect_skills_json(workspace_id)
     }
 
@@ -872,19 +862,9 @@ impl NativeRuntime {
         &self,
         workspace_id: Option<String>,
         archive_path: String,
-        scope: String,
     ) -> Result<String> {
-        let workspace = workspace_id
-            .as_deref()
-            .map(|workspace_id| self.workspace(workspace_id))
-            .transpose()?;
-        skills::import_skill_zip(
-            &self.skills_root,
-            workspace.as_deref().map(WorkspaceTool::canonical_root),
-            Path::new(&archive_path),
-            &scope,
-        )
-        .map_err(native_error_message)?;
+        skills::import_skill_zip(&self.skills_root, Path::new(&archive_path))
+            .map_err(native_error_message)?;
         self.inspect_skills_json(workspace_id)
     }
 

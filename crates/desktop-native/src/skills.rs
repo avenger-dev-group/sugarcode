@@ -112,22 +112,10 @@ pub(super) fn ensure_skill(
     require_skill(user_root, workspace_root, preferences, skill_id).map(|_| ())
 }
 
-pub(super) fn import_skill(
-    user_root: &Path,
-    workspace_root: Option<&Path>,
-    source_path: &Path,
-    scope: &str,
-) -> Result<(), String> {
+pub(super) fn import_skill(user_root: &Path, source_path: &Path) -> Result<(), String> {
     let source = canonical_directory(source_path)?;
     let (_, definition, _, _) = read_definition(&source)?;
-    let destination_root = match scope {
-        "user" => canonical_directory(user_root)?,
-        "project" => create_project_skills_root(
-            workspace_root
-                .ok_or_else(|| "Open a project before importing a project Skill.".to_owned())?,
-        )?,
-        _ => return Err("Skill import scope must be user or project.".to_owned()),
-    };
+    let destination_root = canonical_directory(user_root)?;
     let destination = destination_root.join(&definition.name);
     if destination.exists() {
         return Err("A Skill with this name already exists in the selected scope.".to_owned());
@@ -141,12 +129,7 @@ pub(super) fn import_skill(
     })
 }
 
-pub(super) fn import_skill_zip(
-    user_root: &Path,
-    workspace_root: Option<&Path>,
-    archive_path: &Path,
-    scope: &str,
-) -> Result<(), String> {
+pub(super) fn import_skill_zip(user_root: &Path, archive_path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(archive_path).map_err(|error| error.to_string())?;
     if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > MAX_IMPORT_BYTES
     {
@@ -220,7 +203,7 @@ pub(super) fn import_skill_zip(
                 extracted_bytes = extracted_bytes.saturating_add(copied);
             }
         }
-        import_skill(user_root, workspace_root, &staging_root, scope)
+        import_skill(user_root, &staging_root)
     })();
     let _ = fs::remove_dir_all(&staging_root);
     extracted
@@ -436,22 +419,6 @@ fn canonical_descendant(path: &Path, owner: &Path) -> Result<PathBuf, String> {
         return Err("Project Skill directories must stay inside the project.".to_owned());
     }
     Ok(canonical)
-}
-
-fn create_project_skills_root(workspace_root: &Path) -> Result<PathBuf, String> {
-    let workspace_root = workspace_root
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    let sugarcode_root = workspace_root.join(".sugarcode");
-    if !sugarcode_root.exists() {
-        fs::create_dir(&sugarcode_root).map_err(|error| error.to_string())?;
-    }
-    let sugarcode_root = canonical_descendant(&sugarcode_root, &workspace_root)?;
-    let skills_root = sugarcode_root.join("skills");
-    if !skills_root.exists() {
-        fs::create_dir(&skills_root).map_err(|error| error.to_string())?;
-    }
-    canonical_descendant(&skills_root, &workspace_root)
 }
 
 fn validate_copy_tree(root: &Path) -> Result<(), String> {
