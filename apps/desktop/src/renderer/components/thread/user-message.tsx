@@ -16,6 +16,7 @@ import type {
   ThreadWorkbenchViewProps,
   TranscriptMessageViewModel,
 } from './types';
+import { UserMessageAttachments } from './user-message-attachments';
 
 const COLLAPSED_USER_MESSAGE_HEIGHT = 220;
 const MAX_MESSAGE_EDITOR_HEIGHT = 320;
@@ -25,7 +26,9 @@ type UserMessageView = Extract<
   { role: 'user' }
 >['message'];
 
-const MessageAttachments = ({ message }: Readonly<{ message: UserMessageView }>) =>
+const EditorAttachments = ({
+  message,
+}: Readonly<{ message: UserMessageView }>) =>
   message.attachments.length > 0 ? (
     <div className="mb-2 flex flex-wrap gap-2">
       {message.attachments.map((attachment) => (
@@ -52,7 +55,9 @@ const MessageAttachments = ({ message }: Readonly<{ message: UserMessageView }>)
     </div>
   ) : null;
 
-const MessageReferences = ({ message }: Readonly<{ message: UserMessageView }>) =>
+const MessageReferences = ({
+  message,
+}: Readonly<{ message: UserMessageView }>) =>
   message.references.length > 0 ? (
     <div
       className="flex flex-wrap justify-end gap-1.5"
@@ -71,7 +76,7 @@ const MessageReferences = ({ message }: Readonly<{ message: UserMessageView }>) 
                 ? 'Skill'
                 : reference.kind === 'knowledge'
                   ? '知识库'
-                : '文件'}
+                  : '文件'}
           </span>
           <span className="truncate font-medium">{reference.value}</span>
         </span>
@@ -96,16 +101,14 @@ const UserMessageContent = ({
     }
 
     const measureOverflow = () => {
-      setCanCollapse(
-        content.scrollHeight > COLLAPSED_USER_MESSAGE_HEIGHT + 1,
-      );
+      setCanCollapse(content.scrollHeight > COLLAPSED_USER_MESSAGE_HEIGHT + 1);
     };
 
     measureOverflow();
     const observer = new ResizeObserver(measureOverflow);
     observer.observe(content);
     return () => observer.disconnect();
-  }, [message.attachments.length, message.text]);
+  }, [message.text]);
 
   return (
     <>
@@ -118,7 +121,6 @@ const UserMessageContent = ({
             expanded ? undefined : { maxHeight: COLLAPSED_USER_MESSAGE_HEIGHT }
           }
         >
-          <MessageAttachments message={message} />
           {message.text ? (
             <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
               {message.text}
@@ -196,15 +198,14 @@ const UserMessageEditor = ({
   }, []);
 
   const canSubmit =
-    !pending &&
-    (draft.trim().length > 0 || message.attachments.length > 0);
+    !pending && (draft.trim().length > 0 || message.attachments.length > 0);
 
   return (
     <article
       className="w-full rounded-2xl border border-border bg-surface px-4 py-3 shadow-sm"
       aria-label="编辑你的消息"
     >
-      <MessageAttachments message={message} />
+      <EditorAttachments message={message} />
       <textarea
         ref={textareaRef}
         value={draft}
@@ -270,6 +271,7 @@ const UserMessageEditor = ({
 
 type UserMessageProps = Readonly<{
   entry: Extract<TranscriptMessageViewModel, { role: 'user' }>;
+  threadId?: string;
   turnId?: string;
   editable?: boolean;
   editor?: ThreadWorkbenchViewProps['store']['messageEditor'];
@@ -281,6 +283,7 @@ type UserMessageProps = Readonly<{
 
 export const UserMessage = ({
   entry,
+  threadId,
   turnId,
   editable = false,
   editor,
@@ -307,7 +310,11 @@ export const UserMessage = ({
         />
       ) : (
         <>
-          {entry.message.text || entry.message.attachments.length > 0 ? (
+          <UserMessageAttachments
+            attachments={entry.message.attachments}
+            threadId={threadId}
+          />
+          {entry.message.text ? (
             <article
               className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
               aria-label="Your message"

@@ -79,3 +79,24 @@ test('save request carries one credential action per connection without a key ec
     true,
   );
 });
+
+test('media routing may select an existing image profile', () => {
+  assert.equal(isModelConfigValue({
+    ...catalog(),
+    mediaRouting: { imageProfileId: 'model_primary' },
+  }), true);
+  assert.equal(isModelConfigValue({
+    ...catalog(),
+    mediaRouting: { imageProfileId: 'missing_model' },
+  }), false);
+});
+
+test('media routing rejects unknown fields', () => {
+  assert.equal(isModelConfigValue({
+    ...catalog(),
+    mediaRouting: {
+      imageProfileId: 'model_primary',
+      audioProfileId: 'model_primary',
+    },
+  }), false);
+});

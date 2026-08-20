@@ -47,6 +47,9 @@ export type ConversationApi = Readonly<{
     listener: ConversationThreadDeltaListener,
     onDiagnostic?: (diagnostic: ConversationProjectionDiagnostic) => void,
   ) => () => void;
+  getConversationAttachmentPreview: (
+    request: ConversationAttachmentPreviewRequest,
+  ) => Promise<ConversationAttachmentPreviewResult>;
   sendConversationMessage: (
     request: ConversationSendRequest,
   ) => Promise<ConversationActionResult>;
@@ -62,7 +65,9 @@ export type ConversationApi = Readonly<{
   steerQueuedConversationMessage: (
     request: ConversationSteerQueuedMessageRequest,
   ) => Promise<ConversationActionResult>;
-  resumeConversationQueue: (threadId: string) => Promise<ConversationActionResult>;
+  resumeConversationQueue: (
+    threadId: string,
+  ) => Promise<ConversationActionResult>;
   stopConversationTurn: (threadId: string) => Promise<ConversationActionResult>;
   respondToConversationUserInput: (
     response: ConversationUserInputResponse,
@@ -78,6 +83,23 @@ export type ConversationApi = Readonly<{
     threadId: string,
   ) => Promise<ConversationActionResult>;
 }>;
+
+export type ConversationAttachmentPreviewRequest = Readonly<{
+  threadId: string;
+  assetId: string;
+}>;
+
+export type ConversationAttachmentPreviewResult =
+  | Readonly<{
+      available: true;
+      assetId: string;
+      previewUrl: string;
+    }>
+  | Readonly<{
+      available: false;
+      reason:
+        'invalid' | 'notFound' | 'unsupported' | 'tooLarge' | 'unavailable';
+    }>;
 
 export type ConversationSendRequest = Readonly<{
   input: string;
@@ -107,6 +129,7 @@ export type ConversationQueuedMessageMutationRequest = Readonly<{
 }>;
 
 export type ConversationSteerQueuedMessageRequest =
-  ConversationQueuedMessageMutationRequest & Readonly<{
-    expectedTurnId: string;
-  }>;
+  ConversationQueuedMessageMutationRequest &
+    Readonly<{
+      expectedTurnId: string;
+    }>;

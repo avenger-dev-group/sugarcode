@@ -282,6 +282,63 @@ class ToolLoopLlm extends BaseLlm {
   }
 }
 
+class ImageRoutingFixtureLlm extends BaseLlm {
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    if (this.model === 'vision-model') {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{ text: 'The image shows a login form.' }],
+        },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+    const hasAnalysis = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'analyze_image',
+      ),
+    );
+    if (!hasAnalysis) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-analyze-image',
+              name: 'analyze_image',
+              args: {
+                assetId: `ast_${'a'.repeat(64)}`,
+                question: 'What interface is visible?',
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: { role: 'model', parts: [{ text: 'The screenshot is a login form.' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class UserInputLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
   readonly requests: LlmRequest[] = [];
@@ -1326,6 +1383,142 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost delegates image understanding to the configured analysis model', async () => {
+  const asset = {
+    assetId: `ast_${'a'.repeat(64)}`,
+    sha256: 'a'.repeat(64),
+    mediaType: 'image/png',
+    originalName: 'login.png',
+    sizeBytes: 12,
+    kind: 'image' as const,
+  };
+  const models: ImageRoutingFixtureLlm[] = [];
+  const native = {
+    ...turnNativeFixture(),
+    inspectModelConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      credentialStatuses: [{ connectionId: 'vision-connection', status: 'present' }],
+      config: {
+        defaultProfileId: 'default-model',
+        mediaRouting: { imageProfileId: 'vision-profile' },
+        connections: [{
+          id: 'vision-connection',
+          providerFamily: 'openai',
+          displayName: 'Vision connection',
+          baseUrl: 'http://127.0.0.1:1/v1',
+          enabled: true,
+          wireApi: 'openaiResponses',
+          continuationMode: 'localReplay',
+        }],
+        profiles: [
+          {
+            id: 'default-model',
+            connectionId: 'vision-connection',
+            displayName: 'Default model',
+            modelId: 'default-model',
+            toolCalls: 'auto',
+            strictTools: 'auto',
+            parallelTools: 'auto',
+            imageInput: 'disabled',
+            pdfInput: 'auto',
+          },
+          {
+            id: 'vision-profile',
+            connectionId: 'vision-connection',
+            displayName: 'Vision model',
+            modelId: 'vision-model',
+            toolCalls: 'auto',
+            strictTools: 'auto',
+            parallelTools: 'auto',
+            imageInput: 'enabled',
+            pdfInput: 'auto',
+          },
+        ],
+      },
+    }),
+    modelProfileJson: (profileId?: string) => JSON.stringify({
+      profile: {
+        id: profileId,
+        connectionId: 'vision-connection',
+        displayName: 'Vision model',
+        modelId: 'vision-model',
+        toolCalls: 'auto',
+        strictTools: 'auto',
+        parallelTools: 'auto',
+        imageInput: 'enabled',
+        pdfInput: 'auto',
+      },
+      connection: {
+        id: 'vision-connection',
+        providerFamily: 'openai',
+        displayName: 'Vision connection',
+        baseUrl: 'http://127.0.0.1:1/v1',
+        enabled: true,
+        wireApi: 'openaiResponses',
+        continuationMode: 'localReplay',
+      },
+      apiKey: 'fixture-key',
+    }),
+    readAssetJson: () => JSON.stringify({ asset, data: 'cG5n' }),
+  } as NativeRuntimeBinding;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: (provider) => {
+      const model = new ImageRoutingFixtureLlm({ model: provider.model });
+      models.push(model);
+      return model;
+    },
+    loadNative: () => native,
+    postEvent: (event) => {
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-image-initialize',
+    protocolVersion: 6,
+    dataDirectory: '/tmp/sugarcode-v3-image-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-image-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-image-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'main-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [
+      { type: 'text', text: 'Describe this screenshot.' },
+      { type: 'asset', asset },
+    ],
+  });
+  await completed;
+
+  const mainRequests = models
+    .filter((model) => model.model === 'main-model')
+    .flatMap((model) => model.requests);
+  const visionRequests = models
+    .filter((model) => model.model === 'vision-model')
+    .flatMap((model) => model.requests);
+  assert.ok(Object.hasOwn(mainRequests[0]?.toolsDict ?? {}, 'analyze_image'));
+  assert.match(JSON.stringify(mainRequests[0]?.contents), /Image attachment/u);
+  assert.doesNotMatch(JSON.stringify(mainRequests[0]?.contents), /inlineData/u);
+  assert.equal(visionRequests[0]?.contents[0]?.parts?.[1]?.inlineData?.data, 'cG5n');
+  assert.match(JSON.stringify(mainRequests.at(-1)?.contents), /login form/u);
 });
 
 test('RuntimeHost makes /plan immutable read-only at the tool boundary', async () => {

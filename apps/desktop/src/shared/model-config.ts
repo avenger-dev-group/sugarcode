@@ -41,10 +41,15 @@ export type ModelProfileValue = Readonly<{
   pdfInput: ModelCapabilityMode;
 }>;
 
+export type MediaModelRoutingValue = Readonly<{
+  imageProfileId?: string;
+}>;
+
 export type ModelConfigValue = Readonly<{
   defaultProfileId: string;
   connections: readonly ModelConnectionValue[];
   profiles: readonly ModelProfileValue[];
+  mediaRouting?: MediaModelRoutingValue;
 }>;
 
 export type ModelCredentialStatus = Readonly<{
@@ -221,16 +226,21 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
   CAPABILITY_MODES.includes(value.imageInput as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.pdfInput as ModelCapabilityMode);
 
+const isMediaRouting = (value: unknown): value is MediaModelRoutingValue =>
+  isRecord(value) &&
+  hasOnlyKeys(value, [], ['imageProfileId']) &&
+  (value.imageProfileId === undefined || isId(value.imageProfileId));
+
 export const isModelConfigValue = (
   value: unknown,
 ): value is ModelConfigValue => {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, [
-      'defaultProfileId',
-      'connections',
-      'profiles',
-    ]) ||
+    !hasOnlyKeys(
+      value,
+      ['defaultProfileId', 'connections', 'profiles'],
+      ['mediaRouting'],
+    ) ||
     !isId(value.defaultProfileId) ||
     !Array.isArray(value.connections) ||
     value.connections.length < 1 ||
@@ -239,7 +249,9 @@ export const isModelConfigValue = (
     !Array.isArray(value.profiles) ||
     value.profiles.length < 1 ||
     value.profiles.length > 128 ||
-    !value.profiles.every(isProfile)
+    !value.profiles.every(isProfile) ||
+    (value.mediaRouting !== undefined &&
+      !isMediaRouting(value.mediaRouting))
   ) {
     return false;
   }
@@ -287,6 +299,9 @@ export const isModelConfigValue = (
   const defaultProfile = profiles.find(
     (profile) => profile.id === value.defaultProfileId,
   );
+  const imageProfileId = (
+    value.mediaRouting as MediaModelRoutingValue | undefined
+  )?.imageProfileId;
   const defaultConnection = connections.find(
     (connection) =>
       connection.id === defaultProfile?.connectionId,
@@ -294,6 +309,7 @@ export const isModelConfigValue = (
   return (
     wireApiMatches &&
     capabilitiesMatch &&
+    (imageProfileId === undefined || profileIds.has(imageProfileId)) &&
     defaultConnection?.enabled === true
   );
 };

@@ -52,7 +52,9 @@ class FixtureRuntime {
     this.sent.push(command);
   };
 
-  request = async (command: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>) => {
+  request = async (
+    command: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>,
+  ) => {
     this.sent.push(command);
     if (command.type === 'thread.list') {
       return {
@@ -119,6 +121,7 @@ class FixtureRuntime {
     }
     if (command.type === 'asset.import') {
       const sha256 = 'a'.repeat(64);
+      const mediaType = command.mediaType ?? 'application/octet-stream';
       return {
         type: 'asset.imported',
         requestId: command.requestId,
@@ -126,10 +129,10 @@ class FixtureRuntime {
         asset: {
           assetId: `ast_${sha256}`,
           sha256,
-          mediaType: 'text/plain',
+          mediaType,
           originalName: command.fileName,
           sizeBytes: 7,
-          kind: 'text',
+          kind: mediaType.startsWith('image/') ? 'image' : 'text',
         },
       } as RuntimeEvent;
     }
@@ -152,23 +155,27 @@ class FixtureRuntime {
               archivedAt: null,
               parentThreadId: null,
             },
-            turns: [{
-              id: revision.turnId,
-              requestId: revision.requestId,
-              status: 'interrupted',
-              providerWireApi: 'openaiResponses',
-              model: 'gpt-5',
-              errorJson: '{"kind":"runtimeRestart"}',
-              startedAt: 2,
-              completedAt: 3,
-            }],
-            items: [{
-              id: `${revision.turnId}:user`,
-              turnId: revision.turnId,
-              sequence: 0,
-              kind: 'turn.userMessage',
-              payload: { content: revision.content },
-            }],
+            turns: [
+              {
+                id: revision.turnId,
+                requestId: revision.requestId,
+                status: 'interrupted',
+                providerWireApi: 'openaiResponses',
+                model: 'gpt-5',
+                errorJson: '{"kind":"runtimeRestart"}',
+                startedAt: 2,
+                completedAt: 3,
+              },
+            ],
+            items: [
+              {
+                id: `${revision.turnId}:user`,
+                turnId: revision.turnId,
+                sequence: 0,
+                kind: 'turn.userMessage',
+                payload: { content: revision.content },
+              },
+            ],
             agentTasks: [],
             queue: { paused: false, messages: [] },
           },
@@ -184,7 +191,8 @@ class FixtureRuntime {
           thread: {
             id: command.threadId,
             workspaceId: command.workspaceId,
-            title: command.threadId === THREAD_ID ? 'First task' : 'Second task',
+            title:
+              command.threadId === THREAD_ID ? 'First task' : 'Second task',
             createdAt: 1,
             updatedAt: 1,
             archivedAt: null,
@@ -269,9 +277,8 @@ class FixtureRuntime {
         messages: [],
       };
       const queue: RuntimeThreadQueue = {
-        paused: previous.messages.length > 0
-          ? command.type === 'queue.pause'
-          : false,
+        paused:
+          previous.messages.length > 0 ? command.type === 'queue.pause' : false,
         messages: previous.messages,
       };
       this.queues.set(command.threadId, queue);
@@ -331,9 +338,162 @@ class SnapshotFixtureRuntime {
         snapshot: this.snapshot,
       };
     }
+    if (command.type === 'asset.preview') {
+      const asset = this.snapshot.items
+        .flatMap((item) => {
+          const content =
+            item.kind === 'turn.userMessage' ? item.payload.content : undefined;
+          return Array.isArray(content) ? content : [];
+        })
+        .find(
+          (part) =>
+            part.type === 'asset' && part.asset.assetId === command.assetId,
+        );
+      if (!asset || asset.type !== 'asset') {
+        throw new Error('Fixture image was not found.');
+      }
+      return {
+        type: 'asset.preview',
+        requestId: command.requestId,
+        sequence: 3,
+        preview: {
+          available: true,
+          asset: asset.asset,
+          data: 'cG5n',
+        },
+      };
+    }
     throw new Error(`Unexpected snapshot fixture request ${command.type}.`);
   };
 }
+
+test('attachment previews are loaded on demand and scoped to their Thread', async () => {
+  const sha256 = 'a'.repeat(64);
+  const turnId = '0198f140-0000-7000-8000-000000000003';
+  const snapshot: RuntimeThreadSnapshot = {
+    thread: {
+      id: THREAD_ID,
+      workspaceId: WORKSPACE_ID,
+      title: 'Image task',
+      createdAt: 1,
+      updatedAt: 1,
+      archivedAt: null,
+      parentThreadId: null,
+    },
+    turns: [
+      {
+        id: turnId,
+        requestId: 'preview-turn-request',
+        status: 'completed',
+        providerWireApi: 'openaiResponses',
+        model: 'fixture',
+        errorJson: null,
+        startedAt: 1,
+        completedAt: 2,
+      },
+    ],
+    items: [
+      {
+        id: `${turnId}:user`,
+        turnId,
+        sequence: 0,
+        kind: 'turn.userMessage',
+        payload: {
+          content: [
+            {
+              type: 'asset',
+              asset: {
+                assetId: `ast_${sha256}`,
+                sha256,
+                mediaType: 'image/png',
+                originalName: 'screen.png',
+                sizeBytes: 3,
+                kind: 'image',
+              },
+            },
+          ],
+        },
+      },
+    ],
+    agentTasks: [],
+    queue: { paused: false, messages: [] },
+  };
+  const controller = new RuntimeConversationController(
+    new SnapshotFixtureRuntime(snapshot) as unknown as RuntimeSupervisor,
+  );
+  await controller.switchWorkspace(WORKSPACE_ID);
+  assert.equal((await controller.selectThread(THREAD_ID)).accepted, true);
+
+  assert.deepEqual(
+    await controller.getAttachmentPreview({
+      threadId: THREAD_ID,
+      assetId: `ast_${sha256}`,
+    }),
+    {
+      available: true,
+      assetId: `ast_${sha256}`,
+      previewUrl: 'data:image/png;base64,cG5n',
+    },
+  );
+  assert.deepEqual(
+    await controller.getAttachmentPreview({
+      threadId: SECOND_THREAD_ID,
+      assetId: `ast_${sha256}`,
+    }),
+    { available: false, reason: 'notFound' },
+  );
+});
+
+test('runtime confirmation preserves an optimistic image preview', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  await controller.switchWorkspace(WORKSPACE_ID);
+  controller.startNewThread();
+  assert.equal(
+    (
+      await controller.startTurn({
+        input: 'Inspect this image',
+        attachments: [
+          {
+            fileName: 'screen.png',
+            mediaType: 'image/png',
+            data: 'cG5n',
+          },
+        ],
+      })
+    ).accepted,
+    true,
+  );
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+      command.type === 'turn.start',
+  );
+  assert.ok(started);
+  assert.equal(
+    controller.getSnapshot().turns[0]?.messages[0]?.attachments?.[0]
+      ?.previewUrl,
+    'data:image/png;base64,cG5n',
+  );
+
+  fixture.emit({
+    type: 'turn.userMessage',
+    requestId: started.requestId,
+    sequence: 3,
+    workspaceId: WORKSPACE_ID,
+    threadId: started.threadId,
+    turnId: started.turnId,
+    itemId: `${started.turnId}:user`,
+    content: started.content,
+  });
+
+  assert.equal(
+    controller.getSnapshot().turns[0]?.messages[0]?.attachments?.[0]
+      ?.previewUrl,
+    'data:image/png;base64,cG5n',
+  );
+});
 
 test('UUIDv7 generator creates canonical time-ordered identifiers', () => {
   const id = createUuidV7(1_754_000_000_000, new Uint8Array(10).fill(0xab));
@@ -350,7 +510,10 @@ test('Stop records the user control as the cancellation source', async () => {
   );
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal(controller.startNewThread().accepted, true);
-  assert.equal((await controller.startTurn({ input: 'Long task' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'Long task' })).accepted,
+    true,
+  );
 
   assert.equal((await controller.stopTurn(THREAD_ID)).accepted, true);
   const cancel = fixture.sent.find(
@@ -417,7 +580,9 @@ test('running sends enqueue in FIFO order and completion starts the queue head',
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   const queuedStart = fixture.sent.find(
-    (command): command is Extract<RuntimeCommand, { type: 'turn.startQueued' }> =>
+    (
+      command,
+    ): command is Extract<RuntimeCommand, { type: 'turn.startQueued' }> =>
       command.type === 'turn.startQueued',
   );
   assert.ok(queuedStart);
@@ -451,7 +616,9 @@ test('an interrupted Turn pauses its durable queue until resume', async () => {
   assert.equal(controller.getSnapshot().queue?.paused, true);
   assert.equal((await controller.resumeQueue(THREAD_ID)).accepted, true);
   assert.equal(controller.getSnapshot().queue?.paused, false);
-  assert.ok(fixture.sent.some((command) => command.type === 'turn.startQueued'));
+  assert.ok(
+    fixture.sent.some((command) => command.type === 'turn.startQueued'),
+  );
 });
 
 test('command output projection updates are batched and completion flushes them', async () => {
@@ -463,7 +630,10 @@ test('command output projection updates are batched and completion flushes them'
   controller.subscribeThreadDelta((delta) => deltas.push(delta));
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal(controller.startNewThread().accepted, true);
-  assert.equal((await controller.startTurn({ input: 'Stream output' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'Stream output' })).accepted,
+    true,
+  );
   const started = fixture.sent.find(
     (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       command.type === 'turn.start',
@@ -528,7 +698,10 @@ test('/compact starts a maintenance Turn without a user message', async () => {
   );
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal(controller.startNewThread().accepted, true);
-  assert.equal((await controller.startTurn({ input: 'Seed history' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'Seed history' })).accepted,
+    true,
+  );
   const seed = fixture.sent.find(
     (candidate): candidate is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       candidate.type === 'turn.start',
@@ -577,12 +750,19 @@ test('/compact starts a maintenance Turn without a user message', async () => {
     status: 'completed',
   });
   fixture.sent.length = 0;
-  assert.equal((await controller.startTurn({
-    input: '/compact 保留数据库迁移决策',
-    modelProfileId: 'profile-1',
-  })).accepted, true);
+  assert.equal(
+    (
+      await controller.startTurn({
+        input: '/compact 保留数据库迁移决策',
+        modelProfileId: 'profile-1',
+      })
+    ).accepted,
+    true,
+  );
   const command = fixture.sent.find(
-    (candidate): candidate is Extract<RuntimeCommand, { type: 'context.compact' }> =>
+    (
+      candidate,
+    ): candidate is Extract<RuntimeCommand, { type: 'context.compact' }> =>
       candidate.type === 'context.compact',
   );
   assert.ok(command);
@@ -603,8 +783,11 @@ test('revising the latest terminal Turn replaces its transcript and preserves se
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal(controller.startNewThread().accepted, true);
   assert.equal(
-    (await controller.startTurn({ input: '$frontend-design\nOriginal request' }))
-      .accepted,
+    (
+      await controller.startTurn({
+        input: '$frontend-design\nOriginal request',
+      })
+    ).accepted,
     true,
   );
   const original = fixture.sent.find(
@@ -662,7 +845,9 @@ test('revising the latest terminal Turn replaces its transcript and preserves se
   });
   assert.equal(result.accepted, true);
   const revisedCommand = fixture.sent.find(
-    (candidate): candidate is Extract<RuntimeCommand, { type: 'turn.revise' }> =>
+    (
+      candidate,
+    ): candidate is Extract<RuntimeCommand, { type: 'turn.revise' }> =>
       candidate.type === 'turn.revise',
   );
   assert.ok(revisedCommand);
@@ -756,15 +941,19 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     reason: 'accepted',
   });
   assert.equal(
-    (await controller.startTurn({
-      input: 'Implement the runtime slice',
-      attachments: [{
-        fileName: 'fixture.txt',
-        mediaType: 'text/plain',
-        data: 'Zml4dHVyZQ==',
-      }],
-      modelProfileId: 'profile-1',
-    })).accepted,
+    (
+      await controller.startTurn({
+        input: 'Implement the runtime slice',
+        attachments: [
+          {
+            fileName: 'fixture.txt',
+            mediaType: 'text/plain',
+            data: 'Zml4dHVyZQ==',
+          },
+        ],
+        modelProfileId: 'profile-1',
+      })
+    ).accepted,
     true,
   );
   const started = fixture.sent.find((command) => command.type === 'turn.start');
@@ -774,7 +963,9 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   }
   assert.equal(started.content[1]?.type, 'asset');
   assert.equal(started.generateTitle, true);
-  const created = fixture.sent.find((command) => command.type === 'thread.create');
+  const created = fixture.sent.find(
+    (command) => command.type === 'thread.create',
+  );
   assert.equal(created?.type, 'thread.create');
   if (created?.type === 'thread.create') {
     assert.equal(created.title, undefined);
@@ -820,28 +1011,33 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     threadId: THREAD_ID,
     turnId: started.turnId,
     inputRequestId: 'input-scope',
-    questions: [{
-      id: 'scope',
-      header: '实现范围',
-      question: '本次需要覆盖到哪一层？',
-      options: [
-        { label: '完整链路（推荐）', description: '包含 Agent、协议和界面。' },
-        { label: '仅界面', description: '只处理显示和交互。' },
-      ],
-    }],
+    questions: [
+      {
+        id: 'scope',
+        header: '实现范围',
+        question: '本次需要覆盖到哪一层？',
+        options: [
+          {
+            label: '完整链路（推荐）',
+            description: '包含 Agent、协议和界面。',
+          },
+          { label: '仅界面', description: '只处理显示和交互。' },
+        ],
+      },
+    ],
   });
   assert.equal(
     controller.getSnapshot().turns[0]?.userInputRequest?.id,
     'input-scope',
   );
-  assert.deepEqual(
-    controller.getSnapshot().navigator.inputRequiredThreadIds,
-    [THREAD_ID],
-  );
+  assert.deepEqual(controller.getSnapshot().navigator.inputRequiredThreadIds, [
+    THREAD_ID,
+  ]);
   assert.equal(
-    controller.getSnapshot().turns[0]?.activities?.find(
-      (entry) => entry.type === 'userInput',
-    )?.activity.state,
+    controller
+      .getSnapshot()
+      .turns[0]?.activities?.find((entry) => entry.type === 'userInput')
+      ?.activity.state,
     'awaiting',
   );
   assert.deepEqual(
@@ -851,12 +1047,14 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       inputRequestId: 'input-scope',
       submission: {
         kind: 'submitted',
-        decisions: [{
-          questionId: 'scope',
-          kind: 'answered',
-          source: 'option',
-          answer: '不存在的选项',
-        }],
+        decisions: [
+          {
+            questionId: 'scope',
+            kind: 'answered',
+            source: 'option',
+            answer: '不存在的选项',
+          },
+        ],
       },
     }),
     { accepted: false, reason: 'invalidInput' },
@@ -868,12 +1066,14 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       inputRequestId: 'input-scope',
       submission: {
         kind: 'submitted',
-        decisions: [{
-          questionId: 'scope',
-          kind: 'answered',
-          source: 'option',
-          answer: '完整链路（推荐）',
-        }],
+        decisions: [
+          {
+            questionId: 'scope',
+            kind: 'answered',
+            source: 'option',
+            answer: '完整链路（推荐）',
+          },
+        ],
       },
     }),
     { accepted: true, reason: 'accepted' },
@@ -893,25 +1093,24 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     inputRequestId: 'input-scope',
     submission: {
       kind: 'submitted',
-      decisions: [{
-        questionId: 'scope',
-        kind: 'answered',
-        source: 'option',
-        answer: '完整链路（推荐）',
-      }],
+      decisions: [
+        {
+          questionId: 'scope',
+          kind: 'answered',
+          source: 'option',
+          answer: '完整链路（推荐）',
+        },
+      ],
     },
   });
-  assert.equal(
-    controller.getSnapshot().turns[0]?.userInputRequest,
-    undefined,
-  );
+  assert.equal(controller.getSnapshot().turns[0]?.userInputRequest, undefined);
   assert.deepEqual(
     controller.getSnapshot().navigator.inputRequiredThreadIds,
     [],
   );
-  const userInputActivity = controller.getSnapshot().turns[0]?.activities?.find(
-    (entry) => entry.type === 'userInput',
-  );
+  const userInputActivity = controller
+    .getSnapshot()
+    .turns[0]?.activities?.find((entry) => entry.type === 'userInput');
   assert.equal(userInputActivity?.type, 'userInput');
   if (userInputActivity?.type === 'userInput') {
     assert.equal(userInputActivity.activity.state, 'submitted');
@@ -1113,10 +1312,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       },
     },
   });
-  assert.equal(
-    publishedSnapshots.length,
-    globalSnapshotsBeforeAgentProgress,
-  );
+  assert.equal(publishedSnapshots.length, globalSnapshotsBeforeAgentProgress);
   fixture.emit({
     type: 'approval.requested',
     requestId: started.requestId,
@@ -1177,17 +1373,19 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     succeeded: true,
     result: {
       ok: true,
-      files: [{
-        path: 'src/example.ts',
-        kind: 'update',
-        diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
-        beforeSha256: 'a'.repeat(64),
-        afterSha256: 'b'.repeat(64),
-        beforeBytes: 4,
-        afterBytes: 4,
-        newlineStyle: 'lf',
-        finalNewline: true,
-      }],
+      files: [
+        {
+          path: 'src/example.ts',
+          kind: 'update',
+          diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+          beforeSha256: 'a'.repeat(64),
+          afterSha256: 'b'.repeat(64),
+          beforeBytes: 4,
+          afterBytes: 4,
+          newlineStyle: 'lf',
+          finalNewline: true,
+        },
+      ],
     },
   });
   fixture.emit({
@@ -1229,30 +1427,32 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
     (activity) => activity.type === 'commandApproval',
   );
   assert.equal(commandActivities?.length, 1);
-  assert.equal(
-    commandActivities?.[0]?.activity.decision?.source,
-    'policy',
-  );
+  assert.equal(commandActivities?.[0]?.activity.decision?.source, 'policy');
   assert.deepEqual(commandActivities?.[0]?.activity.executionResult?.outcome, {
     type: 'workspacePatch',
     filesChanged: 1,
-    files: [{
-      path: 'src/example.ts',
-      kind: 'update',
-      diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
-      beforeSha256: 'a'.repeat(64),
-      afterSha256: 'b'.repeat(64),
-      beforeBytes: 4,
-      afterBytes: 4,
-      newlineStyle: 'lf',
-      finalNewline: true,
-    }],
+    files: [
+      {
+        path: 'src/example.ts',
+        kind: 'update',
+        diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n',
+        beforeSha256: 'a'.repeat(64),
+        afterSha256: 'b'.repeat(64),
+        beforeBytes: 4,
+        afterBytes: 4,
+        newlineStyle: 'lf',
+        finalNewline: true,
+      },
+    ],
   });
   const commentary = snapshot.turns[0]?.activities?.filter(
     (activity) => activity.type === 'commentary',
   );
   assert.equal(commentary?.length, 1);
-  assert.equal(commentary?.[0]?.activity.text, 'The user wants a project review.');
+  assert.equal(
+    commentary?.[0]?.activity.text,
+    'The user wants a project review.',
+  );
   const reads = snapshot.turns[0]?.activities?.filter(
     (activity) => activity.type === 'workspaceRead',
   );
@@ -1264,10 +1464,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
       { type: 'error', kind: 'notFound' },
     ],
   );
-  assert.equal(
-    publishedSnapshots.every(isConversationStateSnapshot),
-    true,
-  );
+  assert.equal(publishedSnapshots.every(isConversationStateSnapshot), true);
   assert.equal(
     publishedThreadProjections.every(isConversationThreadProjectionSnapshot),
     true,
@@ -1285,7 +1482,10 @@ test('runtime conversation controller projects generated and user-edited titles'
     fixture as unknown as RuntimeSupervisor,
   );
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
-  assert.equal((await controller.startTurn({ input: '修复会话标题' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: '修复会话标题' })).accepted,
+    true,
+  );
   const started = fixture.sent.find(
     (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       command.type === 'turn.start',
@@ -1333,7 +1533,8 @@ test('runtime conversation controller projects generated and user-edited titles'
 });
 
 test('runtime conversation controller keeps delete as the only Thread lifecycle mutation', async () => {
-  const sent: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>[] = [];
+  const sent: Exclude<RuntimeCommand, { type: 'initialize' | 'shutdown' }>[] =
+    [];
   const thread: RuntimeThreadRecord = {
     id: THREAD_ID,
     workspaceId: WORKSPACE_ID,
@@ -1480,16 +1681,18 @@ test('runtime conversation controller restores interleaved tool activity from du
       archivedAt: null,
       parentThreadId: null,
     },
-    turns: [{
-      id: turnId,
-      requestId: 'request-restored',
-      status: 'completed',
-      providerWireApi: 'anthropicMessages',
-      model: 'claude-sonnet',
-      errorJson: null,
-      startedAt: 1,
-      completedAt: 2,
-    }],
+    turns: [
+      {
+        id: turnId,
+        requestId: 'request-restored',
+        status: 'completed',
+        providerWireApi: 'anthropicMessages',
+        model: 'claude-sonnet',
+        errorJson: null,
+        startedAt: 1,
+        completedAt: 2,
+      },
+    ],
     items: [
       {
         id: 'user-item',
@@ -1593,7 +1796,10 @@ test('runtime conversation controller keeps active Turns running across Thread n
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
 
   assert.equal(controller.startNewThread().accepted, true);
-  assert.equal((await controller.startTurn({ input: 'First task' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'First task' })).accepted,
+    true,
+  );
   const first = fixture.sent.find(
     (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       command.type === 'turn.start',
@@ -1628,9 +1834,14 @@ test('runtime conversation controller keeps active Turns running across Thread n
     reason: 'accepted',
   });
   assert.equal(controller.getSnapshot().phase, 'idle');
-  assert.deepEqual(controller.getSnapshot().navigator.runningThreadIds, [THREAD_ID]);
+  assert.deepEqual(controller.getSnapshot().navigator.runningThreadIds, [
+    THREAD_ID,
+  ]);
 
-  assert.equal((await controller.startTurn({ input: 'Second task' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'Second task' })).accepted,
+    true,
+  );
   const starts = fixture.sent.filter(
     (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       command.type === 'turn.start',
@@ -1648,7 +1859,10 @@ test('runtime conversation controller keeps active Turns running across Thread n
     reason: 'accepted',
   });
   assert.equal(controller.getSnapshot().activeTurnId, first.turnId);
-  assert.equal(controller.getSnapshot().turns[0]?.messages[0]?.text, 'First task');
+  assert.equal(
+    controller.getSnapshot().turns[0]?.messages[0]?.text,
+    'First task',
+  );
 
   fixture.emit({
     type: 'turn.completed',
@@ -1676,7 +1890,10 @@ test('runtime conversation controller keeps active Turns running across Thread n
     controller.getSnapshot().navigator.unreadThreadStatuses?.[SECOND_THREAD_ID],
     'completed',
   );
-  assert.equal((await controller.selectThread(SECOND_THREAD_ID)).accepted, true);
+  assert.equal(
+    (await controller.selectThread(SECOND_THREAD_ID)).accepted,
+    true,
+  );
   assert.equal(
     controller.getSnapshot().navigator.unreadThreadStatuses?.[SECOND_THREAD_ID],
     undefined,
@@ -1707,7 +1924,10 @@ test('runtime conversation controller keeps active Turns isolated across workspa
 
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal(controller.startNewThread().accepted, true);
-  assert.equal((await controller.startTurn({ input: 'First workspace task' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'First workspace task' })).accepted,
+    true,
+  );
   const first = fixture.sent.find(
     (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       command.type === 'turn.start',
@@ -1725,9 +1945,14 @@ test('runtime conversation controller keeps active Turns isolated across workspa
 
   assert.equal(await controller.switchWorkspace(SECOND_WORKSPACE_ID), true);
   assert.equal(controller.getSnapshot().phase, 'idle');
-  assert.deepEqual(controller.getSnapshot().navigator.runningThreadIds, [THREAD_ID]);
+  assert.deepEqual(controller.getSnapshot().navigator.runningThreadIds, [
+    THREAD_ID,
+  ]);
   assert.equal(controller.startNewThread().accepted, true);
-  assert.equal((await controller.startTurn({ input: 'Second workspace task' })).accepted, true);
+  assert.equal(
+    (await controller.startTurn({ input: 'Second workspace task' })).accepted,
+    true,
+  );
   const starts = fixture.sent.filter(
     (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
       command.type === 'turn.start',
@@ -1752,10 +1977,16 @@ test('runtime conversation controller keeps active Turns isolated across workspa
   assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
   assert.equal((await controller.selectThread(THREAD_ID)).accepted, true);
   assert.equal(controller.getSnapshot().activeTurnId, first.turnId);
-  assert.equal(controller.getSnapshot().turns[0]?.messages[0]?.text, 'First workspace task');
+  assert.equal(
+    controller.getSnapshot().turns[0]?.messages[0]?.text,
+    'First workspace task',
+  );
 
   assert.equal(await controller.switchWorkspace(SECOND_WORKSPACE_ID), true);
-  assert.equal((await controller.selectThread(SECOND_THREAD_ID)).accepted, true);
+  assert.equal(
+    (await controller.selectThread(SECOND_THREAD_ID)).accepted,
+    true,
+  );
   fixture.emit({
     type: 'turn.textDelta',
     requestId: first.requestId,
@@ -1781,16 +2012,20 @@ test('runtime conversation controller keeps active Turns isolated across workspa
   assert.equal(snapshot.threadId, SECOND_THREAD_ID);
   assert.equal(snapshot.turns[0]?.messages[0]?.text, 'Second workspace task');
   assert.deepEqual(snapshot.navigator.runningThreadIds, [SECOND_THREAD_ID]);
-  assert.equal(snapshot.navigator.unreadThreadStatuses?.[THREAD_ID], 'completed');
+  assert.equal(
+    snapshot.navigator.unreadThreadStatuses?.[THREAD_ID],
+    'completed',
+  );
   assert.equal(isConversationStateSnapshot(snapshot), true);
 });
 
 test('runtime conversation controller isolates concurrent Turn startup by workspace', async () => {
   const releaseCreate = new Map<string, () => void>();
   const fixture = new FixtureRuntime(
-    (workspaceId) => new Promise<void>((resolve) => {
-      releaseCreate.set(workspaceId, resolve);
-    }),
+    (workspaceId) =>
+      new Promise<void>((resolve) => {
+        releaseCreate.set(workspaceId, resolve);
+      }),
   );
   const controller = new RuntimeConversationController(
     fixture as unknown as RuntimeSupervisor,
@@ -1842,15 +2077,17 @@ test('runtime conversation controller ignores a stale Workspace list result', as
         sequence: 1,
         workspaceId: command.workspaceId,
         query: '',
-        threads: [{
-          id: threadId,
-          workspaceId: command.workspaceId,
-          title: command.workspaceId,
-          createdAt: 1,
-          updatedAt: 1,
-          archivedAt: null,
-          parentThreadId: null,
-        }],
+        threads: [
+          {
+            id: threadId,
+            workspaceId: command.workspaceId,
+            title: command.workspaceId,
+            createdAt: 1,
+            updatedAt: 1,
+            archivedAt: null,
+            parentThreadId: null,
+          },
+        ],
       });
       if (command.workspaceId === WORKSPACE_ID) {
         return new Promise((resolve) => {
@@ -1872,15 +2109,17 @@ test('runtime conversation controller ignores a stale Workspace list result', as
     sequence: 2,
     workspaceId: WORKSPACE_ID,
     query: '',
-    threads: [{
-      id: THREAD_ID,
-      workspaceId: WORKSPACE_ID,
-      title: 'Stale task',
-      createdAt: 1,
-      updatedAt: 2,
-      archivedAt: null,
-      parentThreadId: null,
-    }],
+    threads: [
+      {
+        id: THREAD_ID,
+        workspaceId: WORKSPACE_ID,
+        title: 'Stale task',
+        createdAt: 1,
+        updatedAt: 2,
+        archivedAt: null,
+        parentThreadId: null,
+      },
+    ],
   });
   assert.equal(await first, true);
 

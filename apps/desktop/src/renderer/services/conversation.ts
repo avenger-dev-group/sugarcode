@@ -1,5 +1,7 @@
 import type {
   ConversationActionResult,
+  ConversationAttachmentPreviewRequest,
+  ConversationAttachmentPreviewResult,
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationSendRequest,
@@ -16,9 +18,8 @@ import type {
 
 const desktopApi = (): Window['sugarcode'] => window.sugarcode;
 
-export const getConversationState =
-  (): Promise<ConversationStateSnapshot> =>
-    desktopApi().getConversationState();
+export const getConversationState = (): Promise<ConversationStateSnapshot> =>
+  desktopApi().getConversationState();
 
 export const onConversationStateChanged = (
   listener: ConversationStateListener,
@@ -28,6 +29,11 @@ export const getConversationThreadProjection = (
   threadId: string,
 ): Promise<ConversationThreadProjectionSnapshot> =>
   desktopApi().getConversationThreadProjection(threadId);
+
+export const getConversationAttachmentPreview = (
+  request: ConversationAttachmentPreviewRequest,
+): Promise<ConversationAttachmentPreviewResult> =>
+  desktopApi().getConversationAttachmentPreview(request);
 
 export const onConversationThreadProjectionChanged = (
   listener: ConversationThreadProjectionListener,
@@ -71,9 +77,10 @@ export const resumeConversationQueue = (
 ): Promise<ConversationActionResult> =>
   desktopApi().resumeConversationQueue(threadId);
 
-export const stopConversationTurn =
-  (threadId: string): Promise<ConversationActionResult> =>
-    desktopApi().stopConversationTurn(threadId);
+export const stopConversationTurn = (
+  threadId: string,
+): Promise<ConversationActionResult> =>
+  desktopApi().stopConversationTurn(threadId);
 
 export const respondToConversationUserInput = (
   response: ConversationUserInputResponse,

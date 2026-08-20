@@ -3,6 +3,7 @@ import { parseComposerSubmission } from '../../shared/composer.ts';
 
 import {
   isConversationThreadProjectionDelta,
+  isConversationAttachmentPreviewRequest,
   isConversationThreadProjectionSnapshot,
   isConversationStateSnapshot,
   isConversationSendRequest,
@@ -15,6 +16,7 @@ import {
   isValidThreadSearchInput,
   type ConversationActionResult,
   type ConversationAttachment,
+  type ConversationAttachmentPreviewResult,
   type ConversationStateListener,
   type ConversationStateSnapshot,
   type ConversationThreadDeltaListener,
@@ -56,7 +58,11 @@ import type { RuntimeSupervisor } from './supervisor.ts';
 
 const accepted = (
   result: Pick<ConversationActionResult, 'disposition' | 'queueItemId'> = {},
-): ConversationActionResult => ({ accepted: true, reason: 'accepted', ...result });
+): ConversationActionResult => ({
+  accepted: true,
+  reason: 'accepted',
+  ...result,
+});
 const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
 ): ConversationActionResult => ({ accepted: false, reason });
@@ -195,16 +201,17 @@ export class RuntimeConversationController {
       : undefined;
     const phase: ConversationStateSnapshot['phase'] = !this.available
       ? 'unavailable'
-      : this.workspaceId && this.pendingTurnStartWorkspaces.has(this.workspaceId)
+      : this.workspaceId &&
+          this.pendingTurnStartWorkspaces.has(this.workspaceId)
         ? 'starting'
-        : activeTurn?.phase ?? (this.threadId ? 'ready' : 'idle');
+        : (activeTurn?.phase ?? (this.threadId ? 'ready' : 'idle'));
     return {
       revision: this.revision,
       ...(this.workspaceId ? { workspaceId: this.workspaceId } : {}),
       phase,
       ...(this.threadId ? { threadId: this.threadId } : {}),
       ...(activeTurn ? { activeTurnId: activeTurn.turnId } : {}),
-      turns: this.threadId ? this.turnsByThread.get(this.threadId) ?? [] : [],
+      turns: this.threadId ? (this.turnsByThread.get(this.threadId) ?? []) : [],
       ...(this.threadId
         ? {
             queue: this.queuesByThread.get(this.threadId) ?? {
@@ -226,9 +233,7 @@ export class RuntimeConversationController {
   getThreadProjection = (
     threadId: unknown,
   ): ConversationThreadProjectionSnapshot | null =>
-    typeof threadId === 'string'
-      ? this.buildThreadProjection(threadId)
-      : null;
+    typeof threadId === 'string' ? this.buildThreadProjection(threadId) : null;
 
   subscribeThreadProjection = (
     listener: ConversationThreadProjectionListener,
@@ -242,6 +247,56 @@ export class RuntimeConversationController {
   ): (() => void) => {
     this.threadDeltaListeners.add(listener);
     return () => this.threadDeltaListeners.delete(listener);
+  };
+
+  getAttachmentPreview = async (
+    request: unknown,
+  ): Promise<ConversationAttachmentPreviewResult> => {
+    if (!isConversationAttachmentPreviewRequest(request)) {
+      return { available: false, reason: 'invalid' };
+    }
+    const thread = this.threadRecords.get(request.threadId);
+    if (!thread || thread.workspaceId !== this.workspaceId) {
+      return { available: false, reason: 'notFound' };
+    }
+    const attachment = (this.turnsByThread.get(request.threadId) ?? [])
+      .flatMap((turn) => turn.messages)
+      .flatMap((message) => message.attachments ?? [])
+      .find((candidate) => candidate.assetId === request.assetId);
+    if (!attachment) {
+      return { available: false, reason: 'notFound' };
+    }
+    if (attachment.kind !== 'image') {
+      return { available: false, reason: 'unsupported' };
+    }
+    try {
+      const event = await this.runtime.request(
+        {
+          type: 'asset.preview',
+          requestId: randomUUID(),
+          assetId: attachment.assetId,
+        },
+        'asset.preview',
+      );
+      if (event.preview.available === false) {
+        return { available: false, reason: event.preview.reason };
+      }
+      if (
+        event.preview.asset.assetId !== attachment.assetId ||
+        event.preview.asset.sha256 !== attachment.sha256 ||
+        event.preview.asset.mediaType !== attachment.mediaType ||
+        !/^image\/[A-Za-z0-9.+-]+$/u.test(event.preview.asset.mediaType)
+      ) {
+        return { available: false, reason: 'unavailable' };
+      }
+      return {
+        available: true,
+        assetId: attachment.assetId,
+        previewUrl: `data:${event.preview.asset.mediaType};base64,${event.preview.data}`,
+      };
+    } catch {
+      return { available: false, reason: 'unavailable' };
+    }
   };
 
   switchWorkspace = async (workspaceId: string): Promise<boolean> => {
@@ -275,7 +330,10 @@ export class RuntimeConversationController {
         this.workspaceId === workspaceId
       ) {
         this.navigator = { ...this.navigator, status: 'error' };
-        this.notice = { kind: 'requestFailed', summary: 'Threads could not be loaded from local storage.' };
+        this.notice = {
+          kind: 'requestFailed',
+          summary: 'Threads could not be loaded from local storage.',
+        };
         this.publish();
       }
       return false;
@@ -293,7 +351,8 @@ export class RuntimeConversationController {
     let threadId = this.threadId;
     const submission = parseComposerSubmission(input.input);
     const compactCommand = submission.references.some(
-      (reference) => reference.kind === 'command' && reference.target === 'compact',
+      (reference) =>
+        reference.kind === 'command' && reference.target === 'compact',
     );
     let generateTitle = threadId
       ? this.threadRecords.get(threadId)?.title === null
@@ -307,14 +366,15 @@ export class RuntimeConversationController {
       : undefined;
     const shouldQueue = Boolean(
       threadId &&
-        (pendingStart ||
-          this.activeTurnsByThread.has(threadId) ||
-          currentQueue?.paused ||
-          (currentQueue?.messages.length ?? 0) > 0),
+      (pendingStart ||
+        this.activeTurnsByThread.has(threadId) ||
+        currentQueue?.paused ||
+        (currentQueue?.messages.length ?? 0) > 0),
     );
-    const releaseQueueOperation = shouldQueue && threadId
-      ? await this.acquireQueueOperation(threadId)
-      : undefined;
+    const releaseQueueOperation =
+      shouldQueue && threadId
+        ? await this.acquireQueueOperation(threadId)
+        : undefined;
     if (compactCommand && !shouldQueue) {
       if (!threadId || (input.attachments?.length ?? 0) > 0) {
         return rejected('invalidInput');
@@ -336,7 +396,9 @@ export class RuntimeConversationController {
         workspaceId,
         threadId,
         turnId,
-        ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
+        ...(input.modelProfileId
+          ? { modelProfileId: input.modelProfileId }
+          : {}),
         ...(submission.text.trim() ? { focus: submission.text.trim() } : {}),
       });
       this.refreshNavigator();
@@ -349,7 +411,8 @@ export class RuntimeConversationController {
     }
     this.notice = undefined;
     this.publish();
-    let optimisticTurn: Readonly<{ threadId: string; turnId: string }> | undefined;
+    let optimisticTurn:
+      Readonly<{ threadId: string; turnId: string }> | undefined;
     try {
       const content = initialTurnContent(input.input);
       const attachments: ConversationAttachment[] = [];
@@ -359,7 +422,9 @@ export class RuntimeConversationController {
             type: 'asset.import',
             requestId: randomUUID(),
             fileName: attachment.fileName,
-            ...(attachment.mediaType ? { mediaType: attachment.mediaType } : {}),
+            ...(attachment.mediaType
+              ? { mediaType: attachment.mediaType }
+              : {}),
             data: attachment.data,
           },
           'asset.imported',
@@ -368,7 +433,9 @@ export class RuntimeConversationController {
         attachments.push({
           ...attachmentFromPart({ type: 'asset', asset: imported.asset }),
           ...(imported.asset.kind === 'image'
-            ? { previewUrl: `data:${imported.asset.mediaType};base64,${attachment.data}` }
+            ? {
+                previewUrl: `data:${imported.asset.mediaType};base64,${attachment.data}`,
+              }
             : {}),
         });
       }
@@ -392,7 +459,10 @@ export class RuntimeConversationController {
           created.threadId,
           projectThreadQueue(created.snapshot.queue),
         );
-        this.runtimeQueuesByThread.set(created.threadId, created.snapshot.queue);
+        this.runtimeQueuesByThread.set(
+          created.threadId,
+          created.snapshot.queue,
+        );
         if (this.workspaceId === workspaceId && !this.threadId) {
           this.threadSelectionGeneration += 1;
           this.threadId = created.threadId;
@@ -421,7 +491,9 @@ export class RuntimeConversationController {
         }
         releaseQueueOperation?.();
         if (!this.activeTurnsByThread.has(threadId)) {
-          const terminalStatus = this.turnsByThread.get(threadId)?.at(-1)?.status;
+          const terminalStatus = this.turnsByThread
+            .get(threadId)
+            ?.at(-1)?.status;
           if (
             terminalStatus === 'completed' ||
             terminalStatus === 'failed' ||
@@ -459,7 +531,9 @@ export class RuntimeConversationController {
         workspaceId,
         threadId,
         turnId,
-        ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
+        ...(input.modelProfileId
+          ? { modelProfileId: input.modelProfileId }
+          : {}),
         ...(generateTitle ? { generateTitle: true } : {}),
         content,
       });
@@ -484,20 +558,29 @@ export class RuntimeConversationController {
         this.refreshNavigator();
       }
       if (this.workspaceId === workspaceId) {
-        this.notice = { kind: 'requestFailed', summary: 'The local Agent could not start this Turn.' };
+        this.notice = {
+          kind: 'requestFailed',
+          summary: 'The local Agent could not start this Turn.',
+        };
       }
       this.publish();
       return rejected('unavailable');
     }
   };
 
-  updateQueuedMessage = async (input: unknown): Promise<ConversationActionResult> => {
+  updateQueuedMessage = async (
+    input: unknown,
+  ): Promise<ConversationActionResult> => {
     if (!isConversationQueuedMessageUpdateRequest(input)) {
       return rejected('invalidInput');
     }
     const workspaceId = this.workspaceId;
     const thread = this.threadRecords.get(input.threadId);
-    if (!workspaceId || !this.available || thread?.workspaceId !== workspaceId) {
+    if (
+      !workspaceId ||
+      !this.available ||
+      thread?.workspaceId !== workspaceId
+    ) {
       return rejected('unknownThread');
     }
     const existing = this.runtimeQueuesByThread
@@ -506,7 +589,9 @@ export class RuntimeConversationController {
     if (!existing) {
       return rejected('queueItemNotFound');
     }
-    if (this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId) {
+    if (
+      this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId
+    ) {
       return rejected('turnActive');
     }
     const content: RuntimeContentPart[] = [
@@ -515,7 +600,9 @@ export class RuntimeConversationController {
         (part) => part.type === 'asset' || part.type === 'knowledgeReferences',
       ),
     ];
-    const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
+    const releaseQueueOperation = await this.acquireQueueOperation(
+      input.threadId,
+    );
     try {
       const event = await this.runtime.request(
         {
@@ -526,7 +613,9 @@ export class RuntimeConversationController {
           queueItemId: input.queueItemId,
           expectedRevision: input.expectedRevision,
           content,
-          ...(input.modelProfileId ? { modelProfileId: input.modelProfileId } : {}),
+          ...(input.modelProfileId
+            ? { modelProfileId: input.modelProfileId }
+            : {}),
         },
         'queue.changed',
       );
@@ -537,7 +626,10 @@ export class RuntimeConversationController {
       return accepted();
     } catch (error) {
       const reason = this.queueErrorReason(error);
-      if (reason === 'queueRevisionMismatch' || reason === 'queueItemNotFound') {
+      if (
+        reason === 'queueRevisionMismatch' ||
+        reason === 'queueItemNotFound'
+      ) {
         await this.refreshRuntimeQueue(input.threadId, workspaceId);
       }
       return rejected(reason);
@@ -546,19 +638,29 @@ export class RuntimeConversationController {
     }
   };
 
-  deleteQueuedMessage = async (input: unknown): Promise<ConversationActionResult> => {
+  deleteQueuedMessage = async (
+    input: unknown,
+  ): Promise<ConversationActionResult> => {
     if (!isConversationQueuedMessageMutationRequest(input)) {
       return rejected('invalidInput');
     }
     const workspaceId = this.workspaceId;
     const thread = this.threadRecords.get(input.threadId);
-    if (!workspaceId || !this.available || thread?.workspaceId !== workspaceId) {
+    if (
+      !workspaceId ||
+      !this.available ||
+      thread?.workspaceId !== workspaceId
+    ) {
       return rejected('unknownThread');
     }
-    if (this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId) {
+    if (
+      this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId
+    ) {
       return rejected('turnActive');
     }
-    const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
+    const releaseQueueOperation = await this.acquireQueueOperation(
+      input.threadId,
+    );
     try {
       const event = await this.runtime.request(
         {
@@ -578,7 +680,10 @@ export class RuntimeConversationController {
       return accepted();
     } catch (error) {
       const reason = this.queueErrorReason(error);
-      if (reason === 'queueRevisionMismatch' || reason === 'queueItemNotFound') {
+      if (
+        reason === 'queueRevisionMismatch' ||
+        reason === 'queueItemNotFound'
+      ) {
         await this.refreshRuntimeQueue(input.threadId, workspaceId);
       }
       return rejected(reason);
@@ -587,7 +692,9 @@ export class RuntimeConversationController {
     }
   };
 
-  steerQueuedMessage = async (input: unknown): Promise<ConversationActionResult> => {
+  steerQueuedMessage = async (
+    input: unknown,
+  ): Promise<ConversationActionResult> => {
     if (!isConversationSteerQueuedMessageRequest(input)) {
       return rejected('invalidInput');
     }
@@ -599,10 +706,14 @@ export class RuntimeConversationController {
     if (active.phase !== 'inProgress') {
       return rejected('notSteerable');
     }
-    if (this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId) {
+    if (
+      this.promotingQueueItemsByThread.get(input.threadId) === input.queueItemId
+    ) {
       return rejected('turnActive');
     }
-    const releaseQueueOperation = await this.acquireQueueOperation(input.threadId);
+    const releaseQueueOperation = await this.acquireQueueOperation(
+      input.threadId,
+    );
     try {
       const event = await this.runtime.request(
         {
@@ -625,7 +736,10 @@ export class RuntimeConversationController {
       return accepted();
     } catch (error) {
       const reason = this.queueErrorReason(error);
-      if (reason === 'queueRevisionMismatch' || reason === 'queueItemNotFound') {
+      if (
+        reason === 'queueRevisionMismatch' ||
+        reason === 'queueItemNotFound'
+      ) {
         await this.refreshRuntimeQueue(input.threadId, workspaceId);
       }
       return rejected(reason);
@@ -634,12 +748,17 @@ export class RuntimeConversationController {
     }
   };
 
-  resumeQueue = async (threadId: unknown): Promise<ConversationActionResult> => {
+  resumeQueue = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
     if (typeof threadId !== 'string') {
       return rejected('unknownThread');
     }
     const workspaceId = this.workspaceId;
-    if (!workspaceId || this.threadRecords.get(threadId)?.workspaceId !== workspaceId) {
+    if (
+      !workspaceId ||
+      this.threadRecords.get(threadId)?.workspaceId !== workspaceId
+    ) {
       return rejected('unknownThread');
     }
     const releaseQueueOperation = await this.acquireQueueOperation(threadId);
@@ -835,9 +954,7 @@ export class RuntimeConversationController {
       return rejected('noActiveTurn');
     }
     const questions = turn.userInputRequest.questions;
-    const questionIds = questions.map(
-      (question) => question.id,
-    );
+    const questionIds = questions.map((question) => question.id);
     const decisionIds = new Set(
       input.submission.decisions.map((decision) => decision.questionId),
     );
@@ -848,9 +965,9 @@ export class RuntimeConversationController {
       const question = questionById.get(decision.questionId);
       return Boolean(
         question &&
-          (decision.kind !== 'answered' ||
-            decision.source !== 'option' ||
-            question.options.some((option) => option.label === decision.answer)),
+        (decision.kind !== 'answered' ||
+          decision.source !== 'option' ||
+          question.options.some((option) => option.label === decision.answer)),
       );
     });
     if (
@@ -885,12 +1002,21 @@ export class RuntimeConversationController {
     const normalizedQuery = query.trim();
     this.navigator = {
       ...this.navigator,
-      search: { ...this.navigator.search, query: normalizedQuery, status: 'loading' },
+      search: {
+        ...this.navigator.search,
+        query: normalizedQuery,
+        status: 'loading',
+      },
     };
     this.publish();
     try {
       const event = await this.runtime.request(
-        { type: 'thread.list', requestId: randomUUID(), workspaceId, query: normalizedQuery },
+        {
+          type: 'thread.list',
+          requestId: randomUUID(),
+          workspaceId,
+          query: normalizedQuery,
+        },
         'thread.listResult',
       );
       if (
@@ -900,7 +1026,9 @@ export class RuntimeConversationController {
         return accepted();
       }
       const titles = Object.fromEntries(
-        event.threads.flatMap((thread) => thread.title ? [[thread.id, thread.title]] : []),
+        event.threads.flatMap((thread) =>
+          thread.title ? [[thread.id, thread.title]] : [],
+        ),
       );
       this.navigator = {
         ...this.navigator,
@@ -921,13 +1049,18 @@ export class RuntimeConversationController {
       ) {
         return accepted();
       }
-      this.navigator = { ...this.navigator, search: { ...this.navigator.search, status: 'error' } };
+      this.navigator = {
+        ...this.navigator,
+        search: { ...this.navigator.search, status: 'error' },
+      };
       this.publish();
       return rejected('unavailable');
     }
   };
 
-  selectThread = async (threadId: unknown): Promise<ConversationActionResult> => {
+  selectThread = async (
+    threadId: unknown,
+  ): Promise<ConversationActionResult> => {
     if (typeof threadId !== 'string') {
       return rejected('unknownThread');
     }
@@ -957,7 +1090,10 @@ export class RuntimeConversationController {
     ) {
       return rejected('turnActive');
     }
-    if (this.activeTurnsByThread.has(threadId) && this.turnsByThread.has(threadId)) {
+    if (
+      this.activeTurnsByThread.has(threadId) &&
+      this.turnsByThread.has(threadId)
+    ) {
       this.threadId = threadId;
       this.unreadThreadStatuses.delete(threadId);
       this.refreshNavigator();
@@ -1303,7 +1439,9 @@ export class RuntimeConversationController {
     switch (event.type) {
       case 'turn.started':
         turns[index] = { ...turn, model: event.model };
-        if (this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId) {
+        if (
+          this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId
+        ) {
           this.activeTurnsByThread.set(event.threadId, {
             workspaceId: event.workspaceId,
             turnId: event.turnId,
@@ -1314,15 +1452,38 @@ export class RuntimeConversationController {
         break;
       case 'turn.userMessage':
         {
+          const existingUser = turn.messages.find(
+            (message) => message.role === 'user',
+          );
           const text = event.content
-            .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
-              part.type === 'text')
+            .filter(
+              (part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+                part.type === 'text',
+            )
             .map((part) => part.text)
             .join('\n');
-          const attachments = event.content.flatMap((part) =>
-            part.type === 'asset' ? [attachmentFromPart(part)] : []);
-          const knowledgeReferences = knowledgeReferencesFromParts(event.content);
-          const existingUser = turn.messages.find((message) => message.role === 'user');
+          const attachments = event.content.flatMap((part) => {
+            if (part.type !== 'asset') {
+              return [];
+            }
+            const attachment = attachmentFromPart(part);
+            const existingAttachment = existingUser?.attachments?.find(
+              (candidate) =>
+                candidate.assetId === attachment.assetId &&
+                candidate.sha256 === attachment.sha256,
+            );
+            return [
+              {
+                ...attachment,
+                ...(existingAttachment?.previewUrl
+                  ? { previewUrl: existingAttachment.previewUrl }
+                  : {}),
+              },
+            ];
+          });
+          const knowledgeReferences = knowledgeReferencesFromParts(
+            event.content,
+          );
           const userMessage = {
             id: existingUser?.id ?? event.itemId,
             role: 'user' as const,
@@ -1335,13 +1496,13 @@ export class RuntimeConversationController {
             ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
             status: 'completed' as const,
           };
-        turns[index] = {
-          ...turn,
-          messages: [
-            userMessage,
-            ...turn.messages.filter((message) => message.role !== 'user'),
-          ],
-        };
+          turns[index] = {
+            ...turn,
+            messages: [
+              userMessage,
+              ...turn.messages.filter((message) => message.role !== 'user'),
+            ],
+          };
         }
         break;
       case 'turn.textStarted':
@@ -1364,19 +1525,35 @@ export class RuntimeConversationController {
               },
             };
           } else {
-            activities.push({ type: 'commentary', activity: { id: event.itemId, text: event.delta, status: 'inProgress' } });
+            activities.push({
+              type: 'commentary',
+              activity: {
+                id: event.itemId,
+                text: event.delta,
+                status: 'inProgress',
+              },
+            });
           }
           turns[index] = { ...turn, activities };
         } else {
           const messages = [...turn.messages];
           const agentIndex = messages.findIndex(
-            (message) => message.role === 'agent' && message.id === event.itemId,
+            (message) =>
+              message.role === 'agent' && message.id === event.itemId,
           );
           if (agentIndex >= 0) {
             const current = messages[agentIndex];
-            messages[agentIndex] = { ...current, text: current.text + event.delta };
+            messages[agentIndex] = {
+              ...current,
+              text: current.text + event.delta,
+            };
           } else {
-            messages.push({ id: event.itemId, role: 'agent', text: event.delta, status: 'inProgress' });
+            messages.push({
+              id: event.itemId,
+              role: 'agent',
+              text: event.delta,
+              status: 'inProgress',
+            });
           }
           turns[index] = { ...turn, messages };
         }
@@ -1385,7 +1562,8 @@ export class RuntimeConversationController {
       case 'turn.textCompleted': {
         if (event.phase === 'commentary') {
           const messages = turn.messages.filter(
-            (message) => message.role !== 'agent' || message.id !== event.itemId,
+            (message) =>
+              message.role !== 'agent' || message.id !== event.itemId,
           );
           const activities = [...(turn.activities ?? [])];
           const activityIndex = activities.findIndex(
@@ -1532,7 +1710,8 @@ export class RuntimeConversationController {
       case 'turn.contextCompactionFinished': {
         const activities = [...(turn.activities ?? [])];
         const activityIndex = activities.findIndex(
-          (activity) => activity.type === 'contextCompaction' &&
+          (activity) =>
+            activity.type === 'contextCompaction' &&
             activity.activity.id === event.compactionId,
         );
         const next = {
@@ -1615,10 +1794,9 @@ export class RuntimeConversationController {
             id: `${event.approvalId}:request`,
             callId: event.operationId,
             approvalId: event.approvalId,
-            operationKind:
-              event.projectEnvironmentTrust
-                ? 'projectEnvironment'
-                : event.toolName === 'workspace_apply_patch'
+            operationKind: event.projectEnvironmentTrust
+              ? 'projectEnvironment'
+              : event.toolName === 'workspace_apply_patch'
                 ? 'workspacePatch'
                 : 'shell',
             command: event.argumentsSummary,
@@ -1699,9 +1877,8 @@ export class RuntimeConversationController {
               ...activity.activity,
               liveOutput: {
                 ...liveOutput,
-                [event.stream]: `${liveOutput[event.stream]}${event.delta}`.slice(
-                  -64 * 1024,
-                ),
+                [event.stream]:
+                  `${liveOutput[event.stream]}${event.delta}`.slice(-64 * 1024),
               },
             },
           };
@@ -1762,7 +1939,10 @@ export class RuntimeConversationController {
           void this.finishQueueAfterTurn(event.threadId, 'failed');
           break;
         }
-        const messages = turn.messages.map((message) => ({ ...message, status: 'completed' as const }));
+        const messages = turn.messages.map((message) => ({
+          ...message,
+          status: 'completed' as const,
+        }));
         const activities = turn.activities?.map((activity) => {
           if (activity.type === 'commentary') {
             return {
@@ -1770,7 +1950,10 @@ export class RuntimeConversationController {
               activity: { ...activity.activity, status: 'completed' as const },
             };
           }
-          if (activity.type === 'orchestration' && event.status !== 'completed') {
+          if (
+            activity.type === 'orchestration' &&
+            event.status !== 'completed'
+          ) {
             return {
               type: 'orchestration' as const,
               activity: {
@@ -1798,7 +1981,9 @@ export class RuntimeConversationController {
               })()
             : {}),
         };
-        if (this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId) {
+        if (
+          this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId
+        ) {
           this.activeTurnsByThread.delete(event.threadId);
         }
         if (event.threadId === this.threadId) {
@@ -1879,8 +2064,9 @@ export class RuntimeConversationController {
   };
 
   private refreshNavigator = (
-    status: ConversationThreadNavigatorSnapshot['status'] =
-      this.available ? 'ready' : this.navigator.status,
+    status: ConversationThreadNavigatorSnapshot['status'] = this.available
+      ? 'ready'
+      : this.navigator.status,
   ): void => {
     const threads = [...this.threadRecords.values()]
       .filter((thread) => thread.workspaceId === this.workspaceId)
@@ -1893,7 +2079,9 @@ export class RuntimeConversationController {
       status,
       activeThreadIds: threads.map((thread) => thread.id),
       activeThreadTitles: Object.fromEntries(
-        threads.flatMap((thread) => thread.title ? [[thread.id, thread.title]] : []),
+        threads.flatMap((thread) =>
+          thread.title ? [[thread.id, thread.title]] : [],
+        ),
       ),
       activeTruncated: threads.length === 200,
       runningThreadIds: [...this.activeTurnsByThread.keys()],
@@ -1901,16 +2089,13 @@ export class RuntimeConversationController {
         ([threadId, activeTurn]) =>
           this.turnsByThread
             .get(threadId)
-            ?.find((turn) => turn.id === activeTurn.turnId)
-            ?.userInputRequest
+            ?.find((turn) => turn.id === activeTurn.turnId)?.userInputRequest
             ? [threadId]
             : [],
       ),
       ...(this.unreadThreadStatuses.size > 0
         ? {
-            unreadThreadStatuses: Object.fromEntries(
-              this.unreadThreadStatuses,
-            ),
+            unreadThreadStatuses: Object.fromEntries(this.unreadThreadStatuses),
           }
         : {}),
     };
@@ -1949,7 +2134,10 @@ export class RuntimeConversationController {
     this.runtimeQueuesByThread.set(threadId, queue);
     this.queuesByThread.set(threadId, projectThreadQueue(queue));
     const promoting = this.promotingQueueItemsByThread.get(threadId);
-    if (promoting && !queue.messages.some((message) => message.id === promoting)) {
+    if (
+      promoting &&
+      !queue.messages.some((message) => message.id === promoting)
+    ) {
       this.promotingQueueItemsByThread.delete(threadId);
     }
     return true;
@@ -1958,7 +2146,8 @@ export class RuntimeConversationController {
   private acquireQueueOperation = async (
     threadId: string,
   ): Promise<() => void> => {
-    const previous = this.queueOperationTails.get(threadId) ?? Promise.resolve();
+    const previous =
+      this.queueOperationTails.get(threadId) ?? Promise.resolve();
     let releaseCurrent = (): void => undefined;
     const current = new Promise<void>((resolve) => {
       releaseCurrent = resolve;
@@ -2035,12 +2224,15 @@ export class RuntimeConversationController {
       return false;
     }
     const text = event.content
-      .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
-        part.type === 'text')
+      .filter(
+        (part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+          part.type === 'text',
+      )
       .map((part) => part.text)
       .join('\n');
     const attachments = event.content.flatMap((part) =>
-      part.type === 'asset' ? [attachmentFromPart(part)] : []);
+      part.type === 'asset' ? [attachmentFromPart(part)] : [],
+    );
     const knowledgeReferences = knowledgeReferencesFromParts(event.content);
     turns[index] = {
       ...turn,
@@ -2071,50 +2263,55 @@ export class RuntimeConversationController {
         return;
       }
       const turnId = createUuidV7();
-    const text = head.content
-      .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
-        part.type === 'text')
-      .map((part) => part.text)
-      .join('\n');
-    const attachments = head.content.flatMap((part) =>
-      part.type === 'asset' ? [attachmentFromPart(part)] : []);
-    const knowledgeReferences = knowledgeReferencesFromParts(head.content);
-    this.turnsByThread.set(threadId, [
-      ...(this.turnsByThread.get(threadId) ?? []),
-      {
-        id: turnId,
-        status: 'inProgress',
-        messages: [
-          {
-            id: `${turnId}:user`,
-            role: 'user',
-            text,
-            ...(attachments.length > 0 ? { attachments } : {}),
-            ...(knowledgeReferences.length > 0 ? { knowledgeReferences } : {}),
-            status: 'inProgress',
-          },
-        ],
-      },
-    ]);
-    this.activeTurnsByThread.set(threadId, {
-      workspaceId: thread.workspaceId,
-      turnId,
-      phase: 'starting',
-    });
-    this.unreadThreadStatuses.delete(threadId);
-    this.promotingQueueItemsByThread.set(threadId, head.id);
-    this.refreshNavigator();
-    this.runtime.send({
-      type: 'turn.startQueued',
-      requestId: randomUUID(),
-      workspaceId: thread.workspaceId,
-      threadId,
-      turnId,
-      queueItemId: head.id,
-      expectedRevision: head.revision,
-      ...(head.modelProfileId ? { modelProfileId: head.modelProfileId } : {}),
-      content: head.content,
-    });
+      const text = head.content
+        .filter(
+          (part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+            part.type === 'text',
+        )
+        .map((part) => part.text)
+        .join('\n');
+      const attachments = head.content.flatMap((part) =>
+        part.type === 'asset' ? [attachmentFromPart(part)] : [],
+      );
+      const knowledgeReferences = knowledgeReferencesFromParts(head.content);
+      this.turnsByThread.set(threadId, [
+        ...(this.turnsByThread.get(threadId) ?? []),
+        {
+          id: turnId,
+          status: 'inProgress',
+          messages: [
+            {
+              id: `${turnId}:user`,
+              role: 'user',
+              text,
+              ...(attachments.length > 0 ? { attachments } : {}),
+              ...(knowledgeReferences.length > 0
+                ? { knowledgeReferences }
+                : {}),
+              status: 'inProgress',
+            },
+          ],
+        },
+      ]);
+      this.activeTurnsByThread.set(threadId, {
+        workspaceId: thread.workspaceId,
+        turnId,
+        phase: 'starting',
+      });
+      this.unreadThreadStatuses.delete(threadId);
+      this.promotingQueueItemsByThread.set(threadId, head.id);
+      this.refreshNavigator();
+      this.runtime.send({
+        type: 'turn.startQueued',
+        requestId: randomUUID(),
+        workspaceId: thread.workspaceId,
+        threadId,
+        turnId,
+        queueItemId: head.id,
+        expectedRevision: head.revision,
+        ...(head.modelProfileId ? { modelProfileId: head.modelProfileId } : {}),
+        content: head.content,
+      });
       this.publishThreadProjection(threadId, true);
       this.publish();
     } finally {

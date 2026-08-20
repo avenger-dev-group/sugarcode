@@ -6,6 +6,8 @@ export const CONVERSATION_THREAD_PROJECTION_CHANGED_CHANNEL =
   'conversation-thread-projection:changed';
 export const CONVERSATION_THREAD_DELTA_CHANNEL =
   'conversation-thread-projection:delta';
+export const CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL =
+  'conversation-attachment:preview';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
 export const CONVERSATION_REVISE_CHANNEL = 'conversation:revise';
 export const CONVERSATION_QUEUE_UPDATE_CHANNEL = 'conversation-queue:update';

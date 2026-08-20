@@ -101,6 +101,7 @@ import {
 } from '@/shared/git';
 import {
   CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
   CONVERSATION_REVISE_CHANNEL,
   CONVERSATION_QUEUE_UPDATE_CHANNEL,
   CONVERSATION_QUEUE_DELETE_CHANNEL,
@@ -118,10 +119,13 @@ import {
   CONVERSATION_THREAD_SEARCH_CHANNEL,
   CONVERSATION_THREAD_SELECT_CHANNEL,
   isConversationActionResult,
+  isConversationAttachmentPreviewResult,
   isConversationStateSnapshot,
   isConversationThreadProjectionDelta,
   isConversationThreadProjectionSnapshot,
   type ConversationActionResult,
+  type ConversationAttachmentPreviewRequest,
+  type ConversationAttachmentPreviewResult,
   type ConversationStateSnapshot,
   type ConversationReviseTurnRequest,
   type ConversationQueuedMessageMutationRequest,
@@ -275,10 +279,7 @@ import {
   type UpdateStateSnapshot,
 } from '@/shared/update';
 
-type StateChangedHandler = (
-  event: IpcRendererEvent,
-  snapshot: unknown,
-) => void;
+type StateChangedHandler = (event: IpcRendererEvent, snapshot: unknown) => void;
 
 export type IpcRendererBoundary = Readonly<{
   invoke: (channel: string, ...args: readonly unknown[]) => Promise<unknown>;
@@ -294,9 +295,7 @@ const invokeConversationThreadAction = async (
 ): Promise<ConversationActionResult> => {
   const result: unknown = await ipcRenderer.invoke(channel, threadId);
   if (!isConversationActionResult(result)) {
-    throw new Error(
-      `Main returned an invalid Thread ${action} result.`,
-    );
+    throw new Error(`Main returned an invalid Thread ${action} result.`);
   }
   return result;
 };
@@ -314,10 +313,7 @@ export const createDesktopApi = (
     return snapshot;
   },
   onUpdateStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      snapshot: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown): void => {
       if (isUpdateStateSnapshot(snapshot)) {
         listener(snapshot);
       }
@@ -406,7 +402,10 @@ export const createDesktopApi = (
     return result;
   },
   exportSkillZip: async (id: string): Promise<SkillsActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(SKILLS_EXPORT_ZIP_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      SKILLS_EXPORT_ZIP_CHANNEL,
+      id,
+    );
     if (!isSkillsActionResult(result)) {
       throw new Error('Main returned an invalid Skill ZIP export action.');
     }
@@ -422,7 +421,10 @@ export const createDesktopApi = (
   createKnowledgeBase: async (
     request: KnowledgeCreateRequest,
   ): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_CREATE_CHANNEL, request);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_CREATE_CHANNEL,
+      request,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid knowledge create result.');
     }
@@ -432,28 +434,41 @@ export const createDesktopApi = (
     id: string,
     request: KnowledgeUpdateRequest,
   ): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_UPDATE_CHANNEL, id, request);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_UPDATE_CHANNEL,
+      id,
+      request,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid knowledge update result.');
     }
     return result;
   },
   deleteKnowledgeBase: async (id: string): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_DELETE_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_DELETE_CHANNEL,
+      id,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid knowledge delete result.');
     }
     return result;
   },
   addKnowledgeFiles: async (id: string): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_ADD_FILES_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_ADD_FILES_CHANNEL,
+      id,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid knowledge file result.');
     }
     return result;
   },
   addKnowledgeFolder: async (id: string): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_ADD_FOLDER_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_ADD_FOLDER_CHANNEL,
+      id,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid knowledge folder result.');
     }
@@ -476,7 +491,10 @@ export const createDesktopApi = (
   readKnowledgeTextDocument: async (
     id: string,
   ): Promise<KnowledgeEditableDocument> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_TEXT_READ_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_TEXT_READ_CHANNEL,
+      id,
+    );
     if (!isKnowledgeEditableDocument(result)) {
       throw new Error('Main returned invalid editable knowledge content.');
     }
@@ -497,9 +515,14 @@ export const createDesktopApi = (
     return result;
   },
   deleteKnowledgeSource: async (id: string): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SOURCE_DELETE_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_SOURCE_DELETE_CHANNEL,
+      id,
+    );
     if (!isKnowledgeActionResult(result)) {
-      throw new Error('Main returned an invalid knowledge source delete result.');
+      throw new Error(
+        'Main returned an invalid knowledge source delete result.',
+      );
     }
     return result;
   },
@@ -513,19 +536,31 @@ export const createDesktopApi = (
       rebuild,
     );
     if (!isKnowledgeActionResult(result)) {
-      throw new Error('Main returned an invalid knowledge source rescan result.');
+      throw new Error(
+        'Main returned an invalid knowledge source rescan result.',
+      );
     }
     return result;
   },
-  cancelKnowledgeIndexJob: async (id: string): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_INDEX_CANCEL_CHANNEL, id);
+  cancelKnowledgeIndexJob: async (
+    id: string,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_INDEX_CANCEL_CHANNEL,
+      id,
+    );
     if (!isKnowledgeActionResult(result)) {
-      throw new Error('Main returned an invalid knowledge index cancel result.');
+      throw new Error(
+        'Main returned an invalid knowledge index cancel result.',
+      );
     }
     return result;
   },
   getKnowledgeBaseDetail: async (id: string): Promise<KnowledgeBaseDetail> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_DETAIL_CHANNEL, id);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_DETAIL_CHANNEL,
+      id,
+    );
     if (!isKnowledgeBaseDetail(result)) {
       throw new Error('Main returned invalid knowledge base details.');
     }
@@ -535,7 +570,11 @@ export const createDesktopApi = (
     ids: readonly string[],
     query: string,
   ): Promise<KnowledgeSearchResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SEARCH_CHANNEL, ids, query);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_SEARCH_CHANNEL,
+      ids,
+      query,
+    );
     if (!isKnowledgeSearchResult(result)) {
       throw new Error('Main returned an invalid knowledge search result.');
     }
@@ -551,7 +590,9 @@ export const createDesktopApi = (
       documentId,
     );
     if (!isKnowledgeActionResult(result)) {
-      throw new Error('Main returned an invalid knowledge document open result.');
+      throw new Error(
+        'Main returned an invalid knowledge document open result.',
+      );
     }
     return result;
   },
@@ -565,40 +606,60 @@ export const createDesktopApi = (
       documentId,
     );
     if (!isKnowledgeActionResult(result)) {
-      throw new Error('Main returned an invalid knowledge document reveal result.');
+      throw new Error(
+        'Main returned an invalid knowledge document reveal result.',
+      );
     }
     return result;
   },
   installSemanticModel: async (): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_INSTALL_CHANNEL);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_MODEL_INSTALL_CHANNEL,
+    );
     if (!isKnowledgeActionResult(result)) {
-      throw new Error('Main returned an invalid semantic model install result.');
+      throw new Error(
+        'Main returned an invalid semantic model install result.',
+      );
     }
     return result;
   },
   cancelSemanticModelDownload: async (): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_CANCEL_CHANNEL);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_MODEL_CANCEL_CHANNEL,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid semantic model cancel result.');
     }
     return result;
   },
   removeSemanticModel: async (): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_MODEL_REMOVE_CHANNEL);
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_MODEL_REMOVE_CHANNEL,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid semantic model remove result.');
     }
     return result;
   },
-  selectKnowledgeRetrievalPlan: async (planId: string): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_RETRIEVAL_SELECT_CHANNEL, planId);
+  selectKnowledgeRetrievalPlan: async (
+    planId: string,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_RETRIEVAL_SELECT_CHANNEL,
+      planId,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid retrieval selection result.');
     }
     return result;
   },
-  setSemanticIndexPaused: async (paused: boolean): Promise<KnowledgeActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(KNOWLEDGE_SEMANTIC_INDEX_PAUSE_CHANNEL, paused);
+  setSemanticIndexPaused: async (
+    paused: boolean,
+  ): Promise<KnowledgeActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      KNOWLEDGE_SEMANTIC_INDEX_PAUSE_CHANNEL,
+      paused,
+    );
     if (!isKnowledgeActionResult(result)) {
       throw new Error('Main returned an invalid semantic index pause result.');
     }
@@ -624,7 +685,9 @@ export const createDesktopApi = (
       request,
     );
     if (!isCommandEnvironmentActionResult(result)) {
-      throw new Error('Main returned an invalid command environment refresh result.');
+      throw new Error(
+        'Main returned an invalid command environment refresh result.',
+      );
     }
     return result;
   },
@@ -636,7 +699,9 @@ export const createDesktopApi = (
       request,
     );
     if (!isCommandEnvironmentActionResult(result)) {
-      throw new Error('Main returned an invalid command environment profile result.');
+      throw new Error(
+        'Main returned an invalid command environment profile result.',
+      );
     }
     return result;
   },
@@ -677,10 +742,7 @@ export const createDesktopApi = (
     return snapshot;
   },
   onTerminalStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      signal: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, signal: unknown): void => {
       if (isTerminalStateSignal(signal)) {
         listener(signal);
       }
@@ -701,12 +763,7 @@ export const createDesktopApi = (
   writeTerminalInput: (
     request: TerminalInputRequest,
   ): Promise<TerminalActionResult> =>
-    invokeTerminalAction(
-      ipcRenderer,
-      TERMINAL_INPUT_CHANNEL,
-      request,
-      'input',
-    ),
+    invokeTerminalAction(ipcRenderer, TERMINAL_INPUT_CHANNEL, request, 'input'),
   resizeTerminal: (
     request: TerminalResizeRequest,
   ): Promise<TerminalActionResult> =>
@@ -735,10 +792,7 @@ export const createDesktopApi = (
     return snapshot;
   },
   onPreviewStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      snapshot: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown): void => {
       if (isPreviewStateSnapshot(snapshot)) {
         listener(snapshot);
       }
@@ -828,21 +882,11 @@ export const createDesktopApi = (
   reloadPreview: (
     request: PreviewSessionRequest,
   ): Promise<PreviewActionResult> =>
-    invokePreviewAction(
-      ipcRenderer,
-      PREVIEW_RELOAD_CHANNEL,
-      request,
-      'reload',
-    ),
+    invokePreviewAction(ipcRenderer, PREVIEW_RELOAD_CHANNEL, request, 'reload'),
   goBackPreview: (
     request: PreviewSessionRequest,
   ): Promise<PreviewActionResult> =>
-    invokePreviewAction(
-      ipcRenderer,
-      PREVIEW_GO_BACK_CHANNEL,
-      request,
-      'back',
-    ),
+    invokePreviewAction(ipcRenderer, PREVIEW_GO_BACK_CHANNEL, request, 'back'),
   goForwardPreview: (
     request: PreviewSessionRequest,
   ): Promise<PreviewActionResult> =>
@@ -855,33 +899,22 @@ export const createDesktopApi = (
   closePreview: (
     request: PreviewSessionRequest,
   ): Promise<PreviewActionResult> =>
-    invokePreviewAction(
-      ipcRenderer,
-      PREVIEW_CLOSE_CHANNEL,
-      request,
-      'close',
-    ),
+    invokePreviewAction(ipcRenderer, PREVIEW_CLOSE_CHANNEL, request, 'close'),
   getGitState: async (): Promise<GitStateSnapshot> => {
-    const snapshot: unknown = await ipcRenderer.invoke(
-      GIT_STATE_GET_CHANNEL,
-    );
+    const snapshot: unknown = await ipcRenderer.invoke(GIT_STATE_GET_CHANNEL);
     if (!isGitStateSnapshot(snapshot)) {
       throw new Error('Main returned an invalid Git state snapshot.');
     }
     return snapshot;
   },
   onGitStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      snapshot: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown): void => {
       if (isGitStateSnapshot(snapshot)) {
         listener(snapshot);
       }
     };
     ipcRenderer.on(GIT_STATE_CHANGED_CHANNEL, handler);
-    return () =>
-      ipcRenderer.removeListener(GIT_STATE_CHANGED_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(GIT_STATE_CHANGED_CHANNEL, handler);
   },
   refreshGitStatus: async (
     request: GitGenerationRequest,
@@ -895,13 +928,8 @@ export const createDesktopApi = (
     }
     return result;
   },
-  loadGitDiff: async (
-    request: GitDiffRequest,
-  ): Promise<GitDiffResult> => {
-    const result: unknown = await ipcRenderer.invoke(
-      GIT_DIFF_CHANNEL,
-      request,
-    );
+  loadGitDiff: async (request: GitDiffRequest): Promise<GitDiffResult> => {
+    const result: unknown = await ipcRenderer.invoke(GIT_DIFF_CHANNEL, request);
     if (!isGitDiffResult(result)) {
       throw new Error('Main returned an invalid Git diff result.');
     }
@@ -990,18 +1018,17 @@ export const createDesktopApi = (
       );
     };
   },
-  getCommandApprovalState:
-    async (): Promise<CommandApprovalStateSnapshot> => {
-      const snapshot: unknown = await ipcRenderer.invoke(
-        COMMAND_APPROVAL_STATE_GET_CHANNEL,
+  getCommandApprovalState: async (): Promise<CommandApprovalStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      COMMAND_APPROVAL_STATE_GET_CHANNEL,
+    );
+    if (!isCommandApprovalStateSnapshot(snapshot)) {
+      throw new Error(
+        'Main returned an invalid command approval state snapshot.',
       );
-      if (!isCommandApprovalStateSnapshot(snapshot)) {
-        throw new Error(
-          'Main returned an invalid command approval state snapshot.',
-        );
-      }
-      return snapshot;
-    },
+    }
+    return snapshot;
+  },
   onCommandApprovalStateChanged: (listener) => {
     const handleStateChanged = (
       _event: IpcRendererEvent,
@@ -1011,10 +1038,7 @@ export const createDesktopApi = (
         listener(snapshot);
       }
     };
-    ipcRenderer.on(
-      COMMAND_APPROVAL_STATE_CHANGED_CHANNEL,
-      handleStateChanged,
-    );
+    ipcRenderer.on(COMMAND_APPROVAL_STATE_CHANGED_CHANNEL, handleStateChanged);
     return () => {
       ipcRenderer.removeListener(
         COMMAND_APPROVAL_STATE_CHANGED_CHANNEL,
@@ -1064,18 +1088,15 @@ export const createDesktopApi = (
     }
     return result;
   },
-  getConversationState:
-    async (): Promise<ConversationStateSnapshot> => {
-      const snapshot: unknown = await ipcRenderer.invoke(
-        CONVERSATION_STATE_GET_CHANNEL,
-      );
-      if (!isConversationStateSnapshot(snapshot)) {
-        throw new Error(
-          'Main returned an invalid conversation state snapshot.',
-        );
-      }
-      return snapshot;
-    },
+  getConversationState: async (): Promise<ConversationStateSnapshot> => {
+    const snapshot: unknown = await ipcRenderer.invoke(
+      CONVERSATION_STATE_GET_CHANNEL,
+    );
+    if (!isConversationStateSnapshot(snapshot)) {
+      throw new Error('Main returned an invalid conversation state snapshot.');
+    }
+    return snapshot;
+  },
   onConversationStateChanged: (listener) => {
     const handleStateChanged = (
       _event: IpcRendererEvent,
@@ -1104,6 +1125,18 @@ export const createDesktopApi = (
       throw new Error('Main returned an invalid Thread projection.');
     }
     return snapshot;
+  },
+  getConversationAttachmentPreview: async (
+    request: ConversationAttachmentPreviewRequest,
+  ): Promise<ConversationAttachmentPreviewResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
+      request,
+    );
+    if (!isConversationAttachmentPreviewResult(result)) {
+      throw new Error('Main returned an invalid attachment preview.');
+    }
+    return result;
   },
   onConversationThreadProjectionChanged: (listener, onDiagnostic) => {
     const handleProjectionChanged = (
@@ -1144,10 +1177,7 @@ export const createDesktopApi = (
     };
   },
   onConversationThreadDelta: (listener, onDiagnostic) => {
-    const handleDelta = (
-      _event: IpcRendererEvent,
-      delta: unknown,
-    ): void => {
+    const handleDelta = (_event: IpcRendererEvent, delta: unknown): void => {
       if (isConversationThreadProjectionDelta(delta)) {
         listener(delta);
       } else {
@@ -1205,7 +1235,10 @@ export const createDesktopApi = (
   updateQueuedConversationMessage: async (
     request: ConversationQueuedMessageUpdateRequest,
   ): Promise<ConversationActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_UPDATE_CHANNEL, request);
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_QUEUE_UPDATE_CHANNEL,
+      request,
+    );
     if (!isConversationActionResult(result)) {
       throw new Error('Main returned an invalid queued message update result.');
     }
@@ -1214,39 +1247,55 @@ export const createDesktopApi = (
   deleteQueuedConversationMessage: async (
     request: ConversationQueuedMessageMutationRequest,
   ): Promise<ConversationActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_DELETE_CHANNEL, request);
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_QUEUE_DELETE_CHANNEL,
+      request,
+    );
     if (!isConversationActionResult(result)) {
-      throw new Error('Main returned an invalid queued message deletion result.');
+      throw new Error(
+        'Main returned an invalid queued message deletion result.',
+      );
     }
     return result;
   },
   steerQueuedConversationMessage: async (
     request: ConversationSteerQueuedMessageRequest,
   ): Promise<ConversationActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_STEER_CHANNEL, request);
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_QUEUE_STEER_CHANNEL,
+      request,
+    );
     if (!isConversationActionResult(result)) {
-      throw new Error('Main returned an invalid queued message steering result.');
+      throw new Error(
+        'Main returned an invalid queued message steering result.',
+      );
     }
     return result;
   },
-  resumeConversationQueue: async (threadId: string): Promise<ConversationActionResult> => {
-    const result: unknown = await ipcRenderer.invoke(CONVERSATION_QUEUE_RESUME_CHANNEL, threadId);
+  resumeConversationQueue: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_QUEUE_RESUME_CHANNEL,
+      threadId,
+    );
     if (!isConversationActionResult(result)) {
       throw new Error('Main returned an invalid queue resume result.');
     }
     return result;
   },
-  stopConversationTurn:
-    async (threadId: string): Promise<ConversationActionResult> => {
-      const result: unknown = await ipcRenderer.invoke(
-        CONVERSATION_STOP_CHANNEL,
-        threadId,
-      );
-      if (!isConversationActionResult(result)) {
-        throw new Error('Main returned an invalid conversation stop result.');
-      }
-      return result;
-    },
+  stopConversationTurn: async (
+    threadId: string,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_STOP_CHANNEL,
+      threadId,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid conversation stop result.');
+    }
+    return result;
+  },
   respondToConversationUserInput: async (
     response: ConversationUserInputResponse,
   ): Promise<ConversationActionResult> => {
@@ -1283,16 +1332,15 @@ export const createDesktopApi = (
     }
     return result;
   },
-  startNewConversationThread:
-    async (): Promise<ConversationActionResult> => {
-      const result: unknown = await ipcRenderer.invoke(
-        CONVERSATION_THREAD_NEW_CHANNEL,
-      );
-      if (!isConversationActionResult(result)) {
-        throw new Error('Main returned an invalid new Thread result.');
-      }
-      return result;
-    },
+  startNewConversationThread: async (): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_THREAD_NEW_CHANNEL,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid new Thread result.');
+    }
+    return result;
+  },
   deleteConversationThread: async (
     threadId: string,
   ): Promise<ConversationActionResult> =>
@@ -1312,10 +1360,7 @@ export const createDesktopApi = (
     return snapshot;
   },
   onMcpSessionStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      snapshot: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown): void => {
       if (isMcpSessionStateSnapshot(snapshot)) {
         listener(snapshot);
       }
@@ -1364,20 +1409,14 @@ export const createDesktopApi = (
     return snapshot;
   },
   onMcpApprovalStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      snapshot: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown): void => {
       if (isMcpApprovalStateSnapshot(snapshot)) {
         listener(snapshot);
       }
     };
     ipcRenderer.on(MCP_APPROVAL_STATE_CHANGED_CHANNEL, handler);
     return () =>
-      ipcRenderer.removeListener(
-        MCP_APPROVAL_STATE_CHANGED_CHANNEL,
-        handler,
-      );
+      ipcRenderer.removeListener(MCP_APPROVAL_STATE_CHANGED_CHANNEL, handler);
   },
   approveMcpCall: async (
     presentationId: string,
@@ -1420,9 +1459,7 @@ export const createDesktopApi = (
       request,
     );
     if (!isModelConfigActionResult(action)) {
-      throw new Error(
-        'Main returned an invalid model configuration action.',
-      );
+      throw new Error('Main returned an invalid model configuration action.');
     }
     return action;
   },
@@ -1448,9 +1485,7 @@ export const createDesktopApi = (
       expectedRevision,
     );
     if (!isModelConfigActionResult(action)) {
-      throw new Error(
-        'Main returned an invalid credential deletion action.',
-      );
+      throw new Error('Main returned an invalid credential deletion action.');
     }
     return action;
   },
@@ -1464,40 +1499,31 @@ export const createDesktopApi = (
     return state;
   },
   onWorkspaceStateChanged: (listener) => {
-    const handler = (
-      _event: IpcRendererEvent,
-      state: unknown,
-    ): void => {
+    const handler = (_event: IpcRendererEvent, state: unknown): void => {
       if (isWorkspaceStateSnapshot(state)) {
         listener(state);
       }
     };
     ipcRenderer.on(WORKSPACE_STATE_CHANGED_CHANNEL, handler);
     return () =>
-      ipcRenderer.removeListener(
-        WORKSPACE_STATE_CHANGED_CHANNEL,
-        handler,
-      );
+      ipcRenderer.removeListener(WORKSPACE_STATE_CHANGED_CHANNEL, handler);
   },
   selectWorkspace: async (): Promise<WorkspaceSelectResult> => {
-    const result: unknown = await ipcRenderer.invoke(
-      WORKSPACE_SELECT_CHANNEL,
-    );
+    const result: unknown = await ipcRenderer.invoke(WORKSPACE_SELECT_CHANNEL);
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid workspace selection result.');
     }
     return result;
   },
-  resumeWorkspaceProject:
-    async (): Promise<WorkspaceSelectResult> => {
-      const result: unknown = await ipcRenderer.invoke(
-        WORKSPACE_PROJECT_RESUME_CHANNEL,
-      );
-      if (!isWorkspaceSelectResult(result)) {
-        throw new Error('Main returned an invalid project resume result.');
-      }
-      return result;
-    },
+  resumeWorkspaceProject: async (): Promise<WorkspaceSelectResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      WORKSPACE_PROJECT_RESUME_CHANNEL,
+    );
+    if (!isWorkspaceSelectResult(result)) {
+      throw new Error('Main returned an invalid project resume result.');
+    }
+    return result;
+  },
   activateWorkspaceProject: async (
     projectId: string,
   ): Promise<WorkspaceSelectResult> => {
@@ -1571,9 +1597,7 @@ export const createDesktopApi = (
     return result;
   },
   clearWorkspace: async (): Promise<WorkspaceSelectResult> => {
-    const result: unknown = await ipcRenderer.invoke(
-      WORKSPACE_CLEAR_CHANNEL,
-    );
+    const result: unknown = await ipcRenderer.invoke(WORKSPACE_CLEAR_CHANNEL);
     if (!isWorkspaceSelectResult(result)) {
       throw new Error('Main returned an invalid workspace clear result.');
     }

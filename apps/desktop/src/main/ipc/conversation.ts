@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 
 import {
   CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
   CONVERSATION_REVISE_CHANNEL,
   CONVERSATION_QUEUE_UPDATE_CHANNEL,
   CONVERSATION_QUEUE_DELETE_CHANNEL,
@@ -22,6 +23,7 @@ import {
 
 import type {
   ConversationActionResult,
+  ConversationAttachmentPreviewResult,
   ConversationStateListener,
   ConversationStateSnapshot,
   ConversationThreadDeltaListener,
@@ -41,6 +43,9 @@ type ConversationControllerBoundary = Readonly<{
   subscribeThreadDelta: (
     listener: ConversationThreadDeltaListener,
   ) => () => void;
+  getAttachmentPreview: (
+    request: unknown,
+  ) => Promise<ConversationAttachmentPreviewResult>;
   startTurn: (input: unknown) => Promise<ConversationActionResult>;
   reviseTurn: (input: unknown) => Promise<ConversationActionResult>;
   updateQueuedMessage: (input: unknown) => Promise<ConversationActionResult>;
@@ -93,63 +98,90 @@ export const registerConversationIpc = (
     },
   );
 
+  ipcMain.handle(CONVERSATION_SEND_CHANNEL, async (event, input: unknown) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('Conversation send came from an untrusted frame.');
+    }
+    return options.controller.startTurn(input);
+  });
+
   ipcMain.handle(
-    CONVERSATION_SEND_CHANNEL,
+    CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
+    async (event, request: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error(
+          'Attachment preview request came from an untrusted frame.',
+        );
+      }
+      return options.controller.getAttachmentPreview(request);
+    },
+  );
+
+  ipcMain.handle(CONVERSATION_REVISE_CHANNEL, async (event, input: unknown) => {
+    if (!isTrustedIpcSender(event, options)) {
+      throw new Error('Conversation revision came from an untrusted frame.');
+    }
+    return options.controller.reviseTurn(input);
+  });
+
+  ipcMain.handle(
+    CONVERSATION_QUEUE_UPDATE_CHANNEL,
     async (event, input: unknown) => {
       if (!isTrustedIpcSender(event, options)) {
-        throw new Error('Conversation send came from an untrusted frame.');
+        throw new Error('Queued message update came from an untrusted frame.');
       }
-      return options.controller.startTurn(input);
+      return options.controller.updateQueuedMessage(input);
+    },
+  );
+  ipcMain.handle(
+    CONVERSATION_QUEUE_DELETE_CHANNEL,
+    async (event, input: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error(
+          'Queued message deletion came from an untrusted frame.',
+        );
+      }
+      return options.controller.deleteQueuedMessage(input);
+    },
+  );
+  ipcMain.handle(
+    CONVERSATION_QUEUE_STEER_CHANNEL,
+    async (event, input: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error(
+          'Queued message steering came from an untrusted frame.',
+        );
+      }
+      return options.controller.steerQueuedMessage(input);
+    },
+  );
+  ipcMain.handle(
+    CONVERSATION_QUEUE_RESUME_CHANNEL,
+    async (event, threadId: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Queue resume came from an untrusted frame.');
+      }
+      return options.controller.resumeQueue(threadId);
     },
   );
 
   ipcMain.handle(
-    CONVERSATION_REVISE_CHANNEL,
-    async (event, input: unknown) => {
+    CONVERSATION_STOP_CHANNEL,
+    async (event, threadId: unknown) => {
       if (!isTrustedIpcSender(event, options)) {
-        throw new Error('Conversation revision came from an untrusted frame.');
+        throw new Error('Conversation stop came from an untrusted frame.');
       }
-      return options.controller.reviseTurn(input);
+      return options.controller.stopTurn(threadId);
     },
   );
-
-  ipcMain.handle(CONVERSATION_QUEUE_UPDATE_CHANNEL, async (event, input: unknown) => {
-    if (!isTrustedIpcSender(event, options)) {
-      throw new Error('Queued message update came from an untrusted frame.');
-    }
-    return options.controller.updateQueuedMessage(input);
-  });
-  ipcMain.handle(CONVERSATION_QUEUE_DELETE_CHANNEL, async (event, input: unknown) => {
-    if (!isTrustedIpcSender(event, options)) {
-      throw new Error('Queued message deletion came from an untrusted frame.');
-    }
-    return options.controller.deleteQueuedMessage(input);
-  });
-  ipcMain.handle(CONVERSATION_QUEUE_STEER_CHANNEL, async (event, input: unknown) => {
-    if (!isTrustedIpcSender(event, options)) {
-      throw new Error('Queued message steering came from an untrusted frame.');
-    }
-    return options.controller.steerQueuedMessage(input);
-  });
-  ipcMain.handle(CONVERSATION_QUEUE_RESUME_CHANNEL, async (event, threadId: unknown) => {
-    if (!isTrustedIpcSender(event, options)) {
-      throw new Error('Queue resume came from an untrusted frame.');
-    }
-    return options.controller.resumeQueue(threadId);
-  });
-
-  ipcMain.handle(CONVERSATION_STOP_CHANNEL, async (event, threadId: unknown) => {
-    if (!isTrustedIpcSender(event, options)) {
-      throw new Error('Conversation stop came from an untrusted frame.');
-    }
-    return options.controller.stopTurn(threadId);
-  });
 
   ipcMain.handle(
     CONVERSATION_USER_INPUT_RESPONSE_CHANNEL,
     async (event, input: unknown) => {
       if (!isTrustedIpcSender(event, options)) {
-        throw new Error('Conversation user input came from an untrusted frame.');
+        throw new Error(
+          'Conversation user input came from an untrusted frame.',
+        );
       }
       return options.controller.respondToUserInput(input);
     },
@@ -224,6 +256,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_STATE_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_PROJECTION_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_REVISE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_QUEUE_UPDATE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_QUEUE_DELETE_CHANNEL);

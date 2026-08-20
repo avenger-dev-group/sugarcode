@@ -5,6 +5,8 @@ import * as conversation from '../../src/shared/conversation.ts';
 
 const {
   isConversationStateSnapshot,
+  isConversationAttachmentPreviewRequest,
+  isConversationAttachmentPreviewResult,
   isConversationReviseTurnRequest,
   isConversationUserInputResponse,
   isValidConversationTitle,
@@ -12,6 +14,7 @@ const {
 
 test('conversation compatibility barrel preserves its public runtime exports', () => {
   assert.deepEqual(Object.keys(conversation).sort(), [
+    'CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL',
     'CONVERSATION_QUEUE_DELETE_CHANNEL',
     'CONVERSATION_QUEUE_RESUME_CHANNEL',
     'CONVERSATION_QUEUE_STEER_CHANNEL',
@@ -31,6 +34,7 @@ test('conversation compatibility barrel preserves its public runtime exports', (
     'CONVERSATION_USER_INPUT_RESPONSE_CHANNEL',
     'MAX_CONVERSATION_ATTACHMENTS',
     'MAX_CONVERSATION_ATTACHMENT_BYTES',
+    'MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH',
     'MAX_CONVERSATION_INPUT_BYTES',
     'MAX_CONVERSATION_TITLE_BYTES',
     'MAX_FILE_CHANGE_DIFF_BYTES',
@@ -40,6 +44,8 @@ test('conversation compatibility barrel preserves its public runtime exports', (
     'MAX_USER_INPUT_OPTIONS',
     'MAX_USER_INPUT_QUESTIONS',
     'isConversationActionResult',
+    'isConversationAttachmentPreviewRequest',
+    'isConversationAttachmentPreviewResult',
     'isConversationQueuedMessageMutationRequest',
     'isConversationQueuedMessageUpdateRequest',
     'isConversationReviseTurnRequest',
@@ -56,6 +62,40 @@ test('conversation compatibility barrel preserves its public runtime exports', (
     'isValidSha256',
     'isValidThreadSearchInput',
   ]);
+});
+
+test('attachment previews require scoped asset identifiers and bounded image data', () => {
+  const assetId = `ast_${'a'.repeat(64)}`;
+  assert.equal(
+    isConversationAttachmentPreviewRequest({
+      threadId: THREAD_WEB,
+      assetId,
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationAttachmentPreviewRequest({
+      threadId: THREAD_WEB,
+      assetId: '../escape',
+    }),
+    false,
+  );
+  assert.equal(
+    isConversationAttachmentPreviewResult({
+      available: true,
+      assetId,
+      previewUrl: 'data:image/png;base64,cG5n',
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationAttachmentPreviewResult({
+      available: true,
+      assetId,
+      previewUrl: 'data:text/html;base64,PHNjcmlwdD4=',
+    }),
+    false,
+  );
 });
 
 test('conversation revision requests are bounded and identify their target Turn', () => {
@@ -187,21 +227,25 @@ test('conversation snapshots validate optional durable knowledge citations', () 
           type: 'success',
           mode: 'hybrid',
           matches: 1,
-          knowledgeBases: [{
-            id: `kb_${'1'.repeat(32)}`,
-            name: '产品规范',
-          }],
-          citations: [{
-            citation: 'K1',
-            knowledgeBaseId: `kb_${'1'.repeat(32)}`,
-            knowledgeBaseName: '产品规范',
-            documentId: `kd_${'2'.repeat(32)}`,
-            fileName: 'retrieval.md',
-            relativePath: 'spec/retrieval.md',
-            heading: '模型切换',
-            pageNumber: 3,
-            content: '新索引完成后原子切换。',
-          }],
+          knowledgeBases: [
+            {
+              id: `kb_${'1'.repeat(32)}`,
+              name: '产品规范',
+            },
+          ],
+          citations: [
+            {
+              citation: 'K1',
+              knowledgeBaseId: `kb_${'1'.repeat(32)}`,
+              knowledgeBaseName: '产品规范',
+              documentId: `kd_${'2'.repeat(32)}`,
+              fileName: 'retrieval.md',
+              relativePath: 'spec/retrieval.md',
+              heading: '模型切换',
+              pageNumber: 3,
+              content: '新索引完成后原子切换。',
+            },
+          ],
         },
       },
     },
@@ -211,37 +255,46 @@ test('conversation snapshots validate optional durable knowledge citations', () 
     phase: 'ready',
     workspaceId: 'workspace-fixture',
     threadId: THREAD_WEB,
-    turns: [{
-      id: TURN_REVIEW,
-      status: 'completed',
-      messages: [],
-      activities: [knowledgeActivity],
-    }],
+    turns: [
+      {
+        id: TURN_REVIEW,
+        status: 'completed',
+        messages: [],
+        activities: [knowledgeActivity],
+      },
+    ],
   } as const;
 
   assert.equal(isConversationStateSnapshot(withActivity), true);
   assert.equal(
     isConversationStateSnapshot({
       ...withActivity,
-      turns: [{
-        ...withActivity.turns[0],
-        activities: [{
-          ...knowledgeActivity,
-          activity: {
-            ...knowledgeActivity.activity,
-            result: {
-              ...knowledgeActivity.activity.result,
-              outcome: {
-                ...knowledgeActivity.activity.result.outcome,
-                citations: [{
-                  ...knowledgeActivity.activity.result.outcome.citations[0],
-                  documentId: '../../outside',
-                }],
+      turns: [
+        {
+          ...withActivity.turns[0],
+          activities: [
+            {
+              ...knowledgeActivity,
+              activity: {
+                ...knowledgeActivity.activity,
+                result: {
+                  ...knowledgeActivity.activity.result,
+                  outcome: {
+                    ...knowledgeActivity.activity.result.outcome,
+                    citations: [
+                      {
+                        ...knowledgeActivity.activity.result.outcome
+                          .citations[0],
+                        documentId: '../../outside',
+                      },
+                    ],
+                  },
+                },
               },
             },
-          },
-        }],
-      }],
+          ],
+        },
+      ],
     }),
     false,
   );
@@ -250,68 +303,94 @@ test('conversation snapshots validate optional durable knowledge citations', () 
 test('conversation snapshots and responses preserve bounded user questions', () => {
   const userInputRequest = {
     id: 'input-fixture',
-    questions: [{
-      id: 'scope',
-      header: '实现范围',
-      question: '本次需要覆盖到哪一层？',
-      options: [
-        { label: '完整链路（推荐）', description: '包含 Agent、协议和界面。' },
-        { label: '仅界面', description: '只处理显示和交互。' },
-      ],
-    }],
+    questions: [
+      {
+        id: 'scope',
+        header: '实现范围',
+        question: '本次需要覆盖到哪一层？',
+        options: [
+          {
+            label: '完整链路（推荐）',
+            description: '包含 Agent、协议和界面。',
+          },
+          { label: '仅界面', description: '只处理显示和交互。' },
+        ],
+      },
+    ],
   };
-  assert.equal(isConversationStateSnapshot({
-    ...snapshot('completed'),
-    phase: 'inProgress',
-    threadId: THREAD_WEB,
-    activeTurnId: TURN_REVIEW,
-    turns: [{
-      id: TURN_REVIEW,
-      status: 'inProgress',
-      messages: [],
-      userInputRequest,
-    }],
-  }), true);
-  assert.equal(isConversationUserInputResponse({
-    threadId: THREAD_WEB,
-    turnId: TURN_REVIEW,
-    inputRequestId: userInputRequest.id,
-    submission: {
-      kind: 'submitted',
-      decisions: [{
-        questionId: 'scope',
-        kind: 'answered',
-        source: 'option',
-        answer: '完整链路（推荐）',
-      }],
-    },
-  }), true);
-  assert.equal(isConversationUserInputResponse({
-    threadId: THREAD_WEB,
-    turnId: TURN_REVIEW,
-    inputRequestId: userInputRequest.id,
-    submission: {
-      kind: 'cancelled',
-      decisions: [{ questionId: 'scope', kind: 'skipped' }],
-    },
-  }), true);
-  assert.equal(isConversationUserInputResponse({
-    threadId: THREAD_WEB,
-    turnId: TURN_REVIEW,
-    inputRequestId: userInputRequest.id,
-    submission: { kind: 'submitted', decisions: [] },
-  }), false);
-  assert.equal(isConversationStateSnapshot({
-    ...snapshot('completed'),
-    phase: 'ready',
-    threadId: THREAD_WEB,
-    turns: [{
-      id: TURN_REVIEW,
-      status: 'completed',
-      messages: [],
-      userInputRequest,
-    }],
-  }), false);
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'inProgress',
+      threadId: THREAD_WEB,
+      activeTurnId: TURN_REVIEW,
+      turns: [
+        {
+          id: TURN_REVIEW,
+          status: 'inProgress',
+          messages: [],
+          userInputRequest,
+        },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationUserInputResponse({
+      threadId: THREAD_WEB,
+      turnId: TURN_REVIEW,
+      inputRequestId: userInputRequest.id,
+      submission: {
+        kind: 'submitted',
+        decisions: [
+          {
+            questionId: 'scope',
+            kind: 'answered',
+            source: 'option',
+            answer: '完整链路（推荐）',
+          },
+        ],
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationUserInputResponse({
+      threadId: THREAD_WEB,
+      turnId: TURN_REVIEW,
+      inputRequestId: userInputRequest.id,
+      submission: {
+        kind: 'cancelled',
+        decisions: [{ questionId: 'scope', kind: 'skipped' }],
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isConversationUserInputResponse({
+      threadId: THREAD_WEB,
+      turnId: TURN_REVIEW,
+      inputRequestId: userInputRequest.id,
+      submission: { kind: 'submitted', decisions: [] },
+    }),
+    false,
+  );
+  assert.equal(
+    isConversationStateSnapshot({
+      ...snapshot('completed'),
+      phase: 'ready',
+      threadId: THREAD_WEB,
+      turns: [
+        {
+          id: TURN_REVIEW,
+          status: 'completed',
+          messages: [],
+          userInputRequest,
+        },
+      ],
+    }),
+    false,
+  );
 });
 
 test('conversation snapshots retain a classified interruption reason after runtime restart', () => {
@@ -320,12 +399,14 @@ test('conversation snapshots retain a classified interruption reason after runti
       ...snapshot('interrupted'),
       phase: 'ready',
       threadId: THREAD_WEB,
-      turns: [{
-        id: TURN_REVIEW,
-        status: 'interrupted',
-        messages: [],
-        error: { kind: 'incomplete', retryable: true },
-      }],
+      turns: [
+        {
+          id: TURN_REVIEW,
+          status: 'interrupted',
+          messages: [],
+          error: { kind: 'incomplete', retryable: true },
+        },
+      ],
     }),
     true,
   );

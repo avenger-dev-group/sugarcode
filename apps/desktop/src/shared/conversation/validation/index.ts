@@ -10,6 +10,8 @@ export {
 } from './projection.ts';
 export {
   isConversationActionResult,
+  isConversationAttachmentPreviewRequest,
+  isConversationAttachmentPreviewResult,
   isConversationReviseTurnRequest,
   isConversationQueuedMessageMutationRequest,
   isConversationQueuedMessageUpdateRequest,

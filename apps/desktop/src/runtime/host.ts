@@ -17,9 +17,7 @@ import {
   ContextManager,
   type RuntimeContextCheckpoint,
 } from './context-manager.ts';
-import {
-  buildAgentInstructions,
-} from './agent-instructions.ts';
+import { buildAgentInstructions } from './agent-instructions.ts';
 import {
   composerIntentInstruction,
   composerModelText,
@@ -47,15 +45,20 @@ import {
   readModelItemMetadata,
   readModelStepOutcome,
 } from './models/step-outcome.ts';
-import type {
-  ModelStepOutcome,
-  ModelTextPhase,
-} from './models/types.ts';
+import type { ModelStepOutcome, ModelTextPhase } from './models/types.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './models/types.ts';
 import {
-  loadNativeRuntime,
-  type NativeRuntimeBinding,
-} from './native.ts';
+  createImageAnalysisTool,
+  ImageAnalyzer,
+  imageAttachmentReference,
+  type ImageAnalysisModel,
+  type StoredImageContent,
+} from './media-analysis.ts';
+import {
+  availableThreadImages,
+  imageAnalysisProfileIds,
+} from './media-routing.ts';
+import { loadNativeRuntime, type NativeRuntimeBinding } from './native.ts';
 import {
   isRuntimeContentPart,
   MAX_RUNTIME_PLAN_BYTES,
@@ -85,21 +88,18 @@ import {
   workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
 import { createTurnSkills, type TurnSkills } from './skills.ts';
-import { createTurnKnowledge, resolveKnowledgeReferences } from './knowledge.ts';
+import {
+  createTurnKnowledge,
+  resolveKnowledgeReferences,
+} from './knowledge.ts';
 import {
   toolFailureRecoveryKey,
   toolResultFailed,
   toolResultRequiresFinalRecovery,
 } from './tool-result.ts';
 import { toolProgressSummary } from './tool-progress-summary.ts';
-import {
-  generateThreadTitle,
-  titleSourceFromContent,
-} from './thread-title.ts';
-import {
-  RuntimeMcpManager,
-  type McpToolApproval,
-} from './mcp.ts';
+import { generateThreadTitle, titleSourceFromContent } from './thread-title.ts';
+import { RuntimeMcpManager, type McpToolApproval } from './mcp.ts';
 import type {
   McpConfigActionResult,
   McpConfigInspection,
@@ -122,6 +122,8 @@ import type {
   TaskWorkspaceActionResult,
   TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
+import { isModelConfigInspection } from '../shared/model-config.ts';
+import { MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH } from '../shared/conversation/limits.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
@@ -142,12 +144,11 @@ const reserveContextTokens = (
     4_096,
     Math.ceil(selection.contextWindowTokens * 0.05),
   );
-  const available = selection.contextWindowTokens -
-    DEFAULT_MAX_OUTPUT_TOKENS - safety;
-  const trigger = selection.compactThresholdTokens ?? Math.min(
-    Math.floor(selection.contextWindowTokens * 0.85),
-    available,
-  );
+  const available =
+    selection.contextWindowTokens - DEFAULT_MAX_OUTPUT_TOKENS - safety;
+  const trigger =
+    selection.compactThresholdTokens ??
+    Math.min(Math.floor(selection.contextWindowTokens * 0.85), available);
   return {
     ...selection,
     compactThresholdTokens: Math.max(0, trigger - reservedTokens),
@@ -289,8 +290,7 @@ type TurnExecutionCommand =
   | Extract<RuntimeCommand, { type: 'turn.revise' }>;
 
 type TurnContextCommand =
-  | TurnExecutionCommand
-  | Extract<RuntimeCommand, { type: 'context.compact' }>;
+  TurnExecutionCommand | Extract<RuntimeCommand, { type: 'context.compact' }>;
 
 type TextItemState = {
   phase: ModelTextPhase;
@@ -322,15 +322,17 @@ type TurnDriverOptions = Readonly<{
   validateInvocation?: () => void;
 }>;
 
-type QueueNativeBinding = Required<Pick<
-  NativeRuntimeBinding,
-  | 'createQueuedMessageJson'
-  | 'updateQueuedMessageJson'
-  | 'deleteQueuedMessageJson'
-  | 'setQueuePausedJson'
-  | 'promoteQueuedMessageJson'
-  | 'steerQueuedMessageJson'
->>;
+type QueueNativeBinding = Required<
+  Pick<
+    NativeRuntimeBinding,
+    | 'createQueuedMessageJson'
+    | 'updateQueuedMessageJson'
+    | 'deleteQueuedMessageJson'
+    | 'setQueuePausedJson'
+    | 'promoteQueuedMessageJson'
+    | 'steerQueuedMessageJson'
+  >
+>;
 
 type InvalidArgumentGuard = {
   repeats: Map<string, number>;
@@ -422,8 +424,10 @@ const chineseSectionNumber = (value: string): number | undefined => {
   if (value === '十') return 10;
   const [tens, units] = value.split('十');
   if (units !== undefined) {
-    return (tens ? (digits.get(tens) ?? 0) : 1) * 10 +
-      (units ? (digits.get(units) ?? 0) : 0);
+    return (
+      (tens ? (digits.get(tens) ?? 0) : 1) * 10 +
+      (units ? (digits.get(units) ?? 0) : 0)
+    );
   }
   return digits.get(value);
 };
@@ -491,10 +495,11 @@ const parseUserInputQuestions = (
     if (!isRecord(candidate) || !Array.isArray(candidate.options)) {
       return undefined;
     }
-    const id = typeof candidate.id === 'string' &&
+    const id =
+      typeof candidate.id === 'string' &&
       /^[a-z][a-z0-9_]{0,63}$/u.test(candidate.id)
-      ? candidate.id
-      : undefined;
+        ? candidate.id
+        : undefined;
     const header = boundedUserInputText(candidate.header, 48, 12);
     const question = boundedUserInputText(candidate.question, 512);
     if (
@@ -548,15 +553,13 @@ const stableJsonValue = (value: unknown): unknown => {
   }
   return Object.fromEntries(
     Object.entries(value)
-      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(([key, item]) => [key, stableJsonValue(item)]),
   );
 };
 
 const capabilityEnabled = (value: unknown): boolean => value !== 'disabled';
-const capabilityMode = (
-  value: unknown,
-): 'auto' | 'enabled' | 'disabled' =>
+const capabilityMode = (value: unknown): 'auto' | 'enabled' | 'disabled' =>
   value === 'enabled' || value === 'disabled' ? value : 'auto';
 
 class RuntimeStateUnavailableError extends Error {
@@ -611,10 +614,11 @@ const usageFromEvent = (event: Event): RuntimeUsage | undefined => {
   }
   const inputTokens = usage.promptTokenCount ?? 0;
   const outputTokens = usage.candidatesTokenCount ?? 0;
-  const contextInputTokens = isRecord(event.customMetadata) &&
-      typeof event.customMetadata.contextInputTokens === 'number'
-    ? event.customMetadata.contextInputTokens
-    : inputTokens;
+  const contextInputTokens =
+    isRecord(event.customMetadata) &&
+    typeof event.customMetadata.contextInputTokens === 'number'
+      ? event.customMetadata.contextInputTokens
+      : inputTokens;
   return {
     inputTokens,
     contextInputTokens,
@@ -693,7 +697,10 @@ export class RuntimeHost {
   private readonly sessions = new InMemorySessionService();
   private readonly activeTurns = new Map<string, AbortController>();
   private readonly activeTurnThreads = new Map<string, string>();
-  private readonly activeTurnSelections = new Map<string, RuntimeModelSelection>();
+  private readonly activeTurnSelections = new Map<
+    string,
+    RuntimeModelSelection
+  >();
   private readonly activeTurnSkills = new Map<string, TurnSkills>();
   private readonly pendingSteersByTurn = new Map<
     string,
@@ -707,6 +714,7 @@ export class RuntimeHost {
   private readonly mcp = new RuntimeMcpManager();
   private readonly collaboration = new CollaborationCoordinator();
   private readonly contextManager = new ContextManager();
+  private readonly imageAnalyzer = new ImageAnalyzer();
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -729,7 +737,7 @@ export class RuntimeHost {
           );
           this.revisionNativeAvailable =
             typeof this.nativeRuntime.replaceLatestTurnWithUserMessage ===
-              'function';
+            'function';
           this.mcp.configure(
             this.parseNativeJson<McpConfigInspection>(
               this.nativeRuntime.inspectMcpConfigJson(),
@@ -850,21 +858,23 @@ export class RuntimeHost {
           command.threadId,
         );
         const taskHasTerminal = [...this.terminals.values()].some(
-          (terminal) => terminal.workspaceId === command.workspaceId &&
+          (terminal) =>
+            terminal.workspaceId === command.workspaceId &&
             terminal.threadId === command.threadId,
         );
         this.emit({
           type: 'taskWorkspace.action',
           requestId: command.requestId,
-          action: taskIsActive || taskHasTerminal
-            ? { accepted: false }
-            : this.parseNativeJson<TaskWorkspaceActionResult>(
-                this.requireNative().setTaskWorkspaceModeJson(
-                  command.workspaceId,
-                  command.threadId,
-                  command.mode,
+          action:
+            taskIsActive || taskHasTerminal
+              ? { accepted: false }
+              : this.parseNativeJson<TaskWorkspaceActionResult>(
+                  this.requireNative().setTaskWorkspaceModeJson(
+                    command.workspaceId,
+                    command.threadId,
+                    command.mode,
+                  ),
                 ),
-              ),
         });
         break;
       }
@@ -882,6 +892,29 @@ export class RuntimeHost {
           ),
         });
         break;
+      case 'asset.preview': {
+        this.requireReady(command.requestId);
+        const stored = this.parseNativeJson<StoredImageContent>(
+          this.requireNative().readAssetJson(command.assetId),
+        );
+        if (stored.asset.assetId !== command.assetId) {
+          throw new Error(
+            'Stored asset metadata does not match the preview request.',
+          );
+        }
+        this.emit({
+          type: 'asset.preview',
+          requestId: command.requestId,
+          preview:
+            stored.asset.kind !== 'image'
+              ? { available: false, reason: 'unsupported' }
+              : stored.data.length + 128 >
+                  MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH
+                ? { available: false, reason: 'tooLarge' }
+                : { available: true, asset: stored.asset, data: stored.data },
+        });
+        break;
+      }
       case 'turn.start':
       case 'turn.startQueued':
       case 'turn.revise':
@@ -983,7 +1016,8 @@ export class RuntimeHost {
         this.requireReady(command.requestId);
         if (
           !this.activeTurns.has(command.expectedTurnId) ||
-          this.activeTurnThreads.get(command.expectedTurnId) !== command.threadId ||
+          this.activeTurnThreads.get(command.expectedTurnId) !==
+            command.threadId ||
           this.activeTurns.get(command.expectedTurnId)?.signal.aborted
         ) {
           throw new Error('turnMismatch');
@@ -1027,15 +1061,18 @@ export class RuntimeHost {
         const taken = this.parseNativeJson<{
           message: { content: RuntimeContentPart[] };
           queue: RuntimeThreadQueue;
-        }>(this.requireQueueNative().steerQueuedMessageJson(
-          command.threadId,
-          command.queueItemId,
-          command.expectedRevision,
-          command.expectedTurnId,
-          itemId,
-          this.sequence + 1,
-        ));
-        const pending = this.pendingSteersByTurn.get(command.expectedTurnId) ?? [];
+        }>(
+          this.requireQueueNative().steerQueuedMessageJson(
+            command.threadId,
+            command.queueItemId,
+            command.expectedRevision,
+            command.expectedTurnId,
+            itemId,
+            this.sequence + 1,
+          ),
+        );
+        const pending =
+          this.pendingSteersByTurn.get(command.expectedTurnId) ?? [];
         pending.push([...taken.message.content]);
         this.pendingSteersByTurn.set(command.expectedTurnId, pending);
         this.emitTransient({
@@ -1078,15 +1115,19 @@ export class RuntimeHost {
         const questions = new Map(
           pending?.questions.map((question) => [question.id, question]),
         );
-        const decisionsValid = command.submission.decisions.every((decision) => {
-          const question = questions.get(decision.questionId);
-          return Boolean(
-            question &&
+        const decisionsValid = command.submission.decisions.every(
+          (decision) => {
+            const question = questions.get(decision.questionId);
+            return Boolean(
+              question &&
               (decision.kind !== 'answered' ||
                 decision.source !== 'option' ||
-                question.options.some((option) => option.label === decision.answer)),
-          );
-        });
+                question.options.some(
+                  (option) => option.label === decision.answer,
+                )),
+            );
+          },
+        );
         if (
           !pending ||
           pending.workspaceId !== command.workspaceId ||
@@ -1094,15 +1135,15 @@ export class RuntimeHost {
           pending.turnId !== command.turnId ||
           !decisionsValid ||
           (command.submission.kind === 'submitted' &&
-            (expectedQuestionIds?.length !== command.submission.decisions.length ||
+            (expectedQuestionIds?.length !==
+              command.submission.decisions.length ||
               !expectedQuestionIds.every((id) => submittedDecisions.has(id))))
         ) {
           this.emit({
             type: 'runtime.log',
             requestId: command.requestId,
             level: 'warn',
-            message:
-              `User input ${command.inputRequestId} has no matching pending runtime tool.`,
+            message: `User input ${command.inputRequestId} has no matching pending runtime tool.`,
           });
           break;
         }
@@ -1135,7 +1176,8 @@ export class RuntimeHost {
         this.requireReady(command.requestId);
         if (
           this.handleTerminalAction(command, () =>
-            this.requireNative().terminalInput(command.sessionId, command.data))
+            this.requireNative().terminalInput(command.sessionId, command.data),
+          )
         ) {
           this.emit({
             type: 'terminal.inputAccepted',
@@ -1154,7 +1196,8 @@ export class RuntimeHost {
             command.sessionId,
             command.columns,
             command.rows,
-          ));
+          ),
+        );
         break;
       case 'terminal.flow': {
         this.requireReady(command.requestId);
@@ -1170,7 +1213,8 @@ export class RuntimeHost {
       case 'terminal.terminate':
         this.requireReady(command.requestId);
         this.handleTerminalAction(command, () =>
-          this.requireNative().terminalTerminate(command.sessionId));
+          this.requireNative().terminalTerminate(command.sessionId),
+        );
         break;
       case 'terminal.close':
         this.closeTerminal(command.sessionId);
@@ -1220,11 +1264,12 @@ export class RuntimeHost {
           this.pendingApprovals.size > 0 ||
           this.mcp.getActiveServerIds().length > 0
         ) {
-          const reason = this.activeTurns.size > 0
-            ? 'turnActive'
-            : this.pendingApprovals.size > 0
-              ? 'approvalPending'
-              : 'sessionActive';
+          const reason =
+            this.activeTurns.size > 0
+              ? 'turnActive'
+              : this.pendingApprovals.size > 0
+                ? 'approvalPending'
+                : 'sessionActive';
           this.emit({
             type: 'mcp.configAction',
             requestId: command.requestId,
@@ -1281,7 +1326,11 @@ export class RuntimeHost {
             command.expectedSha256,
           ),
         );
-        this.emit({ type: 'skills.content', requestId: command.requestId, content });
+        this.emit({
+          type: 'skills.content',
+          requestId: command.requestId,
+          content,
+        });
         break;
       }
       case 'skills.setEnabled': {
@@ -1324,14 +1373,22 @@ export class RuntimeHost {
             command.destinationPath,
           ),
         );
-        const action: SkillsActionResult = { accepted: true, path: result.path };
-        this.emit({ type: 'skills.action', requestId: command.requestId, action });
+        const action: SkillsActionResult = {
+          accepted: true,
+          path: result.path,
+        };
+        this.emit({
+          type: 'skills.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'skills.importZip': {
         this.requireReady(command.requestId);
         const native = this.requireNative();
-        if (!native.importSkillZipJson) throw new Error('Skill ZIP import is unavailable.');
+        if (!native.importSkillZipJson)
+          throw new Error('Skill ZIP import is unavailable.');
         const inspection = this.parseNativeJson<SkillsInspection>(
           native.importSkillZipJson(command.workspaceId, command.archivePath),
         );
@@ -1345,9 +1402,14 @@ export class RuntimeHost {
       case 'skills.exportZip': {
         this.requireReady(command.requestId);
         const native = this.requireNative();
-        if (!native.exportSkillZipJson) throw new Error('Skill ZIP export is unavailable.');
+        if (!native.exportSkillZipJson)
+          throw new Error('Skill ZIP export is unavailable.');
         const result = this.parseNativeJson<{ path: string }>(
-          native.exportSkillZipJson(command.workspaceId, command.skillId, command.destinationPath),
+          native.exportSkillZipJson(
+            command.workspaceId,
+            command.skillId,
+            command.destinationPath,
+          ),
         );
         this.emit({
           type: 'skills.action',
@@ -1359,17 +1421,23 @@ export class RuntimeHost {
       case 'knowledge.inspect': {
         this.requireReady(command.requestId);
         const native = this.requireNative();
-        if (!native.inspectKnowledgeJson) throw new Error('Knowledge runtime is unavailable.');
+        if (!native.inspectKnowledgeJson)
+          throw new Error('Knowledge runtime is unavailable.');
         const inspection = this.parseNativeJson<KnowledgeInspection>(
           native.inspectKnowledgeJson(command.workspaceId),
         );
-        this.emit({ type: 'knowledge.inspection', requestId: command.requestId, inspection });
+        this.emit({
+          type: 'knowledge.inspection',
+          requestId: command.requestId,
+          inspection,
+        });
         break;
       }
       case 'knowledge.create': {
         this.requireReady(command.requestId);
         const native = this.requireNative();
-        if (!native.createKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        if (!native.createKnowledgeBaseJson)
+          throw new Error('Knowledge runtime is unavailable.');
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.createKnowledgeBaseJson(
             command.name,
@@ -1377,7 +1445,11 @@ export class RuntimeHost {
             JSON.stringify(command.workspaceIds),
           ),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.update': {
@@ -1396,17 +1468,26 @@ export class RuntimeHost {
             command.semanticEnabled,
           ),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.delete': {
         this.requireReady(command.requestId);
         const native = this.requireNative();
-        if (!native.deleteKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        if (!native.deleteKnowledgeBaseJson)
+          throw new Error('Knowledge runtime is unavailable.');
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.deleteKnowledgeBaseJson(command.knowledgeBaseId),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.addFiles': {
@@ -1454,7 +1535,11 @@ export class RuntimeHost {
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.deleteKnowledgeSourceJson(command.sourceId),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.source.rescan': {
@@ -1471,17 +1556,26 @@ export class RuntimeHost {
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.cancelKnowledgeIndexJobJson(command.jobId),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.detail': {
         this.requireReady(command.requestId);
         const native = this.requireNative();
-        if (!native.inspectKnowledgeBaseJson) throw new Error('Knowledge runtime is unavailable.');
+        if (!native.inspectKnowledgeBaseJson)
+          throw new Error('Knowledge runtime is unavailable.');
         const detail = this.parseNativeJson<KnowledgeBaseDetail>(
           native.inspectKnowledgeBaseJson(command.knowledgeBaseId),
         );
-        this.emit({ type: 'knowledge.detail', requestId: command.requestId, detail });
+        this.emit({
+          type: 'knowledge.detail',
+          requestId: command.requestId,
+          detail,
+        });
         break;
       }
       case 'knowledge.search': {
@@ -1503,7 +1597,11 @@ export class RuntimeHost {
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.cancelSemanticModelDownloadJson(),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.model.remove': {
@@ -1515,7 +1613,11 @@ export class RuntimeHost {
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.removeSemanticModelJson(),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.retrieval.select': {
@@ -1527,7 +1629,11 @@ export class RuntimeHost {
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.selectKnowledgeRetrievalPlanJson(command.planId),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'knowledge.semanticIndex.pause': {
@@ -1539,7 +1645,11 @@ export class RuntimeHost {
         const action = this.parseNativeJson<KnowledgeActionResult>(
           native.setSemanticIndexPausedJson(command.paused),
         );
-        this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+        this.emit({
+          type: 'knowledge.action',
+          requestId: command.requestId,
+          action,
+        });
         break;
       }
       case 'thread.list':
@@ -1631,7 +1741,10 @@ export class RuntimeHost {
           result: this.parseNativeJson(
             this.requireNative().gitStatusJson(
               command.threadId
-                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                ? this.taskWorkspaceBindingId(
+                    command.workspaceId,
+                    command.threadId,
+                  )
                 : command.workspaceId,
             ),
           ),
@@ -1646,7 +1759,10 @@ export class RuntimeHost {
           result: this.parseNativeJson(
             this.requireNative().gitDiffJson(
               command.threadId
-                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                ? this.taskWorkspaceBindingId(
+                    command.workspaceId,
+                    command.threadId,
+                  )
                 : command.workspaceId,
               command.expectedRevision,
               command.path,
@@ -1666,7 +1782,10 @@ export class RuntimeHost {
           result: this.parseNativeJson(
             this.requireNative().gitMutateJson(
               command.threadId
-                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                ? this.taskWorkspaceBindingId(
+                    command.workspaceId,
+                    command.threadId,
+                  )
                 : command.workspaceId,
               command.expectedRevision,
               command.paths,
@@ -1685,7 +1804,10 @@ export class RuntimeHost {
           result: this.parseNativeJson(
             this.requireNative().gitCommitJson(
               command.threadId
-                ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
+                ? this.taskWorkspaceBindingId(
+                    command.workspaceId,
+                    command.threadId,
+                  )
                 : command.workspaceId,
               command.expectedRevision,
               command.message,
@@ -1762,9 +1884,17 @@ export class RuntimeHost {
   ): Promise<void> => {
     try {
       const native = this.requireNative();
-      if (!native.addKnowledgeFilesJson) throw new Error('Knowledge runtime is unavailable.');
-      const result = this.parseNativeJson<{ indexed: number; skipped: number; errors: number }>(
-        await native.addKnowledgeFilesJson(command.knowledgeBaseId, JSON.stringify(command.paths)),
+      if (!native.addKnowledgeFilesJson)
+        throw new Error('Knowledge runtime is unavailable.');
+      const result = this.parseNativeJson<{
+        indexed: number;
+        skipped: number;
+        errors: number;
+      }>(
+        await native.addKnowledgeFilesJson(
+          command.knowledgeBaseId,
+          JSON.stringify(command.paths),
+        ),
       );
       this.emit({
         type: 'knowledge.action',
@@ -1778,7 +1908,10 @@ export class RuntimeHost {
         action: {
           accepted: false,
           reason: 'unavailable',
-          message: error instanceof Error ? error.message : 'Knowledge indexing failed.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Knowledge indexing failed.',
         },
       });
     }
@@ -1792,27 +1925,28 @@ export class RuntimeHost {
   ): Promise<void> => {
     try {
       const native = this.requireNative();
-      const result = command.type === 'knowledge.text.create'
-        ? await (() => {
-            if (!native.createKnowledgeTextDocumentJson) {
-              throw new Error('Knowledge text creation is unavailable.');
-            }
-            return native.createKnowledgeTextDocumentJson(
-              command.knowledgeBaseId,
-              command.fileName,
-              command.content,
-            );
-          })()
-        : await (() => {
-            if (!native.updateKnowledgeTextDocumentJson) {
-              throw new Error('Knowledge text editing is unavailable.');
-            }
-            return native.updateKnowledgeTextDocumentJson(
-              command.sourceId,
-              command.expectedSha256,
-              command.content,
-            );
-          })();
+      const result =
+        command.type === 'knowledge.text.create'
+          ? await (() => {
+              if (!native.createKnowledgeTextDocumentJson) {
+                throw new Error('Knowledge text creation is unavailable.');
+              }
+              return native.createKnowledgeTextDocumentJson(
+                command.knowledgeBaseId,
+                command.fileName,
+                command.content,
+              );
+            })()
+          : await (() => {
+              if (!native.updateKnowledgeTextDocumentJson) {
+                throw new Error('Knowledge text editing is unavailable.');
+              }
+              return native.updateKnowledgeTextDocumentJson(
+                command.sourceId,
+                command.expectedSha256,
+                command.content,
+              );
+            })();
       const indexed = this.parseNativeJson<{
         indexed: number;
         skipped: number;
@@ -1826,9 +1960,10 @@ export class RuntimeHost {
         action: { accepted: true, ...indexed },
       });
     } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : 'Knowledge document could not be saved.';
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Knowledge document could not be saved.';
       this.emit({
         type: 'knowledge.action',
         requestId: command.requestId,
@@ -1856,7 +1991,11 @@ export class RuntimeHost {
       const action = this.parseNativeJson<KnowledgeActionResult>(
         await native.installSemanticModelJson(),
       );
-      this.emit({ type: 'knowledge.action', requestId: command.requestId, action });
+      this.emit({
+        type: 'knowledge.action',
+        requestId: command.requestId,
+        action,
+      });
     } catch (error) {
       this.emit({
         type: 'knowledge.action',
@@ -1888,13 +2027,18 @@ export class RuntimeHost {
           command.query,
         ),
       );
-      this.emit({ type: 'knowledge.searchResult', requestId: command.requestId, result });
+      this.emit({
+        type: 'knowledge.searchResult',
+        requestId: command.requestId,
+        result,
+      });
     } catch (error) {
       this.emit({
         type: 'runtime.log',
         requestId: command.requestId,
         level: 'error',
-        message: error instanceof Error ? error.message : 'Knowledge search failed.',
+        message:
+          error instanceof Error ? error.message : 'Knowledge search failed.',
       });
     }
   };
@@ -1904,9 +2048,17 @@ export class RuntimeHost {
   ): Promise<void> => {
     try {
       const native = this.requireNative();
-      if (!native.addKnowledgeFolderJson) throw new Error('Knowledge runtime is unavailable.');
-      const result = this.parseNativeJson<{ indexed: number; skipped: number; errors: number }>(
-        await native.addKnowledgeFolderJson(command.knowledgeBaseId, command.path),
+      if (!native.addKnowledgeFolderJson)
+        throw new Error('Knowledge runtime is unavailable.');
+      const result = this.parseNativeJson<{
+        indexed: number;
+        skipped: number;
+        errors: number;
+      }>(
+        await native.addKnowledgeFolderJson(
+          command.knowledgeBaseId,
+          command.path,
+        ),
       );
       this.emit({
         type: 'knowledge.action',
@@ -1920,7 +2072,10 @@ export class RuntimeHost {
         action: {
           accepted: false,
           reason: 'unavailable',
-          message: error instanceof Error ? error.message : 'Knowledge indexing failed.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Knowledge indexing failed.',
         },
       });
     }
@@ -1940,7 +2095,12 @@ export class RuntimeHost {
         errors: number;
         deleted?: number;
         jobId?: string;
-      }>(await native.rescanKnowledgeSourceJson(command.sourceId, command.rebuild));
+      }>(
+        await native.rescanKnowledgeSourceJson(
+          command.sourceId,
+          command.rebuild,
+        ),
+      );
       this.emit({
         type: 'knowledge.action',
         requestId: command.requestId,
@@ -1953,7 +2113,10 @@ export class RuntimeHost {
         action: {
           accepted: false,
           reason: 'unavailable',
-          message: error instanceof Error ? error.message : 'Knowledge rescanning failed.',
+          message:
+            error instanceof Error
+              ? error.message
+              : 'Knowledge rescanning failed.',
         },
       });
     }
@@ -1996,9 +2159,10 @@ export class RuntimeHost {
         type: 'runtime.log',
         requestId: command.requestId,
         level: 'error',
-        message: error instanceof Error
-          ? error.message
-          : 'The workspace directory could not be listed.',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'The workspace directory could not be listed.',
       });
     }
   };
@@ -2033,9 +2197,10 @@ export class RuntimeHost {
         type: 'runtime.log',
         requestId: command.requestId,
         level: 'error',
-        message: error instanceof Error
-          ? error.message
-          : 'Workspace files could not be searched.',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'Workspace files could not be searched.',
       });
     }
   };
@@ -2102,7 +2267,10 @@ export class RuntimeHost {
     return native as QueueNativeBinding;
   };
 
-  private taskWorkspaceBindingId = (workspaceId: string, threadId: string): string => {
+  private taskWorkspaceBindingId = (
+    workspaceId: string,
+    threadId: string,
+  ): string => {
     const native = this.requireNative();
     return typeof native.taskWorkspaceBindingId === 'function'
       ? native.taskWorkspaceBindingId(workspaceId, threadId)
@@ -2156,11 +2324,19 @@ export class RuntimeHost {
   };
 
   private handleTerminalAction = (
-    command: Extract<RuntimeCommand, {
-      type: 'terminal.input' | 'terminal.resize';
-    }> | Extract<RuntimeCommand, {
-      type: 'terminal.terminate' | 'terminal.close';
-    }>,
+    command:
+      | Extract<
+          RuntimeCommand,
+          {
+            type: 'terminal.input' | 'terminal.resize';
+          }
+        >
+      | Extract<
+          RuntimeCommand,
+          {
+            type: 'terminal.terminate' | 'terminal.close';
+          }
+        >,
     action: () => void,
   ): boolean => {
     const terminal = this.terminals.get(command.sessionId);
@@ -2187,7 +2363,11 @@ export class RuntimeHost {
     terminal.sessionId === command.sessionId;
 
   private scheduleTerminalPoll = (terminal: ActiveTerminal): void => {
-    if (terminal.paused || terminal.timer || !this.terminals.has(terminal.sessionId)) {
+    if (
+      terminal.paused ||
+      terminal.timer ||
+      !this.terminals.has(terminal.sessionId)
+    ) {
       return;
     }
     terminal.timer = setTimeout(() => {
@@ -2197,7 +2377,10 @@ export class RuntimeHost {
   };
 
   private pollTerminal = (terminal: ActiveTerminal): void => {
-    if (terminal.paused || this.terminals.get(terminal.sessionId) !== terminal) {
+    if (
+      terminal.paused ||
+      this.terminals.get(terminal.sessionId) !== terminal
+    ) {
       return;
     }
     try {
@@ -2228,13 +2411,12 @@ export class RuntimeHost {
             outputSequence: event.sequence,
             data: event.data,
           });
-        } else if (
-          event.type === 'error' &&
-          typeof event.fatal === 'boolean'
-        ) {
+        } else if (event.type === 'error' && typeof event.fatal === 'boolean') {
           this.emitTerminalError(
             terminal,
-            event.code === 'outputOverload' ? 'outputOverload' : 'terminalCrashed',
+            event.code === 'outputOverload'
+              ? 'outputOverload'
+              : 'terminalCrashed',
             event.fatal,
           );
           if (event.fatal) {
@@ -2255,7 +2437,9 @@ export class RuntimeHost {
             generation: terminal.generation,
             sessionId: terminal.sessionId,
             exitCode: event.exitCode,
-            ...(typeof event.signal === 'string' ? { signal: event.signal } : {}),
+            ...(typeof event.signal === 'string'
+              ? { signal: event.signal }
+              : {}),
             reason: event.reason,
           });
           this.closeTerminal(terminal.sessionId);
@@ -2272,8 +2456,14 @@ export class RuntimeHost {
   };
 
   private emitTerminalError = (
-    terminal: { requestId: string; workspaceId: string; generation: number; sessionId: string },
-    error: 'spawnFailed' | 'protocolInvalid' | 'terminalCrashed' | 'outputOverload',
+    terminal: {
+      requestId: string;
+      workspaceId: string;
+      generation: number;
+      sessionId: string;
+    },
+    error:
+      'spawnFailed' | 'protocolInvalid' | 'terminalCrashed' | 'outputOverload',
     fatal: boolean,
   ): void => {
     this.emit({
@@ -2330,7 +2520,10 @@ export class RuntimeHost {
         for (const item of items) {
           if (item.kind === 'turn.userMessage') {
             const content = item.payload.content;
-            if (!Array.isArray(content) || !content.every(isRuntimeContentPart)) {
+            if (
+              !Array.isArray(content) ||
+              !content.every(isRuntimeContentPart)
+            ) {
               throw new Error('Stored user content is invalid.');
             }
             await this.sessions.appendEvent({
@@ -2351,17 +2544,20 @@ export class RuntimeHost {
           ) {
             continue;
           }
-          const restored = item.kind === 'turn.contextCheckpoint' &&
-              typeof item.payload.summary === 'string'
-            ? {
-                role: 'user' as const,
-                parts: [{
-                  type: 'text' as const,
-                  text: `[SugarCode context checkpoint]\n${item.payload.summary}`,
-                  reasoning: false,
-                }],
-              }
-            : this.parseStoredModelHistory(item.payload.history);
+          const restored =
+            item.kind === 'turn.contextCheckpoint' &&
+            typeof item.payload.summary === 'string'
+              ? {
+                  role: 'user' as const,
+                  parts: [
+                    {
+                      type: 'text' as const,
+                      text: `[SugarCode context checkpoint]\n${item.payload.summary}`,
+                      reasoning: false,
+                    },
+                  ],
+                }
+              : this.parseStoredModelHistory(item.payload.history);
           await this.sessions.appendEvent({
             session,
             event: createEvent({
@@ -2384,7 +2580,8 @@ export class RuntimeHost {
     selection: RuntimeModelSelection,
   ): Content => {
     const attachmentBytes = content.reduce(
-      (total, part) => total + (part.type === 'asset' ? part.asset.sizeBytes : 0),
+      (total, part) =>
+        total + (part.type === 'asset' ? part.asset.sizeBytes : 0),
       0,
     );
     if (attachmentBytes > MAX_TURN_ATTACHMENT_BYTES) {
@@ -2401,28 +2598,37 @@ export class RuntimeHost {
         this.requireNative().readAssetJson(part.asset.assetId),
       );
       if (!this.sameAsset(stored.asset, part.asset)) {
-        throw new Error('Stored content asset metadata does not match the Turn.');
+        throw new Error(
+          'Stored content asset metadata does not match the Turn.',
+        );
       }
       if (
-        (part.asset.kind === 'image' &&
-          !selection.effectiveCapabilities.imageInput) ||
-        (part.asset.kind === 'pdf' &&
-          !selection.effectiveCapabilities.pdfInput)
+        part.asset.kind === 'pdf' &&
+        !selection.effectiveCapabilities.pdfInput
       ) {
-        throw new Error(`The selected model does not accept ${part.asset.kind} input.`);
+        throw new Error(
+          `The selected model does not accept ${part.asset.kind} input.`,
+        );
+      }
+      if (part.asset.kind === 'image') {
+        return [{ text: imageAttachmentReference(part.asset) }];
       }
       if (part.asset.kind === 'text') {
-        return [{
-          text: `Attachment ${part.asset.originalName}:\n${Buffer.from(stored.data, 'base64').toString('utf8')}`,
-        }];
+        return [
+          {
+            text: `Attachment ${part.asset.originalName}:\n${Buffer.from(stored.data, 'base64').toString('utf8')}`,
+          },
+        ];
       }
-      return [{
-        inlineData: {
-          mimeType: part.asset.mediaType,
-          data: stored.data,
-          displayName: part.asset.originalName,
+      return [
+        {
+          inlineData: {
+            mimeType: part.asset.mediaType,
+            data: stored.data,
+            displayName: part.asset.originalName,
+          },
         },
-      }];
+      ];
     });
     return { role: 'user', parts };
   };
@@ -2458,7 +2664,8 @@ export class RuntimeHost {
         this.sequence,
         'turn.modelHistory',
         JSON.stringify({ history }),
-      ));
+      ),
+    );
   };
 
   private persistContextCheckpoint = (
@@ -2476,7 +2683,8 @@ export class RuntimeHost {
         this.sequence,
         'turn.contextCheckpoint',
         JSON.stringify(checkpoint),
-      ));
+      ),
+    );
   };
 
   private storedModelHistory = (content: Content): StoredModelHistory => ({
@@ -2649,13 +2857,12 @@ export class RuntimeHost {
     }),
   });
 
-  private resolveProfile = (
-    command: TurnContextCommand,
-  ): ResolvedProfile => {
+  private resolveProfile = (command: TurnContextCommand): ResolvedProfile => {
     if ('provider' in command && command.provider) {
-      const providerFamily = command.provider.wireApi === 'anthropicMessages'
-        ? 'anthropic'
-        : 'openai';
+      const providerFamily =
+        command.provider.wireApi === 'anthropicMessages'
+          ? 'anthropic'
+          : 'openai';
       return {
         provider: command.provider,
         selection: {
@@ -2677,8 +2884,12 @@ export class RuntimeHost {
         },
       };
     }
+    return this.resolveConfiguredProfile(command.modelProfileId);
+  };
+
+  private resolveConfiguredProfile = (profileId?: string): ResolvedProfile => {
     const resolved = this.parseNativeJson<unknown>(
-      this.requireNative().modelProfileJson(command.modelProfileId),
+      this.requireNative().modelProfileJson(profileId),
     );
     if (
       !isRecord(resolved) ||
@@ -2696,9 +2907,11 @@ export class RuntimeHost {
       typeof profile.modelId !== 'string' ||
       typeof profile.displayName !== 'string' ||
       !['openai', 'anthropic'].includes(String(providerFamily)) ||
-      !['openaiResponses', 'openaiChatCompletions', 'anthropicMessages'].includes(
-        String(wireApi),
-      ) ||
+      ![
+        'openaiResponses',
+        'openaiChatCompletions',
+        'anthropicMessages',
+      ].includes(String(wireApi)) ||
       typeof connection.baseUrl !== 'string'
     ) {
       throw new Error('The selected model profile is incomplete.');
@@ -2709,25 +2922,25 @@ export class RuntimeHost {
       wireApi: wireApi as RuntimeModelSelection['wireApi'],
       modelId: profile.modelId,
       displayName: profile.displayName,
-      contextWindowTokens: typeof profile.contextWindowTokens === 'number'
-        ? profile.contextWindowTokens
-        : knownContextWindowTokens(
+      contextWindowTokens:
+        typeof profile.contextWindowTokens === 'number'
+          ? profile.contextWindowTokens
+          : (knownContextWindowTokens(
+              providerFamily as RuntimeModelSelection['providerFamily'],
+              profile.modelId,
+            ) ?? DEFAULT_CONTEXT_WINDOW_TOKENS),
+      autoCompaction:
+        typeof profile.contextWindowTokens === 'number' ||
+        knownContextWindowTokens(
           providerFamily as RuntimeModelSelection['providerFamily'],
           profile.modelId,
-        ) ?? DEFAULT_CONTEXT_WINDOW_TOKENS,
-      autoCompaction:
-        (typeof profile.contextWindowTokens === 'number' ||
-          knownContextWindowTokens(
-            providerFamily as RuntimeModelSelection['providerFamily'],
-            profile.modelId,
-          ) !== undefined)
+        ) !== undefined
           ? capabilityMode(profile.autoCompaction)
           : 'disabled',
       ...(typeof profile.compactThresholdTokens === 'number'
         ? { compactThresholdTokens: profile.compactThresholdTokens }
         : {}),
-      nativeCompaction:
-        capabilityMode(profile.nativeCompaction),
+      nativeCompaction: capabilityMode(profile.nativeCompaction),
       effectiveCapabilities: {
         toolCalls: capabilityEnabled(profile.toolCalls),
         strictTools: profile.strictTools === 'enabled',
@@ -2736,17 +2949,20 @@ export class RuntimeHost {
         pdfInput: capabilityEnabled(profile.pdfInput),
       },
     };
-    const nativeCompaction = selection.nativeCompaction === 'enabled' ||
-      (selection.nativeCompaction === 'auto' && supportsNativeCompaction(
-        selection.providerFamily,
-        selection.wireApi,
-        connection.baseUrl,
-      ));
+    const nativeCompaction =
+      selection.nativeCompaction === 'enabled' ||
+      (selection.nativeCompaction === 'auto' &&
+        supportsNativeCompaction(
+          selection.providerFamily,
+          selection.wireApi,
+          connection.baseUrl,
+        ));
     const safety = Math.max(
       4_096,
       Math.ceil(selection.contextWindowTokens * 0.05),
     );
-    const effectiveCompactThreshold = selection.compactThresholdTokens ??
+    const effectiveCompactThreshold =
+      selection.compactThresholdTokens ??
       Math.min(
         Math.floor(selection.contextWindowTokens * 0.85),
         selection.contextWindowTokens - DEFAULT_MAX_OUTPUT_TOKENS - safety,
@@ -2770,6 +2986,48 @@ export class RuntimeHost {
     };
   };
 
+  private resolveImageAnalysisModel = (
+    current: ResolvedProfile,
+  ): ImageAnalysisModel | undefined => {
+    const inspection = this.nativeRuntime
+      ? this.parseNativeJson<unknown>(
+          this.nativeRuntime.inspectModelConfigJson(),
+        )
+      : undefined;
+    const profileIds =
+      isModelConfigInspection(inspection) && inspection.config
+        ? imageAnalysisProfileIds(
+            inspection.config,
+            current.selection.profileId,
+          )
+        : [current.selection.profileId];
+    for (const profileId of profileIds) {
+      let candidate: ResolvedProfile;
+      try {
+        candidate =
+          profileId === current.selection.profileId
+            ? current
+            : this.resolveConfiguredProfile(profileId);
+      } catch {
+        continue;
+      }
+      if (!candidate.selection.effectiveCapabilities.imageInput) {
+        continue;
+      }
+      return {
+        profileId: candidate.selection.profileId,
+        modelId: candidate.selection.modelId,
+        displayName: candidate.selection.displayName,
+        model: this.createModel({
+          ...candidate.provider,
+          parallelTools: false,
+          nativeCompaction: false,
+        }),
+      };
+    }
+    return undefined;
+  };
+
   private discover = async (
     requestId: string,
     connectionId: string,
@@ -2784,7 +3042,8 @@ export class RuntimeHost {
         type: 'runtime.log',
         requestId,
         level: 'error',
-        message: error instanceof Error ? error.message : 'Model discovery failed.',
+        message:
+          error instanceof Error ? error.message : 'Model discovery failed.',
       });
     }
   };
@@ -2800,12 +3059,14 @@ export class RuntimeHost {
       parameters: INVALID_TOOL_ARGUMENTS_SCHEMA,
       execute: async (input) => {
         const argumentsValue = isRecord(input) ? input : {};
-        const toolName = typeof argumentsValue.toolName === 'string'
-          ? argumentsValue.toolName
-          : 'unknown';
-        const argumentsText = typeof argumentsValue.argumentsText === 'string'
-          ? argumentsValue.argumentsText.slice(0, 4_096)
-          : '';
+        const toolName =
+          typeof argumentsValue.toolName === 'string'
+            ? argumentsValue.toolName
+            : 'unknown';
+        const argumentsText =
+          typeof argumentsValue.argumentsText === 'string'
+            ? argumentsValue.argumentsText.slice(0, 4_096)
+            : '';
         const key = JSON.stringify({ toolName, argumentsText });
         guard.repeats.set(key, (guard.repeats.get(key) ?? 0) + 1);
         if (toolName.startsWith('knowledge_') && !knowledgeSelected) {
@@ -2879,25 +3140,27 @@ export class RuntimeHost {
         }
         const inputRequestId = randomUUID();
         finalGuard.questions.push(...questions);
-        const submission = await new Promise<RuntimeUserInputSubmission>((resolve) => {
-          this.pendingUserInputs.set(inputRequestId, {
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            questions,
-            resolve,
-          });
-          this.emit({
-            type: 'turn.userInputRequested',
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            inputRequestId,
-            questions,
-          });
-        });
+        const submission = await new Promise<RuntimeUserInputSubmission>(
+          (resolve) => {
+            this.pendingUserInputs.set(inputRequestId, {
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              questions,
+              resolve,
+            });
+            this.emit({
+              type: 'turn.userInputRequested',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              inputRequestId,
+              questions,
+            });
+          },
+        );
         finalGuard.resolvedRequests += 1;
         return submission;
       },
@@ -2922,9 +3185,10 @@ export class RuntimeHost {
             },
           };
         }
-        const content = isRecord(input) && typeof input.content === 'string'
-          ? input.content.trim()
-          : '';
+        const content =
+          isRecord(input) && typeof input.content === 'string'
+            ? input.content.trim()
+            : '';
         const issue = planSubmissionIssue(content);
         if (issue) {
           return {
@@ -2975,11 +3239,7 @@ export class RuntimeHost {
     guard: InvalidArgumentGuard,
   ): string | undefined => {
     const repeated = guard.repeatedToolFailure;
-    if (
-      !repeated ||
-      repeated.count < 2 ||
-      repeated.recoveryDelivered
-    ) {
+    if (!repeated || repeated.count < 2 || repeated.recoveryDelivered) {
       return undefined;
     }
     guard.repeatedToolFailure = {
@@ -3024,13 +3284,10 @@ export class RuntimeHost {
         : undefined;
       const failureName =
         part.functionResponse.name === INVALID_TOOL_ARGUMENTS_TOOL_NAME &&
-          typeof parsedArguments?.toolName === 'string'
+        typeof parsedArguments?.toolName === 'string'
           ? parsedArguments.toolName
           : part.functionResponse.name;
-      const recoveryKey = toolFailureRecoveryKey(
-        failureName,
-        parsedArguments,
-      );
+      const recoveryKey = toolFailureRecoveryKey(failureName, parsedArguments);
       if (!failed) {
         guard.unresolvedToolFailures.delete(recoveryKey);
         guard.repeatedToolFailure = undefined;
@@ -3047,12 +3304,14 @@ export class RuntimeHost {
       const previous = guard.repeatedToolFailure;
       const count = previous?.key === key ? previous.count + 1 : 1;
       const resultRecord = isRecord(result) ? result : {};
-      const failedPath = typeof resultRecord.failedPath === 'string'
-        ? resultRecord.failedPath
-        : undefined;
-      const errorKind = typeof resultRecord.error === 'string'
-        ? resultRecord.error
-        : 'toolFailure';
+      const failedPath =
+        typeof resultRecord.failedPath === 'string'
+          ? resultRecord.failedPath
+          : undefined;
+      const errorKind =
+        typeof resultRecord.error === 'string'
+          ? resultRecord.error
+          : 'toolFailure';
       guard.repeatedToolFailure = {
         key,
         count,
@@ -3110,9 +3369,7 @@ export class RuntimeHost {
     return undefined;
   };
 
-  private runTurnDriver = async (
-    options: TurnDriverOptions,
-  ): Promise<void> => {
+  private runTurnDriver = async (options: TurnDriverOptions): Promise<void> => {
     let message = options.initialMessage;
     let invocation = 0;
     let commentaryOnlyCount = 0;
@@ -3131,7 +3388,8 @@ export class RuntimeHost {
       })) {
         options.onEvent(event, textItems);
         if (event.partial === false) {
-          const nextOutcome = readModelStepOutcome(event.content?.parts ?? []) ??
+          const nextOutcome =
+            readModelStepOutcome(event.content?.parts ?? []) ??
             this.fallbackOutcome(event);
           if (nextOutcome) {
             outcome = nextOutcome;
@@ -3175,10 +3433,11 @@ export class RuntimeHost {
             role: 'user',
             parts: pendingSteers.flatMap((content, index) => [
               ...(index === 0
-                ? [{
-                    text:
-                      '# User adjustment\n\nThe user added the following direction while this Turn was running. Apply it before continuing.',
-                  }]
+                ? [
+                    {
+                      text: '# User adjustment\n\nThe user added the following direction while this Turn was running. Apply it before continuing.',
+                    },
+                  ]
                 : []),
               ...(content.parts ?? []),
             ]),
@@ -3187,19 +3446,22 @@ export class RuntimeHost {
           truncationCount = 0;
           continue;
         }
-        const pendingResults = await options.consumePendingResults?.() ?? null;
+        const pendingResults =
+          (await options.consumePendingResults?.()) ?? null;
         if (pendingResults) {
           options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
-            parts: [{
-              text:
-                '# Internal continuation\n\n' +
-                'Child Agent results completed after your candidate answer. ' +
-                'Consume these results and generate the single final answer. ' +
-                'Keep all visible text in the language of the original user request.\n\n' +
-                pendingResults,
-            }],
+            parts: [
+              {
+                text:
+                  '# Internal continuation\n\n' +
+                  'Child Agent results completed after your candidate answer. ' +
+                  'Consume these results and generate the single final answer. ' +
+                  'Keep all visible text in the language of the original user request.\n\n' +
+                  pendingResults,
+              },
+            ],
           };
           commentaryOnlyCount = 0;
           truncationCount = 0;
@@ -3209,14 +3471,16 @@ export class RuntimeHost {
           options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
-            parts: [{
-              text:
-                '# Internal continuation after tool failure\n\n' +
-                'The most recent tool result failed, so the candidate answer was not accepted as completion. ' +
-                'Continue with a corrected tool call or another concrete approach. If recovery is genuinely impossible, ' +
-                'submit a final answer that names the specific blocker and the work that remains incomplete. ' +
-                'Keep all visible text in the language of the original user request.',
-            }],
+            parts: [
+              {
+                text:
+                  '# Internal continuation after tool failure\n\n' +
+                  'The most recent tool result failed, so the candidate answer was not accepted as completion. ' +
+                  'Continue with a corrected tool call or another concrete approach. If recovery is genuinely impossible, ' +
+                  'submit a final answer that names the specific blocker and the work that remains incomplete. ' +
+                  'Keep all visible text in the language of the original user request.',
+              },
+            ],
           };
           commentaryOnlyCount = 0;
           truncationCount = 0;
@@ -3241,16 +3505,18 @@ export class RuntimeHost {
           }
           message = {
             role: 'user',
-            parts: [{
-              text:
-                '# Internal continuation after incomplete post-question final\n\n' +
-                `${userInputCandidateIssue} ` +
-                'Follow the required structured protocol before finishing; if the issue names a tool, call that tool instead of rewriting the same ordinary final answer. ' +
-                'Otherwise rewrite the final answer as one complete, self-contained response from the beginning. ' +
-                'Include every necessary section instead of continuing prior numbering. ' +
-                'Do not repeat the structured question prompts; incorporate only the resulting decisions where relevant. ' +
-                'Keep all visible text in the language of the original user request.',
-            }],
+            parts: [
+              {
+                text:
+                  '# Internal continuation after incomplete post-question final\n\n' +
+                  `${userInputCandidateIssue} ` +
+                  'Follow the required structured protocol before finishing; if the issue names a tool, call that tool instead of rewriting the same ordinary final answer. ' +
+                  'Otherwise rewrite the final answer as one complete, self-contained response from the beginning. ' +
+                  'Include every necessary section instead of continuing prior numbering. ' +
+                  'Do not repeat the structured question prompts; incorporate only the resulting decisions where relevant. ' +
+                  'Keep all visible text in the language of the original user request.',
+              },
+            ],
           };
           commentaryOnlyCount = 0;
           truncationCount = 0;
@@ -3269,14 +3535,16 @@ export class RuntimeHost {
           }
           message = {
             role: 'user',
-            parts: [{
-              text:
-                '# Internal continuation after premature final\n\n' +
-                'The candidate answer only announced future work, so it was not accepted as completion. ' +
-                'Perform the next concrete tool action now. Submit a final answer only after the requested work is complete and verified, ' +
-                'or name the specific blocker and the work that remains incomplete. ' +
-                'Keep all visible text in the language of the original user request.',
-            }],
+            parts: [
+              {
+                text:
+                  '# Internal continuation after premature final\n\n' +
+                  'The candidate answer only announced future work, so it was not accepted as completion. ' +
+                  'Perform the next concrete tool action now. Submit a final answer only after the requested work is complete and verified, ' +
+                  'or name the specific blocker and the work that remains incomplete. ' +
+                  'Keep all visible text in the language of the original user request.',
+              },
+            ],
           };
           commentaryOnlyCount = 0;
           truncationCount = 0;
@@ -3286,7 +3554,8 @@ export class RuntimeHost {
           throw new ProviderAdapterError({
             kind: 'protocol',
             retryable: false,
-            message: 'The model submitted a final answer while Turn work remained pending.',
+            message:
+              'The model submitted a final answer while Turn work remained pending.',
           });
         }
         options.settleFinalCandidate?.(true, textItems);
@@ -3305,7 +3574,8 @@ export class RuntimeHost {
           throw new ProviderAdapterError({
             kind: 'protocol',
             retryable: false,
-            message: 'The model produced commentary without progress three times.',
+            message:
+              'The model produced commentary without progress three times.',
           });
         }
       } else {
@@ -3317,29 +3587,30 @@ export class RuntimeHost {
           throw new ProviderAdapterError({
             kind: 'outputTooLarge',
             retryable: false,
-            message: 'The model output was truncated twice without a final answer.',
+            message:
+              'The model output was truncated twice without a final answer.',
           });
         }
       }
       message = {
         role: 'user',
-        parts: [{
-          text:
-            `# Internal continuation ${invocation}\n\n` +
-            'Keep all visible text in the language of the original user request. ' +
-            (outcome.reason === 'maxOutputTokens'
-              ? 'Continue after the output truncation and submit a concise final answer when complete.'
-              : outcome.reason === 'pauseTurn'
-                ? 'Resume the paused Turn. Continue tool work or submit the final answer.'
-                : 'Continue the same Turn. Perform the next concrete action or submit the final answer.'),
-        }],
+        parts: [
+          {
+            text:
+              `# Internal continuation ${invocation}\n\n` +
+              'Keep all visible text in the language of the original user request. ' +
+              (outcome.reason === 'maxOutputTokens'
+                ? 'Continue after the output truncation and submit a concise final answer when complete.'
+                : outcome.reason === 'pauseTurn'
+                  ? 'Resume the paused Turn. Continue tool work or submit the final answer.'
+                  : 'Continue the same Turn. Perform the next concrete action or submit the final answer.'),
+          },
+        ],
       };
     }
   };
 
-  private startTurn = async (
-    command: TurnExecutionCommand,
-  ): Promise<void> => {
+  private startTurn = async (command: TurnExecutionCommand): Promise<void> => {
     if (this.activeTurns.has(command.turnId)) {
       this.emitCompleted(command, 'failed', {
         kind: 'invalidRequest',
@@ -3350,16 +3621,17 @@ export class RuntimeHost {
     }
     const controller = new AbortController();
     let revisionCommitted = false;
-    let turnContent = command.type === 'turn.startQueued'
-      ? []
-      : this.nativeRuntime
-        ? resolveKnowledgeReferences(
-            this.nativeRuntime,
-            command.workspaceId,
-            command.content,
-            command.threadId,
-          )
-        : command.content;
+    let turnContent =
+      command.type === 'turn.startQueued'
+        ? []
+        : this.nativeRuntime
+          ? resolveKnowledgeReferences(
+              this.nativeRuntime,
+              command.workspaceId,
+              command.content,
+              command.threadId,
+            )
+          : command.content;
     this.activeTurns.set(command.turnId, controller);
     this.activeTurnThreads.set(command.turnId, command.threadId);
     this.nativeRuntime?.setKnowledgeAgentActive?.(true);
@@ -3369,28 +3641,35 @@ export class RuntimeHost {
           return this.resolveProfile(command);
         } catch (error) {
           if (command.type === 'turn.startQueued') {
-            const message = error instanceof Error
-              ? error.message
-              : 'The queued model is unavailable.';
+            const message =
+              error instanceof Error
+                ? error.message
+                : 'The queued model is unavailable.';
             throw new Error(`modelUnavailable: ${message}`);
           }
           throw error;
         }
       })();
       this.activeTurnSelections.set(command.turnId, resolved.selection);
-      const queuedSubmissionBeforePromotion = command.type === 'turn.startQueued'
-        ? parseComposerSubmission(
-            command.content
-              .filter((part): part is Extract<RuntimeContentPart, { type: 'text' }> =>
-                part.type === 'text')
-              .map((part) => part.text)
-              .join('\n'),
-          )
-        : undefined;
-      const queuedCompaction = queuedSubmissionBeforePromotion?.references.some(
-        (reference) =>
-          reference.kind === 'command' && reference.target === 'compact',
-      ) ?? false;
+      const queuedSubmissionBeforePromotion =
+        command.type === 'turn.startQueued'
+          ? parseComposerSubmission(
+              command.content
+                .filter(
+                  (
+                    part,
+                  ): part is Extract<RuntimeContentPart, { type: 'text' }> =>
+                    part.type === 'text',
+                )
+                .map((part) => part.text)
+                .join('\n'),
+            )
+          : undefined;
+      const queuedCompaction =
+        queuedSubmissionBeforePromotion?.references.some(
+          (reference) =>
+            reference.kind === 'command' && reference.target === 'compact',
+        ) ?? false;
       let queuedTurnSkills: TurnSkills | undefined;
       if (command.type === 'turn.startQueued') {
         this.contentFromParts(turnContent, resolved.selection);
@@ -3423,7 +3702,8 @@ export class RuntimeHost {
             resolved.provider.wireApi,
             resolved.provider.model,
             JSON.stringify(turnContent),
-          ));
+          ),
+        );
         this.emitTransient({
           type: 'turn.revised',
           requestId: command.requestId,
@@ -3446,21 +3726,25 @@ export class RuntimeHost {
           this.nativeRuntime?.ensureThread(
             command.threadId,
             command.workspaceId,
-          ));
+          ),
+        );
         await this.ensureSession(command, resolved.selection);
         const promoted = this.parseNativeJson<{
           message: { content: RuntimeContentPart[] };
           queue: RuntimeThreadQueue;
-        }>(withDurableStateWrite(() =>
-          this.requireQueueNative().promoteQueuedMessageJson(
-            command.threadId,
-            command.queueItemId,
-            command.expectedRevision,
-            command.turnId,
-            command.requestId,
-            resolved.provider.wireApi,
-            resolved.provider.model,
-          )));
+        }>(
+          withDurableStateWrite(() =>
+            this.requireQueueNative().promoteQueuedMessageJson(
+              command.threadId,
+              command.queueItemId,
+              command.expectedRevision,
+              command.turnId,
+              command.requestId,
+              resolved.provider.wireApi,
+              resolved.provider.model,
+            ),
+          ),
+        );
         this.emit({
           type: 'queue.changed',
           requestId: command.requestId,
@@ -3481,7 +3765,8 @@ export class RuntimeHost {
           this.nativeRuntime?.ensureThread(
             command.threadId,
             command.workspaceId,
-          ));
+          ),
+        );
         await this.ensureSession(command, resolved.selection);
         withDurableStateWrite(() =>
           this.nativeRuntime?.startTurn(
@@ -3490,7 +3775,8 @@ export class RuntimeHost {
             command.requestId,
             resolved.provider.wireApi,
             resolved.provider.model,
-          ));
+          ),
+        );
       }
       this.emit({
         type: 'turn.started',
@@ -3509,15 +3795,15 @@ export class RuntimeHost {
         itemId: `${command.turnId}:user`,
         content: turnContent,
       } as const;
-      if (command.type === 'turn.revise' || command.type === 'turn.startQueued') {
+      if (
+        command.type === 'turn.revise' ||
+        command.type === 'turn.startQueued'
+      ) {
         this.emitTransient(userMessageEvent);
       } else {
         this.emit(userMessageEvent);
       }
-      if (
-        command.type === 'turn.startQueued' &&
-        queuedCompaction
-      ) {
+      if (command.type === 'turn.startQueued' && queuedCompaction) {
         await this.executeManualCompaction(
           command,
           resolved,
@@ -3530,50 +3816,57 @@ export class RuntimeHost {
         void this.generateTitle(command, resolved, controller.signal);
       }
       const turnMode = composerTurnMode(turnContent);
-      const turnAccess = turnMode === 'execute'
-        ? 'workspaceWrite' as const
-        : 'readOnly' as const;
-      const collaborationTools = this.nativeRuntime && turnMode === 'execute'
-        ? this.collaboration.toolsForTurn(
-            command,
-            {
-              createTasks: (tasks) => {
-                this.requireNative().createAgentTasksJson(
-                  command.turnId,
-                  JSON.stringify(
-                    tasks.map((task) => ({
-                      id: task.taskId,
-                      parentTaskId: null as string | null,
-                      title: task.title,
-                      status: task.status,
-                      payload: task,
-                    })),
+      const turnAccess =
+        turnMode === 'execute'
+          ? ('workspaceWrite' as const)
+          : ('readOnly' as const);
+      const collaborationTools =
+        this.nativeRuntime && turnMode === 'execute'
+          ? this.collaboration.toolsForTurn(
+              command,
+              {
+                createTasks: (tasks) => {
+                  this.requireNative().createAgentTasksJson(
+                    command.turnId,
+                    JSON.stringify(
+                      tasks.map((task) => ({
+                        id: task.taskId,
+                        parentTaskId: null as string | null,
+                        title: task.title,
+                        status: task.status,
+                        payload: task,
+                      })),
+                    ),
+                  );
+                },
+                updateTask: (task) => {
+                  this.requireNative().updateAgentTask(
+                    task.taskId,
+                    task.status,
+                    JSON.stringify(task),
+                  );
+                },
+                publishTask: (task) => {
+                  this.emit({
+                    type: 'agent.task',
+                    requestId: command.requestId,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    turnId: command.turnId,
+                    task,
+                  });
+                },
+                executeTask: (context) =>
+                  this.executeAgentTask(
+                    command,
+                    resolved,
+                    context,
+                    turnContent,
                   ),
-                );
               },
-              updateTask: (task) => {
-                this.requireNative().updateAgentTask(
-                  task.taskId,
-                  task.status,
-                  JSON.stringify(task),
-                );
-              },
-              publishTask: (task) => {
-                this.emit({
-                  type: 'agent.task',
-                  requestId: command.requestId,
-                  workspaceId: command.workspaceId,
-                  threadId: command.threadId,
-                  turnId: command.turnId,
-                  task,
-                });
-              },
-              executeTask: (context) =>
-                this.executeAgentTask(command, resolved, context, turnContent),
-            },
-            controller.signal,
-          )
-        : [];
+              controller.signal,
+            )
+          : [];
       const invalidArgumentGuard: InvalidArgumentGuard = {
         repeats: new Map<string, number>(),
         calls: new Map<string, string>(),
@@ -3589,21 +3882,23 @@ export class RuntimeHost {
       const nativeWorkspaceId = this.nativeRuntime
         ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
         : command.workspaceId;
-      const turnSkills = queuedTurnSkills ?? (this.nativeRuntime
-        ? createTurnSkills(
-            this.nativeRuntime,
-            nativeWorkspaceId,
-            turnContent,
-          )
-        : {
-            instruction: '',
-            tools: [],
-            validateSteering: (): void => undefined,
-            steeringInstruction: () => '',
-          });
+      const turnSkills =
+        queuedTurnSkills ??
+        (this.nativeRuntime
+          ? createTurnSkills(this.nativeRuntime, nativeWorkspaceId, turnContent)
+          : {
+              instruction: '',
+              tools: [],
+              validateSteering: (): void => undefined,
+              steeringInstruction: () => '',
+            });
       this.activeTurnSkills.set(command.turnId, turnSkills);
       const turnKnowledge = this.nativeRuntime
-        ? createTurnKnowledge(this.nativeRuntime, command.workspaceId, turnContent)
+        ? createTurnKnowledge(
+            this.nativeRuntime,
+            command.workspaceId,
+            turnContent,
+          )
         : {
             instruction: '',
             tools: [],
@@ -3614,11 +3909,19 @@ export class RuntimeHost {
         const queued = this.pendingSteersByTurn.get(command.turnId) ?? [];
         this.pendingSteersByTurn.delete(command.turnId);
         return queued.map((content) => {
-          const modelContent = this.contentFromParts(content, resolved.selection);
+          const modelContent = this.contentFromParts(
+            content,
+            resolved.selection,
+          );
           const composerInstruction = composerIntentInstruction(content);
           const skillInstruction = turnSkills.steeringInstruction(content);
-          const knowledgeInstruction = turnKnowledge.steeringInstruction(content);
-          const metadata = [composerInstruction, skillInstruction, knowledgeInstruction]
+          const knowledgeInstruction =
+            turnKnowledge.steeringInstruction(content);
+          const metadata = [
+            composerInstruction,
+            skillInstruction,
+            knowledgeInstruction,
+          ]
             .filter(Boolean)
             .join('\n\n');
           return metadata
@@ -3641,6 +3944,40 @@ export class RuntimeHost {
         turnContent,
         resolved.selection,
       );
+      const availableImages = this.nativeRuntime
+        ? availableThreadImages(
+            this.parseNativeJson<RuntimeThreadSnapshot>(
+              this.nativeRuntime.loadThreadJson(command.threadId),
+            ),
+            turnContent,
+          )
+        : turnContent.flatMap((part) =>
+            part.type === 'asset' && part.asset.kind === 'image'
+              ? [part.asset]
+              : [],
+          );
+      const imageAnalysisTools =
+        availableImages.length > 0
+          ? [
+              createImageAnalysisTool({
+                assets: availableImages,
+                analysisModel: this.resolveImageAnalysisModel(resolved),
+                analyzer: this.imageAnalyzer,
+                readAsset: (asset) => {
+                  const stored = this.parseNativeJson<StoredImageContent>(
+                    this.requireNative().readAssetJson(asset.assetId),
+                  );
+                  if (!this.sameAsset(stored.asset, asset)) {
+                    throw new Error(
+                      'Stored image metadata does not match the attachment.',
+                    );
+                  }
+                  return stored;
+                },
+                signal: controller.signal,
+              }),
+            ]
+          : [];
       const turnModel = this.createModel(resolved.provider);
       const summarizer = this.createModel({
         ...resolved.provider,
@@ -3648,7 +3985,10 @@ export class RuntimeHost {
       });
       let recoveryCompaction = false;
       const mainTools = [
-        this.invalidArgumentsTool(invalidArgumentGuard, turnKnowledge.tools.length > 0),
+        this.invalidArgumentsTool(
+          invalidArgumentGuard,
+          turnKnowledge.tools.length > 0,
+        ),
         this.requestUserInputTool(
           command,
           userInputFinalGuard,
@@ -3657,44 +3997,45 @@ export class RuntimeHost {
         ...(turnMode === 'plan'
           ? [this.submitPlanTool(command, planSubmissionGuard)]
           : []),
+        ...imageAnalysisTools,
         ...(this.nativeRuntime
           ? [
-            ...createWorkspaceTools(
-              this.nativeRuntime,
-              command.workspaceId,
-              (toolName, argumentsValue, execute) =>
-                this.runPrivilegedTool(
-                  command,
-                  toolName,
-                  argumentsValue,
-                  execute,
-                ),
-              (operationId, stream, delta) => {
-                this.emit({
-                  type: 'operation.output',
-                  requestId: command.requestId,
-                  workspaceId: command.workspaceId,
-                  threadId: command.threadId,
-                  turnId: command.turnId,
-                  operationId,
-                  stream,
-                  delta,
-                });
-              },
-              turnAccess,
-              workspaceInstructions,
-              command.threadId,
-              nativeWorkspaceId,
-            ),
-            ...(turnMode === 'execute'
-              ? this.mcp.toolsForTurn((request) =>
-                this.runMcpTool(command, request),
-              )
-              : []),
-            ...turnSkills.tools,
-            ...turnKnowledge.tools,
-            ...collaborationTools,
-          ]
+              ...createWorkspaceTools(
+                this.nativeRuntime,
+                command.workspaceId,
+                (toolName, argumentsValue, execute) =>
+                  this.runPrivilegedTool(
+                    command,
+                    toolName,
+                    argumentsValue,
+                    execute,
+                  ),
+                (operationId, stream, delta) => {
+                  this.emit({
+                    type: 'operation.output',
+                    requestId: command.requestId,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    turnId: command.turnId,
+                    operationId,
+                    stream,
+                    delta,
+                  });
+                },
+                turnAccess,
+                workspaceInstructions,
+                command.threadId,
+                nativeWorkspaceId,
+              ),
+              ...(turnMode === 'execute'
+                ? this.mcp.toolsForTurn((request) =>
+                    this.runMcpTool(command, request),
+                  )
+                : []),
+              ...turnSkills.tools,
+              ...turnKnowledge.tools,
+              ...collaborationTools,
+            ]
           : []),
       ];
       const agent = new LlmAgent({
@@ -3731,24 +4072,26 @@ export class RuntimeHost {
           }
           if (
             userInputFinalGuard.instructionDeliveredFor <
-              userInputFinalGuard.resolvedRequests
+            userInputFinalGuard.resolvedRequests
           ) {
             userInputFinalGuard.instructionDeliveredFor =
               userInputFinalGuard.resolvedRequests;
             request.contents.push({
               role: 'user',
-              parts: [{
-                text:
-                  '# Internal post-question response boundary\n\n' +
-                  'The structured user-input request has been resolved. Do not continue or append to any draft emitted before request_user_input. ' +
-                  'After any remaining tool work, produce one complete and self-contained final answer from the beginning. ' +
-                  (turnMode === 'plan'
-                    ? 'This Turn remains planning-only: use the answer only to refine the plan and do not implement it. '
-                    : turnMode === 'readOnly'
-                      ? 'This Turn remains read-only and the answer does not authorize workspace changes. '
-                      : '') +
-                  'Do not repeat the question prompts in ordinary final-answer text; incorporate the decisions directly where relevant.',
-              }],
+              parts: [
+                {
+                  text:
+                    '# Internal post-question response boundary\n\n' +
+                    'The structured user-input request has been resolved. Do not continue or append to any draft emitted before request_user_input. ' +
+                    'After any remaining tool work, produce one complete and self-contained final answer from the beginning. ' +
+                    (turnMode === 'plan'
+                      ? 'This Turn remains planning-only: use the answer only to refine the plan and do not implement it. '
+                      : turnMode === 'readOnly'
+                        ? 'This Turn remains read-only and the answer does not authorize workspace changes. '
+                        : '') +
+                    'Do not repeat the question prompts in ordinary final-answer text; incorporate the decisions directly where relevant.',
+                },
+              ],
             });
           }
           try {
@@ -3759,21 +4102,21 @@ export class RuntimeHost {
               selection: reserveContextTokens(
                 resolved.provider.nativeCompaction && !recoveryCompaction
                   ? {
-                    ...resolved.selection,
-                    compactThresholdTokens: Math.min(
-                      resolved.selection.contextWindowTokens -
-                        DEFAULT_MAX_OUTPUT_TOKENS -
-                        Math.max(
-                          4_096,
+                      ...resolved.selection,
+                      compactThresholdTokens: Math.min(
+                        resolved.selection.contextWindowTokens -
+                          DEFAULT_MAX_OUTPUT_TOKENS -
+                          Math.max(
+                            4_096,
+                            Math.ceil(
+                              resolved.selection.contextWindowTokens * 0.05,
+                            ),
+                          ),
+                        (resolved.provider.compactThresholdTokens ?? 0) +
                           Math.ceil(
                             resolved.selection.contextWindowTokens * 0.05,
                           ),
-                        ),
-                      (resolved.provider.compactThresholdTokens ?? 0) +
-                        Math.ceil(
-                          resolved.selection.contextWindowTokens * 0.05,
-                        ),
-                    ),
+                      ),
                     }
                   : resolved.selection,
                 workspaceInstructions?.reserveTokens() ?? 0,
@@ -3784,25 +4127,27 @@ export class RuntimeHost {
                 ? { trigger: 'recovery' as const, force: true }
                 : {}),
               callbacks: {
-              onStarted: (event) => this.emit({
-                type: 'turn.contextCompactionStarted',
-                requestId: command.requestId,
-                workspaceId: command.workspaceId,
-                threadId: command.threadId,
-                turnId: command.turnId,
-                ...event,
-              }),
-              onFinished: (event) => this.emit({
-                type: 'turn.contextCompactionFinished',
-                requestId: command.requestId,
-                workspaceId: command.workspaceId,
-                threadId: command.threadId,
-                turnId: command.turnId,
-                ...event,
-              }),
-              persist: (checkpoint) =>
-                this.persistContextCheckpoint(command, checkpoint),
-              currentSequence: () => this.sequence,
+                onStarted: (event) =>
+                  this.emit({
+                    type: 'turn.contextCompactionStarted',
+                    requestId: command.requestId,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    turnId: command.turnId,
+                    ...event,
+                  }),
+                onFinished: (event) =>
+                  this.emit({
+                    type: 'turn.contextCompactionFinished',
+                    requestId: command.requestId,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    turnId: command.turnId,
+                    ...event,
+                  }),
+                persist: (checkpoint) =>
+                  this.persistContextCheckpoint(command, checkpoint),
+                currentSequence: () => this.sequence,
               },
             });
             recoveryCompaction = false;
@@ -3814,9 +4159,10 @@ export class RuntimeHost {
               type: 'runtime.log',
               requestId: command.requestId,
               level: 'warn',
-              message: error instanceof Error
-                ? `Automatic context compaction failed: ${error.message}`
-                : 'Automatic context compaction failed.',
+              message:
+                error instanceof Error
+                  ? `Automatic context compaction failed: ${error.message}`
+                  : 'Automatic context compaction failed.',
             });
           }
           workspaceInstructions?.injectIntoRequest(request, currentUserContent);
@@ -3850,7 +4196,8 @@ export class RuntimeHost {
                 turnMode === 'plan',
               );
             },
-            onCompletedEvent: (event) => this.persistModelHistory(command, event),
+            onCompletedEvent: (event) =>
+              this.persistModelHistory(command, event),
             consumePendingResults: () =>
               this.collaboration.consumePendingResults(
                 command.turnId,
@@ -3865,7 +4212,7 @@ export class RuntimeHost {
               ![...this.pendingApprovals.values()].some(
                 (approval) => approval.turnId === command.turnId,
               ) &&
-              !(this.activeOperations.get(command.turnId)?.size),
+              !this.activeOperations.get(command.turnId)?.size,
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
             terminalToolResult: (event) =>
@@ -3880,9 +4227,10 @@ export class RuntimeHost {
               if (turnMode === 'plan' && !planSubmissionGuard.proposal) {
                 return 'Planning mode requires the completed plan to be submitted with submit_plan before the Turn can finish.';
               }
-              const planIssue = turnMode === 'plan'
-                ? planSubmissionIssue(candidateText)
-                : undefined;
+              const planIssue =
+                turnMode === 'plan'
+                  ? planSubmissionIssue(candidateText)
+                  : undefined;
               if (planIssue && candidateText.trim().length > 0) {
                 return planIssue;
               }
@@ -3913,10 +4261,11 @@ export class RuntimeHost {
           recoveryCompaction = true;
           driverMessage = {
             role: 'user',
-            parts: [{
-              text:
-                '# Internal context recovery\n\nRetry the original request after SugarCode compacts prior context.',
-            }],
+            parts: [
+              {
+                text: '# Internal context recovery\n\nRetry the original request after SugarCode compacts prior context.',
+              },
+            ],
           };
         }
       }
@@ -3942,7 +4291,7 @@ export class RuntimeHost {
         command,
         details.kind === 'cancelled' ? 'interrupted' : 'failed',
         details.kind === 'cancelled'
-          ? this.cancellationError(command.turnId) ?? details
+          ? (this.cancellationError(command.turnId) ?? details)
           : details,
       );
     } finally {
@@ -3984,7 +4333,7 @@ export class RuntimeHost {
       sessionId: command.threadId,
     });
     const contents = (session?.events ?? []).flatMap((event) =>
-      event.content ? [event.content] : []
+      event.content ? [event.content] : [],
     );
     const request: LlmRequest = {
       model: resolved.selection.modelId,
@@ -4006,22 +4355,24 @@ export class RuntimeHost {
       focus,
       force: true,
       callbacks: {
-        onStarted: (event) => this.emit({
-          type: 'turn.contextCompactionStarted',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          threadId: command.threadId,
-          turnId: command.turnId,
-          ...event,
-        }),
-        onFinished: (event) => this.emit({
-          type: 'turn.contextCompactionFinished',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          threadId: command.threadId,
-          turnId: command.turnId,
-          ...event,
-        }),
+        onStarted: (event) =>
+          this.emit({
+            type: 'turn.contextCompactionStarted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            ...event,
+          }),
+        onFinished: (event) =>
+          this.emit({
+            type: 'turn.contextCompactionFinished',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            ...event,
+          }),
         persist: (checkpoint) =>
           this.persistContextCheckpoint(command, checkpoint),
         currentSequence: () => this.sequence,
@@ -4083,7 +4434,8 @@ export class RuntimeHost {
     try {
       const resolved = this.resolveProfile(command);
       withDurableStateWrite(() =>
-        this.nativeRuntime?.ensureThread(command.threadId, command.workspaceId));
+        this.nativeRuntime?.ensureThread(command.threadId, command.workspaceId),
+      );
       await this.ensureSession(command, resolved.selection);
       withDurableStateWrite(() =>
         this.nativeRuntime?.startTurn(
@@ -4092,7 +4444,8 @@ export class RuntimeHost {
           command.requestId,
           resolved.provider.wireApi,
           resolved.provider.model,
-        ));
+        ),
+      );
       this.emit({
         type: 'turn.started',
         requestId: command.requestId,
@@ -4107,7 +4460,7 @@ export class RuntimeHost {
         sessionId: command.threadId,
       });
       const contents = (session?.events ?? []).flatMap((event) =>
-        event.content ? [event.content] : []
+        event.content ? [event.content] : [],
       );
       const request: LlmRequest = {
         model: resolved.selection.modelId,
@@ -4129,22 +4482,24 @@ export class RuntimeHost {
         focus: command.focus,
         force: true,
         callbacks: {
-          onStarted: (event) => this.emit({
-            type: 'turn.contextCompactionStarted',
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            ...event,
-          }),
-          onFinished: (event) => this.emit({
-            type: 'turn.contextCompactionFinished',
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            ...event,
-          }),
+          onStarted: (event) =>
+            this.emit({
+              type: 'turn.contextCompactionStarted',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              ...event,
+            }),
+          onFinished: (event) =>
+            this.emit({
+              type: 'turn.contextCompactionFinished',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              ...event,
+            }),
           persist: (checkpoint) =>
             this.persistContextCheckpoint(command, checkpoint),
           currentSequence: () => this.sequence,
@@ -4192,7 +4547,7 @@ export class RuntimeHost {
         command,
         details.kind === 'cancelled' ? 'interrupted' : 'failed',
         details.kind === 'cancelled'
-          ? this.cancellationError(command.turnId) ?? details
+          ? (this.cancellationError(command.turnId) ?? details)
           : details,
       );
     } finally {
@@ -4276,11 +4631,13 @@ export class RuntimeHost {
           (dependency.result?.summaryMarkdown ?? ''),
       )
       .join('\n\n');
-    let input = dependencyContext.length > 0
-      ? `${context.task.taskMarkdown}\n\n# Dependency results\n\n${dependencyContext}`
-      : context.task.taskMarkdown;
+    let input =
+      dependencyContext.length > 0
+        ? `${context.task.taskMarkdown}\n\n# Dependency results\n\n${dependencyContext}`
+        : context.task.taskMarkdown;
     if (context.task.role === 'auditor') {
-      input += `\n\n# Mandatory audit report format\n\n` +
+      input +=
+        `\n\n# Mandatory audit report format\n\n` +
         `Return only a Markdown report with these headings:\n\n` +
         `## Verdict\n\n## Findings\n\n## Acceptance criteria\n\n## Residual risks\n\n` +
         `Each finding must include severity, evidence, and a concrete remediation.`;
@@ -4288,7 +4645,8 @@ export class RuntimeHost {
     let streamedSummary = '';
     let completedSummary = '';
     let lastProgressAt = 0;
-    let lastProgressStage: 'waitingForModel' | 'streaming' | 'runningTool' | null = null;
+    let lastProgressStage:
+      'waitingForModel' | 'streaming' | 'runningTool' | null = null;
     let lastProgressSummary = '';
     try {
       const publishProgress = (
@@ -4317,7 +4675,9 @@ export class RuntimeHost {
         'Subagent started and is waiting for the model response.',
         true,
       );
-      const runWithApprovalState = async <T>(operation: () => Promise<T>): Promise<T> => {
+      const runWithApprovalState = async <T>(
+        operation: () => Promise<T>,
+      ): Promise<T> => {
         let waitingVisible = false;
         const timer = setTimeout(() => {
           waitingVisible = true;
@@ -4373,8 +4733,8 @@ export class RuntimeHost {
             ),
             ...(context.task.role === 'worker'
               ? this.mcp.toolsForTurn((request) =>
-                runWithApprovalState(() => this.runMcpTool(command, request))
-              )
+                  runWithApprovalState(() => this.runMcpTool(command, request)),
+                )
               : []),
           ]
         : [];
@@ -4385,9 +4745,17 @@ export class RuntimeHost {
         finalRecoveryUsed: false,
       };
       const turnSkills = this.nativeRuntime
-        ? createTurnSkills(
+        ? createTurnSkills(this.nativeRuntime, nativeWorkspaceId, turnContent)
+        : {
+            instruction: '',
+            tools: [],
+            validateSteering: (): void => undefined,
+            steeringInstruction: () => '',
+          };
+      const turnKnowledge = this.nativeRuntime
+        ? createTurnKnowledge(
             this.nativeRuntime,
-            nativeWorkspaceId,
+            command.workspaceId,
             turnContent,
           )
         : {
@@ -4396,16 +4764,11 @@ export class RuntimeHost {
             validateSteering: (): void => undefined,
             steeringInstruction: () => '',
           };
-      const turnKnowledge = this.nativeRuntime
-        ? createTurnKnowledge(this.nativeRuntime, command.workspaceId, turnContent)
-        : {
-            instruction: '',
-            tools: [],
-            validateSteering: (): void => undefined,
-            steeringInstruction: () => '',
-          };
       const agentTools = [
-        this.invalidArgumentsTool(invalidArgumentGuard, turnKnowledge.tools.length > 0),
+        this.invalidArgumentsTool(
+          invalidArgumentGuard,
+          turnKnowledge.tools.length > 0,
+        ),
         ...tools,
         ...turnSkills.tools,
         ...turnKnowledge.tools,
@@ -4451,12 +4814,13 @@ export class RuntimeHost {
           if (amendments.length > 0) {
             request.contents.push({
               role: 'user',
-              parts: [{
-                text:
-                  `# Task amendments\n\n${amendments
+              parts: [
+                {
+                  text: `# Task amendments\n\n${amendments
                     .map((amendment, index) => `${index + 1}. ${amendment}`)
                     .join('\n\n')}`,
-              }],
+                },
+              ],
             });
           }
           return undefined;
@@ -4479,23 +4843,24 @@ export class RuntimeHost {
           this.observeToolProgress(invalidArgumentGuard, event);
           const parts = event.content?.parts ?? [];
           const text = parts
-            .filter(
-              (part) => !part.thought && typeof part.text === 'string',
-            )
+            .filter((part) => !part.thought && typeof part.text === 'string')
             .map((part) => part.text ?? '')
             .join('');
           if (event.partial && text.length > 0) {
             streamedSummary += text;
             publishProgress('streaming', streamedSummary.slice(-16 * 1024));
           } else if (event.partial === false && text.length > 0) {
-            const outcome = readModelStepOutcome(parts) ??
-              this.fallbackOutcome(event);
+            const outcome =
+              readModelStepOutcome(parts) ?? this.fallbackOutcome(event);
             if (outcome?.kind === 'final') {
               completedSummary = parts
                 .filter((part) => {
                   const metadata = readModelItemMetadata(part);
-                  return !part.thought && metadata?.phase !== 'commentary' &&
-                    typeof part.text === 'string';
+                  return (
+                    !part.thought &&
+                    metadata?.phase !== 'commentary' &&
+                    typeof part.text === 'string'
+                  );
                 })
                 .map((part) => part.text ?? '')
                 .join('');
@@ -4588,12 +4953,14 @@ export class RuntimeHost {
     for (const [index, part] of parts.entries()) {
       if (isVisibleModelTextPart(part)) {
         const metadata = readModelItemMetadata(part);
-        const initialPhase: ModelTextPhase = metadata?.phase ??
-          (part.thought ? 'commentary' : 'provisional');
+        const initialPhase: ModelTextPhase =
+          metadata?.phase ?? (part.thought ? 'commentary' : 'provisional');
         const existingItem = [...textItems.entries()].find(
           ([, item]) => !item.completed && item.phase === initialPhase,
         );
-        const itemId = metadata?.itemId ?? existingItem?.[0] ??
+        const itemId =
+          metadata?.itemId ??
+          existingItem?.[0] ??
           `${command.turnId}:text:${textItems.size}`;
         const state = textItems.get(itemId) ?? {
           phase: initialPhase,
@@ -4615,15 +4982,17 @@ export class RuntimeHost {
           });
         }
         if (event.partial === false) {
-          const outcome = metadata?.outcome ??
+          const outcome =
+            metadata?.outcome ??
             readModelStepOutcome(event.content?.parts ?? []);
-          const completedPhase = hasUserInputCall ||
-              hasPlanSubmissionCall ||
-              part.thought ||
-              initialPhase === 'commentary' ||
-              outcome?.kind !== 'final'
-            ? 'commentary' as const
-            : 'final' as const;
+          const completedPhase =
+            hasUserInputCall ||
+            hasPlanSubmissionCall ||
+            part.thought ||
+            initialPhase === 'commentary' ||
+            outcome?.kind !== 'final'
+              ? ('commentary' as const)
+              : ('final' as const);
           const completedText = hasUserInputCall
             ? userInputBoundaryCommentary(
                 part.text,
@@ -4632,7 +5001,7 @@ export class RuntimeHost {
               )
             : hasPlanSubmissionCall
               ? planSubmissionBoundaryCommentary(userText)
-            : part.text;
+              : part.text;
           if (
             state.completed &&
             state.phase === completedPhase &&
@@ -4683,12 +5052,14 @@ export class RuntimeHost {
             part.functionCall.name,
             part.functionCall.args ?? {},
           );
-          const duplicate = progress && [...textItems.values()].some(
-            (item) =>
-              item.completed &&
-              item.phase === 'commentary' &&
-              item.text === progress,
-          );
+          const duplicate =
+            progress &&
+            [...textItems.values()].some(
+              (item) =>
+                item.completed &&
+                item.phase === 'commentary' &&
+                item.text === progress,
+            );
           if (progress && !duplicate) {
             const progressItemId = `${command.turnId}:progress:${callId}`;
             textItems.set(progressItemId, {
@@ -4716,7 +5087,8 @@ export class RuntimeHost {
           workspaceId: command.workspaceId,
           threadId: command.threadId,
           turnId: command.turnId,
-          itemId: metadata?.itemId ?? part.functionCall.id ?? `${event.id}:${index}`,
+          itemId:
+            metadata?.itemId ?? part.functionCall.id ?? `${event.id}:${index}`,
           callId,
           name: part.functionCall.name,
           arguments: part.functionCall.args ?? {},
@@ -4730,7 +5102,10 @@ export class RuntimeHost {
           workspaceId: command.workspaceId,
           threadId: command.threadId,
           turnId: command.turnId,
-          itemId: metadata?.itemId ?? part.functionResponse.id ?? `${event.id}:${index}`,
+          itemId:
+            metadata?.itemId ??
+            part.functionResponse.id ??
+            `${event.id}:${index}`,
           callId: part.functionResponse.id ?? `${event.id}:${index}`,
           result: part.functionResponse.response ?? {},
         });
@@ -4773,15 +5148,15 @@ export class RuntimeHost {
         continue;
       }
       const strategy = isRecord(openAi)
-        ? 'openaiNative' as const
-        : 'anthropicNative' as const;
-      const compactionId = typeof artifact.id === 'string'
-        ? artifact.id
-        : randomUUID();
-      const beforeContextTokens = isRecord(event.customMetadata) &&
-          typeof event.customMetadata.contextInputTokens === 'number'
-        ? event.customMetadata.contextInputTokens
-        : undefined;
+        ? ('openaiNative' as const)
+        : ('anthropicNative' as const);
+      const compactionId =
+        typeof artifact.id === 'string' ? artifact.id : randomUUID();
+      const beforeContextTokens =
+        isRecord(event.customMetadata) &&
+        typeof event.customMetadata.contextInputTokens === 'number'
+          ? event.customMetadata.contextInputTokens
+          : undefined;
       const startedAt = Date.now();
       this.emit({
         type: 'turn.contextCompactionStarted',
@@ -4794,9 +5169,8 @@ export class RuntimeHost {
         strategy,
         ...(beforeContextTokens === undefined ? {} : { beforeContextTokens }),
       });
-      const readableSummary = typeof artifact.content === 'string'
-        ? artifact.content
-        : undefined;
+      const readableSummary =
+        typeof artifact.content === 'string' ? artifact.content : undefined;
       this.persistContextCheckpoint(command, {
         version: 1,
         checkpointId: compactionId,
@@ -4809,8 +5183,7 @@ export class RuntimeHost {
           providerFamily: selection.providerFamily,
           wireApi: selection.wireApi,
           modelId: selection.modelId,
-          compatibilityKey:
-            `${selection.providerFamily}:${selection.wireApi}:${selection.modelId}`,
+          compatibilityKey: `${selection.providerFamily}:${selection.wireApi}:${selection.modelId}`,
           payload: artifact,
         },
         ...(beforeContextTokens === undefined ? {} : { beforeContextTokens }),
@@ -4869,7 +5242,9 @@ export class RuntimeHost {
     const operationId = randomUUID();
     const approvalId = randomUUID();
     const argumentsJson = JSON.stringify(argumentsValue);
-    const requestHash = createHash('sha256').update(argumentsJson).digest('hex');
+    const requestHash = createHash('sha256')
+      .update(argumentsJson)
+      .digest('hex');
     const approvalPresentation = {
       kind: 'command' as const,
       argumentsSummary: this.approvalArgumentsSummary(
@@ -4947,7 +5322,8 @@ export class RuntimeHost {
     operationId: string,
     execute: (operationId: string) => Promise<unknown>,
   ): Promise<unknown> => {
-    const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
+    const operations =
+      this.activeOperations.get(command.turnId) ?? new Set<string>();
     operations.add(operationId);
     this.activeOperations.set(command.turnId, operations);
     try {
@@ -5018,11 +5394,12 @@ export class RuntimeHost {
     const hasBlockingApproval = [...this.pendingApprovals.values()].some(
       (approval) => !approval.recovered || approval.kind !== 'mcp',
     );
-    const action = this.activeTurns.size > 0
-      ? { accepted: false as const, reason: 'turnActive' as const }
-      : hasBlockingApproval
-        ? { accepted: false as const, reason: 'approvalPending' as const }
-        : await this.mcp.setActive(command.serverIds);
+    const action =
+      this.activeTurns.size > 0
+        ? { accepted: false as const, reason: 'turnActive' as const }
+        : hasBlockingApproval
+          ? { accepted: false as const, reason: 'approvalPending' as const }
+          : await this.mcp.setActive(command.serverIds);
     this.emit({
       type: 'mcp.sessionAction',
       requestId: command.requestId,
@@ -5037,7 +5414,9 @@ export class RuntimeHost {
   ): Promise<unknown> => {
     const operationId = randomUUID();
     const approvalId = randomUUID();
-    const argumentsJson = JSON.stringify(stableJsonValue(request.argumentsValue));
+    const argumentsJson = JSON.stringify(
+      stableJsonValue(request.argumentsValue),
+    );
     if (Buffer.byteLength(argumentsJson, 'utf8') > MAX_MCP_ARGUMENT_BYTES) {
       return { ok: false, error: 'mcpArgumentsTooLarge' };
     }
@@ -5095,7 +5474,8 @@ export class RuntimeHost {
     if (decision === 'denied') {
       return { ok: false, error: 'userDenied' };
     }
-    const operations = this.activeOperations.get(command.turnId) ?? new Set<string>();
+    const operations =
+      this.activeOperations.get(command.turnId) ?? new Set<string>();
     operations.add(operationId);
     this.activeOperations.set(command.turnId, operations);
     try {
@@ -5180,9 +5560,10 @@ export class RuntimeHost {
       const requestHash = createHash('sha256')
         .update(record.argumentsJson)
         .digest('hex');
-      const presentation = argumentsValue && requestHash === record.requestHash
-        ? this.recoveredApprovalPresentation(record, argumentsValue)
-        : null;
+      const presentation =
+        argumentsValue && requestHash === record.requestHash
+          ? this.recoveredApprovalPresentation(record, argumentsValue)
+          : null;
       if (!argumentsValue || !presentation) {
         this.rejectUnrecoverableApproval(record);
         continue;
@@ -5321,8 +5702,7 @@ export class RuntimeHost {
       if (payload === null || payload === undefined) {
         return computed;
       }
-      const legacyArgumentsSummary =
-        `${record.toolName} (${Buffer.byteLength(record.argumentsJson, 'utf8')} bytes)`;
+      const legacyArgumentsSummary = `${record.toolName} (${Buffer.byteLength(record.argumentsJson, 'utf8')} bytes)`;
       return isRecord(payload) &&
         payload.kind === 'command' &&
         (payload.argumentsSummary === computed.argumentsSummary ||
@@ -5341,7 +5721,8 @@ export class RuntimeHost {
       payload.name !== record.toolName ||
       !record.toolName.startsWith(`mcp__${payload.serverId}__`) ||
       typeof payload.argumentsBytes !== 'number' ||
-      payload.argumentsBytes !== Buffer.byteLength(record.argumentsJson, 'utf8') ||
+      payload.argumentsBytes !==
+        Buffer.byteLength(record.argumentsJson, 'utf8') ||
       payload.argumentsSha256 !== record.requestHash ||
       typeof payload.inventorySha256 !== 'string' ||
       !/^[0-9a-f]{64}$/u.test(payload.inventorySha256)
@@ -5388,7 +5769,8 @@ export class RuntimeHost {
     argumentsValue: Readonly<Record<string, unknown>>,
     presentation: RecoveredApprovalPresentation,
   ): Promise<void> => {
-    const operations = this.activeOperations.get(record.turnId) ?? new Set<string>();
+    const operations =
+      this.activeOperations.get(record.turnId) ?? new Set<string>();
     operations.add(record.operationId);
     this.activeOperations.set(record.turnId, operations);
     this.emit({
@@ -5400,42 +5782,49 @@ export class RuntimeHost {
       operationId: record.operationId,
     });
     try {
-      const output = presentation.kind === 'command'
-        ? await executePrivilegedWorkspaceTool(
-            this.requireNative(),
-            record.operationId,
-            record.toolName === 'workspace_apply_patch'
-              ? this.taskWorkspaceBindingId(record.workspaceId, record.threadId)
-              : record.workspaceId,
-            record.toolName,
-            argumentsValue,
-            (operationId, stream, delta) => {
-              this.emit({
-                type: 'operation.output',
-                requestId: record.requestId,
-                workspaceId: record.workspaceId,
-                threadId: record.threadId,
-                turnId: record.turnId,
-                operationId,
-                stream,
-                delta,
-              });
-            },
-            record.threadId,
-          )
-        : await this.mcp.executeRecovered(
-            presentation.serverId,
-            presentation.name,
-            argumentsValue,
-            presentation.inventorySha256,
-            new AbortController().signal,
-          );
+      const output =
+        presentation.kind === 'command'
+          ? await executePrivilegedWorkspaceTool(
+              this.requireNative(),
+              record.operationId,
+              record.toolName === 'workspace_apply_patch'
+                ? this.taskWorkspaceBindingId(
+                    record.workspaceId,
+                    record.threadId,
+                  )
+                : record.workspaceId,
+              record.toolName,
+              argumentsValue,
+              (operationId, stream, delta) => {
+                this.emit({
+                  type: 'operation.output',
+                  requestId: record.requestId,
+                  workspaceId: record.workspaceId,
+                  threadId: record.threadId,
+                  turnId: record.turnId,
+                  operationId,
+                  stream,
+                  delta,
+                });
+              },
+              record.threadId,
+            )
+          : await this.mcp.executeRecovered(
+              presentation.serverId,
+              presentation.name,
+              argumentsValue,
+              presentation.inventorySha256,
+              new AbortController().signal,
+            );
       const result = isRecord(output) ? output : { value: output };
-      const succeeded = presentation.kind === 'mcp'
-        ? result.isError !== true
-        : !(result.ok === false ||
-            result.status === 'error' ||
-            result.status === 'cancelled');
+      const succeeded =
+        presentation.kind === 'mcp'
+          ? result.isError !== true
+          : !(
+              result.ok === false ||
+              result.status === 'error' ||
+              result.status === 'cancelled'
+            );
       this.requireNative().completeOperation(
         record.operationId,
         JSON.stringify(result),
@@ -5454,7 +5843,8 @@ export class RuntimeHost {
     } catch (error) {
       const result = {
         ok: false,
-        error: error instanceof Error ? error.message : 'recoveredOperationFailed',
+        error:
+          error instanceof Error ? error.message : 'recoveredOperationFailed',
       };
       this.requireNative().completeOperation(
         record.operationId,
@@ -5487,9 +5877,7 @@ export class RuntimeHost {
     if (toolName === 'workspace_apply_patch') {
       return false;
     }
-    return !(
-      toolName === 'shell_exec' && argumentsValue.mode === 'sandboxed'
-    );
+    return !(toolName === 'shell_exec' && argumentsValue.mode === 'sandboxed');
   };
 
   private publishApproval = (approvalId: string): void => {
@@ -5534,9 +5922,8 @@ export class RuntimeHost {
     }
     this.pendingApprovals.delete(approvalId);
     this.emit({
-      type: pending.kind === 'mcp'
-        ? 'mcp.approvalResolved'
-        : 'approval.resolved',
+      type:
+        pending.kind === 'mcp' ? 'mcp.approvalResolved' : 'approval.resolved',
       requestId,
       workspaceId: pending.workspaceId,
       threadId: pending.threadId,
@@ -5645,23 +6032,26 @@ export class RuntimeHost {
     ) {
       return workspacePatchApprovalSummary(argumentsValue.patch);
     }
-    if (toolName !== 'shell_exec' || typeof argumentsValue.command !== 'string') {
+    if (
+      toolName !== 'shell_exec' ||
+      typeof argumentsValue.command !== 'string'
+    ) {
       return `${toolName} (${Buffer.byteLength(argumentsJson, 'utf8')} bytes)`;
     }
-    const commandArguments = Array.isArray(argumentsValue.arguments) &&
+    const commandArguments =
+      Array.isArray(argumentsValue.arguments) &&
       argumentsValue.arguments.every((argument) => typeof argument === 'string')
-      ? argumentsValue.arguments.map((argument) => JSON.stringify(argument)).join(' ')
-      : '';
+        ? argumentsValue.arguments
+            .map((argument) => JSON.stringify(argument))
+            .join(' ')
+        : '';
     const rendered = [argumentsValue.command, commandArguments]
       .filter((part) => part.length > 0)
       .join(' ');
-    const prefix = argumentsValue.mode === 'fullAccess'
-      ? 'Full Access'
-      : 'Sandboxed';
+    const prefix =
+      argumentsValue.mode === 'fullAccess' ? 'Full Access' : 'Sandboxed';
     const summary = `${prefix}: ${rendered}`;
-    return summary.length <= 4_096
-      ? summary
-      : `${summary.slice(0, 4_093)}...`;
+    return summary.length <= 4_096 ? summary : `${summary.slice(0, 4_093)}...`;
   };
 
   private emitCompleted = (
@@ -5697,9 +6087,7 @@ export class RuntimeHost {
     });
   };
 
-  private emit = (
-    event: RuntimeEventInput,
-  ): void => {
+  private emit = (event: RuntimeEventInput): void => {
     this.sequence += 1;
     const normalized = { ...event, sequence: this.sequence } as RuntimeEvent;
     const nativeRuntime = this.nativeRuntime;
@@ -5719,7 +6107,7 @@ export class RuntimeHost {
               ? normalized.approvalId
               : 'inputRequestId' in normalized
                 ? normalized.inputRequestId
-              : String(normalized.sequence);
+                : String(normalized.sequence);
       withDurableStateWrite(() =>
         nativeRuntime.appendItem(
           normalized.type === 'turn.textCompleted'
@@ -5729,7 +6117,8 @@ export class RuntimeHost {
           normalized.sequence,
           normalized.type,
           JSON.stringify(normalized),
-        ));
+        ),
+      );
     }
     this.postEvent(normalized);
   };

@@ -1,5 +1,6 @@
 import {
   MAX_CONVERSATION_ATTACHMENTS,
+  MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
   MAX_FILE_CHANGE_DIFF_BYTES,
   MAX_FILE_CHANGE_DIFF_LINES,
   MAX_USER_INPUT_OPTIONS,
@@ -296,7 +297,8 @@ export const isConversationAttachment = (
     (value.kind === 'image' &&
       typeof value.previewUrl === 'string' &&
       value.previewUrl.startsWith(`data:${value.mediaType};base64,`) &&
-      value.previewUrl.length <= 12 * 1024 * 1024));
+      value.previewUrl.length <=
+        MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH));
 
 const isWorkspaceReadOutcome = (
   value: unknown,
@@ -465,7 +467,8 @@ const isKnowledgeCitation = (
   (value.pageNumber === undefined ||
     (Number.isSafeInteger(value.pageNumber) && Number(value.pageNumber) > 0)) &&
   (value.contentKind === undefined ||
-    value.contentKind === 'text' || value.contentKind === 'code') &&
+    value.contentKind === 'text' ||
+    value.contentKind === 'code') &&
   (value.language === undefined || hasBoundedText(value.language, 128)) &&
   (value.startLine === undefined ||
     (Number.isSafeInteger(value.startLine) && Number(value.startLine) > 0)) &&
@@ -485,8 +488,8 @@ export const isKnowledgeActivity = (
     !isId(value.id) ||
     !isId(value.callId) ||
     !['search', 'listDocuments', 'read'].includes(String(value.operation)) ||
-    (value.query !== undefined || value.operation === 'search') &&
-      !hasBoundedText(value.query, 4_000) ||
+    ((value.query !== undefined || value.operation === 'search') &&
+      !hasBoundedText(value.query, 4_000)) ||
     typeof value.callStatus !== 'string' ||
     !MESSAGE_STATUSES.has(value.callStatus as ConversationMessageStatus)
   ) {
@@ -509,7 +512,9 @@ export const isKnowledgeActivity = (
   }
   return (
     outcome.type === 'success' &&
-    ['fullText', 'hybrid', 'documentList', 'read'].includes(String(outcome.mode)) &&
+    ['fullText', 'hybrid', 'documentList', 'read'].includes(
+      String(outcome.mode),
+    ) &&
     Number.isSafeInteger(outcome.matches) &&
     Number(outcome.matches) >= 0 &&
     Number(outcome.matches) <= 400 &&
@@ -602,14 +607,18 @@ export const isFileChangeActivity = (
     return false;
   }
   const change = value.change;
-  const validProposal = (proposal: unknown): proposal is ConversationFileChangeProposal =>
+  const validProposal = (
+    proposal: unknown,
+  ): proposal is ConversationFileChangeProposal =>
     isRecord(proposal) &&
     isId(proposal.id) &&
     proposal.id !== value.id &&
     typeof proposal.status === 'string' &&
     MESSAGE_STATUSES.has(proposal.status as ConversationMessageStatus) &&
     isValidFileChangePath(proposal.path) &&
-    (proposal.kind === 'create' || proposal.kind === 'update' || proposal.kind === 'delete') &&
+    (proposal.kind === 'create' ||
+      proposal.kind === 'update' ||
+      proposal.kind === 'delete') &&
     isValidFileChangeDiff(proposal.diff, proposal.path, proposal.kind) &&
     isValidSha256(proposal.beforeSha256) &&
     isValidSha256(proposal.afterSha256) &&
@@ -635,8 +644,11 @@ export const isFileChangeActivity = (
     (!Array.isArray(changes) ||
       changes.length > 64 ||
       changes.some((proposal) => !validProposal(proposal)) ||
-      new Set(changes.map((proposal) => (proposal as ConversationFileChangeProposal).path)).size !==
-        changes.length)
+      new Set(
+        changes.map(
+          (proposal) => (proposal as ConversationFileChangeProposal).path,
+        ),
+      ).size !== changes.length)
   ) {
     return false;
   }
@@ -672,7 +684,8 @@ export const isFileChangeActivity = (
   if (
     parsedResult?.outcome.type === 'success' &&
     'files' in parsedResult.outcome &&
-    (!Array.isArray(changes) || parsedResult.outcome.files.length !== changes.length)
+    (!Array.isArray(changes) ||
+      parsedResult.outcome.files.length !== changes.length)
   ) {
     return false;
   }
@@ -782,8 +795,7 @@ const isCommandExecutionResultOutcome = (
 export const isCommandApprovalActivity = (
   value: unknown,
 ): value is ConversationCommandApprovalActivity => {
-  const fullAccess =
-    isRecord(value) && value.fullAccess === true;
+  const fullAccess = isRecord(value) && value.fullAccess === true;
   const liveOutputValid =
     !isRecord(value) ||
     !Object.hasOwn(value, 'liveOutput') ||
@@ -809,8 +821,11 @@ export const isCommandApprovalActivity = (
       (fullAccess ? 32_768 : 1_024) ||
     (fullAccess
       ? value.command.includes('\0')
-      : Array.from(value.command).some((character) => /\p{Cc}/u.test(character))) ||
-    (Object.hasOwn(value, 'fullAccess') && typeof value.fullAccess !== 'boolean') ||
+      : Array.from(value.command).some((character) =>
+          /\p{Cc}/u.test(character),
+        )) ||
+    (Object.hasOwn(value, 'fullAccess') &&
+      typeof value.fullAccess !== 'boolean') ||
     !liveOutputValid ||
     typeof value.argumentCount !== 'number' ||
     !Number.isSafeInteger(value.argumentCount) ||
@@ -912,7 +927,9 @@ const isMcpResultReceipt = (
   );
 };
 
-export const isMcpActivity = (value: unknown): value is ConversationMcpActivity => {
+export const isMcpActivity = (
+  value: unknown,
+): value is ConversationMcpActivity => {
   if (
     !isRecord(value) ||
     !isId(value.callItemId) ||

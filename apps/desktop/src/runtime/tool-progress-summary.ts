@@ -1,4 +1,5 @@
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './models/types.ts';
+import { ANALYZE_IMAGE_TOOL_NAME } from './media-analysis.ts';
 
 const boundedProgressValue = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim().length > 0
@@ -58,6 +59,8 @@ export const toolProgressSummary = (
         return paths[0] ? `正在生成 ${pathBasename(paths[0])} 图表。` : '正在生成 Draw.io 图表。';
       case 'shell_exec':
         return '正在运行项目命令。';
+      case ANALYZE_IMAGE_TOOL_NAME:
+        return '正在分析图片内容。';
       case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
         return '工具参数格式不正确，正在调整调用方式。';
       default:
@@ -87,6 +90,8 @@ export const toolProgressSummary = (
       return paths[0] ? `Generating the ${pathBasename(paths[0])} diagram.` : 'Generating a Draw.io diagram.';
     case 'shell_exec':
       return 'Running a project command.';
+    case ANALYZE_IMAGE_TOOL_NAME:
+      return 'Analyzing the image content.';
     case INVALID_TOOL_ARGUMENTS_TOOL_NAME:
       return 'Adjusting an invalid tool argument format.';
     default:

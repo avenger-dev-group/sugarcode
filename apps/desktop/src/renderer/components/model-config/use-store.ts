@@ -216,6 +216,14 @@ export const useStore = ({
     );
     updateConfig((current) => ({
       ...current,
+      ...(current.mediaRouting?.imageProfileId === selectedProfile.id
+        ? {
+            mediaRouting: {
+              ...current.mediaRouting,
+              imageProfileId: undefined,
+            },
+          }
+        : {}),
       defaultProfileId:
         current.defaultProfileId === selectedProfile.id
           ? nextProfile.id
@@ -368,6 +376,14 @@ export const useStore = ({
     },
     updateConnection,
     updateSelectedProfile,
+    setImageAnalysisProfile: (profileId) =>
+      updateConfig((current) => ({
+        ...current,
+        mediaRouting: {
+          ...current.mediaRouting,
+          imageProfileId: profileId,
+        },
+      })),
     addConfiguration,
     deleteConfiguration,
     save,

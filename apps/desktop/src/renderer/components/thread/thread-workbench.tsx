@@ -17,13 +17,7 @@ import {
   Square,
   X,
 } from 'lucide-react';
-import {
-  memo,
-  useEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from 'react';
+import { memo, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useStore as useZustandStore } from 'zustand';
 
 import { AgentCommentary } from '@/renderer/components/agent/agent-commentary';
@@ -117,6 +111,7 @@ const currentOrchestrationActivity = (
 
 type TranscriptMessageProps = Readonly<{
   entry: TranscriptMessageViewModel;
+  threadId?: string;
   turnId?: string;
   editable?: boolean;
   editor?: ThreadWorkbenchViewProps['store']['messageEditor'];
@@ -141,35 +136,38 @@ const TurnPreviewOffer = ({
     (projection) => projection.snapshot.kind,
   );
   const finalAgentMessage = turn.messages.findLast(
-    (entry) =>
-      entry.role === 'agent' && entry.message.state === 'completed',
+    (entry) => entry.role === 'agent' && entry.message.state === 'completed',
   );
   const declaredIntent = finalAgentMessage
     ? parseAgentPreviewResponse(finalAgentMessage.message.text).intent
     : null;
-  const changedHtmlPath = workspaceKind === 'chat'
-    ? collectTurnChangeSummaryFiles(turn.activities)
-        .map((entry) => entry.file)
-        .filter(
-          (file) =>
-            file.afterBytes > 0 && /\.html?$/iu.test(file.path),
-        )
-        .sort((left, right) => {
-          const leftIndex = /(^|\/)index\.html?$/iu.test(left.path) ? 0 : 1;
-          const rightIndex = /(^|\/)index\.html?$/iu.test(right.path) ? 0 : 1;
-          return leftIndex - rightIndex ||
-            left.path.split('/').length - right.path.split('/').length ||
-            left.path.localeCompare(right.path);
-        })[0]?.path
-    : undefined;
-  const intent = declaredIntent ?? (changedHtmlPath
-    ? { kind: 'artifact' as const, path: changedHtmlPath }
-    : null);
-  return intent
-    ? intent.kind === 'drawio'
-      ? <AgentDrawioCard path={intent.path} language={turn.processLanguage} />
-      : <AgentPreviewCard intent={intent} language={turn.processLanguage} />
-    : null;
+  const changedHtmlPath =
+    workspaceKind === 'chat'
+      ? collectTurnChangeSummaryFiles(turn.activities)
+          .map((entry) => entry.file)
+          .filter((file) => file.afterBytes > 0 && /\.html?$/iu.test(file.path))
+          .sort((left, right) => {
+            const leftIndex = /(^|\/)index\.html?$/iu.test(left.path) ? 0 : 1;
+            const rightIndex = /(^|\/)index\.html?$/iu.test(right.path) ? 0 : 1;
+            return (
+              leftIndex - rightIndex ||
+              left.path.split('/').length - right.path.split('/').length ||
+              left.path.localeCompare(right.path)
+            );
+          })[0]?.path
+      : undefined;
+  const intent =
+    declaredIntent ??
+    (changedHtmlPath
+      ? { kind: 'artifact' as const, path: changedHtmlPath }
+      : null);
+  return intent ? (
+    intent.kind === 'drawio' ? (
+      <AgentDrawioCard path={intent.path} language={turn.processLanguage} />
+    ) : (
+      <AgentPreviewCard intent={intent} language={turn.processLanguage} />
+    )
+  ) : null;
 };
 
 const PlanProposal = ({
@@ -279,7 +277,8 @@ const QueueDock = ({
   const queue = store.thread.queue;
   if (queue.messages.length === 0) return null;
   const modelLabel = (profileId?: string): string =>
-    store.modelOptions.find((option) => option.profileId === profileId)?.label ??
+    store.modelOptions.find((option) => option.profileId === profileId)
+      ?.label ??
     profileId ??
     '默认模型';
   return (
@@ -297,7 +296,9 @@ const QueueDock = ({
             已暂停
           </span>
         ) : (
-          <span className="text-[11px] text-tertiary">当前回合完成后依次执行</span>
+          <span className="text-[11px] text-tertiary">
+            当前回合完成后依次执行
+          </span>
         )}
         {queue.paused ? (
           <Button
@@ -309,7 +310,10 @@ const QueueDock = ({
             onClick={() => void store.resumeQueue()}
           >
             {store.queueEditor.pendingIds.includes('resume') ? (
-              <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
+              <LoaderCircle
+                className="size-3 animate-spin"
+                aria-hidden="true"
+              />
             ) : (
               <Play className="size-3 fill-current" aria-hidden="true" />
             )}
@@ -326,9 +330,9 @@ const QueueDock = ({
         {queue.messages.map((message, index) => {
           const editing = store.queueEditor.itemId === message.id;
           const pending = store.queueEditor.pendingIds.includes(message.id);
-          const slashCommand = parseComposerSubmission(message.input).references.some(
-            (reference) => reference.kind === 'command',
-          );
+          const slashCommand = parseComposerSubmission(
+            message.input,
+          ).references.some((reference) => reference.kind === 'command');
           const steerable =
             store.thread.phase === 'inProgress' && !slashCommand && !pending;
           return (
@@ -337,7 +341,9 @@ const QueueDock = ({
                 <div className="space-y-2">
                   <Textarea
                     value={store.queueEditor.draft}
-                    onChange={(event) => store.setQueueEditDraft(event.target.value)}
+                    onChange={(event) =>
+                      store.setQueueEditDraft(event.target.value)
+                    }
                     className="min-h-20 resize-y rounded-xl bg-background text-sm"
                     autoFocus
                   />
@@ -357,17 +363,39 @@ const QueueDock = ({
                       </SelectTrigger>
                       <SelectContent>
                         {store.modelOptions.map((option) => (
-                          <SelectItem key={option.profileId} value={option.profileId} disabled={!option.available}>
+                          <SelectItem
+                            key={option.profileId}
+                            value={option.profileId}
+                            disabled={!option.available}
+                          >
                             {option.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button type="button" size="sm" variant="ghost" className="ml-auto h-8" onClick={store.cancelQueueEdit} disabled={pending}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="ml-auto h-8"
+                      onClick={store.cancelQueueEdit}
+                      disabled={pending}
+                    >
                       取消
                     </Button>
-                    <Button type="button" size="sm" className="h-8" onClick={() => void store.saveQueueEdit()} disabled={pending || !store.queueEditor.draft.trim()}>
-                      {pending ? <LoaderCircle className="size-3 animate-spin" aria-hidden="true" /> : null}
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-8"
+                      onClick={() => void store.saveQueueEdit()}
+                      disabled={pending || !store.queueEditor.draft.trim()}
+                    >
+                      {pending ? (
+                        <LoaderCircle
+                          className="size-3 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : null}
                       保存
                     </Button>
                   </div>
@@ -384,7 +412,10 @@ const QueueDock = ({
                     <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-tertiary">
                       <span>{modelLabel(message.modelProfileId)}</span>
                       {message.attachments.map((attachment) => (
-                        <span key={attachment.assetId} className="max-w-40 truncate rounded-md bg-surface px-1.5 py-0.5">
+                        <span
+                          key={attachment.assetId}
+                          className="max-w-40 truncate rounded-md bg-surface px-1.5 py-0.5"
+                        >
                           {attachment.originalName}
                         </span>
                       ))}
@@ -392,14 +423,48 @@ const QueueDock = ({
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-0.5 opacity-70 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                    <Button type="button" size="icon-xs" variant="ghost" disabled={!steerable} title={slashCommand ? 'Slash Command 只能作为下一回合执行' : '调整当前回合方向'} aria-label="调整方向" onClick={() => void store.steerQueueMessage(message)}>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      disabled={!steerable}
+                      title={
+                        slashCommand
+                          ? 'Slash Command 只能作为下一回合执行'
+                          : '调整当前回合方向'
+                      }
+                      aria-label="调整方向"
+                      onClick={() => void store.steerQueueMessage(message)}
+                    >
                       <CornerUpRight className="size-3.5" aria-hidden="true" />
                     </Button>
-                    <Button type="button" size="icon-xs" variant="ghost" disabled={pending} aria-label="编辑队列消息" onClick={() => store.beginQueueEdit(message)}>
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      disabled={pending}
+                      aria-label="编辑队列消息"
+                      onClick={() => store.beginQueueEdit(message)}
+                    >
                       <Pencil className="size-3.5" aria-hidden="true" />
                     </Button>
-                    <Button type="button" size="icon-xs" variant="ghost" className="hover:text-destructive" disabled={pending} aria-label="删除队列消息" onClick={() => void store.deleteQueueMessage(message)}>
-                      {pending ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden="true" /> : <Trash2 className="size-3.5" aria-hidden="true" />}
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      className="hover:text-destructive"
+                      disabled={pending}
+                      aria-label="删除队列消息"
+                      onClick={() => void store.deleteQueueMessage(message)}
+                    >
+                      {pending ? (
+                        <LoaderCircle
+                          className="size-3.5 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Trash2 className="size-3.5" aria-hidden="true" />
+                      )}
                     </Button>
                   </div>
                 </div>
@@ -433,7 +498,9 @@ const TurnActivity = ({
     case 'skill':
       return <SkillActivity activity={entry.activity} language={language} />;
     case 'knowledge':
-      return <KnowledgeActivity activity={entry.activity} language={language} />;
+      return (
+        <KnowledgeActivity activity={entry.activity} language={language} />
+      );
     case 'fileChange':
       return <FileChangeReview review={entry.activity} />;
     case 'commandApproval':
@@ -527,6 +594,7 @@ const TurnActivityTimeline = ({
 };
 
 const TranscriptTurnView = ({
+  threadId,
   turn,
   turnNumber,
   boundary,
@@ -562,11 +630,12 @@ const TranscriptTurnView = ({
           <TranscriptMessage
             key={entry.message.id}
             entry={entry}
+            threadId={threadId}
             turnId={turn.id}
             editable={editableMessageId === entry.message.id}
             editor={
               messageEditor.turnId === turn.id &&
-                messageEditor.messageId === entry.message.id
+              messageEditor.messageId === entry.message.id
                 ? messageEditor
                 : undefined
             }
@@ -631,9 +700,7 @@ const TranscriptTurnView = ({
           language={turn.processLanguage}
         />
       ) : null}
-      {turn.status === 'completed' ? (
-        <TurnPreviewOffer turn={turn} />
-      ) : null}
+      {turn.status === 'completed' ? <TurnPreviewOffer turn={turn} /> : null}
       {turn.status === 'inProgress' && progress ? (
         <ActiveTurnStatus progress={progress} language={turn.processLanguage} />
       ) : null}
@@ -662,11 +729,7 @@ const TranscriptTurnView = ({
 const TranscriptTurn = memo(TranscriptTurnView);
 
 const ThreadSelectionSkeleton = () => (
-  <div
-    className="space-y-8 py-3"
-    role="status"
-    aria-label="正在加载目标会话"
-  >
+  <div className="space-y-8 py-3" role="status" aria-label="正在加载目标会话">
     <div className="ml-auto w-2/3 space-y-2 rounded-2xl rounded-br-md bg-surface p-4">
       <div className="h-3 w-11/12 animate-pulse rounded-full bg-border" />
       <div className="h-3 w-7/12 animate-pulse rounded-full bg-border" />
@@ -744,9 +807,8 @@ export const ThreadWorkbenchView = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const workspace = useWorkspaceNavigationStore();
   const composerProjectName =
-    workspace.state.status === 'ready' &&
-    workspace.state.kind === 'project'
-      ? workspace.state.projectName ?? workspace.state.name
+    workspace.state.status === 'ready' && workspace.state.kind === 'project'
+      ? (workspace.state.projectName ?? workspace.state.name)
       : undefined;
   const draftProjectRemovable = canRemoveDraftProject(
     workspace.state,
@@ -784,9 +846,7 @@ export const ThreadWorkbenchView = ({
         <aside
           id="task-navigator"
           className={`hidden min-h-0 shrink-0 overflow-hidden md:block ${navigatorTransition} ${
-            navigatorOpen
-              ? 'opacity-100'
-              : 'pointer-events-none opacity-0'
+            navigatorOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
           }`}
           style={{ width: navigatorOpen ? navigatorWidth : 0 }}
           aria-hidden={!navigatorOpen}
@@ -806,472 +866,493 @@ export const ThreadWorkbenchView = ({
             />
           </div>
         </aside>
-      {navigatorResize ? (
-        <div
-          className={`panel-resizer hidden md:block ${
-            navigatorResize.dragging ? 'panel-resizer--active' : ''
-          } ${
-            navigatorOpen ? '' : 'panel-resizer--collapsed'
-          }`}
-          role="separator"
-          aria-label="调整任务导航宽度"
-          aria-orientation="vertical"
-          aria-valuemin={navigatorResize.minWidth}
-          aria-valuemax={navigatorResize.maxWidth}
-          aria-valuenow={navigatorResize.width}
-          tabIndex={0}
-          onPointerDown={navigatorResize.onPointerDown}
-          onKeyDown={navigatorResize.onKeyDown}
-        />
-      ) : null}
-      <section
-        className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${
-          store.thread.isEmpty ? 'empty-thread-workbench' : ''
-        }`}
-      >
-        {mainSurface ? (
+        {navigatorResize ? (
           <div
-            className="window-no-drag absolute inset-0 z-20 flex min-h-0 flex-col bg-background"
-            data-layout="main-surface"
-          >
-            {mainSurface}
-          </div>
-        ) : null}
-        <header
-          className={`${
-            mainSurface ? 'window-no-drag' : 'window-drag-region'
-          } relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
-            navigatorOpen ? 'pl-5' : 'window-collapsed-header'
-          } ${contextRailOpen ? 'pr-5' : 'window-titlebar-trailing-safe'}`}
-        >
-          {onToggleNavigator ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              className={`window-leading-toggle window-no-drag absolute top-1.5 hidden text-tertiary transition-opacity duration-150 md:inline-flex motion-reduce:transition-none ${
-                navigatorOpen
-                  ? 'pointer-events-none opacity-0'
-                  : 'opacity-100'
-              }`}
-              onClick={onToggleNavigator}
-              aria-controls="task-navigator"
-              aria-expanded={navigatorOpen}
-              aria-label="展开左侧任务栏"
-              title="展开左侧任务栏"
-              tabIndex={navigatorOpen ? -1 : 0}
-            >
-              <PanelLeftOpen aria-hidden="true" />
-            </Button>
-          ) : null}
-          {conversationTitle ? (
-            <p
-              className="window-no-drag min-w-0 truncate text-sm font-normal tracking-[-0.015em]"
-              title={conversationTitle}
-            >
-              {conversationTitle}
-            </p>
-          ) : null}
-          <TerminalWorkbench
-            navigatorOffset={
-              navigatorOpen ? navigatorWidth + (navigatorResize ? 1 : 0) : 0
-            }
+            className={`panel-resizer hidden md:block ${
+              navigatorResize.dragging ? 'panel-resizer--active' : ''
+            } ${navigatorOpen ? '' : 'panel-resizer--collapsed'}`}
+            role="separator"
+            aria-label="调整任务导航宽度"
+            aria-orientation="vertical"
+            aria-valuemin={navigatorResize.minWidth}
+            aria-valuemax={navigatorResize.maxWidth}
+            aria-valuenow={navigatorResize.width}
+            tabIndex={0}
+            onPointerDown={navigatorResize.onPointerDown}
+            onKeyDown={navigatorResize.onKeyDown}
           />
-          {contextRail && onToggleContextRail ? (
-            <Button
-              type="button"
-              size="icon-sm"
-              variant="ghost"
-              className="window-no-drag ml-1 text-tertiary"
-              onClick={onToggleContextRail}
-              aria-controls="workspace-tools"
-              aria-expanded={contextRailOpen}
-              aria-label={contextRailOpen ? '关闭右侧工具栏' : '展开右侧工具栏'}
-              title={contextRailOpen ? '关闭右侧工具栏' : '展开右侧工具栏'}
+        ) : null}
+        <section
+          className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${
+            store.thread.isEmpty ? 'empty-thread-workbench' : ''
+          }`}
+        >
+          {mainSurface ? (
+            <div
+              className="window-no-drag absolute inset-0 z-20 flex min-h-0 flex-col bg-background"
+              data-layout="main-surface"
             >
-              {contextRailOpen ? (
-                <PanelRightClose aria-hidden="true" />
-              ) : (
-                <PanelRightOpen aria-hidden="true" />
-              )}
-            </Button>
+              {mainSurface}
+            </div>
           ) : null}
-        </header>
-        <ScrollArea
-          data-layout="conversation-scroll"
-          className={`relative min-h-0 min-w-0 flex-1 ${
-            store.thread.isEmpty ? 'empty-thread-scroll' : ''
-          }`}
-          scrollbars={store.thread.isEmpty ? 'none' : 'vertical'}
-          onWheel={recordWheelScrollIntent}
-          onKeyDown={recordKeyScrollIntent}
-          onPointerDown={beginPointerScroll}
-          onPointerUp={endPointerScroll}
-          onPointerCancel={endPointerScroll}
-          viewportProps={{
-            'aria-label': 'Conversation transcript',
-            className:
-              '[&>div]:!block [&>div]:w-full [&>div]:min-w-0 [&>div]:max-w-full',
-            tabIndex: 0,
-            ref: transcriptViewport,
-            onScroll: recordScrollPosition,
-          }}
-        >
-          <div
-            ref={transcriptContent}
-            className={`mx-auto flex min-h-full w-full min-w-0 max-w-4xl flex-col px-6 pb-8 pt-8 [contain:inline-size] sm:px-10 ${
-              store.thread.isEmpty ? 'empty-thread-transcript' : ''
-            }`}
+          <header
+            className={`${
+              mainSurface ? 'window-no-drag' : 'window-drag-region'
+            } relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
+              navigatorOpen ? 'pl-5' : 'window-collapsed-header'
+            } ${contextRailOpen ? 'pr-5' : 'window-titlebar-trailing-safe'}`}
           >
-            {pendingThreadId && selectionError ? (
-              <ThreadSelectionError
-                summary={selectionError}
-                onRetry={() => void store.selectThread(pendingThreadId)}
-              />
-            ) : pendingThreadId || settlingThreadSelection ? (
-              <ThreadSelectionSkeleton />
-            ) : store.thread.isEmpty ? (
-              <EmptyThreadState
-                onSelectPrompt={store.setDraft}
-                projectName={composerProjectName}
-              />
-            ) : (
-              <div className="min-w-0 max-w-full">
-                {store.thread.turns.map((turn, index) => (
-                  <TranscriptTurn
-                    key={turn.id}
-                    turn={turn}
-                    turnNumber={index + 1}
-                    boundary={toTranscriptTurnBoundary(
-                      index,
-                      Boolean(
-                        store.thread.turns[index - 1]?.failure ||
-                          store.thread.turns[index - 1]?.terminalLabel,
-                      ),
-                    )}
-                    progress={
-                      store.activeTurnProgress?.turnId === turn.id
-                        ? store.activeTurnProgress
-                        : undefined
-                    }
-                    editableMessageId={
-                      store.editableMessageTarget?.turnId === turn.id
-                        ? store.editableMessageTarget.messageId
-                        : null
-                    }
-                    messageEditor={store.messageEditor}
-                    onBeginMessageEdit={store.beginMessageEdit}
-                    onSetMessageEditDraft={store.setMessageEditDraft}
-                    onCancelMessageEdit={store.cancelMessageEdit}
-                    onSubmitMessageEdit={store.submitMessageEdit}
-                    planActionable={
-                      index === store.thread.turns.length - 1 &&
-                      turn.status === 'completed' &&
-                      store.thread.phase === 'ready' &&
-                      !store.isSending
-                    }
-                    onImplementPlan={store.implementPlan}
-                    onRefinePlan={store.refinePlan}
-                  />
-                ))}
-              </div>
-            )}
-            {store.isSending || store.thread.phase === 'starting' ? (
-              <div
-                className="mt-8 flex items-center gap-2 text-sm font-normal text-process"
-                role="status"
-                aria-live="polite"
+            {onToggleNavigator ? (
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                className={`window-leading-toggle window-no-drag absolute top-1.5 hidden text-tertiary transition-opacity duration-150 md:inline-flex motion-reduce:transition-none ${
+                  navigatorOpen
+                    ? 'pointer-events-none opacity-0'
+                    : 'opacity-100'
+                }`}
+                onClick={onToggleNavigator}
+                aria-controls="task-navigator"
+                aria-expanded={navigatorOpen}
+                aria-label="展开左侧任务栏"
+                title="展开左侧任务栏"
+                tabIndex={navigatorOpen ? -1 : 0}
               >
-                <LoaderCircle
-                  className="size-3.5 animate-spin"
-                  aria-hidden="true"
-                />
-                <span>正在提交任务…</span>
-              </div>
+                <PanelLeftOpen aria-hidden="true" />
+              </Button>
             ) : null}
-            <div ref={transcriptEnd} />
-          </div>
-        </ScrollArea>
-
-        <div
-          data-layout="conversation-composer"
-          className={`relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8 ${
-            store.thread.isEmpty ? 'empty-thread-composer' : ''
-          }`}
-        >
-          <div className="mx-auto max-w-3xl">
-            {agentTaskActivity ? (
-              <AgentTaskDock activity={agentTaskActivity} />
-            ) : null}
-            {composerSurface === 'composer' ? <QueueDock store={store} /> : null}
-            {(store.actionError || store.thread.notice || workspace.error) && (
-              <p className="mb-2 px-1 text-xs text-destructive" role="alert">
-                {store.actionError ?? store.thread.notice ?? workspace.error}
+            {conversationTitle ? (
+              <p
+                className="window-no-drag min-w-0 truncate text-sm font-normal tracking-[-0.015em]"
+                title={conversationTitle}
+              >
+                {conversationTitle}
               </p>
-            )}
-            {composerSurface === 'approval' ? (
-              approvalSurface
-            ) : composerSurface === 'userInput' &&
-              userInputTurn?.userInputRequest ? (
-              <UserInputSurface
-                turnId={userInputTurn.id}
-                request={userInputTurn.userInputRequest}
-                onSubmit={store.respondToUserInput}
-              />
-            ) : (
-              <div
-                className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
-                onDragOver={(event) => {
-                  if (event.dataTransfer.types.includes('Files')) {
-                    event.preventDefault();
-                  }
-                }}
-                onDrop={(event) => {
-                  if (event.dataTransfer.files.length > 0) {
-                    event.preventDefault();
-                    void store.addAttachments(
-                      Array.from(event.dataTransfer.files),
-                    );
-                  }
-                }}
+            ) : null}
+            <TerminalWorkbench
+              navigatorOffset={
+                navigatorOpen ? navigatorWidth + (navigatorResize ? 1 : 0) : 0
+              }
+            />
+            {contextRail && onToggleContextRail ? (
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                className="window-no-drag ml-1 text-tertiary"
+                onClick={onToggleContextRail}
+                aria-controls="workspace-tools"
+                aria-expanded={contextRailOpen}
+                aria-label={
+                  contextRailOpen ? '关闭右侧工具栏' : '展开右侧工具栏'
+                }
+                title={contextRailOpen ? '关闭右侧工具栏' : '展开右侧工具栏'}
               >
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
-                className="sr-only"
-                tabIndex={-1}
-                onChange={(event) => {
-                  void store.addAttachments(Array.from(event.target.files ?? []));
-                  event.target.value = '';
-                }}
-              />
-              {composerProjectName ? (
-                <div className="group/project mx-3 mt-3 flex h-8 w-fit max-w-[calc(100%_-_1.5rem)] items-center rounded-lg bg-surface">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    className="flex h-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm font-normal text-navigation transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                    disabled={workspace.busy}
-                    onClick={() => void workspace.chooseProject()}
-                    aria-label={`重新选择项目文件夹，当前为 ${composerProjectName}`}
-                    title="重新选择项目文件夹"
-                  >
-                    <Folder className="size-4 shrink-0 text-tertiary" aria-hidden="true" />
-                    <span className="truncate">{composerProjectName}</span>
-                  </Button>
-                  {draftProjectRemovable ? (
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost"
-                      className="mr-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={workspace.busy}
-                      onClick={() => void workspace.activateChat()}
-                      aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
-                      title="移除项目并切换到聊天模式"
-                    >
-                      <X className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  ) : null}
+                {contextRailOpen ? (
+                  <PanelRightClose aria-hidden="true" />
+                ) : (
+                  <PanelRightOpen aria-hidden="true" />
+                )}
+              </Button>
+            ) : null}
+          </header>
+          <ScrollArea
+            data-layout="conversation-scroll"
+            className={`relative min-h-0 min-w-0 flex-1 ${
+              store.thread.isEmpty ? 'empty-thread-scroll' : ''
+            }`}
+            scrollbars={store.thread.isEmpty ? 'none' : 'vertical'}
+            onWheel={recordWheelScrollIntent}
+            onKeyDown={recordKeyScrollIntent}
+            onPointerDown={beginPointerScroll}
+            onPointerUp={endPointerScroll}
+            onPointerCancel={endPointerScroll}
+            viewportProps={{
+              'aria-label': 'Conversation transcript',
+              className:
+                '[&>div]:!block [&>div]:w-full [&>div]:min-w-0 [&>div]:max-w-full',
+              tabIndex: 0,
+              ref: transcriptViewport,
+              onScroll: recordScrollPosition,
+            }}
+          >
+            <div
+              ref={transcriptContent}
+              className={`mx-auto flex min-h-full w-full min-w-0 max-w-4xl flex-col px-6 pb-8 pt-8 [contain:inline-size] sm:px-10 ${
+                store.thread.isEmpty ? 'empty-thread-transcript' : ''
+              }`}
+            >
+              {pendingThreadId && selectionError ? (
+                <ThreadSelectionError
+                  summary={selectionError}
+                  onRetry={() => void store.selectThread(pendingThreadId)}
+                />
+              ) : pendingThreadId || settlingThreadSelection ? (
+                <ThreadSelectionSkeleton />
+              ) : store.thread.isEmpty ? (
+                <EmptyThreadState
+                  onSelectPrompt={store.setDraft}
+                  projectName={composerProjectName}
+                />
+              ) : (
+                <div className="min-w-0 max-w-full">
+                  {store.thread.turns.map((turn, index) => (
+                    <TranscriptTurn
+                      key={turn.id}
+                      threadId={store.thread.threadIdentity ?? undefined}
+                      turn={turn}
+                      turnNumber={index + 1}
+                      boundary={toTranscriptTurnBoundary(
+                        index,
+                        Boolean(
+                          store.thread.turns[index - 1]?.failure ||
+                          store.thread.turns[index - 1]?.terminalLabel,
+                        ),
+                      )}
+                      progress={
+                        store.activeTurnProgress?.turnId === turn.id
+                          ? store.activeTurnProgress
+                          : undefined
+                      }
+                      editableMessageId={
+                        store.editableMessageTarget?.turnId === turn.id
+                          ? store.editableMessageTarget.messageId
+                          : null
+                      }
+                      messageEditor={store.messageEditor}
+                      onBeginMessageEdit={store.beginMessageEdit}
+                      onSetMessageEditDraft={store.setMessageEditDraft}
+                      onCancelMessageEdit={store.cancelMessageEdit}
+                      onSubmitMessageEdit={store.submitMessageEdit}
+                      planActionable={
+                        index === store.thread.turns.length - 1 &&
+                        turn.status === 'completed' &&
+                        store.thread.phase === 'ready' &&
+                        !store.isSending
+                      }
+                      onImplementPlan={store.implementPlan}
+                      onRefinePlan={store.refinePlan}
+                    />
+                  ))}
+                </div>
+              )}
+              {store.isSending || store.thread.phase === 'starting' ? (
+                <div
+                  className="mt-8 flex items-center gap-2 text-sm font-normal text-process"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <LoaderCircle
+                    className="size-3.5 animate-spin"
+                    aria-hidden="true"
+                  />
+                  <span>正在提交任务…</span>
                 </div>
               ) : null}
-              {store.attachments.length > 0 ? (
-                <div className="flex gap-2 overflow-x-auto px-3 pt-3">
-                  {store.attachments.map((attachment) => (
-                    <div
-                      key={attachment.id}
-                      className="relative flex h-16 min-w-48 max-w-60 items-center gap-2.5 rounded-xl border bg-surface px-2.5 pr-8"
-                    >
-                      {attachment.previewUrl ? (
-                        <img
-                          src={attachment.previewUrl}
-                          alt=""
-                          className="size-11 shrink-0 rounded-lg object-cover"
+              <div ref={transcriptEnd} />
+            </div>
+          </ScrollArea>
+
+          <div
+            data-layout="conversation-composer"
+            className={`relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8 ${
+              store.thread.isEmpty ? 'empty-thread-composer' : ''
+            }`}
+          >
+            <div className="mx-auto max-w-3xl">
+              {agentTaskActivity ? (
+                <AgentTaskDock activity={agentTaskActivity} />
+              ) : null}
+              {composerSurface === 'composer' ? (
+                <QueueDock store={store} />
+              ) : null}
+              {(store.actionError ||
+                store.thread.notice ||
+                workspace.error) && (
+                <p className="mb-2 px-1 text-xs text-destructive" role="alert">
+                  {store.actionError ?? store.thread.notice ?? workspace.error}
+                </p>
+              )}
+              {composerSurface === 'approval' ? (
+                approvalSurface
+              ) : composerSurface === 'userInput' &&
+                userInputTurn?.userInputRequest ? (
+                <UserInputSurface
+                  turnId={userInputTurn.id}
+                  request={userInputTurn.userInputRequest}
+                  onSubmit={store.respondToUserInput}
+                />
+              ) : (
+                <div
+                  className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
+                  onDragOver={(event) => {
+                    if (event.dataTransfer.types.includes('Files')) {
+                      event.preventDefault();
+                    }
+                  }}
+                  onDrop={(event) => {
+                    if (event.dataTransfer.files.length > 0) {
+                      event.preventDefault();
+                      void store.addAttachments(
+                        Array.from(event.dataTransfer.files),
+                      );
+                    }
+                  }}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
+                    className="sr-only"
+                    tabIndex={-1}
+                    onChange={(event) => {
+                      void store.addAttachments(
+                        Array.from(event.target.files ?? []),
+                      );
+                      event.target.value = '';
+                    }}
+                  />
+                  {composerProjectName ? (
+                    <div className="group/project mx-3 mt-3 flex h-8 w-fit max-w-[calc(100%_-_1.5rem)] items-center rounded-lg bg-surface">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="flex h-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm font-normal text-navigation transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={workspace.busy}
+                        onClick={() => void workspace.chooseProject()}
+                        aria-label={`重新选择项目文件夹，当前为 ${composerProjectName}`}
+                        title="重新选择项目文件夹"
+                      >
+                        <Folder
+                          className="size-4 shrink-0 text-tertiary"
+                          aria-hidden="true"
                         />
-                      ) : (
-                        <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-background">
-                          <FileText className="size-5 text-secondary" aria-hidden="true" />
+                        <span className="truncate">{composerProjectName}</span>
+                      </Button>
+                      {draftProjectRemovable ? (
+                        <Button
+                          type="button"
+                          size="icon-xs"
+                          variant="ghost"
+                          className="mr-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          disabled={workspace.busy}
+                          onClick={() => void workspace.activateChat()}
+                          aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
+                          title="移除项目并切换到聊天模式"
+                        >
+                          <X className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {store.attachments.length > 0 ? (
+                    <div className="flex gap-2 overflow-x-auto px-3 pt-3">
+                      {store.attachments.map((attachment) => (
+                        <div
+                          key={attachment.id}
+                          className="relative flex h-16 min-w-48 max-w-60 items-center gap-2.5 rounded-xl border bg-surface px-2.5 pr-8"
+                        >
+                          {attachment.previewUrl ? (
+                            <img
+                              src={attachment.previewUrl}
+                              alt=""
+                              className="size-11 shrink-0 rounded-lg object-cover"
+                            />
+                          ) : (
+                            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-background">
+                              <FileText
+                                className="size-5 text-secondary"
+                                aria-hidden="true"
+                              />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-medium">
+                              {attachment.fileName}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-tertiary">
+                              {Math.ceil(attachment.sizeBytes / 1024)} KiB
+                            </p>
+                          </div>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="absolute right-1 top-1 size-7"
+                            aria-label={`Remove ${attachment.fileName}`}
+                            onClick={() =>
+                              store.removeAttachment(attachment.id)
+                            }
+                          >
+                            <X className="size-3.5" aria-hidden="true" />
+                          </Button>
                         </div>
-                      )}
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium">
-                          {attachment.fileName}
-                        </p>
-                        <p className="mt-0.5 text-[11px] text-tertiary">
-                          {Math.ceil(attachment.sizeBytes / 1024)} KiB
-                        </p>
+                      ))}
+                    </div>
+                  ) : null}
+                  <ComposerInput
+                    value={store.draft}
+                    onValueChange={store.setDraft}
+                    workspaceGeneration={store.workspaceGeneration}
+                    workspaceReady={store.workspaceReady}
+                    onPaste={(event) => {
+                      const files = Array.from(
+                        event.clipboardData.files,
+                      ).filter((file) => file.type.startsWith('image/'));
+                      if (files.length > 0) {
+                        event.preventDefault();
+                        void store.addAttachments(files);
+                      }
+                    }}
+                    onSubmit={() => void store.send()}
+                    disabled={
+                      (store.thread.phase === 'unavailable' &&
+                        !store.startsChatOnSend) ||
+                      store.isSending ||
+                      store.navigator.pendingThreadId !== null
+                    }
+                  />
+                  <div className="flex items-end justify-between gap-3 px-3 pt-1 pb-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="size-8"
+                          aria-label="Attach files"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={store.modelSelectionDisabled}
+                        >
+                          <Paperclip className="size-4" aria-hidden="true" />
+                        </Button>
+                        <Select
+                          value={store.selectedModelProfileId}
+                          onValueChange={store.setSelectedModelProfileId}
+                          disabled={
+                            store.modelSelectionDisabled ||
+                            store.modelOptions.length === 0
+                          }
+                        >
+                          <SelectTrigger
+                            className="h-8 w-auto max-w-56 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
+                            aria-label="Model for next turn"
+                          >
+                            <SelectValue placeholder="No model configured" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {store.modelOptions.map((option) => (
+                              <SelectItem
+                                key={option.profileId}
+                                value={option.profileId}
+                                disabled={!option.available}
+                              >
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {permissionControl}
                       </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {store.showStopControl ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => void store.stop()}
+                          disabled={!store.canStop}
+                          aria-label="Stop current turn"
+                        >
+                          {store.canStop ? (
+                            <Square
+                              className="size-3 fill-current"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <LoaderCircle
+                              className="size-3 animate-spin"
+                              aria-hidden="true"
+                            />
+                          )}
+                          {store.thread.phase === 'stopping'
+                            ? 'Stopping'
+                            : store.canStop
+                              ? 'Stop'
+                              : 'Starting'}
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
                         size="icon"
-                        variant="ghost"
-                        className="absolute right-1 top-1 size-7"
-                        aria-label={`Remove ${attachment.fileName}`}
-                        onClick={() => store.removeAttachment(attachment.id)}
+                        className="size-9 rounded-xl"
+                        onClick={() => void store.send()}
+                        disabled={!store.canSend}
+                        aria-label="Send message"
                       >
-                        <X className="size-3.5" aria-hidden="true" />
+                        <ArrowUp aria-hidden="true" />
                       </Button>
                     </div>
-                  ))}
-                </div>
-              ) : null}
-              <ComposerInput
-                value={store.draft}
-                onValueChange={store.setDraft}
-                workspaceGeneration={store.workspaceGeneration}
-                workspaceReady={store.workspaceReady}
-                onPaste={(event) => {
-                  const files = Array.from(event.clipboardData.files).filter(
-                    (file) => file.type.startsWith('image/'),
-                  );
-                  if (files.length > 0) {
-                    event.preventDefault();
-                    void store.addAttachments(files);
-                  }
-                }}
-                onSubmit={() => void store.send()}
-                disabled={
-                  (store.thread.phase === 'unavailable' &&
-                    !store.startsChatOnSend) ||
-                  store.isSending ||
-                  store.navigator.pendingThreadId !== null
-                }
-              />
-              <div className="flex items-end justify-between gap-3 px-3 pt-1 pb-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="size-8"
-                      aria-label="Attach files"
-                      onClick={() => fileInputRef.current?.click()}
-                      disabled={store.modelSelectionDisabled}
-                    >
-                      <Paperclip className="size-4" aria-hidden="true" />
-                    </Button>
-                    <Select
-                      value={store.selectedModelProfileId}
-                      onValueChange={store.setSelectedModelProfileId}
-                      disabled={
-                        store.modelSelectionDisabled ||
-                        store.modelOptions.length === 0
-                      }
-                    >
-                      <SelectTrigger
-                        className="h-8 w-auto max-w-56 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
-                        aria-label="Model for next turn"
-                      >
-                        <SelectValue placeholder="No model configured" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {store.modelOptions.map((option) => (
-                          <SelectItem
-                            key={option.profileId}
-                            value={option.profileId}
-                            disabled={!option.available}
-                          >
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {permissionControl}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {store.showStopControl ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => void store.stop()}
-                      disabled={!store.canStop}
-                      aria-label="Stop current turn"
-                    >
-                      {store.canStop ? (
-                        <Square className="size-3 fill-current" aria-hidden="true" />
-                      ) : (
-                        <LoaderCircle className="size-3 animate-spin" aria-hidden="true" />
-                      )}
-                      {store.thread.phase === 'stopping'
-                        ? 'Stopping'
-                        : store.canStop
-                          ? 'Stop'
-                          : 'Starting'}
-                    </Button>
-                  ) : null}
-                  <Button
-                    type="button"
-                    size="icon"
-                    className="size-9 rounded-xl"
-                    onClick={() => void store.send()}
-                    disabled={!store.canSend}
-                    aria-label="Send message"
-                  >
-                    <ArrowUp aria-hidden="true" />
-                  </Button>
-                </div>
-              </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-      </section>
-      {contextRail ? (
-        <>
-          {contextRailOpen && onToggleContextRail ? (
-            <button
-              type="button"
-              className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px] min-[1100px]:hidden"
-              onClick={onToggleContextRail}
-              aria-label="关闭右侧工具栏"
-            />
-          ) : null}
-          {contextRailResize ? (
-            <div
-              className={`panel-resizer hidden min-[1100px]:block ${
-                contextRailResize.dragging ? 'panel-resizer--active' : ''
-              } ${
-                contextRailOpen ? '' : 'panel-resizer--collapsed'
+        </section>
+        {contextRail ? (
+          <>
+            {contextRailOpen && onToggleContextRail ? (
+              <button
+                type="button"
+                className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px] min-[1100px]:hidden"
+                onClick={onToggleContextRail}
+                aria-label="关闭右侧工具栏"
+              />
+            ) : null}
+            {contextRailResize ? (
+              <div
+                className={`panel-resizer hidden min-[1100px]:block ${
+                  contextRailResize.dragging ? 'panel-resizer--active' : ''
+                } ${contextRailOpen ? '' : 'panel-resizer--collapsed'}`}
+                role="separator"
+                aria-label="调整上下文栏宽度"
+                aria-orientation="vertical"
+                aria-valuemin={contextRailResize.minWidth}
+                aria-valuemax={contextRailResize.maxWidth}
+                aria-valuenow={contextRailResize.width}
+                tabIndex={0}
+                onPointerDown={contextRailResize.onPointerDown}
+                onKeyDown={contextRailResize.onKeyDown}
+              />
+            ) : null}
+            <aside
+              id="workspace-tools"
+              className={`fixed inset-y-0 right-0 z-40 block min-h-0 shrink-0 overflow-hidden bg-background shadow-[-24px_0_64px_var(--shadow-soft)] [width:var(--context-rail-mobile-width)] min-[1100px]:static min-[1100px]:z-auto min-[1100px]:shadow-none min-[1100px]:[width:var(--context-rail-desktop-width)] ${contextRailTransition} ${
+                contextRailOpen
+                  ? 'opacity-100'
+                  : 'pointer-events-none opacity-0'
               }`}
-              role="separator"
-              aria-label="调整上下文栏宽度"
-              aria-orientation="vertical"
-              aria-valuemin={contextRailResize.minWidth}
-              aria-valuemax={contextRailResize.maxWidth}
-              aria-valuenow={contextRailResize.width}
-              tabIndex={0}
-              onPointerDown={contextRailResize.onPointerDown}
-              onKeyDown={contextRailResize.onKeyDown}
-            />
-          ) : null}
-          <aside
-            id="workspace-tools"
-            className={`fixed inset-y-0 right-0 z-40 block min-h-0 shrink-0 overflow-hidden bg-background shadow-[-24px_0_64px_var(--shadow-soft)] [width:var(--context-rail-mobile-width)] min-[1100px]:static min-[1100px]:z-auto min-[1100px]:shadow-none min-[1100px]:[width:var(--context-rail-desktop-width)] ${contextRailTransition} ${
-              contextRailOpen
-                ? 'opacity-100'
-                : 'pointer-events-none opacity-0'
-            }`}
-            style={{
-              '--context-rail-mobile-width': contextRailOpen
-                ? `min(${contextRailWidth}px, calc(100vw - 1rem))`
-                : '0px',
-              '--context-rail-desktop-width': contextRailOpen
-                ? contextRailTargetWidth
-                : '0px',
-            } as CSSProperties}
-            aria-label="Workspace tools"
-            aria-hidden={!contextRailOpen}
-            inert={contextRailOpen ? undefined : true}
-          >
-            <div className="h-full w-full">{contextRail}</div>
-          </aside>
-        </>
-      ) : null}
+              style={
+                {
+                  '--context-rail-mobile-width': contextRailOpen
+                    ? `min(${contextRailWidth}px, calc(100vw - 1rem))`
+                    : '0px',
+                  '--context-rail-desktop-width': contextRailOpen
+                    ? contextRailTargetWidth
+                    : '0px',
+                } as CSSProperties
+              }
+              aria-label="Workspace tools"
+              aria-hidden={!contextRailOpen}
+              inert={contextRailOpen ? undefined : true}
+            >
+              <div className="h-full w-full">{contextRail}</div>
+            </aside>
+          </>
+        ) : null}
       </div>
       <AlertDialog
         open={store.modelSwitchConfirmation !== null}

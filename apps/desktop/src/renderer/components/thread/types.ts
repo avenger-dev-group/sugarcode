@@ -80,10 +80,7 @@ export type TurnFailureViewModel = Readonly<{
 
 export type TurnModelViewModel = Readonly<{
   displayName: string;
-  wireApi:
-    | 'openaiResponses'
-    | 'openaiChatCompletions'
-    | 'anthropicMessages';
+  wireApi: 'openaiResponses' | 'openaiChatCompletions' | 'anthropicMessages';
 }>;
 
 export type ActiveTurnProgressViewModel = Readonly<{
@@ -106,12 +103,7 @@ export type ActiveTurnOperationProgress = Readonly<{
 }>;
 
 export type SkillActivityPresentationState =
-  | 'running'
-  | 'stopping'
-  | 'uncertain'
-  | 'succeeded'
-  | 'failed'
-  | 'interrupted';
+  'running' | 'stopping' | 'uncertain' | 'succeeded' | 'failed' | 'interrupted';
 
 export type SkillActivityViewModel = Readonly<{
   id: string;
@@ -124,12 +116,7 @@ export type SkillActivityViewModel = Readonly<{
 }>;
 
 export type KnowledgeActivityPresentationState =
-  | 'running'
-  | 'stopping'
-  | 'uncertain'
-  | 'succeeded'
-  | 'failed'
-  | 'interrupted';
+  'running' | 'stopping' | 'uncertain' | 'succeeded' | 'failed' | 'interrupted';
 
 export type KnowledgeActivityViewModel = Readonly<{
   id: string;
@@ -384,6 +371,7 @@ export type ThreadWorkbenchViewProps = Readonly<{
 }>;
 
 export type TranscriptTurnProps = Readonly<{
+  threadId?: string;
   turn: TurnViewModel;
   turnNumber: number;
   boundary: 'none' | 'divider' | 'precedingTerminal';

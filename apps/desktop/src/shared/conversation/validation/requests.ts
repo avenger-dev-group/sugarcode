@@ -1,5 +1,6 @@
 import {
   MAX_CONVERSATION_ATTACHMENTS,
+  MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
   MAX_CONVERSATION_INPUT_BYTES,
   MAX_CONVERSATION_TITLE_BYTES,
   MAX_THREAD_SEARCH_BYTES,
@@ -12,6 +13,8 @@ import type {
 } from '../activities.ts';
 import type {
   ConversationActionResult,
+  ConversationAttachmentPreviewRequest,
+  ConversationAttachmentPreviewResult,
   ConversationReviseTurnRequest,
   ConversationQueuedMessageMutationRequest,
   ConversationQueuedMessageUpdateRequest,
@@ -52,6 +55,40 @@ export const isConversationActionResult = (
     value.disposition === 'queued') &&
   (value.queueItemId === undefined || isId(value.queueItemId)) &&
   (value.disposition !== 'queued' || isId(value.queueItemId));
+
+export const isConversationAttachmentPreviewRequest = (
+  value: unknown,
+): value is ConversationAttachmentPreviewRequest =>
+  isRecord(value) &&
+  Object.keys(value).every((key) => ['threadId', 'assetId'].includes(key)) &&
+  isId(value.threadId) &&
+  typeof value.assetId === 'string' &&
+  /^ast_[0-9a-f]{64}$/u.test(value.assetId);
+
+export const isConversationAttachmentPreviewResult = (
+  value: unknown,
+): value is ConversationAttachmentPreviewResult =>
+  isRecord(value) &&
+  typeof value.available === 'boolean' &&
+  (value.available
+    ? Object.keys(value).every((key) =>
+        ['available', 'assetId', 'previewUrl'].includes(key),
+      ) &&
+      typeof value.assetId === 'string' &&
+      /^ast_[0-9a-f]{64}$/u.test(value.assetId) &&
+      typeof value.previewUrl === 'string' &&
+      /^data:image\/[A-Za-z0-9.+-]+;base64,/u.test(value.previewUrl) &&
+      value.previewUrl.length <= MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH
+    : Object.keys(value).every((key) =>
+        ['available', 'reason'].includes(key),
+      ) &&
+      [
+        'invalid',
+        'notFound',
+        'unsupported',
+        'tooLarge',
+        'unavailable',
+      ].includes(String(value.reason)));
 
 export const isValidConversationInput = (value: unknown): value is string =>
   typeof value === 'string' &&
@@ -111,7 +148,13 @@ export const isConversationQueuedMessageUpdateRequest = (
 ): value is ConversationQueuedMessageUpdateRequest =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['threadId', 'queueItemId', 'expectedRevision', 'input', 'modelProfileId'].includes(key),
+    [
+      'threadId',
+      'queueItemId',
+      'expectedRevision',
+      'input',
+      'modelProfileId',
+    ].includes(key),
   ) &&
   isId(value.threadId) &&
   isId(value.queueItemId) &&
@@ -127,7 +170,9 @@ export const isConversationSteerQueuedMessageRequest = (
 ): value is ConversationSteerQueuedMessageRequest =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['threadId', 'queueItemId', 'expectedRevision', 'expectedTurnId'].includes(key),
+    ['threadId', 'queueItemId', 'expectedRevision', 'expectedTurnId'].includes(
+      key,
+    ),
   ) &&
   isId(value.threadId) &&
   isId(value.queueItemId) &&
@@ -171,9 +216,8 @@ export const isConversationUserInputResponse = (
             ['questionId', 'kind', 'source', 'answer'].includes(key),
           )),
   ) &&
-  new Set(
-    value.submission.decisions.map((decision) => decision.questionId),
-  ).size === value.submission.decisions.length;
+  new Set(value.submission.decisions.map((decision) => decision.questionId))
+    .size === value.submission.decisions.length;
 
 const isConversationAttachmentUpload = (
   value: unknown,

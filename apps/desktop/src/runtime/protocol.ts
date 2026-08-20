@@ -60,6 +60,7 @@ import {
   type TaskWorkspaceActionResult,
   type TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
+import { MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH } from '../shared/conversation/limits.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 6 as const;
 
@@ -373,6 +374,11 @@ export type RuntimeCommand =
       fileName: string;
       mediaType?: string;
       data: string;
+    }>
+  | Readonly<{
+      type: 'asset.preview';
+      requestId: string;
+      assetId: string;
     }>
   | Readonly<{
       type: 'turn.start';
@@ -895,6 +901,20 @@ export type RuntimeEvent =
       }>)
   | (RuntimeEventBase &
       Readonly<{
+        type: 'asset.preview';
+        preview:
+          | Readonly<{
+              available: true;
+              asset: RuntimeAssetDescriptor;
+              data: string;
+            }>
+          | Readonly<{
+              available: false;
+              reason: 'unsupported' | 'tooLarge';
+            }>;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
         type: 'environment.inspection';
         status: CommandEnvironmentStatus;
       }>)
@@ -1181,7 +1201,11 @@ export type RuntimeEvent =
         workspaceId: string;
         generation: number;
         sessionId: string;
-        error: 'spawnFailed' | 'protocolInvalid' | 'terminalCrashed' | 'outputOverload';
+        error:
+          | 'spawnFailed'
+          | 'protocolInvalid'
+          | 'terminalCrashed'
+          | 'outputOverload';
         fatal: boolean;
       }>)
   | (RuntimeEventBase &
@@ -1192,7 +1216,8 @@ export type RuntimeEvent =
         sessionId: string;
         exitCode: number;
         signal?: string;
-        reason: 'natural' | 'requested' | 'ownerLost' | 'protocolError' | 'ioError';
+        reason:
+          'natural' | 'requested' | 'ownerLost' | 'protocolError' | 'ioError';
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1299,11 +1324,7 @@ export type RuntimeEvent =
       Readonly<{
         type: 'thread.mutated';
         workspaceId: string;
-        operation:
-          | 'create'
-          | 'rename'
-          | 'generateTitle'
-          | 'delete';
+        operation: 'create' | 'rename' | 'generateTitle' | 'delete';
         threadId: string;
         snapshot?: RuntimeThreadSnapshot;
         deleted?: boolean;
@@ -1346,7 +1367,8 @@ const hasBoundedRuntimeMarkdown = (
   value.trim().length > 0 &&
   utf8ByteLength(value) <= maxBytes &&
   !Array.from(value).some(
-    (character) => /\p{Cc}/u.test(character) && !['\n', '\r', '\t'].includes(character),
+    (character) =>
+      /\p{Cc}/u.test(character) && !['\n', '\r', '\t'].includes(character),
   );
 
 const isRuntimeUserInputQuestion = (
@@ -1383,7 +1405,10 @@ const isRuntimeUserInputDecision = (
     ? Object.keys(value).every((key) => ['questionId', 'kind'].includes(key))
     : value.kind === 'answered' &&
       (value.source === 'option' || value.source === 'custom') &&
-      hasBoundedRuntimeText(value.answer, MAX_RUNTIME_USER_INPUT_ANSWER_BYTES) &&
+      hasBoundedRuntimeText(
+        value.answer,
+        MAX_RUNTIME_USER_INPUT_ANSWER_BYTES,
+      ) &&
       Object.keys(value).every((key) =>
         ['questionId', 'kind', 'source', 'answer'].includes(key),
       ));
@@ -1423,8 +1448,7 @@ const isSafeWorkspacePath = (
 const workspaceDocumentLineCount = (content: string): number =>
   Math.max(
     1,
-    (content.match(/\n/gu)?.length ?? 0) +
-      (content.endsWith('\n') ? 0 : 1),
+    (content.match(/\n/gu)?.length ?? 0) + (content.endsWith('\n') ? 0 : 1),
   );
 
 const SESSION_ID_PATTERN =
@@ -1436,7 +1460,8 @@ const isSessionId = (value: unknown): value is string =>
 const isStringRecord = (
   value: unknown,
 ): value is Readonly<Record<string, string>> =>
-  isRecord(value) && Object.values(value).every((item) => typeof item === 'string');
+  isRecord(value) &&
+  Object.values(value).every((item) => typeof item === 'string');
 
 const isProviderConfig = (value: unknown): value is RuntimeProviderConfig =>
   isRecord(value) &&
@@ -1460,7 +1485,9 @@ const isProviderConfig = (value: unknown): value is RuntimeProviderConfig =>
   (value.nativeCompaction === undefined ||
     typeof value.nativeCompaction === 'boolean');
 
-export const isRuntimeContentPart = (value: unknown): value is RuntimeContentPart => {
+export const isRuntimeContentPart = (
+  value: unknown,
+): value is RuntimeContentPart => {
   if (!isRecord(value)) {
     return false;
   }
@@ -1483,10 +1510,7 @@ export const isRuntimeContentPart = (value: unknown): value is RuntimeContentPar
       )
     );
   }
-  return (
-    value.type === 'asset' &&
-    isAssetDescriptor(value.asset)
-  );
+  return value.type === 'asset' && isAssetDescriptor(value.asset);
 };
 
 const isAssetDescriptor = (value: unknown): value is RuntimeAssetDescriptor =>
@@ -1511,7 +1535,11 @@ const hasRequestId = (
   typeof value.requestId === 'string' && value.requestId.length > 0;
 
 export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
-  if (!isRecord(value) || !hasRequestId(value) || typeof value.type !== 'string') {
+  if (
+    !isRecord(value) ||
+    !hasRequestId(value) ||
+    typeof value.type !== 'string'
+  ) {
     return false;
   }
   switch (value.type) {
@@ -1585,10 +1613,16 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.fileName === 'string' &&
         value.fileName.length > 0 &&
         value.fileName.length <= 255 &&
-        (value.mediaType === undefined || typeof value.mediaType === 'string') &&
+        (value.mediaType === undefined ||
+          typeof value.mediaType === 'string') &&
         typeof value.data === 'string' &&
         value.data.length > 0 &&
         value.data.length <= 27_962_032
+      );
+    case 'asset.preview':
+      return (
+        typeof value.assetId === 'string' &&
+        /^ast_[0-9a-f]{64}$/u.test(value.assetId)
       );
     case 'turn.start':
     case 'turn.revise':
@@ -1823,35 +1857,43 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         Array.isArray(value.serverIds) &&
         value.serverIds.length <= 2 &&
         value.serverIds.every(
-          (id) => typeof id === 'string' && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(id),
+          (id) =>
+            typeof id === 'string' &&
+            /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(id),
         ) &&
         new Set(value.serverIds).size === value.serverIds.length
       );
     case 'skills.inspect':
-      return value.workspaceId === undefined || typeof value.workspaceId === 'string';
+      return (
+        value.workspaceId === undefined || typeof value.workspaceId === 'string'
+      );
     case 'skills.content':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         isSkillId(value.skillId) &&
         typeof value.expectedSha256 === 'string' &&
         /^[0-9a-f]{64}$/u.test(value.expectedSha256)
       );
     case 'skills.setEnabled':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         isSkillId(value.skillId) &&
         typeof value.enabled === 'boolean'
       );
     case 'skills.import':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         typeof value.sourcePath === 'string' &&
         value.sourcePath.length > 0 &&
         value.sourcePath.length <= 4_096
       );
     case 'skills.export':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         isSkillId(value.skillId) &&
         typeof value.destinationPath === 'string' &&
         value.destinationPath.length > 0 &&
@@ -1859,27 +1901,35 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
       );
     case 'skills.importZip':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         typeof value.archivePath === 'string' &&
         value.archivePath.length > 0 &&
         value.archivePath.length <= 4_096
       );
     case 'skills.exportZip':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         isSkillId(value.skillId) &&
         typeof value.destinationPath === 'string' &&
         value.destinationPath.length > 0 &&
         value.destinationPath.length <= 4_096
       );
     case 'knowledge.inspect':
-      return value.workspaceId === undefined || typeof value.workspaceId === 'string';
+      return (
+        value.workspaceId === undefined || typeof value.workspaceId === 'string'
+      );
     case 'knowledge.model.install':
     case 'knowledge.model.cancel':
     case 'knowledge.model.remove':
       return true;
     case 'knowledge.retrieval.select':
-      return typeof value.planId === 'string' && value.planId.length > 0 && value.planId.length <= 128;
+      return (
+        typeof value.planId === 'string' &&
+        value.planId.length > 0 &&
+        value.planId.length <= 128
+      );
     case 'knowledge.semanticIndex.pause':
       return typeof value.paused === 'boolean';
     case 'knowledge.create':
@@ -1908,9 +1958,11 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         Array.isArray(value.ignoreRules) &&
         value.ignoreRules.length <= 256 &&
         value.ignoreRules.every(
-          (rule) => typeof rule === 'string' && rule.length > 0 && rule.length <= 1_024,
+          (rule) =>
+            typeof rule === 'string' && rule.length > 0 && rule.length <= 1_024,
         ) &&
-        (value.semanticEnabled === undefined || typeof value.semanticEnabled === 'boolean')
+        (value.semanticEnabled === undefined ||
+          typeof value.semanticEnabled === 'boolean')
       );
     case 'knowledge.delete':
     case 'knowledge.detail':
@@ -1926,7 +1978,10 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.paths.length > 0 &&
         value.paths.length <= 256 &&
         value.paths.every(
-          (path) => typeof path === 'string' && path.length > 0 && path.length <= 16_384,
+          (path) =>
+            typeof path === 'string' &&
+            path.length > 0 &&
+            path.length <= 16_384,
         )
       );
     case 'knowledge.addFolder':
@@ -1956,7 +2011,10 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         utf8ByteLength(value.content) <= 2 * 1_024 * 1_024
       );
     case 'knowledge.text.read':
-      return typeof value.sourceId === 'string' && /^ks_[0-9a-f]{32}$/u.test(value.sourceId);
+      return (
+        typeof value.sourceId === 'string' &&
+        /^ks_[0-9a-f]{32}$/u.test(value.sourceId)
+      );
     case 'knowledge.text.update':
       return (
         typeof value.sourceId === 'string' &&
@@ -1975,10 +2033,14 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.rebuild === undefined || typeof value.rebuild === 'boolean')
       );
     case 'knowledge.index.cancel':
-      return typeof value.jobId === 'string' && /^kj_[0-9a-f]{32}$/u.test(value.jobId);
+      return (
+        typeof value.jobId === 'string' &&
+        /^kj_[0-9a-f]{32}$/u.test(value.jobId)
+      );
     case 'knowledge.search':
       return (
-        (value.workspaceId === undefined || typeof value.workspaceId === 'string') &&
+        (value.workspaceId === undefined ||
+          typeof value.workspaceId === 'string') &&
         Array.isArray(value.knowledgeBaseIds) &&
         value.knowledgeBaseIds.length > 0 &&
         value.knowledgeBaseIds.length <= 4 &&
@@ -2058,7 +2120,11 @@ export const isRuntimeAgentTask = (value: unknown): value is RuntimeAgentTask =>
       Number(value.result.durationMs) >= 0));
 
 export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
-  if (!isRecord(value) || !hasEventBase(value) || typeof value.type !== 'string') {
+  if (
+    !isRecord(value) ||
+    !hasEventBase(value) ||
+    typeof value.type !== 'string'
+  ) {
     return false;
   }
   switch (value.type) {
@@ -2113,13 +2179,15 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
             utf8ByteLength(value.document.content) +
               (value.document.hasUtf8Bom === true ? 3 : 0) &&
           Number.isSafeInteger(value.document.lines) &&
-          value.document.lines === workspaceDocumentLineCount(value.document.content) &&
+          value.document.lines ===
+            workspaceDocumentLineCount(value.document.content) &&
           typeof value.document.hasUtf8Bom === 'boolean') ||
           (value.document.status === 'truncated' &&
             typeof value.document.content === 'string' &&
             Number.isSafeInteger(value.document.bytes) &&
             Number.isSafeInteger(value.document.returnedBytes) &&
-            value.document.returnedBytes === utf8ByteLength(value.document.content) &&
+            value.document.returnedBytes ===
+              utf8ByteLength(value.document.content) &&
             Number.isSafeInteger(value.document.lines) &&
             typeof value.document.hasUtf8Bom === 'boolean') ||
           (value.document.status === 'error' &&
@@ -2154,6 +2222,19 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       );
     case 'asset.imported':
       return isAssetDescriptor(value.asset);
+    case 'asset.preview':
+      return (
+        isRecord(value.preview) &&
+        typeof value.preview.available === 'boolean' &&
+        (value.preview.available
+          ? isAssetDescriptor(value.preview.asset) &&
+            value.preview.asset.kind === 'image' &&
+            typeof value.preview.data === 'string' &&
+            value.preview.data.length > 0 &&
+            value.preview.data.length + 128 <=
+              MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH
+          : ['unsupported', 'tooLarge'].includes(String(value.preview.reason)))
+      );
     case 'turn.revised':
       return (
         typeof value.workspaceId === 'string' &&
@@ -2223,7 +2304,9 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         ['applicationSummary', 'openaiNative', 'anthropicNative'].includes(
           String(value.strategy),
         ) &&
-        ['completed', 'failed', 'interrupted'].includes(String(value.outcome)) &&
+        ['completed', 'failed', 'interrupted'].includes(
+          String(value.outcome),
+        ) &&
         Number.isSafeInteger(value.durationMs) &&
         Number(value.durationMs) >= 0 &&
         (value.beforeContextTokens === undefined ||
@@ -2378,7 +2461,12 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.workspaceId === 'string' &&
         Number.isSafeInteger(value.generation) &&
         isSessionId(value.sessionId) &&
-        ['spawnFailed', 'protocolInvalid', 'terminalCrashed', 'outputOverload'].includes(String(value.error)) &&
+        [
+          'spawnFailed',
+          'protocolInvalid',
+          'terminalCrashed',
+          'outputOverload',
+        ].includes(String(value.error)) &&
         typeof value.fatal === 'boolean'
       );
     case 'terminal.exited':
@@ -2388,7 +2476,13 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         isSessionId(value.sessionId) &&
         Number.isSafeInteger(value.exitCode) &&
         (value.signal === undefined || typeof value.signal === 'string') &&
-        ['natural', 'requested', 'ownerLost', 'protocolError', 'ioError'].includes(String(value.reason))
+        [
+          'natural',
+          'requested',
+          'ownerLost',
+          'protocolError',
+          'ioError',
+        ].includes(String(value.reason))
       );
     case 'environment.inspection':
       return isCommandEnvironmentStatus(value.status);
@@ -2460,15 +2554,13 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
     case 'thread.mutated':
       return (
         typeof value.workspaceId === 'string' &&
-        [
-          'create',
-          'rename',
-          'generateTitle',
-          'delete',
-        ].includes(String(value.operation)) &&
+        ['create', 'rename', 'generateTitle', 'delete'].includes(
+          String(value.operation),
+        ) &&
         typeof value.threadId === 'string' &&
         (value.deleted === undefined ||
-          (value.operation === 'delete' && typeof value.deleted === 'boolean')) &&
+          (value.operation === 'delete' &&
+            typeof value.deleted === 'boolean')) &&
         (value.snapshot === undefined || isThreadSnapshot(value.snapshot))
       );
     case 'git.result':

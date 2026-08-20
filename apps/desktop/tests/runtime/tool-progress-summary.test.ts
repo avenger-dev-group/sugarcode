@@ -37,3 +37,12 @@ test('Skill progress uses its dedicated activity instead of synthesized text', (
     undefined,
   );
 });
+
+test('image analysis has a localized progress summary', () => {
+  assert.equal(
+    toolProgressSummary('分析这张图片', 'analyze_image', {
+      assetId: `ast_${'a'.repeat(64)}`,
+    }),
+    '正在分析图片内容。',
+  );
+});

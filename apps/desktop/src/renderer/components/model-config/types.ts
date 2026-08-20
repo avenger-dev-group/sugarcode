@@ -31,6 +31,7 @@ export type ModelConfigStore = Readonly<{
   setProviderWire: (wireApi: ModelWireApi) => void;
   updateConnection: (patch: Partial<ModelConnectionValue>) => void;
   updateSelectedProfile: (patch: Partial<ModelProfileValue>) => void;
+  setImageAnalysisProfile: (profileId: string | undefined) => void;
   addConfiguration: () => void;
   deleteConfiguration: () => void;
   save: () => void;
