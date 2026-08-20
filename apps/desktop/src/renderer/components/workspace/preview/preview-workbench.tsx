@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
+import { useModalLayerOpen } from '@/renderer/components/ui/use-modal-layer';
 
 import { useStore } from './use-store';
 
@@ -44,6 +45,7 @@ const PreviewWorkbenchView = ({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const setBoundsRef = useRef(store.setBounds);
   const onTitleChangeRef = useRef(onTitleChange);
+  const modalLayerOpen = useModalLayerOpen();
   const ready = store.state.status === 'ready';
   const connected = store.state.status === 'opening' || ready;
   const workspaceReady = store.workspace.status === 'ready';
@@ -59,7 +61,8 @@ const PreviewWorkbenchView = ({
       const location = new URL(store.state.url);
       onTitleChangeRef.current?.(
         location.protocol === 'file:'
-          ? decodeURIComponent(location.pathname.split('/').at(-1) ?? '') || '本地 HTML'
+          ? decodeURIComponent(location.pathname.split('/').at(-1) ?? '') ||
+              '本地 HTML'
           : location.host || '浏览器',
       );
     } catch {
@@ -68,7 +71,7 @@ const PreviewWorkbenchView = ({
   }, [store.state]);
 
   useEffect(() => {
-    if (!active || !connected) {
+    if (!active || !connected || modalLayerOpen) {
       void setBoundsRef.current(null);
       return;
     }
@@ -105,7 +108,7 @@ const PreviewWorkbenchView = ({
       window.removeEventListener('scroll', syncBounds, true);
       void setBoundsRef.current(null);
     };
-  }, [active, connected, ready, sessionId]);
+  }, [active, connected, modalLayerOpen, ready, sessionId]);
 
   return (
     <section
@@ -158,9 +161,15 @@ const PreviewWorkbenchView = ({
           }}
         >
           {connected && store.state.url.startsWith('https://') ? (
-            <LockKeyhole className="size-3.5 shrink-0 text-[#3b8b65]" aria-hidden="true" />
+            <LockKeyhole
+              className="size-3.5 shrink-0 text-[#3b8b65]"
+              aria-hidden="true"
+            />
           ) : (
-            <Globe2 className="size-3.5 shrink-0 text-[#8b9490]" aria-hidden="true" />
+            <Globe2
+              className="size-3.5 shrink-0 text-[#8b9490]"
+              aria-hidden="true"
+            />
           )}
           <input
             aria-label="浏览器地址"
@@ -181,7 +190,11 @@ const PreviewWorkbenchView = ({
           disabled={!workspaceReady || store.busy}
           onClick={() => void store.navigate()}
         >
-          {store.state.status === 'opening' ? '加载中' : connected ? '前往' : '打开'}
+          {store.state.status === 'opening'
+            ? '加载中'
+            : connected
+              ? '前往'
+              : '打开'}
         </Button>
         {connected ? (
           <Button
@@ -203,16 +216,23 @@ const PreviewWorkbenchView = ({
         <span className="flex min-w-0 items-center gap-2">
           <span
             className={`size-1.5 shrink-0 rounded-full ${
-              ready ? 'bg-[#439a70] shadow-[0_0_0_3px_rgba(67,154,112,.12)]' : 'bg-[#b2b9b5]'
+              ready
+                ? 'bg-[#439a70] shadow-[0_0_0_3px_rgba(67,154,112,.12)]'
+                : 'bg-[#b2b9b5]'
             }`}
             aria-hidden="true"
           />
           {previewStatusLabel(store.state.status)}
           {connected ? (
-            <span className="truncate text-[#9aa29e]">· {store.state.origin}</span>
+            <span className="truncate text-[#9aa29e]">
+              · {store.state.origin}
+            </span>
           ) : null}
         </span>
-        <span className="flex shrink-0 items-center gap-1.5" title="隔离的浏览会话">
+        <span
+          className="flex shrink-0 items-center gap-1.5"
+          title="隔离的浏览会话"
+        >
           <ShieldCheck className="size-3" aria-hidden="true" />
           Sandboxed
         </span>
@@ -227,7 +247,10 @@ const PreviewWorkbenchView = ({
           {store.state.status === 'opening' ? (
             <div className="absolute inset-0 grid place-items-center bg-[#fbfcfb]">
               <div className="flex items-center gap-2.5 text-xs text-[#737d78]">
-                <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+                <LoaderCircle
+                  className="size-4 animate-spin"
+                  aria-hidden="true"
+                />
                 正在加载页面…
               </div>
             </div>
@@ -244,16 +267,21 @@ const PreviewWorkbenchView = ({
               浏览网页或预览 HTML
             </h2>
             <p className="mt-2 text-xs leading-5 text-[#707a75]">
-              输入任意 HTTP 或 HTTPS 地址。Agent 生成的静态 HTML 可从聊天中的交付物卡片直接在这里打开，无需启动服务。
+              输入任意 HTTP 或 HTTPS 地址。Agent 生成的静态 HTML
+              可从聊天中的交付物卡片直接在这里打开，无需启动服务。
             </p>
             <p className="mt-4 font-mono text-[10px] leading-4 text-[#9aa29e]">
               普通网页 · 本地开发地址 · file:// HTML 交付物
             </p>
             {!workspaceReady ? (
-              <p className="mt-3 text-xs text-[#a66342]">请先打开一个项目工作区。</p>
+              <p className="mt-3 text-xs text-[#a66342]">
+                请先打开一个项目工作区。
+              </p>
             ) : null}
             {store.state.status === 'failed' ? (
-              <p className="mt-3 text-xs text-[#b64e49]">页面加载失败，请检查地址或文件是否仍然存在。</p>
+              <p className="mt-3 text-xs text-[#b64e49]">
+                页面加载失败，请检查地址或文件是否仍然存在。
+              </p>
             ) : null}
           </div>
         </div>

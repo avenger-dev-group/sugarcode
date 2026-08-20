@@ -3,14 +3,22 @@ import { Dialog as DialogPrimitive } from 'radix-ui';
 
 import { cn } from '@/renderer/utils/class-name';
 
+import { acquireModalLayer } from './use-modal-layer';
+
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
 const DialogClose = DialogPrimitive.Close;
 const DialogTitle = DialogPrimitive.Title;
 const DialogDescription = DialogPrimitive.Description;
 
+const DialogLayerRegistration = (): null => {
+  React.useLayoutEffect(() => acquireModalLayer(), []);
+  return null;
+};
+
 const DialogContent = ({
   className,
+  children,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content>) => (
   <DialogPrimitive.Portal>
@@ -21,7 +29,10 @@ const DialogContent = ({
         className,
       )}
       {...props}
-    />
+    >
+      <DialogLayerRegistration />
+      {children}
+    </DialogPrimitive.Content>
   </DialogPrimitive.Portal>
 );
 
