@@ -7,6 +7,7 @@ import {
 } from './protocol.ts';
 
 const MAX_AVAILABLE_THREAD_IMAGES = 32;
+const MAX_AVAILABLE_THREAD_VIDEOS = 16;
 
 const usableImageProfile = (
   config: ModelConfigValue,
@@ -38,11 +39,85 @@ export const imageAnalysisProfileIds = (
   );
 };
 
+const usableVideoProfile = (
+  config: ModelConfigValue,
+  profileId: string,
+): boolean => {
+  const profile = config.profiles.find((candidate) => candidate.id === profileId);
+  const connection = config.connections.find(
+    (candidate) => candidate.id === profile?.connectionId,
+  );
+  return Boolean(
+    profile &&
+    connection?.enabled === true &&
+    profile.videoInput !== 'disabled',
+  );
+};
+
+const usableAudioProfile = (
+  config: ModelConfigValue,
+  profileId: string,
+): boolean => {
+  const profile = config.profiles.find((candidate) => candidate.id === profileId);
+  const connection = config.connections.find(
+    (candidate) => candidate.id === profile?.connectionId,
+  );
+  return Boolean(
+    profile &&
+    connection?.enabled === true &&
+    connection.wireApi !== 'anthropicMessages' &&
+    profile.audioInput !== 'disabled',
+  );
+};
+
+export const audioAnalysisProfileIds = (
+  config: ModelConfigValue,
+  videoProfileId: string | undefined,
+  currentProfileId: string,
+): readonly string[] => {
+  const preferred = [
+    config.mediaRouting?.audioProfileId,
+    videoProfileId,
+    currentProfileId,
+    config.defaultProfileId,
+  ];
+  return preferred.filter(
+    (profileId, index): profileId is string =>
+      typeof profileId === 'string' &&
+      preferred.indexOf(profileId) === index &&
+      usableAudioProfile(config, profileId),
+  );
+};
+
+export const videoAnalysisProfileIds = (
+  config: ModelConfigValue,
+  currentProfileId: string,
+): readonly string[] => {
+  const preferred = [
+    config.mediaRouting?.videoProfileId,
+    currentProfileId,
+    config.defaultProfileId,
+  ];
+  return preferred.filter(
+    (profileId, index): profileId is string =>
+      typeof profileId === 'string' &&
+      preferred.indexOf(profileId) === index &&
+      usableVideoProfile(config, profileId),
+  );
+};
+
 const imageAssets = (
   content: readonly RuntimeContentPart[],
 ): readonly RuntimeAssetDescriptor[] =>
   content.flatMap((part) =>
     part.type === 'asset' && part.asset.kind === 'image' ? [part.asset] : [],
+  );
+
+const videoAssets = (
+  content: readonly RuntimeContentPart[],
+): readonly RuntimeAssetDescriptor[] =>
+  content.flatMap((part) =>
+    part.type === 'asset' && part.asset.kind === 'video' ? [part.asset] : [],
   );
 
 const storedUserContent = (
@@ -84,6 +159,28 @@ export const availableThreadImages = (
     seen.add(asset.assetId);
     result.push(asset);
     if (result.length >= MAX_AVAILABLE_THREAD_IMAGES) {
+      break;
+    }
+  }
+  return result;
+};
+
+export const availableThreadVideos = (
+  snapshot: RuntimeThreadSnapshot,
+  currentContent: readonly RuntimeContentPart[],
+): readonly RuntimeAssetDescriptor[] => {
+  const result: RuntimeAssetDescriptor[] = [];
+  const seen = new Set<string>();
+  for (const asset of [
+    ...videoAssets(currentContent),
+    ...storedUserContent(snapshot).flatMap(videoAssets),
+  ]) {
+    if (seen.has(asset.assetId)) {
+      continue;
+    }
+    seen.add(asset.assetId);
+    result.push(asset);
+    if (result.length >= MAX_AVAILABLE_THREAD_VIDEOS) {
       break;
     }
   }

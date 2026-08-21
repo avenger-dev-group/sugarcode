@@ -288,7 +288,10 @@ export const isConversationAttachment = (
   typeof value.sizeBytes === 'number' &&
   Number.isSafeInteger(value.sizeBytes) &&
   value.sizeBytes > 0 &&
-  (value.kind === 'image' || value.kind === 'pdf' || value.kind === 'text') &&
+  (value.kind === 'image' ||
+    value.kind === 'video' ||
+    value.kind === 'pdf' ||
+    value.kind === 'text') &&
   (value.pdfPages === undefined ||
     (value.kind === 'pdf' &&
       Number.isSafeInteger(value.pdfPages) &&

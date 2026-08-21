@@ -65,7 +65,37 @@ const accepted = (
 });
 const rejected = (
   reason: Exclude<ConversationActionResult['reason'], 'accepted'>,
-): ConversationActionResult => ({ accepted: false, reason });
+  attachmentFailure?: ConversationActionResult['attachmentFailure'],
+): ConversationActionResult => ({
+  accepted: false,
+  reason,
+  ...(attachmentFailure ? { attachmentFailure } : {}),
+});
+
+const attachmentImportFailure = (
+  error: unknown,
+): NonNullable<ConversationActionResult['attachmentFailure']> => {
+  const message = error instanceof Error ? error.message : String(error);
+  const tagged = /assetImport:(sourceUnavailable|unsupportedFormat|mediaTypeMismatch|tooLarge|storageUnavailable|unknown):/u.exec(
+    message,
+  )?.[1] as ConversationActionResult['attachmentFailure'] | undefined;
+  if (tagged) {
+    return tagged;
+  }
+  if (message.includes('does not support path-based video imports')) {
+    return 'runtimeOutdated';
+  }
+  if (message.includes('unsupported content media type')) {
+    return 'unsupportedFormat';
+  }
+  if (message.includes('declared media type does not match')) {
+    return 'mediaTypeMismatch';
+  }
+  if (message.includes('exceeds the size limit')) {
+    return 'tooLarge';
+  }
+  return 'unknown';
+};
 
 const knowledgeReferencesFromParts = (content: readonly RuntimeContentPart[]) =>
   content.flatMap((part) =>
@@ -413,10 +443,12 @@ export class RuntimeConversationController {
     this.publish();
     let optimisticTurn:
       Readonly<{ threadId: string; turnId: string }> | undefined;
+    let importingAttachment = false;
     try {
       const content = initialTurnContent(input.input);
       const attachments: ConversationAttachment[] = [];
       for (const attachment of input.attachments ?? []) {
+        importingAttachment = true;
         const imported = await this.runtime.request(
           {
             type: 'asset.import',
@@ -425,19 +457,22 @@ export class RuntimeConversationController {
             ...(attachment.mediaType
               ? { mediaType: attachment.mediaType }
               : {}),
-            data: attachment.data,
+            ...('localPath' in attachment
+              ? { localPath: attachment.localPath }
+              : { data: attachment.data }),
           },
           'asset.imported',
         );
         content.push({ type: 'asset', asset: imported.asset });
         attachments.push({
           ...attachmentFromPart({ type: 'asset', asset: imported.asset }),
-          ...(imported.asset.kind === 'image'
+          ...(imported.asset.kind === 'image' && 'data' in attachment
             ? {
                 previewUrl: `data:${imported.asset.mediaType};base64,${attachment.data}`,
               }
             : {}),
         });
+        importingAttachment = false;
       }
       if (!threadId) {
         const created = await this.runtime.request(
@@ -540,7 +575,11 @@ export class RuntimeConversationController {
       this.publishThreadProjection(threadId, true);
       this.publish();
       return accepted({ disposition: 'started' });
-    } catch {
+    } catch (error) {
+      const attachmentUnavailable = importingAttachment;
+      const importFailure = attachmentUnavailable
+        ? attachmentImportFailure(error)
+        : undefined;
       releaseQueueOperation?.();
       this.pendingTurnStartWorkspaces.delete(workspaceId);
       if (
@@ -560,11 +599,16 @@ export class RuntimeConversationController {
       if (this.workspaceId === workspaceId) {
         this.notice = {
           kind: 'requestFailed',
-          summary: 'The local Agent could not start this Turn.',
+          summary: attachmentUnavailable
+            ? 'The attachment could not be imported.'
+            : 'The local Agent could not start this Turn.',
         };
       }
       this.publish();
-      return rejected('unavailable');
+      return rejected(
+        attachmentUnavailable ? 'attachmentUnavailable' : 'unavailable',
+        importFailure,
+      );
     }
   };
 

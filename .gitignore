@@ -32,6 +32,7 @@ coverage
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 build/Release
 apps/desktop/native/*.node
+apps/desktop/vendor/ffmpeg/
 
 # Dependency directories
 node_modules/

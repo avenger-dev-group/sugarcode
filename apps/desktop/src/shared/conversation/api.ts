@@ -11,6 +11,15 @@ import type {
   ConversationThreadProjectionSnapshot,
 } from './projection.ts';
 
+export type ConversationAttachmentFailure =
+  | 'sourceUnavailable'
+  | 'unsupportedFormat'
+  | 'mediaTypeMismatch'
+  | 'tooLarge'
+  | 'runtimeOutdated'
+  | 'storageUnavailable'
+  | 'unknown';
+
 export type ConversationActionResult = Readonly<{
   accepted: boolean;
   reason:
@@ -26,12 +35,15 @@ export type ConversationActionResult = Readonly<{
     | 'turnMismatch'
     | 'notSteerable'
     | 'modelUnavailable'
+    | 'attachmentUnavailable'
     | 'unavailable'
     | 'noActiveTurn';
   disposition?: 'started' | 'queued';
   queueItemId?: string;
+  attachmentFailure?: ConversationAttachmentFailure;
 }>;
 export type ConversationApi = Readonly<{
+  getLocalFilePath: (file: File) => string;
   getConversationState: () => Promise<ConversationStateSnapshot>;
   onConversationStateChanged: (
     listener: ConversationStateListener,

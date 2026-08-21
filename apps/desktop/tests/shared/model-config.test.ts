@@ -80,14 +80,26 @@ test('save request carries one credential action per connection without a key ec
   );
 });
 
-test('media routing may select an existing image profile', () => {
+test('media routing may select existing image, video, and audio profiles', () => {
   assert.equal(isModelConfigValue({
     ...catalog(),
-    mediaRouting: { imageProfileId: 'model_primary' },
+    mediaRouting: {
+      imageProfileId: 'model_primary',
+      videoProfileId: 'model_primary',
+      audioProfileId: 'model_primary',
+    },
   }), true);
   assert.equal(isModelConfigValue({
     ...catalog(),
     mediaRouting: { imageProfileId: 'missing_model' },
+  }), false);
+  assert.equal(isModelConfigValue({
+    ...catalog(),
+    mediaRouting: { videoProfileId: 'missing_model' },
+  }), false);
+  assert.equal(isModelConfigValue({
+    ...catalog(),
+    mediaRouting: { audioProfileId: 'missing_model' },
   }), false);
 });
 
@@ -96,7 +108,30 @@ test('media routing rejects unknown fields', () => {
     ...catalog(),
     mediaRouting: {
       imageProfileId: 'model_primary',
-      audioProfileId: 'model_primary',
+      unsupportedProfileId: 'model_primary',
     },
+  }), false);
+});
+
+test('media capabilities and connection transport remain optional and validated', () => {
+  const configured = catalog();
+  assert.equal(isModelConfigValue({
+    ...configured,
+    connections: [{
+      ...configured.connections[0],
+      mediaTransport: 'dashscopeTemporaryUrl',
+    }],
+    profiles: [{
+      ...configured.profiles[0],
+      videoInput: 'enabled',
+      audioInput: 'enabled',
+    }],
+  }), true);
+  assert.equal(isModelConfigValue({
+    ...configured,
+    connections: [{
+      ...configured.connections[0],
+      mediaTransport: 'unknown',
+    }],
   }), false);
 });

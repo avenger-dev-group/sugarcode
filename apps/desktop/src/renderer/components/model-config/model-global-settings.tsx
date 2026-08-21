@@ -1,4 +1,4 @@
-import { ImageIcon } from 'lucide-react';
+import { AudioLines, ImageIcon, Video } from 'lucide-react';
 
 import {
   Select,
@@ -89,8 +89,125 @@ export const ModelGlobalSettings = ({ store }: ModelGlobalSettingsProps) => (
         </label>
       </section>
 
+      <section className="grid gap-4 rounded-xl border bg-surface/20 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)] sm:items-start">
+        <div className="flex gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-surface text-secondary">
+            <AudioLines className="size-4" aria-hidden="true" />
+          </span>
+          <div>
+            <h4 className="text-sm font-medium">音频与会议转写</h4>
+            <p className="mt-1 text-xs leading-5 text-tertiary">
+              视频原生分析不可用或需要会议纪要时，用于转写音轨、区分说话人并保留时间戳。
+            </p>
+          </div>
+        </div>
+
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-secondary">音频分析模型</span>
+          <Select
+            value={
+              store.config.mediaRouting?.audioProfileId ??
+              AUTOMATIC_PROFILE_VALUE
+            }
+            onValueChange={(value) =>
+              store.setAudioAnalysisProfile(
+                value === AUTOMATIC_PROFILE_VALUE ? undefined : value,
+              )
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={AUTOMATIC_PROFILE_VALUE}>自动选择</SelectItem>
+              {store.config.profiles.map((profile) => {
+                const connection = store.config.connections.find(
+                  (candidate) => candidate.id === profile.connectionId,
+                );
+                const available =
+                  connection?.enabled === true &&
+                  connection.wireApi !== 'anthropicMessages' &&
+                  profile.audioInput !== 'disabled';
+
+                return (
+                  <SelectItem
+                    key={profile.id}
+                    value={profile.id}
+                    disabled={!available}
+                  >
+                    {profile.displayName}
+                    {available ? '' : '（不可用）'}
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+          <span className="text-xs leading-5 text-tertiary">
+            未指定时优先复用视频模型，再尝试当前模型与默认模型。
+          </span>
+        </label>
+      </section>
+
+      <section className="grid gap-4 rounded-xl border bg-surface/20 px-4 py-4 sm:grid-cols-[minmax(0,1fr)_minmax(15rem,0.8fr)] sm:items-start">
+        <div className="flex gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-surface text-secondary">
+            <Video className="size-4" aria-hidden="true" />
+          </span>
+          <div>
+            <h4 className="text-sm font-medium">视频理解</h4>
+            <p className="mt-1 text-xs leading-5 text-tertiary">
+              为视频分析指定支持视频输入的模型；不可用时自动降级到当前模型和默认模型。
+            </p>
+          </div>
+        </div>
+
+        <label className="grid gap-1.5 text-sm">
+          <span className="text-secondary">视频分析模型</span>
+          <Select
+            value={
+              store.config.mediaRouting?.videoProfileId ??
+              AUTOMATIC_PROFILE_VALUE
+            }
+            onValueChange={(value) =>
+              store.setVideoAnalysisProfile(
+                value === AUTOMATIC_PROFILE_VALUE ? undefined : value,
+              )
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={AUTOMATIC_PROFILE_VALUE}>自动选择</SelectItem>
+              {store.config.profiles.map((profile) => {
+                const connection = store.config.connections.find(
+                  (candidate) => candidate.id === profile.connectionId,
+                );
+                const available =
+                  connection?.enabled === true &&
+                  profile.videoInput !== 'disabled';
+
+                return (
+                  <SelectItem
+                    key={profile.id}
+                    value={profile.id}
+                    disabled={!available}
+                  >
+                    {profile.displayName}
+                    {available ? '' : '（不可用）'}
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+          <span className="text-xs leading-5 text-tertiary">
+            使用该模型连接已配置的协议；自动顺序：当前会话模型 → 默认模型
+          </span>
+        </label>
+      </section>
+
       <p className="text-xs leading-5 text-tertiary">
-        音频和视频将在对应的输入处理能力接入后，沿用同一套全局路由配置。
+        视频分析支持 MP4、MOV、WebM、MKV、AVI 和 MPEG，单个本地视频最大 2 GiB。系统优先按所选连接的协议直接分析；会议模式或原生视频不可用时，会分别处理画面和音轨，再按时间轴融合结果。
       </p>
     </fieldset>
   </main>

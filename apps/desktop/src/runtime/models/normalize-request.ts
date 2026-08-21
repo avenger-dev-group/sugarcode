@@ -75,6 +75,9 @@ const normalizePart = (part: Part): NormalizedMessagePart | null => {
       ...(part.inlineData.displayName
         ? { name: part.inlineData.displayName }
         : {}),
+      ...(typeof part.partMetadata?.sugarcodeVideoFps === 'number'
+        ? { fps: part.partMetadata.sugarcodeVideoFps }
+        : {}),
     };
   }
   if (part.fileData?.fileUri && part.fileData.mimeType) {
@@ -84,6 +87,9 @@ const normalizePart = (part: Part): NormalizedMessagePart | null => {
       uri: part.fileData.fileUri,
       ...(part.fileData.displayName
         ? { name: part.fileData.displayName }
+        : {}),
+      ...(typeof part.partMetadata?.sugarcodeVideoFps === 'number'
+        ? { fps: part.partMetadata.sugarcodeVideoFps }
         : {}),
     };
   }

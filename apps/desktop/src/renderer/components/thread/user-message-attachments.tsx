@@ -1,4 +1,4 @@
-import { Image as ImageIcon, LoaderCircle, X } from 'lucide-react';
+import { Image as ImageIcon, LoaderCircle, Video, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/renderer/components/ui/button';
@@ -147,8 +147,11 @@ export const UserMessageAttachments = ({
           {files.map((attachment) => (
             <span
               key={attachment.assetId}
-              className="max-w-56 truncate rounded-xl border bg-surface px-3 py-2 text-xs font-medium text-secondary shadow-sm"
+              className="flex max-w-56 items-center gap-2 truncate rounded-xl border bg-surface px-3 py-2 text-xs font-medium text-secondary shadow-sm"
             >
+              {attachment.kind === 'video' ? (
+                <Video className="size-4 shrink-0" aria-hidden="true" />
+              ) : null}
               {attachment.originalName}
             </span>
           ))}

@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, Menu, shell, Tray } from 'electron';
 import started from 'electron-squirrel-startup';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -277,6 +278,19 @@ const createTray = (): void => {
 
 const startApplication = async (): Promise<void> => {
   await app.whenReady();
+  const ffmpegName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+  const ffmpegCandidates = [
+    process.env.SUGARCODE_FFMPEG_PATH,
+    path.join(process.resourcesPath, 'ffmpeg', ffmpegName),
+    path.join(process.resourcesPath, ffmpegName),
+    ...(process.platform === 'darwin'
+      ? ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg']
+      : process.platform === 'linux'
+        ? ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']
+        : []),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  const resolvedFfmpegPath =
+    ffmpegCandidates.find((candidate) => existsSync(candidate)) ?? ffmpegName;
   runtimeSupervisor = new RuntimeSupervisor({
     runtimePath: path.join(__dirname, 'runtime.mjs'),
     dataDirectory: e2eRoot
@@ -285,6 +299,7 @@ const startApplication = async (): Promise<void> => {
     nativeModulePath: app.isPackaged
       ? path.join(process.resourcesPath, 'sugarcode-desktop-native.node')
       : path.join(app.getAppPath(), 'native', 'sugarcode-desktop-native.node'),
+    ffmpegPath: resolvedFfmpegPath,
   });
   disposeRuntimeEvents = runtimeSupervisor.subscribe((event) => {
     if (event.type === 'runtime.log') {

@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,11 +53,19 @@ const nativeModulePath = path.join(
   resourcesDirectory,
   'sugarcode-desktop-native.node',
 );
+const ffmpegPath = path.join(
+  resourcesDirectory,
+  'ffmpeg',
+  platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg',
+);
 
 for (const requiredPath of [
   executablePath,
   asarPath,
   nativeModulePath,
+  ffmpegPath,
+  path.join(resourcesDirectory, 'ffmpeg', 'COPYING.LGPLv2.1'),
+  path.join(resourcesDirectory, 'ffmpeg', 'FFMPEG-BUILD.txt'),
   path.join(resourcesDirectory, 'icon.png'),
   path.join(resourcesDirectory, 'THIRD_PARTY_NOTICES.txt'),
 ]) {
@@ -139,13 +148,28 @@ const readMachine = (filePath) => {
   return header.readUInt16LE(peOffset + 4);
 };
 
-for (const binaryPath of [executablePath, nativeModulePath]) {
+for (const binaryPath of [executablePath, nativeModulePath, ffmpegPath]) {
   const machine = readMachine(binaryPath);
   if (machine !== expectedMachine) {
     throw new Error(
       `${binaryPath} has machine 0x${machine.toString(16)}, expected 0x${expectedMachine.toString(16)}.`,
     );
   }
+}
+
+const ffmpegVersion = execFileSync(
+  ffmpegPath,
+  ['-hide_banner', '-version'],
+  { encoding: 'utf8' },
+);
+if (
+  !ffmpegVersion.includes('ffmpeg version 9.0.1') ||
+  !ffmpegVersion.includes('--disable-gpl') ||
+  !ffmpegVersion.includes('--disable-nonfree') ||
+  ffmpegVersion.includes('--enable-gpl') ||
+  ffmpegVersion.includes('--enable-nonfree')
+) {
+  throw new Error('Packaged FFmpeg version or license configuration is invalid.');
 }
 
 console.log(

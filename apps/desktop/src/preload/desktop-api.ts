@@ -302,7 +302,19 @@ const invokeConversationThreadAction = async (
 
 export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
+  getPathForFile?: (file: File) => string,
 ): DesktopApi => ({
+  getLocalFilePath: (file: File): string => {
+    const localPath = getPathForFile?.(file) ?? '';
+    if (
+      localPath.length === 0 ||
+      localPath.length > 32_768 ||
+      /[\p{Cc}]/u.test(localPath)
+    ) {
+      throw new Error('Desktop could not resolve the selected file path.');
+    }
+    return localPath;
+  },
   getUpdateState: async (): Promise<UpdateStateSnapshot> => {
     const snapshot: unknown = await ipcRenderer.invoke(
       UPDATE_STATE_GET_CHANNEL,

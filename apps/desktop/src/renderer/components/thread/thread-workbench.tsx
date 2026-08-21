@@ -9,6 +9,7 @@ import {
   ListOrdered,
   Pencil,
   Trash2,
+  Video,
   CornerUpRight,
   Play,
   PanelLeftOpen,
@@ -1104,7 +1105,7 @@ export const ThreadWorkbenchView = ({
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
+                    accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,application/pdf,text/plain"
                     className="sr-only"
                     tabIndex={-1}
                     onChange={(event) => {
@@ -1161,6 +1162,13 @@ export const ThreadWorkbenchView = ({
                               alt=""
                               className="size-11 shrink-0 rounded-lg object-cover"
                             />
+                          ) : attachment.mediaType.startsWith('video/') ? (
+                            <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-background">
+                              <Video
+                                className="size-5 text-secondary"
+                                aria-hidden="true"
+                              />
+                            </div>
                           ) : (
                             <div className="grid size-11 shrink-0 place-items-center rounded-lg bg-background">
                               <FileText

@@ -51,9 +51,11 @@ export type DraftAttachmentViewModel = Readonly<{
   fileName: string;
   mediaType: string;
   sizeBytes: number;
-  data: string;
   previewUrl?: string;
-}>;
+}> & (
+  | Readonly<{ data: string; localPath?: never }>
+  | Readonly<{ localPath: string; data?: never }>
+);
 
 export type TranscriptMessageViewModel =
   | Readonly<{

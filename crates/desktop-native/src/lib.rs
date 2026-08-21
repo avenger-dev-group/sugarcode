@@ -22,6 +22,8 @@ use sha2::{Digest, Sha256};
 use sugarcode_state::ContentAsset;
 use sugarcode_state::ContentAssetKind;
 use sugarcode_state::ContentStore;
+use sugarcode_state::ContentStoreError;
+use sugarcode_state::MAX_TURN_ATTACHMENT_BYTES;
 use sugarcode_terminal::EmbeddedTerminal;
 use sugarcode_tools::CommandEnvironmentManager;
 use sugarcode_tools::CommandEnvironmentSnapshot;
@@ -921,7 +923,7 @@ impl NativeRuntime {
         media_type: Option<String>,
         data: String,
     ) -> Result<String> {
-        const MAX_BASE64_BYTES: usize = 27_962_032;
+        const MAX_BASE64_BYTES: usize = 4 * (MAX_TURN_ATTACHMENT_BYTES as usize).div_ceil(3);
         if data.is_empty() || data.len() > MAX_BASE64_BYTES {
             return Err(Error::from_reason("Asset data is empty or too large."));
         }
@@ -931,7 +933,28 @@ impl NativeRuntime {
         let asset = self
             .content_store
             .import(file_name, media_type.as_deref(), &bytes)
-            .map_err(|error| Error::from_reason(error.to_string()))?;
+            .map_err(content_import_error)?;
+        let row = asset_row(&asset);
+        self.with_store(|store| store.record_asset(&row))?;
+        serde_json::to_string(&row).map_err(|error| {
+            Error::from_reason(format!("Could not encode asset metadata: {error}"))
+        })
+    }
+
+    #[napi]
+    pub fn import_video_path_json(
+        &self,
+        file_name: String,
+        media_type: Option<String>,
+        local_path: String,
+    ) -> Result<String> {
+        if local_path.is_empty() || local_path.len() > 32_768 {
+            return Err(Error::from_reason("Video path is invalid."));
+        }
+        let asset = self
+            .content_store
+            .import_video_path(file_name, media_type.as_deref(), Path::new(&local_path))
+            .map_err(content_import_error)?;
         let row = asset_row(&asset);
         self.with_store(|store| store.record_asset(&row))?;
         serde_json::to_string(&row).map_err(|error| {
@@ -959,6 +982,11 @@ impl NativeRuntime {
             .with_store(|store| store.asset(&asset_id))?
             .ok_or_else(|| Error::from_reason("Content asset does not exist."))?;
         let asset = content_asset(&row)?;
+        if asset.kind == ContentAssetKind::Video {
+            return Err(Error::from_reason(
+                "Video assets must be accessed through the verified path API.",
+            ));
+        }
         let bytes = self
             .content_store
             .read_verified(&asset)
@@ -968,6 +996,23 @@ impl NativeRuntime {
             "data": base64::engine::general_purpose::STANDARD.encode(bytes),
         }))
         .map_err(|error| Error::from_reason(format!("Could not encode asset content: {error}")))
+    }
+
+    #[napi]
+    pub fn read_video_asset_path_json(&self, asset_id: String) -> Result<String> {
+        let row = self
+            .with_store(|store| store.asset(&asset_id))?
+            .ok_or_else(|| Error::from_reason("Content asset does not exist."))?;
+        let asset = content_asset(&row)?;
+        let path = self
+            .content_store
+            .verified_video_path(&asset)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        serde_json::to_string(&json!({
+            "asset": row,
+            "path": path,
+        }))
+        .map_err(|error| Error::from_reason(format!("Could not encode asset path: {error}")))
     }
 
     #[napi]
@@ -2802,6 +2847,34 @@ fn native_error_message(error: impl ToString) -> Error {
     Error::from_reason(error.to_string())
 }
 
+fn content_import_error(error: ContentStoreError) -> Error {
+    let (code, message) = match &error {
+        ContentStoreError::Io(source) if source.kind() == std::io::ErrorKind::NotFound => (
+            "sourceUnavailable",
+            "The attachment source file is no longer available.",
+        ),
+        ContentStoreError::UnsupportedMediaType
+        | ContentStoreError::InvalidUtf8
+        | ContentStoreError::AnimatedImage
+        | ContentStoreError::InvalidPdf
+        | ContentStoreError::PdfPageLimit => (
+            "unsupportedFormat",
+            "The attachment format is unsupported or malformed.",
+        ),
+        ContentStoreError::MediaTypeMismatch => (
+            "mediaTypeMismatch",
+            "The attachment type does not match its content.",
+        ),
+        ContentStoreError::TooLarge => ("tooLarge", "The attachment exceeds the size limit."),
+        ContentStoreError::Io(_) => (
+            "storageUnavailable",
+            "The local attachment store is unavailable.",
+        ),
+        _ => ("unknown", "The attachment could not be imported."),
+    };
+    Error::from_reason(format!("assetImport:{code}: {message}"))
+}
+
 fn asset_row(asset: &ContentAsset) -> AssetRow {
     AssetRow {
         asset_id: asset.asset_id.clone(),
@@ -2817,6 +2890,7 @@ fn asset_row(asset: &ContentAsset) -> AssetRow {
 fn content_asset(row: &AssetRow) -> Result<ContentAsset> {
     let kind = match row.kind.as_str() {
         "image" => ContentAssetKind::Image,
+        "video" => ContentAssetKind::Video,
         "pdf" => ContentAssetKind::Pdf,
         "text" => ContentAssetKind::Text,
         _ => return Err(Error::from_reason("Content asset kind is invalid.")),

@@ -125,12 +125,27 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
+      - name: Set up MSYS2 for bundled FFmpeg
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            make
+            diffutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-nasm
+
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build Windows installer
         if: runner.os == 'Windows'
         run: pnpm desktop:make
+        env:
+          SUGARCODE_MSYS2_BASH: ${{ steps.msys2.outputs.msys2-location }}\usr\bin\bash.exe
 
       - name: Package macOS application
         if: runner.os == 'macOS'
@@ -231,6 +246,9 @@ jobs:
         env:
           RELEASE_NOTES: SugarCode ${{ inputs.version }}
         run: node scripts/create-update-manifest.mjs "${{ inputs.version }}" release-assets
+
+      - name: Stage corresponding FFmpeg source
+        run: node scripts/prepare-bundled-ffmpeg.mjs --source-only release-assets
 
       - name: Create or update GitHub Release
         env:

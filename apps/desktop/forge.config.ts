@@ -8,6 +8,7 @@ import path from 'node:path';
 const appIconBasePath = path.join(__dirname, 'assets', 'icon');
 const appIconPngPath = `${appIconBasePath}.png`;
 const workspaceRoot = path.resolve(__dirname, '..', '..');
+const bundledFfmpegDirectory = path.join(__dirname, 'vendor', 'ffmpeg');
 
 const buildReleaseNative = async (
   platform: string,
@@ -36,6 +37,39 @@ const buildReleaseNative = async (
           signal
             ? `Release native build terminated by ${signal}.`
             : `Release native build exited with code ${code ?? 'unknown'}.`,
+        ),
+      );
+    });
+  });
+};
+
+const buildBundledFfmpeg = async (
+  platform: string,
+  arch: string,
+): Promise<void> => {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [
+        path.join(workspaceRoot, 'scripts', 'prepare-bundled-ffmpeg.mjs'),
+        '--platform',
+        platform,
+        '--arch',
+        arch,
+      ],
+      { cwd: workspaceRoot, stdio: 'inherit' },
+    );
+    child.once('error', reject);
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          signal
+            ? `Bundled FFmpeg build terminated by ${signal}.`
+            : `Bundled FFmpeg build exited with code ${code ?? 'unknown'}.`,
         ),
       );
     });
@@ -82,6 +116,7 @@ const config: ForgeConfig = {
     extraResource: [
       appIconPngPath,
       path.join(__dirname, 'native', 'sugarcode-desktop-native.node'),
+      bundledFfmpegDirectory,
       path.resolve(__dirname, '..', '..', 'THIRD_PARTY_NOTICES.txt'),
     ],
     icon: appIconBasePath,
@@ -103,6 +138,7 @@ const config: ForgeConfig = {
   hooks: {
     prePackage: async (_forgeConfig, platform, arch) => {
       await buildReleaseNative(platform, arch);
+      await buildBundledFfmpeg(platform, arch);
     },
     preMake: async () => {
       await prepareWindowsMaker();

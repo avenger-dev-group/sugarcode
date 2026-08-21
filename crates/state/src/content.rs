@@ -3,22 +3,28 @@ use sha2::Sha256;
 use std::error::Error;
 use std::fmt;
 use std::fs;
+use std::fs::File;
 use std::io;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
 
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_VIDEO_BYTES: usize = 2 * 1024 * 1024 * 1024;
 pub const MAX_PDF_BYTES: usize = 20 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_PDF_PAGES: u32 = 100;
 pub const MAX_TURN_ATTACHMENTS: usize = 10;
-pub const MAX_TURN_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_TURN_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentAssetKind {
     Image,
+    Video,
     Pdf,
     Text,
 }
@@ -27,6 +33,7 @@ impl ContentAssetKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Image => "image",
+            Self::Video => "video",
             Self::Pdf => "pdf",
             Self::Text => "text",
         }
@@ -67,7 +74,9 @@ impl ContentStore {
     ) -> Result<ContentAsset, ContentStoreError> {
         validate_original_name(&original_name)?;
         let detected = detect_and_validate(bytes)?;
-        if declared_media_type.is_some_and(|declared| declared != detected.media_type) {
+        if declared_media_type
+            .is_some_and(|declared| !media_type_matches(declared, detected.media_type))
+        {
             return Err(ContentStoreError::MediaTypeMismatch);
         }
         let sha256 = sha256_hex(bytes);
@@ -120,6 +129,91 @@ impl ContentStore {
         Ok(asset)
     }
 
+    pub fn import_video_path(
+        &self,
+        original_name: String,
+        declared_media_type: Option<&str>,
+        source_path: &Path,
+    ) -> Result<ContentAsset, ContentStoreError> {
+        validate_original_name(&original_name)?;
+        if !source_path.is_absolute() {
+            return Err(ContentStoreError::InvalidAsset);
+        }
+        let mut source = File::open(source_path).map_err(ContentStoreError::Io)?;
+        let metadata = source.metadata().map_err(ContentStoreError::Io)?;
+        if !metadata.is_file() {
+            return Err(ContentStoreError::UnsafeStore);
+        }
+        let size_bytes = metadata.len();
+        if size_bytes == 0 || size_bytes > MAX_VIDEO_BYTES as u64 {
+            return Err(ContentStoreError::TooLarge);
+        }
+        let media_type = detect_video_reader(&mut source)?;
+        if declared_media_type.is_some_and(|declared| !media_type_matches(declared, media_type)) {
+            return Err(ContentStoreError::MediaTypeMismatch);
+        }
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(ContentStoreError::Io)?;
+        let mut temp = NamedTempFile::new_in(&self.root).map_err(ContentStoreError::Io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(ContentStoreError::Io)?;
+        }
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 1024 * 1024];
+        let mut copied = 0u64;
+        loop {
+            let read = source.read(&mut buffer).map_err(ContentStoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            copied = copied
+                .checked_add(read as u64)
+                .ok_or(ContentStoreError::TooLarge)?;
+            if copied > MAX_VIDEO_BYTES as u64 {
+                return Err(ContentStoreError::TooLarge);
+            }
+            hasher.update(&buffer[..read]);
+            temp.write_all(&buffer[..read])
+                .map_err(ContentStoreError::Io)?;
+        }
+        if copied != size_bytes {
+            return Err(ContentStoreError::HashMismatch);
+        }
+        temp.flush().map_err(ContentStoreError::Io)?;
+        temp.as_file().sync_all().map_err(ContentStoreError::Io)?;
+        temp.as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .map_err(ContentStoreError::Io)?;
+        if detect_video_reader(temp.as_file_mut())? != media_type {
+            return Err(ContentStoreError::HashMismatch);
+        }
+        let sha256 = hex_digest(hasher.finalize().as_slice());
+        let asset = ContentAsset {
+            asset_id: format!("ast_{sha256}"),
+            sha256: sha256.clone(),
+            media_type: media_type.to_owned(),
+            original_name,
+            size_bytes,
+            kind: ContentAssetKind::Video,
+            pdf_pages: None,
+        };
+        let target = self.asset_path(&sha256)?;
+        match temp.persist_noclobber(&target) {
+            Ok(_) => {}
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+                verify_file_hash(&target, size_bytes, &sha256)?;
+            }
+            Err(error) => return Err(ContentStoreError::Io(error.error)),
+        }
+        sync_directory(&self.root)?;
+        Ok(asset)
+    }
+
     pub fn read_verified(&self, asset: &ContentAsset) -> Result<Vec<u8>, ContentStoreError> {
         validate_asset_descriptor(asset)?;
         let bytes = self.read_verified_descriptor(
@@ -134,6 +228,20 @@ impl ContentStore {
             return Err(ContentStoreError::HashMismatch);
         }
         Ok(bytes)
+    }
+
+    pub fn verified_video_path(&self, asset: &ContentAsset) -> Result<PathBuf, ContentStoreError> {
+        validate_asset_descriptor(asset)?;
+        if asset.kind != ContentAssetKind::Video || asset.pdf_pages.is_some() {
+            return Err(ContentStoreError::InvalidAsset);
+        }
+        let path = self.asset_path(&asset.sha256)?;
+        verify_file_hash(&path, asset.size_bytes, &asset.sha256)?;
+        let mut file = File::open(&path).map_err(ContentStoreError::Io)?;
+        if detect_video_reader(&mut file)? != asset.media_type {
+            return Err(ContentStoreError::HashMismatch);
+        }
+        Ok(path)
     }
 
     pub fn read_verified_descriptor(
@@ -272,6 +380,46 @@ fn detect_and_validate(bytes: &[u8]) -> Result<DetectedContent, ContentStoreErro
             pdf_pages: None,
         });
     }
+    if let Some(media_type) = iso_video_media_type(bytes) {
+        enforce_size(bytes, MAX_VIDEO_BYTES)?;
+        return Ok(DetectedContent {
+            kind: ContentAssetKind::Video,
+            media_type,
+            pdf_pages: None,
+        });
+    }
+    if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        enforce_size(bytes, MAX_VIDEO_BYTES)?;
+        let header = &bytes[..bytes.len().min(4 * 1024)];
+        let media_type = if find_bytes(header, b"webm").is_some() {
+            "video/webm"
+        } else if find_bytes(header, b"matroska").is_some() {
+            "video/x-matroska"
+        } else {
+            return Err(ContentStoreError::UnsupportedMediaType);
+        };
+        return Ok(DetectedContent {
+            kind: ContentAssetKind::Video,
+            media_type,
+            pdf_pages: None,
+        });
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"AVI " {
+        enforce_size(bytes, MAX_VIDEO_BYTES)?;
+        return Ok(DetectedContent {
+            kind: ContentAssetKind::Video,
+            media_type: "video/x-msvideo",
+            pdf_pages: None,
+        });
+    }
+    if bytes.starts_with(b"\x00\x00\x01\xba") || bytes.starts_with(b"\x00\x00\x01\xb3") {
+        enforce_size(bytes, MAX_VIDEO_BYTES)?;
+        return Ok(DetectedContent {
+            kind: ContentAssetKind::Video,
+            media_type: "video/mpeg",
+            pdf_pages: None,
+        });
+    }
     if bytes.starts_with(b"%PDF-") {
         enforce_size(bytes, MAX_PDF_BYTES)?;
         let pdf_pages = pdf_page_count(bytes)?;
@@ -288,6 +436,103 @@ fn detect_and_validate(bytes: &[u8]) -> Result<DetectedContent, ContentStoreErro
         media_type: "text/plain",
         pdf_pages: None,
     })
+}
+
+fn detect_video_reader(file: &mut File) -> Result<&'static str, ContentStoreError> {
+    let mut header = vec![0u8; 64 * 1024];
+    let read = file.read(&mut header).map_err(ContentStoreError::Io)?;
+    header.truncate(read);
+    detect_video_media_type(&header).ok_or(ContentStoreError::UnsupportedMediaType)
+}
+
+fn detect_video_media_type(bytes: &[u8]) -> Option<&'static str> {
+    if let Some(media_type) = iso_video_media_type(bytes) {
+        return Some(media_type);
+    }
+    if bytes.starts_with(b"\x1a\x45\xdf\xa3") {
+        let header = &bytes[..bytes.len().min(4 * 1024)];
+        return if find_bytes(header, b"webm").is_some() {
+            Some("video/webm")
+        } else if find_bytes(header, b"matroska").is_some() {
+            Some("video/x-matroska")
+        } else {
+            None
+        };
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"AVI " {
+        return Some("video/x-msvideo");
+    }
+    if bytes.starts_with(b"\x00\x00\x01\xba") || bytes.starts_with(b"\x00\x00\x01\xb3") {
+        return Some("video/mpeg");
+    }
+    None
+}
+
+fn iso_video_media_type(bytes: &[u8]) -> Option<&'static str> {
+    let brands = iso_file_type_brands(bytes)?;
+    if brands.chunks_exact(4).any(|brand| brand == b"qt  ") {
+        return Some("video/quicktime");
+    }
+    const VIDEO_BRANDS: [&[u8; 4]; 32] = [
+        b"isom", b"iso2", b"iso4", b"iso5", b"iso6", b"iso8", b"iso9", b"mp41", b"mp42", b"mp71",
+        b"mp21", b"avc1", b"av01", b"hvc1", b"hev1", b"M4V ", b"M4VH", b"M4VP", b"F4V ", b"F4P ",
+        b"MSNV", b"dash", b"cmfc", b"cmfs", b"cmff", b"cmfl", b"msdh", b"msix", b"3gp4", b"3gp5",
+        b"3gp6", b"3ge6",
+    ];
+    brands
+        .chunks_exact(4)
+        .any(|brand| {
+            VIDEO_BRANDS
+                .iter()
+                .any(|candidate| brand == candidate.as_slice())
+        })
+        .then_some("video/mp4")
+}
+
+fn iso_file_type_brands(bytes: &[u8]) -> Option<&[u8]> {
+    let mut offset = 0usize;
+    while offset.checked_add(8)? <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().ok()?) as usize;
+        let kind = &bytes[offset + 4..offset + 8];
+        let (header_size, box_size) = if size == 1 {
+            if offset.checked_add(16)? > bytes.len() {
+                return None;
+            }
+            let extended = u64::from_be_bytes(bytes[offset + 8..offset + 16].try_into().ok()?);
+            (16usize, usize::try_from(extended).ok()?)
+        } else if size == 0 {
+            (8usize, bytes.len() - offset)
+        } else {
+            (8usize, size)
+        };
+        if box_size < header_size {
+            return None;
+        }
+        let end = offset.checked_add(box_size)?;
+        if end > bytes.len() {
+            return None;
+        }
+        if kind == b"ftyp" {
+            let payload = &bytes[offset + header_size..end];
+            if payload.len() < 8 || !(payload.len() - 8).is_multiple_of(4) {
+                return None;
+            }
+            return Some(payload);
+        }
+        if size == 0 {
+            return None;
+        }
+        offset = end;
+    }
+    None
+}
+
+fn media_type_matches(declared: &str, detected: &str) -> bool {
+    declared == detected
+        || matches!(
+            (declared, detected),
+            ("video/mp4", "video/quicktime") | ("video/quicktime", "video/mp4")
+        )
 }
 
 fn enforce_size(bytes: &[u8], maximum: usize) -> Result<(), ContentStoreError> {
@@ -382,10 +627,45 @@ fn valid_sha256(value: &str) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_digest(Sha256::digest(bytes).as_slice())
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn verify_file_hash(
+    path: &Path,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<(), ContentStoreError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            ContentStoreError::Missing
+        } else {
+            ContentStoreError::Io(error)
+        }
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(ContentStoreError::UnsafeStore);
+    }
+    if metadata.len() != expected_size {
+        return Err(ContentStoreError::HashMismatch);
+    }
+    let mut file = File::open(path).map_err(ContentStoreError::Io)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(ContentStoreError::Io)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if hex_digest(hasher.finalize().as_slice()) != expected_sha256 {
+        return Err(ContentStoreError::HashMismatch);
+    }
+    Ok(())
 }
 
 fn ensure_directory(path: &Path) -> Result<(), ContentStoreError> {

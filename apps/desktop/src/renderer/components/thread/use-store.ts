@@ -44,6 +44,7 @@ import {
 import {
   MAX_CONVERSATION_ATTACHMENTS,
   MAX_CONVERSATION_ATTACHMENT_BYTES,
+  MAX_CONVERSATION_VIDEO_BYTES,
   isValidConversationTitle,
   type ConversationActionResult,
   type ConversationMessageStatus,
@@ -94,6 +95,12 @@ import {
   latestDurableModelProfileId,
   resolveModelProfileId,
 } from './model-selection';
+import {
+  attachmentImportFailureMessage,
+  detectedVideoMediaType,
+  importDraftAttachment,
+  shouldInlineDraftAttachment,
+} from './attachment-import';
 import { useMessageEditor } from './use-message-editor';
 import {
   canStartConversationTurn,
@@ -1508,8 +1515,9 @@ export const useStore = (): ThreadStore => {
     );
   };
 
-  const attachmentBytes = attachments.reduce(
-    (total, attachment) => total + attachment.sizeBytes,
+  const inlineAttachmentBytes = attachments.reduce(
+    (total, attachment) =>
+      total + ('data' in attachment ? attachment.sizeBytes : 0),
     0,
   );
   const startsChatOnSend = shouldStartChatOnSend(workspaceSnapshot);
@@ -1551,34 +1559,32 @@ export const useStore = (): ThreadStore => {
       setActionError('A Turn can include at most 10 attachments.');
       return;
     }
-    const incomingBytes = files.reduce((total, file) => total + file.size, 0);
+    const oversizedVideo = files.find(
+      (file) =>
+        detectedVideoMediaType(file) &&
+        file.size > MAX_CONVERSATION_VIDEO_BYTES,
+    );
+    if (oversizedVideo) {
+      setActionError('Video attachments can be up to 2 GiB each.');
+      return;
+    }
+    const incomingBytes = files.reduce(
+      (total, file) =>
+        total + (shouldInlineDraftAttachment(file) ? file.size : 0),
+      0,
+    );
     if (
-      attachmentBytes + incomingBytes >
+      inlineAttachmentBytes + incomingBytes >
       MAX_CONVERSATION_ATTACHMENT_BYTES
     ) {
-      setActionError('Attachments exceed the 20 MiB Turn limit.');
+      setActionError('Inline attachments exceed the 25 MiB Turn limit.');
       return;
     }
     try {
       const imported = await Promise.all(
-        files.map(async (file): Promise<DraftAttachmentViewModel> => {
-          const bytes = new Uint8Array(await file.arrayBuffer());
-          let binary = '';
-          for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-            binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-          }
-          const data = btoa(binary);
-          return {
-            id: crypto.randomUUID(),
-            fileName: file.name,
-            mediaType: file.type,
-            sizeBytes: file.size,
-            data,
-            ...(file.type.startsWith('image/')
-              ? { previewUrl: `data:${file.type};base64,${data}` }
-              : {}),
-          };
-        }),
+        files.map((file) =>
+          importDraftAttachment(file, window.sugarcode.getLocalFilePath),
+        ),
       );
       setAttachments((current) => [...current, ...imported]);
     } catch {
@@ -1628,7 +1634,12 @@ export const useStore = (): ThreadStore => {
                 ...(attachment.mediaType
                   ? { mediaType: attachment.mediaType }
                   : {}),
-                data: attachment.data,
+                ...('localPath' in attachment
+                  ? {
+                      localPath: attachment.localPath,
+                      sizeBytes: attachment.sizeBytes,
+                    }
+                  : { data: attachment.data }),
               })),
             }
           : {}),
@@ -1645,6 +1656,8 @@ export const useStore = (): ThreadStore => {
               ? '当前队列已满（最多 10 条），请先调整或删除队列消息。'
               : result.reason === 'modelUnavailable'
                 ? '所选模型当前不可用，请更换后重试。'
+                : result.reason === 'attachmentUnavailable'
+                  ? attachmentImportFailureMessage(result.attachmentFailure)
                 : 'The local Agent is not ready for this message.',
         );
       }

@@ -12,6 +12,10 @@ export type ModelWireApi =
   | 'anthropicMessages';
 
 export type ModelCapabilityMode = 'auto' | 'enabled' | 'disabled';
+export type ModelMediaTransport =
+  | 'auto'
+  | 'inline'
+  | 'dashscopeTemporaryUrl';
 export type ModelContinuationMode = 'localReplay' | 'providerManaged';
 export type ModelApiKeyStatus = 'notConfigured' | 'present';
 
@@ -23,6 +27,7 @@ export type ModelConnectionValue = Readonly<{
   enabled: boolean;
   wireApi: ModelWireApi;
   continuationMode: ModelContinuationMode;
+  mediaTransport?: ModelMediaTransport;
 }>;
 
 export type ModelProfileValue = Readonly<{
@@ -38,11 +43,15 @@ export type ModelProfileValue = Readonly<{
   strictTools: ModelCapabilityMode;
   parallelTools: ModelCapabilityMode;
   imageInput: ModelCapabilityMode;
+  videoInput?: ModelCapabilityMode;
+  audioInput?: ModelCapabilityMode;
   pdfInput: ModelCapabilityMode;
 }>;
 
 export type MediaModelRoutingValue = Readonly<{
   imageProfileId?: string;
+  videoProfileId?: string;
+  audioProfileId?: string;
 }>;
 
 export type ModelConfigValue = Readonly<{
@@ -156,17 +165,27 @@ const CAPABILITY_MODES: readonly ModelCapabilityMode[] = [
   'disabled',
 ];
 
+const MEDIA_TRANSPORTS: readonly ModelMediaTransport[] = [
+  'auto',
+  'inline',
+  'dashscopeTemporaryUrl',
+];
+
 const isConnection = (value: unknown): value is ModelConnectionValue =>
   isRecord(value) &&
-  hasOnlyKeys(value, [
-    'id',
-    'providerFamily',
-    'displayName',
-    'baseUrl',
-    'enabled',
-    'wireApi',
-    'continuationMode',
-  ]) &&
+  hasOnlyKeys(
+    value,
+    [
+      'id',
+      'providerFamily',
+      'displayName',
+      'baseUrl',
+      'enabled',
+      'wireApi',
+      'continuationMode',
+    ],
+    ['mediaTransport'],
+  ) &&
   isId(value.id) &&
   PROVIDER_FAMILIES.includes(
     value.providerFamily as ModelProviderFamily,
@@ -178,7 +197,9 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
   WIRE_APIS.includes(value.wireApi as ModelWireApi) &&
   ['localReplay', 'providerManaged'].includes(
     value.continuationMode as ModelContinuationMode,
-  );
+  ) &&
+  (value.mediaTransport === undefined ||
+    MEDIA_TRANSPORTS.includes(value.mediaTransport as ModelMediaTransport));
 
 const isProfile = (value: unknown): value is ModelProfileValue =>
   isRecord(value) &&
@@ -200,6 +221,8 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
       'autoCompaction',
       'compactThresholdTokens',
       'nativeCompaction',
+      'videoInput',
+      'audioInput',
     ],
   ) &&
   isId(value.id) &&
@@ -224,12 +247,22 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
   CAPABILITY_MODES.includes(value.strictTools as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.parallelTools as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.imageInput as ModelCapabilityMode) &&
+  (value.videoInput === undefined ||
+    CAPABILITY_MODES.includes(value.videoInput as ModelCapabilityMode)) &&
+  (value.audioInput === undefined ||
+    CAPABILITY_MODES.includes(value.audioInput as ModelCapabilityMode)) &&
   CAPABILITY_MODES.includes(value.pdfInput as ModelCapabilityMode);
 
 const isMediaRouting = (value: unknown): value is MediaModelRoutingValue =>
   isRecord(value) &&
-  hasOnlyKeys(value, [], ['imageProfileId']) &&
-  (value.imageProfileId === undefined || isId(value.imageProfileId));
+  hasOnlyKeys(
+    value,
+    [],
+    ['imageProfileId', 'videoProfileId', 'audioProfileId'],
+  ) &&
+  (value.imageProfileId === undefined || isId(value.imageProfileId)) &&
+  (value.videoProfileId === undefined || isId(value.videoProfileId)) &&
+  (value.audioProfileId === undefined || isId(value.audioProfileId));
 
 export const isModelConfigValue = (
   value: unknown,
@@ -302,6 +335,12 @@ export const isModelConfigValue = (
   const imageProfileId = (
     value.mediaRouting as MediaModelRoutingValue | undefined
   )?.imageProfileId;
+  const videoProfileId = (
+    value.mediaRouting as MediaModelRoutingValue | undefined
+  )?.videoProfileId;
+  const audioProfileId = (
+    value.mediaRouting as MediaModelRoutingValue | undefined
+  )?.audioProfileId;
   const defaultConnection = connections.find(
     (connection) =>
       connection.id === defaultProfile?.connectionId,
@@ -310,6 +349,8 @@ export const isModelConfigValue = (
     wireApiMatches &&
     capabilitiesMatch &&
     (imageProfileId === undefined || profileIds.has(imageProfileId)) &&
+    (videoProfileId === undefined || profileIds.has(videoProfileId)) &&
+    (audioProfileId === undefined || profileIds.has(audioProfileId)) &&
     defaultConnection?.enabled === true
   );
 };

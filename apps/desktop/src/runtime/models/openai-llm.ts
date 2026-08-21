@@ -16,6 +16,7 @@ import type {
   ResponseFunctionToolCall,
   ResponseInput,
   ResponseCompactionItemParam,
+  ResponseInputAudio,
   ResponseInputContent,
   ResponseOutputMessage,
   ResponseStreamEvent,
@@ -128,6 +129,15 @@ const mediaUrl = (part: NormalizedMediaPart): string | undefined =>
   part.uri ??
   (part.data ? `data:${part.mimeType};base64,${part.data}` : undefined);
 
+const audioFormat = (
+  mimeType: string,
+): 'mp3' | 'wav' | undefined =>
+  mimeType === 'audio/mpeg' || mimeType === 'audio/mp3'
+    ? 'mp3'
+    : mimeType === 'audio/wav' || mimeType === 'audio/x-wav'
+      ? 'wav'
+      : undefined;
+
 const providerNameByAdkName = (
   request: NormalizedLlmRequest,
 ): ReadonlyMap<string, string> =>
@@ -187,6 +197,15 @@ const responseMessageContent = (
         },
       ];
     }
+    if (part.mimeType.startsWith('video/')) {
+      return [
+        {
+          type: 'input_file',
+          ...(part.uri ? { file_url: part.uri } : { file_data: url }),
+          filename: part.name ?? 'video.mp4',
+        },
+      ];
+    }
     return [];
   });
 
@@ -194,7 +213,7 @@ const responseInput = (
   request: NormalizedLlmRequest,
   compatibilityKey: string,
 ): ResponseInput => {
-  const result: ResponseInput = [];
+  const result: Array<ResponseInput[number] | ResponseInputAudio> = [];
   const names = providerNameByAdkName(request);
   let startIndex = 0;
   let checkpoint: ResponseCompactionItemParam | undefined;
@@ -246,6 +265,20 @@ const responseInput = (
       result.push(inputMessage);
     }
     for (const part of message.parts) {
+      if (part.type !== 'media' || !part.data) {
+        continue;
+      }
+      const format = audioFormat(part.mimeType);
+      if (!format) {
+        continue;
+      }
+      const audio: ResponseInputAudio = {
+        type: 'input_audio',
+        input_audio: { data: part.data, format },
+      };
+      result.push(audio);
+    }
+    for (const part of message.parts) {
       if (part.type === 'toolCall') {
         const item: ResponseFunctionToolCall = {
           type: 'function_call',
@@ -264,13 +297,25 @@ const responseInput = (
       }
     }
   }
-  return result;
+  return result as ResponseInput;
 };
 
 const chatUserContent = (
   message: NormalizedMessage,
-): string | ChatCompletionContentPart[] => {
-  const content: ChatCompletionContentPart[] = [];
+): string | Array<
+  | ChatCompletionContentPart
+  | Readonly<{
+      type: 'video_url';
+      video_url: Readonly<{ url: string; fps?: number }>;
+    }>
+> => {
+  const content: Array<
+    | ChatCompletionContentPart
+    | Readonly<{
+        type: 'video_url';
+        video_url: Readonly<{ url: string; fps?: number }>;
+      }>
+  > = [];
   for (const part of message.parts) {
     if (part.type === 'text' && !part.thought) {
       content.push({ type: 'text', text: part.text });
@@ -278,6 +323,22 @@ const chatUserContent = (
       const url = mediaUrl(part);
       if (url) {
         content.push({ type: 'image_url', image_url: { url } });
+      }
+    } else if (part.type === 'media' && part.mimeType.startsWith('video/')) {
+      const url = mediaUrl(part);
+      if (url) {
+        content.push({
+          type: 'video_url',
+          video_url: { url, ...(part.fps === undefined ? {} : { fps: part.fps }) },
+        });
+      }
+    } else if (part.type === 'media' && part.data) {
+      const format = audioFormat(part.mimeType);
+      if (format) {
+        content.push({
+          type: 'input_audio',
+          input_audio: { data: part.data, format },
+        });
       }
     }
   }
@@ -292,7 +353,7 @@ const chatMessages = (
   const messages: ChatCompletionMessageParam[] = [];
   const names = providerNameByAdkName(request);
   if (request.system) {
-    messages.push({ role: 'developer', content: request.system });
+    messages.push({ role: 'system', content: request.system });
   }
   for (const message of request.messages) {
     if (message.role === 'assistant') {
@@ -331,7 +392,10 @@ const chatMessages = (
       (typeof userContent === 'string' && userContent.length > 0) ||
       (Array.isArray(userContent) && userContent.length > 0)
     ) {
-      messages.push({ role: 'user', content: userContent });
+      messages.push({
+        role: 'user',
+        content: userContent,
+      } as ChatCompletionMessageParam);
     }
     for (const part of message.parts) {
       if (part.type === 'toolResult') {
