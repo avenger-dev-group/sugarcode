@@ -162,6 +162,7 @@ const shellQuote = (value) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 const buildSource = async (sourceDirectory, platform) => {
   const jobs = String(Math.max(1, Math.min(availableParallelism(), 8)));
+  const buildTarget = bundledFfmpegName(platform);
   if (platform === 'win32') {
     const bashPath =
       process.env.SUGARCODE_MSYS2_BASH ?? 'C:\\msys64\\usr\\bin\\bash.exe';
@@ -177,7 +178,7 @@ const buildSource = async (sourceDirectory, platform) => {
       'export PATH=/mingw64/bin:/usr/bin:$PATH',
       `cd ${shellQuote(normalizedSource)}`,
       `./configure ${FFMPEG_CONFIGURE_ARGUMENTS.map(shellQuote).join(' ')}`,
-      `make -j${jobs} ffmpeg`,
+      `make -j${jobs} ${shellQuote(buildTarget)}`,
     ].join(' && ');
     try {
       await run(bashPath, ['-lc', command]);
@@ -199,7 +200,7 @@ const buildSource = async (sourceDirectory, platform) => {
   await run('./configure', FFMPEG_CONFIGURE_ARGUMENTS, {
     cwd: sourceDirectory,
   });
-  await run('make', [`-j${jobs}`, 'ffmpeg'], { cwd: sourceDirectory });
+  await run('make', [`-j${jobs}`, buildTarget], { cwd: sourceDirectory });
 };
 
 export const verifyBundledFfmpeg = async (binaryPath) => {
