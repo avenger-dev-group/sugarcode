@@ -49,6 +49,7 @@ export type NormalizedMediaPart = Readonly<{
   data?: string;
   uri?: string;
   name?: string;
+  fps?: number;
 }>;
 
 export type NormalizedToolCallPart = Readonly<{

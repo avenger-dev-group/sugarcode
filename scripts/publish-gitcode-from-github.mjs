@@ -6,6 +6,11 @@ import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 
+import {
+  FFMPEG_SOURCE_SHA256,
+  FFMPEG_VERSION,
+} from './prepare-bundled-ffmpeg.mjs';
+
 const run = promisify(execFile);
 const arguments_ = process.argv.slice(2);
 const downloadOnly = arguments_.includes('--download-only');
@@ -51,6 +56,8 @@ const expectedNames = [
   `SugarCode-${version}-macos-x64.dmg`,
   `SugarCode-${version}-windows-x64-Setup.exe`,
   'update-manifest.json',
+  `ffmpeg-${FFMPEG_VERSION}.tar.xz`,
+  `ffmpeg-${FFMPEG_VERSION}.tar.xz.sha256`,
 ];
 
 const gh = async (...arguments__) => {
@@ -155,6 +162,21 @@ for (const [platform, file] of Object.entries(expectedPlatforms)) {
     throw new Error(`SHA-256 mismatch for ${file}.`);
   }
   console.log(`Verified ${file}.`);
+}
+
+const ffmpegSourceName = `ffmpeg-${FFMPEG_VERSION}.tar.xz`;
+const ffmpegSourceHash = await sha256(
+  path.join(assetsDirectory, ffmpegSourceName),
+);
+const ffmpegChecksum = await readFile(
+  path.join(assetsDirectory, `${ffmpegSourceName}.sha256`),
+  'utf8',
+);
+if (
+  ffmpegSourceHash !== FFMPEG_SOURCE_SHA256 ||
+  ffmpegChecksum.trim() !== `${FFMPEG_SOURCE_SHA256}  ${ffmpegSourceName}`
+) {
+  throw new Error('FFmpeg corresponding source archive failed SHA-256 verification.');
 }
 
 console.log(`GitHub Release ${tag} is available in ${assetsDirectory}.`);

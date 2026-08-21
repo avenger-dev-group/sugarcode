@@ -386,6 +386,20 @@ export class AnthropicLlm extends BaseLlm {
   ): AsyncGenerator<LlmResponse, void> {
     void _stream;
     const request = normalizeLlmRequest(llmRequest, this.model);
+    if (
+      request.messages.some((message) =>
+        message.parts.some(
+          (part) => part.type === 'media' && part.mimeType.startsWith('video/'),
+        ),
+      )
+    ) {
+      throw new ProviderAdapterError({
+        kind: 'invalidRequest',
+        retryable: false,
+        message:
+          'This Anthropic Messages adapter does not support direct video input. Select a video-capable model endpoint or protocol.',
+      });
+    }
     const deadline = createRequestDeadline(abortSignal, this.timeoutMs);
     const blocks = new Map<number, AnthropicBlockAccumulator>();
     const completedToolCalls: Array<{

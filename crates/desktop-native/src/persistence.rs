@@ -14,7 +14,7 @@ use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 const MAX_QUEUED_MESSAGES: i64 = 10;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
@@ -479,7 +479,7 @@ impl Store {
             || asset.media_type.is_empty()
             || asset.original_name.is_empty()
             || asset.size_bytes == 0
-            || !matches!(asset.kind.as_str(), "image" | "pdf" | "text")
+            || !matches!(asset.kind.as_str(), "image" | "video" | "pdf" | "text")
         {
             return Err(PersistenceError::InvalidInput(
                 "content asset descriptor is invalid".to_owned(),
@@ -3795,7 +3795,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
                asset_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE,\
                media_type TEXT NOT NULL, original_name TEXT NOT NULL,\
                size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),\
-               kind TEXT NOT NULL CHECK(kind IN ('image','pdf','text')),\
+               kind TEXT NOT NULL CHECK(kind IN ('image','video','pdf','text')),\
                pdf_pages INTEGER, created_at INTEGER NOT NULL DEFAULT (unixepoch())\
              ) STRICT;\
              PRAGMA user_version = 4;",
@@ -4115,6 +4115,27 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 16;",
         )?;
         transaction.commit()?;
+        version = 16;
+    }
+    if version == 16 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "ALTER TABLE content_assets RENAME TO content_assets_v16; \
+             CREATE TABLE content_assets (\
+               asset_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE,\
+               media_type TEXT NOT NULL, original_name TEXT NOT NULL,\
+               size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),\
+               kind TEXT NOT NULL CHECK(kind IN ('image','video','pdf','text')),\
+               pdf_pages INTEGER, created_at INTEGER NOT NULL DEFAULT (unixepoch())\
+             ) STRICT; \
+             INSERT INTO content_assets \
+               (asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages, created_at) \
+             SELECT asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages, created_at \
+               FROM content_assets_v16; \
+             DROP TABLE content_assets_v16; \
+             PRAGMA user_version = 17;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -4320,7 +4341,7 @@ fn validate_queued_content(value: &str) -> Result<Value> {
                     || !required_strings_valid
                     || sha.len() != 64
                     || !sha.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    || !matches!(kind, "image" | "pdf" | "text")
+                    || !matches!(kind, "image" | "video" | "pdf" | "text")
                     || asset.get("sizeBytes").and_then(Value::as_u64).is_none()
                     || asset
                         .get("pdfPages")

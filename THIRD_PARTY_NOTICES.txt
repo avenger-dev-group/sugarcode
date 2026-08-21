@@ -1,6 +1,20 @@
 SugarCode third-party notices
 =============================
 
+FFmpeg
+------
+
+SugarCode packages a minimally configured FFmpeg 9.0.1 executable for local
+video frame and audio-track extraction. FFmpeg is licensed under the GNU Lesser
+General Public License version 2.1 or later. The bundled build is configured
+without GPL or nonfree components and is invoked as a separate process.
+
+The exact unmodified source archive and checksum are published with each
+SugarCode release. Upstream source: https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
+
+This software uses code of FFmpeg licensed under the LGPLv2.1 and its source
+can be downloaded from the SugarCode release page.
+
 Bundled model runtime SDKs
 --------------------------
 

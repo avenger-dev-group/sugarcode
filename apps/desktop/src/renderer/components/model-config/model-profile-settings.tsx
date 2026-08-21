@@ -1,7 +1,6 @@
 import { KeyRound, Star, Trash2 } from 'lucide-react';
 
 import { Button } from '@/renderer/components/ui/button';
-import { Checkbox } from '@/renderer/components/ui/checkbox';
 import { Input } from '@/renderer/components/ui/input';
 import {
   Select,
@@ -219,6 +218,35 @@ export const ModelProfileSettings = ({ store }: ModelProfileSettingsProps) => {
           </label>
 
           <label className="grid gap-1 text-sm">
+            <span className="text-secondary">大媒体文件传输</span>
+            <Select
+              value={store.selectedConnection.mediaTransport ?? 'auto'}
+              onValueChange={(mediaTransport) =>
+                store.updateConnection({
+                  mediaTransport:
+                    mediaTransport as NonNullable<
+                      typeof store.selectedConnection.mediaTransport
+                    >,
+                })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">自动选择</SelectItem>
+                <SelectItem value="inline">请求内嵌</SelectItem>
+                <SelectItem value="dashscopeTemporaryUrl">
+                  阿里云百炼临时 URL
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            <span className="text-xs leading-5 text-tertiary">
+              自动模式仅在识别到兼容的服务端时使用临时上传，否则使用内嵌传输。
+            </span>
+          </label>
+
+          <label className="grid gap-1 text-sm">
             <span className="flex items-center gap-2 text-secondary">
               <span>API 密钥</span>
               {credentialStatus === 'present' ? (
@@ -254,17 +282,34 @@ export const ModelProfileSettings = ({ store }: ModelProfileSettingsProps) => {
             </div>
           </label>
 
-          <label className="flex min-h-11 items-center gap-3 rounded-lg border px-3.5 py-2.5 text-sm">
-            <Checkbox
-              checked={store.selectedProfile.imageInput === 'enabled'}
-              onCheckedChange={(checked) =>
-                store.updateSelectedProfile({
-                  imageInput: checked === true ? 'enabled' : 'auto',
-                })
-              }
-            />
-            <span>支持图像理解（视觉）</span>
-          </label>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {([
+              ['imageInput', '图像输入'],
+              ['videoInput', '原生视频输入'],
+              ['audioInput', '音频输入'],
+            ] as const).map(([capability, label]) => (
+              <label key={capability} className="grid gap-1 text-sm">
+                <span className="text-secondary">{label}</span>
+                <Select
+                  value={store.selectedProfile[capability] ?? 'auto'}
+                  onValueChange={(value) =>
+                    store.updateSelectedProfile({
+                      [capability]: value as 'auto' | 'enabled' | 'disabled',
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">自动检测</SelectItem>
+                    <SelectItem value="enabled">明确支持</SelectItem>
+                    <SelectItem value="disabled">不支持</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+            ))}
+          </div>
 
           <details className="rounded-lg border px-3.5 py-2.5 text-sm">
             <summary className="cursor-pointer select-none text-secondary">

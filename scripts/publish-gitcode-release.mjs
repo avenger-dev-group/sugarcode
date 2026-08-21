@@ -2,6 +2,8 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
+import { FFMPEG_VERSION } from './prepare-bundled-ffmpeg.mjs';
+
 const token = process.env.GITCODE_TOKEN;
 const version = process.env.RELEASE_VERSION;
 const notes = process.env.RELEASE_NOTES ?? '';
@@ -191,13 +193,17 @@ const assetNames = [
   `SugarCode-${version}-macos-x64.dmg`,
   `SugarCode-${version}-windows-x64-Setup.exe`,
   'update-manifest.json',
+  `ffmpeg-${FFMPEG_VERSION}.tar.xz`,
+  `ffmpeg-${FFMPEG_VERSION}.tar.xz.sha256`,
 ];
 const directoryNames = await readdir(assetsDirectory);
 const publishableNames = directoryNames.filter(
   (name) =>
     name === 'update-manifest.json' ||
     name.endsWith('.dmg') ||
-    name.endsWith('.exe'),
+    name.endsWith('.exe') ||
+    name === `ffmpeg-${FFMPEG_VERSION}.tar.xz` ||
+    name === `ffmpeg-${FFMPEG_VERSION}.tar.xz.sha256`,
 );
 const missingLocalAssets = assetNames.filter(
   (name) => !publishableNames.includes(name),

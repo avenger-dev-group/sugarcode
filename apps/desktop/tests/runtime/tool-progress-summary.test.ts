@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { toolProgressSummary } from '../../src/runtime/tool-progress-summary.ts';
+import {
+  toolProgressSummary,
+  toolResultSummary,
+} from '../../src/runtime/tool-progress-summary.ts';
 
 test('workspace read progress uses compact basenames for a small batch', () => {
   assert.equal(
@@ -44,5 +47,41 @@ test('image analysis has a localized progress summary', () => {
       assetId: `ast_${'a'.repeat(64)}`,
     }),
     '正在分析图片内容。',
+  );
+});
+
+test('video analysis progress explains the selected processing path', () => {
+  assert.equal(
+    toolProgressSummary('分析这个会议视频', 'analyze_video', {
+      assetId: `ast_${'a'.repeat(64)}`,
+      mode: 'meeting',
+    }),
+    '正在分析完整视频、转写音轨并区分说话人。',
+  );
+  assert.equal(
+    toolProgressSummary('Analyze this video', 'analyze_video', {
+      assetId: `ast_${'a'.repeat(64)}`,
+      mode: 'native',
+    }),
+    'Analyzing the complete video with the configured model’s native video capability.',
+  );
+});
+
+test('video analysis result reports the actual transport and audio path', () => {
+  assert.equal(
+    toolResultSummary('分析这个会议视频', 'analyze_video', {
+      ok: true,
+      transport: 'hybrid',
+      nativeSource: 'temporaryUrl',
+      speakerCount: 2,
+    }),
+    '视频分析已完成：原生视频 + 独立音轨转写，识别 2 位说话人。',
+  );
+  assert.equal(
+    toolResultSummary('Analyze this video', 'analyze_video', {
+      ok: true,
+      transport: 'extractedFrames',
+    }),
+    'Video analysis completed with extracted frames because native video was unavailable; no usable audio transcript was obtained.',
   );
 });

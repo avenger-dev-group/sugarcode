@@ -21,6 +21,7 @@ type RuntimeSupervisorOptions = Readonly<{
   runtimePath: string;
   dataDirectory: string;
   nativeModulePath: string;
+  ffmpegPath?: string;
   spawn?: (runtimePath: string) => RuntimeChild;
 }>;
 
@@ -236,6 +237,7 @@ export class RuntimeSupervisor {
         protocolVersion: RUNTIME_PROTOCOL_VERSION,
         dataDirectory: this.options.dataDirectory,
         nativeModulePath: this.options.nativeModulePath,
+        ffmpegPath: this.options.ffmpegPath,
       } satisfies RuntimeCommand);
     });
     child.once('exit', (code) => this.handleExit(child, code));

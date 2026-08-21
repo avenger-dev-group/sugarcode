@@ -82,6 +82,9 @@ pnpm desktop:make
 
 Desktop releases automatically include an update manifest containing the
 version, platform artifact names, file sizes, and SHA-256 checksums.
+Installers also include a minimal FFmpeg 9.0.1 executable built without GPL or
+nonfree components. The exact upstream source archive and its SHA-256 checksum
+are published beside every SugarCode release under the LGPL 2.1-or-later terms.
 
 ## Desktop releases and updates
 
@@ -115,13 +118,14 @@ SugarCode 1.0 release flow:
    pnpm release:gitcode:local 3.0.3
    ```
 
-4. The local script downloads the three updater installers and
-   `update-manifest.json` from GitHub, verifies their sizes and SHA-256 hashes,
-   and uploads them to GitCode. Temporary files are kept under
+4. The local script downloads the three updater installers,
+   `update-manifest.json`, and the corresponding FFmpeg source from GitHub,
+   verifies their sizes and SHA-256 hashes, and uploads them to GitCode.
+   Temporary files are kept under
    `release-assets/v3.0.3` for inspection or retry.
-5. Confirm that GitCode Release contains the three installers and
-   `update-manifest.json`. macOS ZIP files remain on GitHub and are not copied
-   because the updater does not use them.
+5. Confirm that GitCode Release contains the three installers,
+   `update-manifest.json`, and both FFmpeg source files. macOS ZIP files remain
+   on GitHub and are not copied because the updater does not use them.
 
 Use `pnpm release:gitcode:local 3.0.3 --download-only` to download and verify
 without changing GitCode. GitCode publishing is resumable: already uploaded

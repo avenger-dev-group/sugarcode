@@ -60,7 +60,10 @@ import {
   type TaskWorkspaceActionResult,
   type TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
-import { MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH } from '../shared/conversation/limits.ts';
+import {
+  MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH,
+  MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
+} from '../shared/conversation/limits.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 6 as const;
 
@@ -113,6 +116,7 @@ export type RuntimeProviderConfig = Readonly<{
   parallelTools: boolean;
   compactThresholdTokens?: number;
   nativeCompaction?: boolean;
+  mediaTransport?: 'auto' | 'inline' | 'dashscopeTemporaryUrl';
 }>;
 
 export type RuntimeApprovalDecisionSource = 'user' | 'policy' | 'system';
@@ -123,7 +127,7 @@ export type RuntimeAssetDescriptor = Readonly<{
   mediaType: string;
   originalName: string;
   sizeBytes: number;
-  kind: 'image' | 'pdf' | 'text';
+  kind: 'image' | 'video' | 'pdf' | 'text';
   pdfPages?: number;
 }>;
 
@@ -307,6 +311,7 @@ export type RuntimeCommand =
       protocolVersion: typeof RUNTIME_PROTOCOL_VERSION;
       dataDirectory: string;
       nativeModulePath?: string;
+      ffmpegPath?: string;
     }>
   | Readonly<{
       type: 'workspace.open';
@@ -373,8 +378,10 @@ export type RuntimeCommand =
       requestId: string;
       fileName: string;
       mediaType?: string;
-      data: string;
-    }>
+    } & (
+      | Readonly<{ data: string; localPath?: never }>
+      | Readonly<{ localPath: string; data?: never }>
+    )>
   | Readonly<{
       type: 'asset.preview';
       requestId: string;
@@ -1525,7 +1532,7 @@ const isAssetDescriptor = (value: unknown): value is RuntimeAssetDescriptor =>
   typeof value.sizeBytes === 'number' &&
   Number.isSafeInteger(value.sizeBytes) &&
   value.sizeBytes > 0 &&
-  ['image', 'pdf', 'text'].includes(String(value.kind)) &&
+  ['image', 'video', 'pdf', 'text'].includes(String(value.kind)) &&
   (value.pdfPages === undefined ||
     (Number.isSafeInteger(value.pdfPages) && Number(value.pdfPages) > 0));
 
@@ -1550,7 +1557,11 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.dataDirectory.length > 0 &&
         (value.nativeModulePath === undefined ||
           (typeof value.nativeModulePath === 'string' &&
-            value.nativeModulePath.length > 0))
+            value.nativeModulePath.length > 0)) &&
+        (value.ffmpegPath === undefined ||
+          (typeof value.ffmpegPath === 'string' &&
+            value.ffmpegPath.length > 0 &&
+            value.ffmpegPath.length <= 32_768))
       );
     case 'workspace.open':
       return (
@@ -1615,9 +1626,14 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.fileName.length <= 255 &&
         (value.mediaType === undefined ||
           typeof value.mediaType === 'string') &&
-        typeof value.data === 'string' &&
-        value.data.length > 0 &&
-        value.data.length <= 27_962_032
+        ((typeof value.data === 'string' &&
+          value.data.length > 0 &&
+          value.data.length <= MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH &&
+          value.localPath === undefined) ||
+          (typeof value.localPath === 'string' &&
+            value.localPath.length > 0 &&
+            value.localPath.length <= 32_768 &&
+            value.data === undefined))
       );
     case 'asset.preview':
       return (

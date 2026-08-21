@@ -31,6 +31,7 @@ class FixtureRuntime {
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();
   private readonly beforeThreadCreated?: (workspaceId: string) => Promise<void>;
   private readonly failRevisionAfterCommit: boolean;
+  private readonly failAssetImport: boolean;
   private reconciledRevision?: Extract<RuntimeCommand, { type: 'turn.revise' }>;
   private createdThreads = 0;
   private readonly queues = new Map<string, RuntimeThreadQueue>();
@@ -38,9 +39,11 @@ class FixtureRuntime {
   constructor(
     beforeThreadCreated?: (workspaceId: string) => Promise<void>,
     failRevisionAfterCommit = false,
+    failAssetImport = false,
   ) {
     this.beforeThreadCreated = beforeThreadCreated;
     this.failRevisionAfterCommit = failRevisionAfterCommit;
+    this.failAssetImport = failAssetImport;
   }
 
   subscribe = (listener: (event: RuntimeEvent) => void): (() => void) => {
@@ -120,6 +123,9 @@ class FixtureRuntime {
       } as RuntimeEvent;
     }
     if (command.type === 'asset.import') {
+      if (this.failAssetImport) {
+        throw new Error('fixture video import failure');
+      }
       const sha256 = 'a'.repeat(64);
       const mediaType = command.mediaType ?? 'application/octet-stream';
       return {
@@ -132,7 +138,11 @@ class FixtureRuntime {
           mediaType,
           originalName: command.fileName,
           sizeBytes: 7,
-          kind: mediaType.startsWith('image/') ? 'image' : 'text',
+          kind: mediaType.startsWith('image/')
+            ? 'image'
+            : mediaType.startsWith('video/')
+              ? 'video'
+              : 'text',
         },
       } as RuntimeEvent;
     }
@@ -492,6 +502,37 @@ test('runtime confirmation preserves an optimistic image preview', async () => {
     controller.getSnapshot().turns[0]?.messages[0]?.attachments?.[0]
       ?.previewUrl,
     'data:image/png;base64,cG5n',
+  );
+});
+
+test('video import failures are distinguished from an unavailable Agent', async () => {
+  const fixture = new FixtureRuntime(undefined, false, true);
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  await controller.switchWorkspace(WORKSPACE_ID);
+  controller.startNewThread();
+
+  const result = await controller.startTurn({
+    input: 'Analyze this video',
+    attachments: [
+      {
+        fileName: 'screen.mov',
+        mediaType: 'video/quicktime',
+        localPath: '/tmp/screen.mov',
+        sizeBytes: 21 * 1024 * 1024,
+      },
+    ],
+  });
+
+  assert.deepEqual(result, {
+    accepted: false,
+    reason: 'attachmentUnavailable',
+    attachmentFailure: 'unknown',
+  });
+  assert.equal(
+    controller.getSnapshot().notice?.summary,
+    'The attachment could not be imported.',
   );
 });
 

@@ -1,8 +1,10 @@
 import {
   MAX_CONVERSATION_ATTACHMENTS,
+  MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH,
   MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
   MAX_CONVERSATION_INPUT_BYTES,
   MAX_CONVERSATION_TITLE_BYTES,
+  MAX_CONVERSATION_VIDEO_BYTES,
   MAX_THREAD_SEARCH_BYTES,
   MAX_USER_INPUT_ANSWER_BYTES,
   MAX_USER_INPUT_QUESTIONS,
@@ -36,15 +38,33 @@ const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'turnMismatch',
   'notSteerable',
   'modelUnavailable',
+  'attachmentUnavailable',
   'unavailable',
   'noActiveTurn',
+]);
+const ATTACHMENT_FAILURES = new Set<
+  NonNullable<ConversationActionResult['attachmentFailure']>
+>([
+  'sourceUnavailable',
+  'unsupportedFormat',
+  'mediaTypeMismatch',
+  'tooLarge',
+  'runtimeOutdated',
+  'storageUnavailable',
+  'unknown',
 ]);
 export const isConversationActionResult = (
   value: unknown,
 ): value is ConversationActionResult =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['accepted', 'reason', 'disposition', 'queueItemId'].includes(key),
+    [
+      'accepted',
+      'reason',
+      'disposition',
+      'queueItemId',
+      'attachmentFailure',
+    ].includes(key),
   ) &&
   typeof value.accepted === 'boolean' &&
   typeof value.reason === 'string' &&
@@ -54,7 +74,15 @@ export const isConversationActionResult = (
     value.disposition === 'started' ||
     value.disposition === 'queued') &&
   (value.queueItemId === undefined || isId(value.queueItemId)) &&
-  (value.disposition !== 'queued' || isId(value.queueItemId));
+  (value.disposition !== 'queued' || isId(value.queueItemId)) &&
+  (value.attachmentFailure === undefined ||
+    (value.reason === 'attachmentUnavailable' &&
+      typeof value.attachmentFailure === 'string' &&
+      ATTACHMENT_FAILURES.has(
+        value.attachmentFailure as NonNullable<
+          ConversationActionResult['attachmentFailure']
+        >,
+      )));
 
 export const isConversationAttachmentPreviewRequest = (
   value: unknown,
@@ -224,7 +252,7 @@ const isConversationAttachmentUpload = (
 ): value is ConversationAttachmentUpload =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['fileName', 'mediaType', 'data'].includes(key),
+    ['fileName', 'mediaType', 'data', 'localPath', 'sizeBytes'].includes(key),
   ) &&
   typeof value.fileName === 'string' &&
   value.fileName.length > 0 &&
@@ -232,9 +260,22 @@ const isConversationAttachmentUpload = (
   !/[\\/\p{Cc}]/u.test(value.fileName) &&
   (value.mediaType === undefined ||
     (typeof value.mediaType === 'string' && value.mediaType.length <= 127)) &&
-  typeof value.data === 'string' &&
-  value.data.length > 0 &&
-  value.data.length <= 27_962_032;
+  ((typeof value.data === 'string' &&
+    value.data.length > 0 &&
+    value.data.length <= MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH &&
+    value.localPath === undefined &&
+    value.sizeBytes === undefined) ||
+    (typeof value.localPath === 'string' &&
+      value.localPath.length > 0 &&
+      value.localPath.length <= 32_768 &&
+      !/[\p{Cc}]/u.test(value.localPath) &&
+      typeof value.sizeBytes === 'number' &&
+      Number.isSafeInteger(value.sizeBytes) &&
+      value.sizeBytes > 0 &&
+      value.sizeBytes <= MAX_CONVERSATION_VIDEO_BYTES &&
+      value.data === undefined &&
+      typeof value.mediaType === 'string' &&
+      value.mediaType.startsWith('video/')));
 
 export const isValidThreadSearchInput = (value: unknown): value is string => {
   if (

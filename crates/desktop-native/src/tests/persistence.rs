@@ -5,6 +5,52 @@ use serde_json::Value;
 use super::NativeRuntime;
 use super::persistence::Store;
 
+fn quicktime_fixture() -> Vec<u8> {
+    vec![
+        0x00, 0x00, 0x00, 0x14, b'f', b't', b'y', b'p', b'q', b't', b' ', b' ', 0x00, 0x00, 0x00,
+        0x00, b'q', b't', b' ', b' ',
+    ]
+}
+
+fn import_quicktime_fixture(directory: &tempfile::TempDir) -> Value {
+    let video_path = directory.path().join("录屏.mov");
+    std::fs::write(&video_path, quicktime_fixture()).expect("video fixture");
+    let runtime = NativeRuntime::open(directory.path().join("data").to_string_lossy().into_owned())
+        .expect("native runtime");
+    let imported: Value = serde_json::from_str(
+        &runtime
+            .import_video_path_json(
+                "录屏.mov".to_owned(),
+                Some("video/quicktime".to_owned()),
+                video_path.to_string_lossy().into_owned(),
+            )
+            .expect("import video path"),
+    )
+    .expect("video descriptor JSON");
+    let stored: Value = serde_json::from_str(
+        &runtime
+            .read_video_asset_path_json(
+                imported["assetId"]
+                    .as_str()
+                    .expect("video asset ID")
+                    .to_owned(),
+            )
+            .expect("read verified video path"),
+    )
+    .expect("stored video JSON");
+    assert_eq!(stored["asset"], imported);
+    imported
+}
+
+#[test]
+fn native_runtime_imports_and_persists_video_paths() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let imported = import_quicktime_fixture(&directory);
+    assert_eq!(imported["kind"], "video");
+    assert_eq!(imported["mediaType"], "video/quicktime");
+    assert_eq!(imported["sizeBytes"], 20);
+}
+
 fn seeded_store(directory: &tempfile::TempDir) -> Store {
     let mut store = Store::open(directory.path()).expect("open v3 store");
     store
@@ -1074,7 +1120,46 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 16);
+    assert_eq!(version, 17);
+}
+
+#[test]
+fn schema_sixteen_database_migrates_to_video_assets() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data_directory = directory.path().join("data");
+    {
+        let _runtime = NativeRuntime::open(data_directory.to_string_lossy().into_owned())
+            .expect("create current database");
+    }
+    let database_path = Store::database_path(&data_directory);
+    let connection = Connection::open(&database_path).expect("database");
+    connection
+        .execute_batch(
+            "ALTER TABLE content_assets RENAME TO content_assets_v17;
+             CREATE TABLE content_assets (
+               asset_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL UNIQUE,
+               media_type TEXT NOT NULL, original_name TEXT NOT NULL,
+               size_bytes INTEGER NOT NULL CHECK(size_bytes > 0),
+               kind TEXT NOT NULL CHECK(kind IN ('image','pdf','text')),
+               pdf_pages INTEGER, created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             ) STRICT;
+             INSERT INTO content_assets
+               (asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages, created_at)
+             SELECT asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages, created_at
+               FROM content_assets_v17;
+             DROP TABLE content_assets_v17;
+             PRAGMA user_version = 16;",
+        )
+        .expect("downgrade content asset schema");
+    drop(connection);
+
+    let imported = import_quicktime_fixture(&directory);
+    assert_eq!(imported["kind"], "video");
+    let connection = Connection::open(database_path).expect("migrated database");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(version, 17);
 }
 
 #[test]
@@ -1125,7 +1210,7 @@ fn schema_fourteen_database_migrates_to_durable_knowledge_index_jobs() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 16);
+    assert_eq!(version, 17);
     let job_table: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_index_jobs'",

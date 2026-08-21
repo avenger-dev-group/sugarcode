@@ -33,10 +33,12 @@ test('conversation compatibility barrel preserves its public runtime exports', (
     'CONVERSATION_THREAD_SELECT_CHANNEL',
     'CONVERSATION_USER_INPUT_RESPONSE_CHANNEL',
     'MAX_CONVERSATION_ATTACHMENTS',
+    'MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH',
     'MAX_CONVERSATION_ATTACHMENT_BYTES',
     'MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH',
     'MAX_CONVERSATION_INPUT_BYTES',
     'MAX_CONVERSATION_TITLE_BYTES',
+    'MAX_CONVERSATION_VIDEO_BYTES',
     'MAX_FILE_CHANGE_DIFF_BYTES',
     'MAX_FILE_CHANGE_DIFF_LINES',
     'MAX_THREAD_SEARCH_BYTES',
@@ -62,6 +64,67 @@ test('conversation compatibility barrel preserves its public runtime exports', (
     'isValidSha256',
     'isValidThreadSearchInput',
   ]);
+  assert.equal(
+    conversation.MAX_CONVERSATION_ATTACHMENT_BYTES,
+    25 * 1024 * 1024,
+  );
+  assert.equal(
+    conversation.MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH,
+    34_952_536,
+  );
+});
+
+test('conversation requests accept lightweight local video references without inline bytes', () => {
+  assert.equal(
+    conversation.isConversationSendRequest({
+      input: 'Analyze this video',
+      attachments: [{
+        fileName: 'demo.mp4',
+        mediaType: 'video/mp4',
+        localPath: '/tmp/demo.mp4',
+        sizeBytes: 512 * 1024 * 1024,
+      }],
+    }),
+    true,
+  );
+  assert.equal(
+    conversation.isConversationSendRequest({
+      input: 'Read this file',
+      attachments: [{
+        fileName: 'secret.txt',
+        mediaType: 'text/plain',
+        localPath: '/tmp/secret.txt',
+        sizeBytes: 10,
+      }],
+    }),
+    false,
+  );
+});
+
+test('conversation results distinguish attachment import failures', () => {
+  assert.equal(
+    conversation.isConversationActionResult({
+      accepted: false,
+      reason: 'attachmentUnavailable',
+    }),
+    true,
+  );
+  assert.equal(
+    conversation.isConversationActionResult({
+      accepted: false,
+      reason: 'attachmentUnavailable',
+      attachmentFailure: 'unsupportedFormat',
+    }),
+    true,
+  );
+  assert.equal(
+    conversation.isConversationActionResult({
+      accepted: false,
+      reason: 'unavailable',
+      attachmentFailure: 'unsupportedFormat',
+    }),
+    false,
+  );
 });
 
 test('attachment previews require scoped asset identifiers and bounded image data', () => {

@@ -55,9 +55,25 @@ import {
   type StoredImageContent,
 } from './media-analysis.ts';
 import {
+  audioAnalysisProfileIds,
+  availableThreadVideos,
   availableThreadImages,
   imageAnalysisProfileIds,
+  videoAnalysisProfileIds,
 } from './media-routing.ts';
+import type { AudioAnalysisModel } from './audio-transcription.ts';
+import {
+  createVideoAnalysisTool,
+  VideoAnalyzer,
+  videoAttachmentReference,
+  type StoredVideoContent,
+  type VideoAnalysisModel,
+} from './video-analysis.ts';
+import {
+  createDashscopeTemporaryMediaPublisher,
+  effectiveMediaTransport,
+  type TemporaryMediaPublisher,
+} from './temporary-media.ts';
 import { loadNativeRuntime, type NativeRuntimeBinding } from './native.ts';
 import {
   isRuntimeContentPart,
@@ -97,7 +113,10 @@ import {
   toolResultFailed,
   toolResultRequiresFinalRecovery,
 } from './tool-result.ts';
-import { toolProgressSummary } from './tool-progress-summary.ts';
+import {
+  toolProgressSummary,
+  toolResultSummary,
+} from './tool-progress-summary.ts';
 import { generateThreadTitle, titleSourceFromContent } from './thread-title.ts';
 import { RuntimeMcpManager, type McpToolApproval } from './mcp.ts';
 import type {
@@ -123,14 +142,16 @@ import type {
   TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
 import { isModelConfigInspection } from '../shared/model-config.ts';
-import { MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH } from '../shared/conversation/limits.ts';
+import {
+  MAX_CONVERSATION_ATTACHMENT_BYTES,
+  MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
+} from '../shared/conversation/limits.ts';
 
 const APPLICATION_NAME = 'sugarcode-desktop-v3';
 const DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000;
 const DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_AGENT_MAX_OUTPUT_TOKENS;
 const DEFAULT_PROVIDER_TIMEOUT_MS = DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
 const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
-const MAX_TURN_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
 
 const reserveContextTokens = (
@@ -210,6 +231,7 @@ type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
   createModel?: (provider: RuntimeProviderConfig) => BaseLlm;
   loadNative?: typeof loadNativeRuntime;
+  videoAnalyzer?: VideoAnalyzer;
 }>;
 
 type PendingApproval = Readonly<{
@@ -279,9 +301,43 @@ const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
     : new OpenAiLlm({ ...common, wireApi: provider.wireApi });
 };
 
+const temporaryMediaPublisher = (
+  provider: RuntimeProviderConfig,
+): TemporaryMediaPublisher | undefined => {
+  if (
+    effectiveMediaTransport(provider.mediaTransport, provider.baseUrl) !==
+      'dashscopeTemporaryUrl' ||
+    !provider.apiKey
+  ) {
+    return undefined;
+  }
+  return createDashscopeTemporaryMediaPublisher({
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+  });
+};
+
+const providerForPublishedMedia = (
+  provider: RuntimeProviderConfig,
+  publisher: TemporaryMediaPublisher | undefined,
+): RuntimeProviderConfig =>
+  publisher
+    ? {
+        ...provider,
+        headers: {
+          ...provider.headers,
+          'X-DashScope-OssResourceResolve': 'enable',
+        },
+      }
+    : provider;
+
 type ResolvedProfile = Readonly<{
   provider: RuntimeProviderConfig;
   selection: RuntimeModelSelection;
+  mediaCapabilities: Readonly<{
+    videoInput: 'auto' | 'enabled' | 'disabled';
+    audioInput: 'auto' | 'enabled' | 'disabled';
+  }>;
 }>;
 
 type TurnExecutionCommand =
@@ -715,6 +771,7 @@ export class RuntimeHost {
   private readonly collaboration = new CollaborationCoordinator();
   private readonly contextManager = new ContextManager();
   private readonly imageAnalyzer = new ImageAnalyzer();
+  private readonly videoAnalyzer: VideoAnalyzer;
   private sequence = 0;
   private initialized = false;
   private shuttingDown = false;
@@ -725,11 +782,13 @@ export class RuntimeHost {
     this.postEvent = options.postEvent;
     this.createModel = options.createModel ?? defaultCreateModel;
     this.loadNative = options.loadNative ?? loadNativeRuntime;
+    this.videoAnalyzer = options.videoAnalyzer ?? new VideoAnalyzer();
   }
 
   handle = (command: RuntimeCommand): void => {
     switch (command.type) {
       case 'initialize':
+        this.videoAnalyzer.setFfmpegPath(command.ffmpegPath);
         if (command.nativeModulePath) {
           this.nativeRuntime = this.loadNative(
             command.nativeModulePath,
@@ -880,17 +939,35 @@ export class RuntimeHost {
       }
       case 'asset.import':
         this.requireReady(command.requestId);
-        this.emit({
-          type: 'asset.imported',
-          requestId: command.requestId,
-          asset: this.parseNativeJson<RuntimeAssetDescriptor>(
-            this.requireNative().importAssetJson(
-              command.fileName,
-              command.mediaType,
-              command.data,
-            ),
-          ),
-        });
+        {
+          const native = this.requireNative();
+          if (command.localPath && !native.importVideoPathJson) {
+            throw new Error(
+              'The native runtime does not support path-based video imports.',
+            );
+          }
+          const importedJson = command.localPath
+            ? native.importVideoPathJson?.(
+                command.fileName,
+                command.mediaType,
+                command.localPath,
+              )
+            : native.importAssetJson(
+                command.fileName,
+                command.mediaType,
+                command.data,
+              );
+          if (!importedJson) {
+            throw new Error(
+              'The native runtime did not return imported video metadata.',
+            );
+          }
+          this.emit({
+            type: 'asset.imported',
+            requestId: command.requestId,
+            asset: this.parseNativeJson<RuntimeAssetDescriptor>(importedJson),
+          });
+        }
         break;
       case 'asset.preview': {
         this.requireReady(command.requestId);
@@ -2581,11 +2658,15 @@ export class RuntimeHost {
   ): Content => {
     const attachmentBytes = content.reduce(
       (total, part) =>
-        total + (part.type === 'asset' ? part.asset.sizeBytes : 0),
+        total +
+        (part.type === 'asset' &&
+        (part.asset.kind === 'pdf' || part.asset.kind === 'text')
+          ? part.asset.sizeBytes
+          : 0),
       0,
     );
-    if (attachmentBytes > MAX_TURN_ATTACHMENT_BYTES) {
-      throw new Error('Turn attachments exceed the 20 MiB limit.');
+    if (attachmentBytes > MAX_CONVERSATION_ATTACHMENT_BYTES) {
+      throw new Error('Inline Turn attachments exceed the 25 MiB limit.');
     }
     const parts: Part[] = content.flatMap((part): readonly Part[] => {
       if (part.type === 'text') {
@@ -2593,6 +2674,12 @@ export class RuntimeHost {
       }
       if (part.type === 'knowledgeReferences') {
         return [];
+      }
+      if (part.asset.kind === 'image') {
+        return [{ text: imageAttachmentReference(part.asset) }];
+      }
+      if (part.asset.kind === 'video') {
+        return [{ text: videoAttachmentReference(part.asset) }];
       }
       const stored = this.parseNativeJson<StoredAssetContent>(
         this.requireNative().readAssetJson(part.asset.assetId),
@@ -2609,9 +2696,6 @@ export class RuntimeHost {
         throw new Error(
           `The selected model does not accept ${part.asset.kind} input.`,
         );
-      }
-      if (part.asset.kind === 'image') {
-        return [{ text: imageAttachmentReference(part.asset) }];
       }
       if (part.asset.kind === 'text') {
         return [
@@ -2865,6 +2949,10 @@ export class RuntimeHost {
           : 'openai';
       return {
         provider: command.provider,
+        mediaCapabilities: {
+          videoInput: 'auto',
+          audioInput: 'auto',
+        },
         selection: {
           profileId: 'runtime-direct',
           providerFamily,
@@ -2981,6 +3069,15 @@ export class RuntimeHost {
           ? { compactThresholdTokens: effectiveCompactThreshold }
           : {}),
         nativeCompaction,
+        mediaTransport:
+          connection.mediaTransport === 'inline' ||
+          connection.mediaTransport === 'dashscopeTemporaryUrl'
+            ? connection.mediaTransport
+            : 'auto',
+      },
+      mediaCapabilities: {
+        videoInput: capabilityMode(profile.videoInput),
+        audioInput: capabilityMode(profile.audioInput),
       },
       selection,
     };
@@ -3012,6 +3109,102 @@ export class RuntimeHost {
         continue;
       }
       if (!candidate.selection.effectiveCapabilities.imageInput) {
+        continue;
+      }
+      return {
+        profileId: candidate.selection.profileId,
+        modelId: candidate.selection.modelId,
+        displayName: candidate.selection.displayName,
+        model: this.createModel({
+          ...candidate.provider,
+          parallelTools: false,
+          nativeCompaction: false,
+        }),
+      };
+    }
+    return undefined;
+  };
+
+  private resolveVideoAnalysisModel = (
+    current: ResolvedProfile,
+  ): VideoAnalysisModel | undefined => {
+    const inspection = this.nativeRuntime
+      ? this.parseNativeJson<unknown>(
+          this.nativeRuntime.inspectModelConfigJson(),
+        )
+      : undefined;
+    const profileIds =
+      isModelConfigInspection(inspection) && inspection.config
+        ? videoAnalysisProfileIds(
+            inspection.config,
+            current.selection.profileId,
+          )
+        : [current.selection.profileId];
+    for (const profileId of profileIds) {
+      let candidate: ResolvedProfile;
+      try {
+        candidate =
+          profileId === current.selection.profileId
+            ? current
+            : this.resolveConfiguredProfile(profileId);
+      } catch {
+        continue;
+      }
+      if (candidate.mediaCapabilities.videoInput === 'disabled') {
+        continue;
+      }
+      const publisher = temporaryMediaPublisher(candidate.provider);
+      return {
+        profileId: candidate.selection.profileId,
+        modelId: candidate.selection.modelId,
+        displayName: candidate.selection.displayName,
+        wireApi: candidate.selection.wireApi,
+        imageInput: candidate.selection.effectiveCapabilities.imageInput,
+        videoInput: candidate.mediaCapabilities.videoInput,
+        model: this.createModel({
+          ...providerForPublishedMedia(candidate.provider, publisher),
+          parallelTools: false,
+          nativeCompaction: false,
+        }),
+        ...(publisher ? { publisher } : {}),
+      };
+    }
+    return undefined;
+  };
+
+  private resolveAudioAnalysisModel = (
+    current: ResolvedProfile,
+    videoProfileId: string | undefined,
+  ): AudioAnalysisModel | undefined => {
+    const inspection = this.nativeRuntime
+      ? this.parseNativeJson<unknown>(
+          this.nativeRuntime.inspectModelConfigJson(),
+        )
+      : undefined;
+    const profileIds =
+      isModelConfigInspection(inspection) && inspection.config
+        ? audioAnalysisProfileIds(
+            inspection.config,
+            videoProfileId,
+            current.selection.profileId,
+          )
+        : [videoProfileId, current.selection.profileId].filter(
+            (profileId): profileId is string => typeof profileId === 'string',
+          );
+    for (const profileId of profileIds) {
+      let candidate: ResolvedProfile;
+      try {
+        candidate =
+          profileId === current.selection.profileId
+            ? current
+            : this.resolveConfiguredProfile(profileId);
+      } catch {
+        continue;
+      }
+      if (
+        candidate.selection.wireApi === 'anthropicMessages' ||
+        candidate.mediaCapabilities.audioInput === 'disabled'
+      ) {
         continue;
       }
       return {
@@ -3956,6 +4149,18 @@ export class RuntimeHost {
               ? [part.asset]
               : [],
           );
+      const availableVideos = this.nativeRuntime
+        ? availableThreadVideos(
+            this.parseNativeJson<RuntimeThreadSnapshot>(
+              this.nativeRuntime.loadThreadJson(command.threadId),
+            ),
+            turnContent,
+          )
+        : turnContent.flatMap((part) =>
+            part.type === 'asset' && part.asset.kind === 'video'
+              ? [part.asset]
+              : [],
+          );
       const imageAnalysisTools =
         availableImages.length > 0
           ? [
@@ -3970,6 +4175,46 @@ export class RuntimeHost {
                   if (!this.sameAsset(stored.asset, asset)) {
                     throw new Error(
                       'Stored image metadata does not match the attachment.',
+                    );
+                  }
+                  return stored;
+                },
+                signal: controller.signal,
+              }),
+            ]
+          : [];
+      const videoAnalysisModel =
+        availableVideos.length > 0
+          ? this.resolveVideoAnalysisModel(resolved)
+          : undefined;
+      const transcriptionModel =
+        availableVideos.length > 0
+          ? this.resolveAudioAnalysisModel(
+              resolved,
+              videoAnalysisModel?.profileId,
+            )
+          : undefined;
+      const videoAnalysisTools =
+        availableVideos.length > 0
+          ? [
+              createVideoAnalysisTool({
+                assets: availableVideos,
+                analysisModel: videoAnalysisModel,
+                transcriptionModel,
+                analyzer: this.videoAnalyzer,
+                readAsset: (asset) => {
+                  const native = this.requireNative();
+                  if (!native.readVideoAssetPathJson) {
+                    throw new Error(
+                      'The native runtime does not support path-based video analysis.',
+                    );
+                  }
+                  const stored = this.parseNativeJson<StoredVideoContent>(
+                    native.readVideoAssetPathJson(asset.assetId),
+                  );
+                  if (!this.sameAsset(stored.asset, asset)) {
+                    throw new Error(
+                      'Stored video metadata does not match the attachment.',
                     );
                   }
                   return stored;
@@ -3998,6 +4243,7 @@ export class RuntimeHost {
           ? [this.submitPlanTool(command, planSubmissionGuard)]
           : []),
         ...imageAnalysisTools,
+        ...videoAnalysisTools,
         ...(this.nativeRuntime
           ? [
               ...createWorkspaceTools(
@@ -4950,6 +5196,34 @@ export class RuntimeHost {
       .filter((part) => part.type === 'text')
       .map((part) => part.text)
       .join('\n');
+    const publishToolStatus = (itemId: string, status: string): void => {
+      const duplicate = [...textItems.values()].some(
+        (item) =>
+          item.completed &&
+          item.phase === 'commentary' &&
+          item.text === status,
+      );
+      if (duplicate) {
+        return;
+      }
+      textItems.set(itemId, {
+        phase: 'commentary',
+        text: status,
+        started: true,
+        completed: true,
+        pendingFinal: false,
+      });
+      this.emit({
+        type: 'turn.textCompleted',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        itemId,
+        phase: 'commentary',
+        text: status,
+      });
+    };
     for (const [index, part] of parts.entries()) {
       if (isVisibleModelTextPart(part)) {
         const metadata = readModelItemMetadata(part);
@@ -5052,33 +5326,11 @@ export class RuntimeHost {
             part.functionCall.name,
             part.functionCall.args ?? {},
           );
-          const duplicate =
-            progress &&
-            [...textItems.values()].some(
-              (item) =>
-                item.completed &&
-                item.phase === 'commentary' &&
-                item.text === progress,
+          if (progress) {
+            publishToolStatus(
+              `${command.turnId}:progress:${callId}`,
+              progress,
             );
-          if (progress && !duplicate) {
-            const progressItemId = `${command.turnId}:progress:${callId}`;
-            textItems.set(progressItemId, {
-              phase: 'commentary',
-              text: progress,
-              started: true,
-              completed: true,
-              pendingFinal: false,
-            });
-            this.emit({
-              type: 'turn.textCompleted',
-              requestId: command.requestId,
-              workspaceId: command.workspaceId,
-              threadId: command.threadId,
-              turnId: command.turnId,
-              itemId: progressItemId,
-              phase: 'commentary',
-              text: progress,
-            });
           }
         }
         this.emit({
@@ -5096,6 +5348,23 @@ export class RuntimeHost {
       }
       if (part.functionResponse?.name) {
         const metadata = readModelItemMetadata(part);
+        if (
+          event.partial !== true &&
+          !hasVisibleModelText &&
+          isRecord(part.functionResponse.response)
+        ) {
+          const summary = toolResultSummary(
+            userText,
+            part.functionResponse.name,
+            part.functionResponse.response,
+          );
+          if (summary) {
+            publishToolStatus(
+              `${command.turnId}:result-progress:${part.functionResponse.id ?? event.id}:${index}`,
+              summary,
+            );
+          }
+        }
         this.emit({
           type: 'turn.toolResult',
           requestId: command.requestId,

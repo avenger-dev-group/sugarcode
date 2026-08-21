@@ -5,6 +5,7 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   Pencil,
+  Video,
 } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 
@@ -44,6 +45,8 @@ const EditorAttachments = ({
             />
           ) : attachment.kind === 'image' ? (
             <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
+          ) : attachment.kind === 'video' ? (
+            <Video className="size-4 shrink-0" aria-hidden="true" />
           ) : (
             <FileText className="size-4 shrink-0" aria-hidden="true" />
           )}

@@ -20,6 +20,7 @@ import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
+import { VideoAnalyzer } from '../../src/runtime/video-analysis.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
 
@@ -327,6 +328,67 @@ class ImageRoutingFixtureLlm extends BaseLlm {
     }
     yield {
       content: { role: 'model', parts: [{ text: 'The screenshot is a login form.' }] },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class VideoRoutingFixtureLlm extends BaseLlm {
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    if (this.model === 'video-model') {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{ text: 'The video demonstrates a login workflow.' }],
+        },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+    const hasAnalysis = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'analyze_video',
+      ),
+    );
+    if (!hasAnalysis) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-analyze-video',
+              name: 'analyze_video',
+              args: {
+                assetId: `ast_${'c'.repeat(64)}`,
+                question: 'What workflow is shown?',
+                fps: 1,
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: 'The clip shows a login workflow.' }],
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -1519,6 +1581,183 @@ test('RuntimeHost delegates image understanding to the configured analysis model
   assert.doesNotMatch(JSON.stringify(mainRequests[0]?.contents), /inlineData/u);
   assert.equal(visionRequests[0]?.contents[0]?.parts?.[1]?.inlineData?.data, 'cG5n');
   assert.match(JSON.stringify(mainRequests.at(-1)?.contents), /login form/u);
+});
+
+test('RuntimeHost delegates video understanding without changing the configured provider protocol', async () => {
+  const asset = {
+    assetId: `ast_${'c'.repeat(64)}`,
+    sha256: 'c'.repeat(64),
+    mediaType: 'video/mp4',
+    originalName: 'login-flow.mp4',
+    sizeBytes: 1_024,
+    kind: 'video' as const,
+  };
+  const models: VideoRoutingFixtureLlm[] = [];
+  const createdProviders: Array<{ model: string; wireApi: string }> = [];
+  const videoEvents: RuntimeEvent[] = [];
+  const native = {
+    ...turnNativeFixture(),
+    inspectModelConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      credentialStatuses: [{ connectionId: 'video-connection', status: 'present' }],
+      config: {
+        defaultProfileId: 'default-model',
+        mediaRouting: { videoProfileId: 'video-profile' },
+        connections: [{
+          id: 'video-connection',
+          providerFamily: 'anthropic',
+          displayName: 'Video connection',
+          baseUrl: 'http://127.0.0.1:1',
+          enabled: true,
+          wireApi: 'anthropicMessages',
+          continuationMode: 'localReplay',
+        }],
+        profiles: [
+          {
+            id: 'default-model',
+            connectionId: 'video-connection',
+            displayName: 'Default model',
+            modelId: 'default-model',
+            toolCalls: 'auto',
+            strictTools: 'auto',
+            parallelTools: 'auto',
+            imageInput: 'auto',
+            pdfInput: 'auto',
+          },
+          {
+            id: 'video-profile',
+            connectionId: 'video-connection',
+            displayName: 'Video model',
+            modelId: 'video-model',
+            toolCalls: 'auto',
+            strictTools: 'auto',
+            parallelTools: 'auto',
+            imageInput: 'auto',
+            pdfInput: 'auto',
+          },
+        ],
+      },
+    }),
+    modelProfileJson: (profileId?: string) => JSON.stringify({
+      profile: {
+        id: profileId,
+        connectionId: 'video-connection',
+        displayName: 'Video model',
+        modelId: 'video-model',
+        toolCalls: 'auto',
+        strictTools: 'auto',
+        parallelTools: 'auto',
+        imageInput: 'auto',
+        pdfInput: 'auto',
+      },
+      connection: {
+        id: 'video-connection',
+        providerFamily: 'anthropic',
+        displayName: 'Video connection',
+        baseUrl: 'http://127.0.0.1:1',
+        enabled: true,
+        wireApi: 'anthropicMessages',
+        continuationMode: 'localReplay',
+      },
+      apiKey: 'fixture-key',
+    }),
+    readVideoAssetPathJson: () => JSON.stringify({
+      asset,
+      path: '/fixture/login-flow.mp4',
+    }),
+  } as NativeRuntimeBinding;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: (provider) => {
+      createdProviders.push({ model: provider.model, wireApi: provider.wireApi });
+      const model = new VideoRoutingFixtureLlm({ model: provider.model });
+      models.push(model);
+      return model;
+    },
+    videoAnalyzer: new VideoAnalyzer({
+      extractFrames: async () => ({
+        durationSeconds: 2,
+        effectiveFps: 1,
+        frames: [{ data: 'anBlZw==', timestampSeconds: 0 }],
+      }),
+      extractAudio: async () => ({
+        durationSeconds: 2,
+        chunks: [],
+      }),
+    }),
+    loadNative: () => native,
+    postEvent: (event) => {
+      videoEvents.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-video-initialize',
+    protocolVersion: 6,
+    dataDirectory: '/tmp/sugarcode-v3-video-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-video-turn',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-video-fixture',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'main-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [
+      { type: 'text', text: 'Describe this video.' },
+      { type: 'asset', asset },
+    ],
+  });
+  await completed;
+
+  const mainRequests = models
+    .filter((model) => model.model === 'main-model')
+    .flatMap((model) => model.requests);
+  const videoRequests = models
+    .filter((model) => model.model === 'video-model')
+    .flatMap((model) => model.requests);
+  const videoToolRequest = mainRequests.find((request) =>
+    Object.hasOwn(request.toolsDict ?? {}, 'analyze_video'),
+  );
+  assert.ok(videoToolRequest, JSON.stringify(
+    {
+      providers: createdProviders,
+      events: videoEvents,
+      requests: mainRequests.map((request) => ({
+        tools: Object.keys(request.toolsDict ?? {}),
+        contents: request.contents,
+      })),
+    },
+  ));
+  assert.match(JSON.stringify(videoToolRequest.contents), /Video attachment/u);
+  assert.doesNotMatch(JSON.stringify(videoToolRequest.contents), /inlineData/u);
+  assert.equal(videoRequests[0]?.contents[0]?.parts?.[1]?.inlineData?.data, 'anBlZw==');
+  assert.equal(videoRequests[0]?.contents[0]?.parts?.[1]?.inlineData?.mimeType, 'image/jpeg');
+  assert.ok(createdProviders.some(
+    (provider) =>
+      provider.model === 'video-model' && provider.wireApi === 'anthropicMessages',
+  ));
+  assert.ok(videoEvents.some(
+    (event) =>
+      event.type === 'turn.textCompleted' &&
+      event.phase === 'commentary' &&
+      event.text.includes('extracted frames because native video was unavailable'),
+  ));
+  assert.match(JSON.stringify(mainRequests.at(-1)?.contents), /login workflow/u);
 });
 
 test('RuntimeHost makes /plan immutable read-only at the tool boundary', async () => {

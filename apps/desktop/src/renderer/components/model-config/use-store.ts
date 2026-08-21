@@ -31,6 +31,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   enabled: true,
   wireApi: 'openaiChatCompletions',
   continuationMode: 'localReplay',
+  mediaTransport: 'auto',
 };
 
 const INITIAL_PROFILE: ModelProfileValue = {
@@ -44,6 +45,8 @@ const INITIAL_PROFILE: ModelProfileValue = {
   strictTools: 'auto',
   parallelTools: 'auto',
   imageInput: 'auto',
+  videoInput: 'auto',
+  audioInput: 'auto',
   pdfInput: 'auto',
 };
 
@@ -216,11 +219,21 @@ export const useStore = ({
     );
     updateConfig((current) => ({
       ...current,
-      ...(current.mediaRouting?.imageProfileId === selectedProfile.id
+      ...(current.mediaRouting?.imageProfileId === selectedProfile.id ||
+          current.mediaRouting?.videoProfileId === selectedProfile.id ||
+          current.mediaRouting?.audioProfileId === selectedProfile.id
         ? {
             mediaRouting: {
               ...current.mediaRouting,
-              imageProfileId: undefined,
+              ...(current.mediaRouting.imageProfileId === selectedProfile.id
+                ? { imageProfileId: undefined }
+                : {}),
+              ...(current.mediaRouting.videoProfileId === selectedProfile.id
+                ? { videoProfileId: undefined }
+                : {}),
+              ...(current.mediaRouting.audioProfileId === selectedProfile.id
+                ? { audioProfileId: undefined }
+                : {}),
             },
           }
         : {}),
@@ -382,6 +395,22 @@ export const useStore = ({
         mediaRouting: {
           ...current.mediaRouting,
           imageProfileId: profileId,
+        },
+      })),
+    setVideoAnalysisProfile: (profileId) =>
+      updateConfig((current) => ({
+        ...current,
+        mediaRouting: {
+          ...current.mediaRouting,
+          videoProfileId: profileId,
+        },
+      })),
+    setAudioAnalysisProfile: (profileId) =>
+      updateConfig((current) => ({
+        ...current,
+        mediaRouting: {
+          ...current.mediaRouting,
+          audioProfileId: profileId,
         },
       })),
     addConfiguration,

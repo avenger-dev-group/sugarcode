@@ -218,7 +218,10 @@ export const AboutSettings = () => {
         </section>
 
         <footer className="border-t pt-5 text-xs font-normal leading-relaxed text-tertiary">
-          © 2026 AixvoLink LLC。保留所有权利。
+          <p>© 2026 AixvoLink LLC。保留所有权利。</p>
+          <p className="mt-1">
+            本软件包含 FFmpeg 9.0.1，依据 LGPL 2.1 或更高版本许可。
+          </p>
         </footer>
       </div>
     </>

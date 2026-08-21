@@ -26,6 +26,47 @@ const llmRequest = (): LlmRequest => ({
   toolsDict: {},
 });
 
+const videoRequest = (): LlmRequest => ({
+  model: 'fixture-model',
+  contents: [{
+    role: 'user',
+    parts: [
+      { text: 'What happens in this video?' },
+      {
+        inlineData: {
+          mimeType: 'video/mp4',
+          data: 'bXA0',
+          displayName: 'clip.mp4',
+        },
+        partMetadata: { sugarcodeVideoFps: 1.5 },
+      },
+    ],
+  }],
+  config: {},
+  liveConnectConfig: {},
+  toolsDict: {},
+});
+
+const audioRequest = (): LlmRequest => ({
+  model: 'fixture-model',
+  contents: [{
+    role: 'user',
+    parts: [
+      { text: 'Transcribe this meeting.' },
+      {
+        inlineData: {
+          mimeType: 'audio/mpeg',
+          data: 'bXAz',
+          displayName: 'meeting.mp3',
+        },
+      },
+    ],
+  }],
+  config: {},
+  liveConnectConfig: {},
+  toolsDict: {},
+});
+
 const collect = async (
   stream: AsyncIterable<LlmResponse>,
 ): Promise<readonly LlmResponse[]> => {
@@ -155,6 +196,88 @@ test('OpenAI Chat Completions SDK streams text and usage into ADK responses', as
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 6);
 });
 
+test('OpenAI Chat serializes video with the configured protocol video_url extension', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (_request, response) => {
+    receivedBody = JSON.parse(await readBody(_request)) as Record<string, unknown>;
+    writeSse(response, [
+      {
+        data: {
+          id: 'chatcmpl_video',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: { content: 'A demo.' }, finish_reason: null }],
+        },
+      },
+      {
+        data: {
+          id: 'chatcmpl_video',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        },
+      },
+      { data: '[DONE]' },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  await collect(model.generateContentAsync(videoRequest(), true));
+
+  const messages = receivedBody?.messages as Array<Record<string, unknown>>;
+  const content = messages[0]?.content as Array<Record<string, unknown>>;
+  assert.deepEqual(content[1], {
+    type: 'video_url',
+    video_url: {
+      url: 'data:video/mp4;base64,bXA0',
+      fps: 1.5,
+    },
+  });
+});
+
+test('OpenAI Chat serializes extracted audio as input_audio', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    writeSse(response, [
+      {
+        data: {
+          id: 'chatcmpl_audio',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        },
+      },
+      { data: '[DONE]' },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  await collect(model.generateContentAsync(audioRequest(), true));
+
+  const messages = receivedBody?.messages as Array<Record<string, unknown>>;
+  const content = messages[0]?.content as Array<Record<string, unknown>>;
+  assert.deepEqual(content[1], {
+    type: 'input_audio',
+    input_audio: { data: 'bXAz', format: 'mp3' },
+  });
+});
+
 test('OpenAI Responses SDK maps function calls back to the ADK tool name', async (context) => {
   let receivedBody: Record<string, unknown> | undefined;
   const fixture = await serve(async (request, response) => {
@@ -258,6 +381,90 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(receivedBody?.max_output_tokens, 32_768);
   assert.equal(events.at(-1)?.turnComplete, true);
+});
+
+test('OpenAI Responses serializes video as an input file without changing protocols', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    writeSse(response, [{
+      event: 'response.completed',
+      data: {
+        type: 'response.completed',
+        sequence_number: 1,
+        response: {
+          id: 'resp_video_fixture',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  await collect(model.generateContentAsync(videoRequest(), true));
+
+  const input = receivedBody?.input as Array<Record<string, unknown>>;
+  const content = input[0]?.content as Array<Record<string, unknown>>;
+  assert.deepEqual(content[1], {
+    type: 'input_file',
+    file_data: 'data:video/mp4;base64,bXA0',
+    filename: 'clip.mp4',
+  });
+});
+
+test('OpenAI Responses preserves extracted audio as a dedicated input item', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    writeSse(response, [{
+      event: 'response.completed',
+      data: {
+        type: 'response.completed',
+        sequence_number: 1,
+        response: {
+          id: 'resp_audio_fixture',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  await collect(model.generateContentAsync(audioRequest(), true));
+
+  const input = receivedBody?.input as Array<Record<string, unknown>>;
+  assert.deepEqual(input[1], {
+    type: 'input_audio',
+    input_audio: { data: 'bXAz', format: 'mp3' },
+  });
+});
+
+test('Anthropic Messages rejects direct video without silently dropping it', async () => {
+  const model = new AnthropicLlm({
+    model: 'fixture-model',
+    baseUrl: 'http://127.0.0.1:1/v1',
+    apiKey: 'test-key',
+  });
+  await assert.rejects(
+    collect(model.generateContentAsync(videoRequest(), true)),
+    /does not support direct video input/u,
+  );
 });
 
 test('OpenAI Responses releases its request deadline before a terminal tool call is consumed', async (context) => {

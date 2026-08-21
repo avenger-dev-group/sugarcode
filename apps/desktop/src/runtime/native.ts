@@ -93,7 +93,13 @@ export type NativeRuntimeBinding = Readonly<{
     mediaType: string | undefined,
     data: string,
   ) => string;
+  importVideoPathJson?: (
+    fileName: string,
+    mediaType: string | undefined,
+    localPath: string,
+  ) => string;
   readAssetJson: (assetId: string) => string;
+  readVideoAssetPathJson?: (assetId: string) => string;
   executeCommandJson: (
     operationId: string,
     workspaceId: string,

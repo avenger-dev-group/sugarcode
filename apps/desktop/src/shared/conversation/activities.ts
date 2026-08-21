@@ -34,7 +34,7 @@ export type ConversationAttachment = Readonly<{
   mediaType: string;
   originalName: string;
   sizeBytes: number;
-  kind: 'image' | 'pdf' | 'text';
+  kind: 'image' | 'video' | 'pdf' | 'text';
   pdfPages?: number;
   previewUrl?: string;
 }>;
@@ -42,8 +42,10 @@ export type ConversationAttachment = Readonly<{
 export type ConversationAttachmentUpload = Readonly<{
   fileName: string;
   mediaType?: string;
-  data: string;
-}>;
+}> & (
+  | Readonly<{ data: string; localPath?: never; sizeBytes?: never }>
+  | Readonly<{ localPath: string; sizeBytes: number; data?: never }>
+);
 
 export type ConversationCommentaryActivity = Readonly<{
   id: string;
