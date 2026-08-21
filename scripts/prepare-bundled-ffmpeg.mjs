@@ -6,6 +6,7 @@ import {
   copyFile,
   mkdir,
   mkdtemp,
+  readFile,
   rename,
   rm,
   writeFile,
@@ -178,7 +179,20 @@ const buildSource = async (sourceDirectory, platform) => {
       `./configure ${FFMPEG_CONFIGURE_ARGUMENTS.map(shellQuote).join(' ')}`,
       `make -j${jobs} ffmpeg`,
     ].join(' && ');
-    await run(bashPath, ['-lc', command]);
+    try {
+      await run(bashPath, ['-lc', command]);
+    } catch (error) {
+      const configureLogPath = path.join(
+        sourceDirectory,
+        'ffbuild',
+        'config.log',
+      );
+      if (existsSync(configureLogPath)) {
+        const configureLog = await readFile(configureLogPath, 'utf8');
+        console.error(configureLog.slice(-32 * 1024));
+      }
+      throw error;
+    }
     return;
   }
 
