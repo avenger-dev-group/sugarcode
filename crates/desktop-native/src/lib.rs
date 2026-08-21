@@ -923,7 +923,7 @@ impl NativeRuntime {
         media_type: Option<String>,
         data: String,
     ) -> Result<String> {
-        const MAX_BASE64_BYTES: usize = 4 * ((MAX_TURN_ATTACHMENT_BYTES as usize + 2) / 3);
+        const MAX_BASE64_BYTES: usize = 4 * (MAX_TURN_ATTACHMENT_BYTES as usize).div_ceil(3);
         if data.is_empty() || data.len() > MAX_BASE64_BYTES {
             return Err(Error::from_reason("Asset data is empty or too large."));
         }

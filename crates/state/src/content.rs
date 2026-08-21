@@ -514,7 +514,7 @@ fn iso_file_type_brands(bytes: &[u8]) -> Option<&[u8]> {
         }
         if kind == b"ftyp" {
             let payload = &bytes[offset + header_size..end];
-            if payload.len() < 8 || (payload.len() - 8) % 4 != 0 {
+            if payload.len() < 8 || !(payload.len() - 8).is_multiple_of(4) {
                 return None;
             }
             return Some(payload);
