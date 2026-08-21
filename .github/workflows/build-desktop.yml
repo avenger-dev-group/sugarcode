@@ -125,6 +125,10 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@1.96.0
 
+      - name: Install Intel macOS FFmpeg build tools
+        if: runner.os == 'macOS' && matrix.arch == 'x64'
+        run: brew install nasm
+
       - name: Set up MSYS2 for bundled FFmpeg
         if: runner.os == 'Windows'
         id: msys2
