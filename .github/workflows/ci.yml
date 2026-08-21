@@ -38,6 +38,18 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up MSYS2 for bundled FFmpeg
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            make
+            diffutils
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-nasm
+
       - name: Install JavaScript dependencies
         run: pnpm install --frozen-lockfile
 
