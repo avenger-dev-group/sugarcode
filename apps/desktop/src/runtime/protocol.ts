@@ -116,7 +116,6 @@ export type RuntimeProviderConfig = Readonly<{
   parallelTools: boolean;
   compactThresholdTokens?: number;
   nativeCompaction?: boolean;
-  mediaTransport?: 'auto' | 'inline' | 'dashscopeTemporaryUrl';
 }>;
 
 export type RuntimeApprovalDecisionSource = 'user' | 'policy' | 'system';

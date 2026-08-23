@@ -12,17 +12,12 @@ import {
 test('automatic media transport recognizes DashScope endpoints only', () => {
   assert.equal(
     effectiveMediaTransport(
-      'auto',
       'https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
     ),
     'dashscopeTemporaryUrl',
   );
   assert.equal(
-    effectiveMediaTransport('auto', 'https://api.openai.com/v1'),
-    'inline',
-  );
-  assert.equal(
-    effectiveMediaTransport('inline', 'https://dashscope.aliyuncs.com/v1'),
+    effectiveMediaTransport('https://api.openai.com/v1'),
     'inline',
   );
 });

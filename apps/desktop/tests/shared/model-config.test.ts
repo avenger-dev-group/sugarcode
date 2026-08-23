@@ -113,7 +113,7 @@ test('media routing rejects unknown fields', () => {
   }), false);
 });
 
-test('media capabilities and connection transport remain optional and validated', () => {
+test('media capabilities and legacy connection transport remain compatible', () => {
   const configured = catalog();
   assert.equal(isModelConfigValue({
     ...configured,

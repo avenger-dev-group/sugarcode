@@ -218,35 +218,6 @@ export const ModelProfileSettings = ({ store }: ModelProfileSettingsProps) => {
           </label>
 
           <label className="grid gap-1 text-sm">
-            <span className="text-secondary">大媒体文件传输</span>
-            <Select
-              value={store.selectedConnection.mediaTransport ?? 'auto'}
-              onValueChange={(mediaTransport) =>
-                store.updateConnection({
-                  mediaTransport:
-                    mediaTransport as NonNullable<
-                      typeof store.selectedConnection.mediaTransport
-                    >,
-                })
-              }
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="auto">自动选择</SelectItem>
-                <SelectItem value="inline">请求内嵌</SelectItem>
-                <SelectItem value="dashscopeTemporaryUrl">
-                  阿里云百炼临时 URL
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <span className="text-xs leading-5 text-tertiary">
-              自动模式仅在识别到兼容的服务端时使用临时上传，否则使用内嵌传输。
-            </span>
-          </label>
-
-          <label className="grid gap-1 text-sm">
             <span className="flex items-center gap-2 text-secondary">
               <span>API 密钥</span>
               {credentialStatus === 'present' ? (

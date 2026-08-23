@@ -305,7 +305,7 @@ const temporaryMediaPublisher = (
   provider: RuntimeProviderConfig,
 ): TemporaryMediaPublisher | undefined => {
   if (
-    effectiveMediaTransport(provider.mediaTransport, provider.baseUrl) !==
+    effectiveMediaTransport(provider.baseUrl) !==
       'dashscopeTemporaryUrl' ||
     !provider.apiKey
   ) {
@@ -3069,11 +3069,6 @@ export class RuntimeHost {
           ? { compactThresholdTokens: effectiveCompactThreshold }
           : {}),
         nativeCompaction,
-        mediaTransport:
-          connection.mediaTransport === 'inline' ||
-          connection.mediaTransport === 'dashscopeTemporaryUrl'
-            ? connection.mediaTransport
-            : 'auto',
       },
       mediaCapabilities: {
         videoInput: capabilityMode(profile.videoInput),

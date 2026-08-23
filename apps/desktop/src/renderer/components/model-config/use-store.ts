@@ -31,7 +31,6 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   enabled: true,
   wireApi: 'openaiChatCompletions',
   continuationMode: 'localReplay',
-  mediaTransport: 'auto',
 };
 
 const INITIAL_PROFILE: ModelProfileValue = {

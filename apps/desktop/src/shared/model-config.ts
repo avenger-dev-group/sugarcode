@@ -12,10 +12,6 @@ export type ModelWireApi =
   | 'anthropicMessages';
 
 export type ModelCapabilityMode = 'auto' | 'enabled' | 'disabled';
-export type ModelMediaTransport =
-  | 'auto'
-  | 'inline'
-  | 'dashscopeTemporaryUrl';
 export type ModelContinuationMode = 'localReplay' | 'providerManaged';
 export type ModelApiKeyStatus = 'notConfigured' | 'present';
 
@@ -27,7 +23,6 @@ export type ModelConnectionValue = Readonly<{
   enabled: boolean;
   wireApi: ModelWireApi;
   continuationMode: ModelContinuationMode;
-  mediaTransport?: ModelMediaTransport;
 }>;
 
 export type ModelProfileValue = Readonly<{
@@ -165,11 +160,11 @@ const CAPABILITY_MODES: readonly ModelCapabilityMode[] = [
   'disabled',
 ];
 
-const MEDIA_TRANSPORTS: readonly ModelMediaTransport[] = [
+const LEGACY_MEDIA_TRANSPORTS = [
   'auto',
   'inline',
   'dashscopeTemporaryUrl',
-];
+] as const;
 
 const isConnection = (value: unknown): value is ModelConnectionValue =>
   isRecord(value) &&
@@ -199,7 +194,9 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
     value.continuationMode as ModelContinuationMode,
   ) &&
   (value.mediaTransport === undefined ||
-    MEDIA_TRANSPORTS.includes(value.mediaTransport as ModelMediaTransport));
+    LEGACY_MEDIA_TRANSPORTS.includes(
+      value.mediaTransport as (typeof LEGACY_MEDIA_TRANSPORTS)[number],
+    ));
 
 const isProfile = (value: unknown): value is ModelProfileValue =>
   isRecord(value) &&

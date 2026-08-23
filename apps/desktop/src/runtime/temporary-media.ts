@@ -1,8 +1,6 @@
 import { openAsBlob } from 'node:fs';
 import path from 'node:path';
 
-import type { ModelMediaTransport } from '../shared/model-config.ts';
-
 export type PublishedMedia = Readonly<{
   uri: string;
 }>;
@@ -54,13 +52,8 @@ const looksLikeDashscopeEndpoint = (baseUrl: string): boolean => {
 };
 
 export const effectiveMediaTransport = (
-  configured: ModelMediaTransport | undefined,
   baseUrl: string,
-): Exclude<ModelMediaTransport, 'auto'> => {
-  const transport = configured ?? 'auto';
-  if (transport !== 'auto') {
-    return transport;
-  }
+): 'inline' | 'dashscopeTemporaryUrl' => {
   return looksLikeDashscopeEndpoint(baseUrl)
     ? 'dashscopeTemporaryUrl'
     : 'inline';
