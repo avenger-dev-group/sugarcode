@@ -20,6 +20,7 @@ import type {
 } from './types';
 import {
   baseUrlForProviderWireChange,
+  DEFAULT_NEW_MODEL_WIRE_API,
   presetForWire,
 } from './provider-presets';
 
@@ -29,7 +30,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   displayName: 'OpenAI 兼容接口',
   baseUrl: 'https://api.openai.com/v1',
   enabled: true,
-  wireApi: 'openaiChatCompletions',
+  wireApi: DEFAULT_NEW_MODEL_WIRE_API,
   continuationMode: 'localReplay',
 };
 

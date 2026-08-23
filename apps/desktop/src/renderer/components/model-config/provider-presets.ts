@@ -10,6 +10,8 @@ export type ProviderPreset = Readonly<{
   wireApi: ModelWireApi;
 }>;
 
+export const DEFAULT_NEW_MODEL_WIRE_API: ModelWireApi = 'openaiResponses';
+
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
     providerFamily: 'openai',

@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { baseUrlForProviderWireChange } from '../../../src/renderer/components/model-config/provider-presets.ts';
+import {
+  baseUrlForProviderWireChange,
+  DEFAULT_NEW_MODEL_WIRE_API,
+} from '../../../src/renderer/components/model-config/provider-presets.ts';
+
+test('new model configurations default to OpenAI Responses', () => {
+  assert.equal(DEFAULT_NEW_MODEL_WIRE_API, 'openaiResponses');
+});
 
 test('provider protocol changes preserve a custom Base URL', () => {
   const customBaseUrl = 'http://gateway.example.test:40000/v1';
