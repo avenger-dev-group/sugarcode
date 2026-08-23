@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { getSkills } from '@/renderer/services/skills';
 import { getKnowledge } from '@/renderer/services/knowledge';
@@ -53,6 +60,17 @@ const knowledgeSuggestion = (
     : `@知识库${knowledgeBase.name}`,
 });
 
+const syncMirrorLayout = (
+  textarea: HTMLTextAreaElement,
+  mirror: HTMLDivElement,
+): void => {
+  // Classic scrollbars reduce a textarea's client width. Keep the visible
+  // mirror on that same width so both layers wrap text at identical points.
+  mirror.style.right = `${Math.max(0, textarea.offsetWidth - textarea.clientWidth)}px`;
+  mirror.scrollTop = textarea.scrollTop;
+  mirror.scrollLeft = textarea.scrollLeft;
+};
+
 export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const mirrorRef = useRef<HTMLDivElement | null>(null);
@@ -68,6 +86,25 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
   const [message, setMessage] = useState<string | null>(null);
   const rawId = useId();
   const listboxId = `composer-suggestions-${rawId.replace(/:/gu, '')}`;
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    const mirror = mirrorRef.current;
+    if (textarea && mirror) {
+      syncMirrorLayout(textarea, mirror);
+    }
+  }, [props.value]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    const mirror = mirrorRef.current;
+    if (!textarea || !mirror) {
+      return undefined;
+    }
+    const observer = new ResizeObserver(() => syncMirrorLayout(textarea, mirror));
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, []);
 
   const suggestions = useMemo<readonly ComposerSuggestion[]>(() => {
     if (!token) {
@@ -276,8 +313,7 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
 
   const handleScroll: ComposerSuggestionStore['handleScroll'] = (event) => {
     if (mirrorRef.current) {
-      mirrorRef.current.scrollTop = event.currentTarget.scrollTop;
-      mirrorRef.current.scrollLeft = event.currentTarget.scrollLeft;
+      syncMirrorLayout(event.currentTarget, mirrorRef.current);
     }
   };
 
