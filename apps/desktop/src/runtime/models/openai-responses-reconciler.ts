@@ -10,6 +10,12 @@ import {
   RuntimeProtocolError,
   protocolProviderError,
 } from '../protocol-error.ts';
+import {
+  toolCallConflictFields,
+  toolCallContentKey,
+  toolCallSemanticKey,
+  validToolArguments,
+} from './openai-responses-tool-call.ts';
 import type { ModelTextPhase } from './types.ts';
 
 type SlotBase = {
@@ -113,7 +119,11 @@ const semanticKey = (item: ResponseOutputItem): string | undefined => {
     case 'reasoning':
       return `reasoning:${reasoningText(item)}`;
     case 'function_call':
-      return `tool:${item.call_id}:${item.name}:${item.arguments}`;
+      return toolCallSemanticKey({
+        callId: item.call_id,
+        name: item.name,
+        arguments: item.arguments,
+      });
     default:
       return undefined;
   }
@@ -140,14 +150,6 @@ const hasSemanticUnknownContent = (item: ResponseOutputItem): boolean =>
       return true;
     },
   );
-
-const validToolArguments = (value: string): boolean => {
-  try {
-    return isRecord(JSON.parse(value));
-  } catch {
-    return false;
-  }
-};
 
 export class OpenAiResponsesReconciler {
   private readonly slots = new Map<number, OutputSlot>();
@@ -187,66 +189,156 @@ export class OpenAiResponsesReconciler {
     }
   };
 
+  private uniqueSlot = (
+    candidates: readonly OutputSlot[],
+    value: Readonly<Record<string, unknown>>,
+    eventType: string,
+  ): OutputSlot | undefined => {
+    if (candidates.length <= 1) {
+      return candidates[0];
+    }
+    throw this.protocolError(
+      'OpenAI Responses matched more than one existing output item.',
+      'ambiguousOutputReconciliation',
+      {
+        ...value,
+        candidateTypes: candidates.map((candidate) => candidate.type),
+      },
+      eventType,
+    );
+  };
+
   private slotByIdentity = (
     expectedType: OutputSlot['type'],
     observedItemId: string,
+    eventType: string,
   ): OutputSlot | undefined =>
-    [...this.slots.values()].find(
-      (slot) =>
-        slot.type === expectedType &&
-        (slot.itemId === observedItemId || slot.aliases.has(observedItemId)),
+    this.uniqueSlot(
+      [...this.slots.values()].filter(
+        (slot) =>
+          slot.type === expectedType &&
+          (slot.itemId === observedItemId || slot.aliases.has(observedItemId)),
+      ),
+      { expectedType, identityKind: 'itemId' },
+      eventType,
     );
 
-  private compatibleSlot = (
+  private streamSlot = (
     outputIndex: number,
     expectedType: OutputSlot['type'],
     observedItemId: string,
-    semantic?: string,
+    eventType: string,
   ): OutputSlot | undefined => {
     const indexed = this.slots.get(outputIndex);
     if (indexed?.type === expectedType) {
       return indexed;
     }
-    if (observedItemId) {
-      const identified = this.slotByIdentity(expectedType, observedItemId);
-      if (identified) {
-        return identified;
-      }
-    }
-    if (semantic !== undefined) {
-      const candidates = [...this.slots.values()].filter((slot) => {
-        if (slot.type !== expectedType) {
-          return false;
-        }
-        if (slot.type === 'text') {
-          return `text:${slot.text}` === semantic;
-        }
-        if (slot.type === 'reasoning') {
-          return `reasoning:${reasoningText(slot.item)}` === semantic;
-        }
-        return `tool:${slot.callId}:${slot.name}:${slot.arguments}` === semantic;
-      });
-      if (candidates.length === 1) {
-        return candidates[0];
-      }
-      if (candidates.length > 1) {
-        throw this.protocolError(
-          'OpenAI Responses terminal output matched more than one streamed item.',
-          'ambiguousOutputReconciliation',
-          { outputIndex, expectedType, observedItemId, candidates },
-          'response.completed',
-        );
-      }
-    }
     if (indexed) {
       throw this.protocolError(
         'OpenAI Responses reused an output index for a different item type.',
         'outputIndexMismatch',
-        { outputIndex, expectedType, observedItemId, indexed },
-        'response.output_item.done',
+        { outputIndex, expectedType, observedItemId, indexedType: indexed.type },
+        eventType,
       );
     }
+    return observedItemId
+      ? this.slotByIdentity(expectedType, observedItemId, eventType)
+      : undefined;
+  };
+
+  private slotSemanticKey = (slot: OutputSlot): string | undefined => {
+    if (slot.type === 'text') {
+      return `text:${slot.text}`;
+    }
+    if (slot.type === 'reasoning') {
+      return `reasoning:${reasoningText(slot.item)}`;
+    }
+    return toolCallSemanticKey(slot);
+  };
+
+  private terminalSlot = (
+    terminalIndex: number,
+    item: ResponseOutputItem,
+    expectedType: OutputSlot['type'],
+    originalSlotIndexes: ReadonlySet<number>,
+    eventType: 'response.completed' | 'response.incomplete',
+  ): OutputSlot | undefined => {
+    const observedItemId = item.id ?? '';
+    if (observedItemId) {
+      const identified = this.slotByIdentity(
+        expectedType,
+        observedItemId,
+        eventType,
+      );
+      if (identified) {
+        return identified;
+      }
+    }
+    if (item.type === 'function_call' && item.call_id) {
+      const callIdMatch = this.uniqueSlot(
+        [...this.slots.values()].filter(
+          (slot) => slot.type === 'toolCall' && slot.callId === item.call_id,
+        ),
+        { expectedType, identityKind: 'callId' },
+        eventType,
+      );
+      if (callIdMatch) {
+        return callIdMatch;
+      }
+    }
+    const semantic = semanticKey(item);
+    if (semantic !== undefined) {
+      const semanticMatch = this.uniqueSlot(
+        [...this.slots.values()].filter(
+          (slot) =>
+            slot.type === expectedType &&
+            this.slotSemanticKey(slot) === semantic,
+        ),
+        { expectedType, identityKind: 'semantic' },
+        eventType,
+      );
+      if (semanticMatch) {
+        return semanticMatch;
+      }
+    }
+    if (item.type === 'function_call') {
+      const contentKey = toolCallContentKey({
+        name: item.name,
+        arguments: item.arguments,
+      });
+      if (contentKey !== undefined) {
+        const contentMatch = this.uniqueSlot(
+          [...this.slots.values()].filter(
+            (slot) =>
+              slot.type === 'toolCall' &&
+              toolCallContentKey(slot) === contentKey,
+          ),
+          { expectedType, identityKind: 'toolContent' },
+          eventType,
+        );
+        if (contentMatch) {
+          return contentMatch;
+        }
+      }
+    }
+    const indexed = originalSlotIndexes.has(terminalIndex)
+      ? this.slots.get(terminalIndex)
+      : undefined;
+    if (indexed?.type === expectedType) {
+      return indexed;
+    }
     return undefined;
+  };
+
+  private availableOutputIndex = (preferred: number): number => {
+    if (!this.slots.has(preferred)) {
+      return preferred;
+    }
+    let candidate = Math.max(preferred, ...this.slots.keys()) + 1;
+    while (this.slots.has(candidate)) {
+      candidate += 1;
+    }
+    return candidate;
   };
 
   private rememberAlias = (slot: OutputSlot, observedItemId: string): void => {
@@ -261,7 +353,12 @@ export class OpenAiResponsesReconciler {
   ): void => {
     this.ensureOpen('response.output_item.added', { outputIndex, item });
     if (item.type === 'message') {
-      const existing = this.compatibleSlot(outputIndex, 'text', item.id);
+      const existing = this.streamSlot(
+        outputIndex,
+        'text',
+        item.id,
+        'response.output_item.added',
+      );
       if (existing?.type === 'text') {
         this.rememberAlias(existing, item.id);
         existing.phase = phaseFromProvider(item.phase);
@@ -280,7 +377,12 @@ export class OpenAiResponsesReconciler {
       return;
     }
     if (item.type === 'reasoning') {
-      const existing = this.compatibleSlot(outputIndex, 'reasoning', item.id);
+      const existing = this.streamSlot(
+        outputIndex,
+        'reasoning',
+        item.id,
+        'response.output_item.added',
+      );
       if (existing?.type === 'reasoning') {
         this.rememberAlias(existing, item.id);
         return;
@@ -297,7 +399,12 @@ export class OpenAiResponsesReconciler {
     }
     if (item.type === 'function_call') {
       const observedId = item.id ?? '';
-      const existing = this.compatibleSlot(outputIndex, 'toolCall', observedId);
+      const existing = this.streamSlot(
+        outputIndex,
+        'toolCall',
+        observedId,
+        'response.output_item.added',
+      );
       if (existing?.type === 'toolCall') {
         this.rememberAlias(existing, observedId);
         existing.callId ||= item.call_id;
@@ -339,7 +446,12 @@ export class OpenAiResponsesReconciler {
       item_id: observedItemId,
       delta,
     });
-    const existing = this.compatibleSlot(outputIndex, 'text', observedItemId);
+    const existing = this.streamSlot(
+      outputIndex,
+      'text',
+      observedItemId,
+      'response.output_text.delta',
+    );
     const slot: TextSlot = existing?.type === 'text'
       ? existing
       : {
@@ -373,10 +485,13 @@ export class OpenAiResponsesReconciler {
     if (delta.length === 0) {
       return undefined;
     }
-    const existing = this.compatibleSlot(
+    const existing = this.streamSlot(
       outputIndex,
       'reasoning',
       observedItemId,
+      kind === 'summary'
+        ? 'response.reasoning_summary_text.delta'
+        : 'response.reasoning_text.delta',
     );
     const slot: ReasoningSlot = existing?.type === 'reasoning'
       ? existing
@@ -433,10 +548,11 @@ export class OpenAiResponsesReconciler {
     arguments: string;
   }>): void => {
     this.ensureOpen('response.function_call_arguments.done', event);
-    const existing = this.compatibleSlot(
+    const existing = this.streamSlot(
       event.outputIndex,
       'toolCall',
       event.itemId,
+      'response.function_call_arguments.done',
     );
     const slot: ToolCallSlot = existing?.type === 'toolCall'
       ? existing
@@ -459,16 +575,23 @@ export class OpenAiResponsesReconciler {
   private reconcileDoneItem = (
     outputIndex: number,
     item: ResponseOutputItem,
-    eventType: 'response.output_item.done' | 'response.completed' | 'response.incomplete',
+    eventType:
+      | 'response.output_item.done'
+      | 'response.completed'
+      | 'response.incomplete',
+    originalSlotIndexes?: ReadonlySet<number>,
   ): void => {
-    const semantic = semanticKey(item);
+    const terminal = eventType !== 'response.output_item.done';
     if (item.type === 'message') {
-      const existing = this.compatibleSlot(
-        outputIndex,
-        'text',
-        item.id,
-        semantic,
-      );
+      const existing = terminal
+        ? this.terminalSlot(
+            outputIndex,
+            item,
+            'text',
+            originalSlotIndexes ?? new Set(),
+            eventType,
+          )
+        : this.streamSlot(outputIndex, 'text', item.id, eventType);
       if (existing?.type === 'text') {
         if (existing.done && existing.text !== messageText(item)) {
           throw this.protocolError(
@@ -479,15 +602,25 @@ export class OpenAiResponsesReconciler {
           );
         }
         this.rememberAlias(existing, item.id);
-        existing.text = messageText(item) || existing.text;
-        existing.phase = phaseFromProvider(item.phase);
+        if (!existing.done) {
+          existing.text = messageText(item) || existing.text;
+          existing.phase = phaseFromProvider(item.phase);
+        } else if (
+          existing.phase === 'provisional' &&
+          phaseFromProvider(item.phase) !== 'provisional'
+        ) {
+          existing.phase = phaseFromProvider(item.phase);
+        }
         existing.refused ||= messageRefused(item);
         existing.done = true;
         return;
       }
-      this.slots.set(outputIndex, {
+      const resolvedIndex = terminal
+        ? this.availableOutputIndex(outputIndex)
+        : outputIndex;
+      this.slots.set(resolvedIndex, {
         type: 'text',
-        outputIndex,
+        outputIndex: resolvedIndex,
         itemId: item.id,
         aliases: new Set(),
         done: true,
@@ -498,37 +631,86 @@ export class OpenAiResponsesReconciler {
       return;
     }
     if (item.type === 'reasoning') {
-      const existing = this.compatibleSlot(
-        outputIndex,
-        'reasoning',
-        item.id,
-        semantic,
-      );
+      const existing = terminal
+        ? this.terminalSlot(
+            outputIndex,
+            item,
+            'reasoning',
+            originalSlotIndexes ?? new Set(),
+            eventType,
+          )
+        : this.streamSlot(outputIndex, 'reasoning', item.id, eventType);
       if (existing?.type === 'reasoning') {
+        const normalized = normalizedReasoningItem(item);
+        const existingContent = (existing.item.content ?? [])
+          .map((part) => part.text)
+          .join('\n');
+        const incomingContent = (normalized.content ?? [])
+          .map((part) => part.text)
+          .join('\n');
+        const existingSummary = existing.item.summary
+          .map((part) => part.text)
+          .join('\n');
+        const incomingSummary = normalized.summary
+          .map((part) => part.text)
+          .join('\n');
+        const encryptedConflict =
+          typeof existing.item.encrypted_content === 'string' &&
+          typeof normalized.encrypted_content === 'string' &&
+          existing.item.encrypted_content !== normalized.encrypted_content;
         if (
           existing.done &&
-          reasoningText(existing.item) !== reasoningText(item)
+          ((existingContent &&
+            incomingContent &&
+            existingContent !== incomingContent) ||
+            (existingSummary &&
+              incomingSummary &&
+              existingSummary !== incomingSummary) ||
+            encryptedConflict)
         ) {
           throw this.protocolError(
             'OpenAI Responses returned conflicting completed reasoning content.',
             'ambiguousOutputReconciliation',
-            { outputIndex, existing: existing.item, item },
+            {
+              contentConflict:
+                Boolean(existingContent && incomingContent) &&
+                existingContent !== incomingContent,
+              summaryConflict:
+                Boolean(existingSummary && incomingSummary) &&
+                existingSummary !== incomingSummary,
+              encryptedContentConflict: encryptedConflict,
+            },
             eventType,
           );
         }
         this.rememberAlias(existing, item.id);
-        existing.item = {
-          ...normalizedReasoningItem(item),
-          id: existing.itemId || item.id,
-          encrypted_content:
-            item.encrypted_content ?? existing.item.encrypted_content,
-        };
+        existing.item = existing.done
+          ? {
+              ...existing.item,
+              ...(!existingContent && incomingContent
+                ? { content: normalized.content }
+                : {}),
+              ...(!existingSummary && incomingSummary
+                ? { summary: normalized.summary }
+                : {}),
+              encrypted_content:
+                existing.item.encrypted_content ?? normalized.encrypted_content,
+            }
+          : {
+              ...normalized,
+              id: existing.itemId || item.id,
+              encrypted_content:
+                normalized.encrypted_content ?? existing.item.encrypted_content,
+            };
         existing.done = true;
         return;
       }
-      this.slots.set(outputIndex, {
+      const resolvedIndex = terminal
+        ? this.availableOutputIndex(outputIndex)
+        : outputIndex;
+      this.slots.set(resolvedIndex, {
         type: 'reasoning',
-        outputIndex,
+        outputIndex: resolvedIndex,
         itemId: item.id,
         aliases: new Set(),
         done: true,
@@ -538,36 +720,48 @@ export class OpenAiResponsesReconciler {
     }
     if (item.type === 'function_call') {
       const observedId = item.id ?? '';
-      const existing = this.compatibleSlot(
-        outputIndex,
-        'toolCall',
-        observedId,
-        semantic,
-      );
+      const existing = terminal
+        ? this.terminalSlot(
+            outputIndex,
+            item,
+            'toolCall',
+            originalSlotIndexes ?? new Set(),
+            eventType,
+          )
+        : this.streamSlot(outputIndex, 'toolCall', observedId, eventType);
       if (existing?.type === 'toolCall') {
-        if (
-          existing.done &&
-          (existing.callId !== item.call_id ||
-            existing.name !== item.name ||
-            existing.arguments !== item.arguments)
-        ) {
+        const conflicts = existing.done
+          ? toolCallConflictFields(existing, item)
+          : [];
+        const semanticConflicts = conflicts.filter(
+          (field) => field !== 'callId',
+        );
+        if (semanticConflicts.length > 0) {
+          const conflictShape = Object.fromEntries(
+            conflicts.map((field) => [field, true]),
+          );
           throw this.protocolError(
-            'OpenAI Responses returned conflicting completed tool calls.',
+            `OpenAI Responses returned conflicting completed tool call fields: ${conflicts.join(', ')}.`,
             'ambiguousOutputReconciliation',
-            { outputIndex, existing, item },
+            { conflicts: conflictShape },
             eventType,
           );
         }
         this.rememberAlias(existing, observedId);
-        existing.callId = item.call_id || existing.callId;
-        existing.name = item.name || existing.name;
-        existing.arguments = item.arguments || existing.arguments;
+        if (!existing.done) {
+          existing.callId = item.call_id || existing.callId;
+          existing.name = item.name || existing.name;
+          existing.arguments = item.arguments || existing.arguments;
+        }
         existing.done = true;
         return;
       }
-      this.slots.set(outputIndex, {
+      const resolvedIndex = terminal
+        ? this.availableOutputIndex(outputIndex)
+        : outputIndex;
+      this.slots.set(resolvedIndex, {
         type: 'toolCall',
-        outputIndex,
+        outputIndex: resolvedIndex,
         itemId: observedId,
         aliases: new Set(),
         done: true,
@@ -602,8 +796,14 @@ export class OpenAiResponsesReconciler {
     eventType: 'response.completed' | 'response.incomplete',
   ): ReconciledResponsesTerminal => {
     this.ensureOpen(eventType, response);
+    const originalSlotIndexes = new Set(this.slots.keys());
     for (const [outputIndex, item] of (response.output ?? []).entries()) {
-      this.reconcileDoneItem(outputIndex, item, eventType);
+      this.reconcileDoneItem(
+        outputIndex,
+        item,
+        eventType,
+        originalSlotIndexes,
+      );
     }
     this.terminated = true;
 

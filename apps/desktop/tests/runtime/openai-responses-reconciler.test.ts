@@ -50,6 +50,185 @@ test('Responses reconciler preserves parallel tool order and independent IDs', (
   );
 });
 
+test('Responses reconciler matches reordered terminal tools by stable identity', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, toolItem(0));
+  reconciler.onOutputItemDone(1, toolItem(1));
+
+  const terminal = reconciler.finish(response('resp_reordered', [
+    toolItem(1),
+    toolItem(0),
+  ]), 'response.completed');
+
+  assert.deepEqual(
+    terminal.blocks.map((block) =>
+      block.type === 'toolCall'
+        ? [block.outputIndex, block.itemId, block.callId]
+        : []),
+    [
+      [0, 'item_0', 'call_0'],
+      [1, 'item_1', 'call_1'],
+    ],
+  );
+});
+
+test('Responses reconciler uses call ID when terminal item ID drifts', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, toolItem(0));
+
+  const terminal = reconciler.finish(response('resp_item_id_drift', [{
+    ...toolItem(0),
+    id: 'gateway_terminal_item_0',
+  }]), 'response.completed');
+
+  assert.deepEqual(terminal.blocks.map((block) =>
+    block.type === 'toolCall'
+      ? [block.itemId, block.callId]
+      : []), [['item_0', 'call_0']]);
+});
+
+test('Responses reconciler compares tool arguments by JSON semantics', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  const streamed = {
+    ...toolItem(0),
+    arguments: '{"path":"file.txt","options":{"b":2,"a":1}}',
+  };
+  reconciler.onOutputItemDone(0, streamed);
+
+  const terminal = reconciler.finish(response('resp_argument_format', [{
+    ...streamed,
+    arguments: '{ "options": { "a": 1, "b": 2 }, "path": "file.txt" }',
+  }]), 'response.completed');
+
+  assert.equal(terminal.blocks[0]?.type, 'toolCall');
+  if (terminal.blocks[0]?.type === 'toolCall') {
+    assert.equal(terminal.blocks[0].arguments, streamed.arguments);
+  }
+});
+
+test('Responses reconciler rejects real tool argument conflicts safely', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, toolItem(0));
+
+  assert.throws(
+    () => reconciler.finish(response('resp_argument_conflict', [{
+      ...toolItem(0),
+      arguments: '{"path":"different-private-path.txt"}',
+    }]), 'response.completed'),
+    (error: unknown) =>
+      error instanceof RuntimeProtocolError &&
+      error.details.protocol?.code === 'ambiguousOutputReconciliation' &&
+      error.message.includes('arguments') &&
+      !error.message.includes('different-private-path.txt'),
+  );
+});
+
+test('Responses reconciler keeps the done call ID when the terminal call ID drifts', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, toolItem(0));
+
+  const terminal = reconciler.finish(response('resp_call_id_drift', [{
+    ...toolItem(0),
+    id: 'item_changed',
+    call_id: 'call_changed',
+  }]), 'response.completed');
+
+  assert.deepEqual(terminal.blocks.map((block) =>
+    block.type === 'toolCall'
+      ? [block.itemId, block.callId]
+      : []), [['item_0', 'call_0']]);
+});
+
+test('Responses reconciler diagnoses call ID and argument conflicts safely', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, toolItem(0));
+
+  assert.throws(
+    () => reconciler.finish(response('resp_call_argument_conflict', [{
+      ...toolItem(0),
+      id: 'item_changed',
+      call_id: 'call_changed',
+      arguments: '{"path":"different-private-path.txt"}',
+    }]), 'response.completed'),
+    (error: unknown) =>
+      error instanceof RuntimeProtocolError &&
+      error.details.protocol?.code === 'ambiguousOutputReconciliation' &&
+      error.message.includes('callId') &&
+      error.message.includes('arguments') &&
+      !error.message.includes('different-private-path.txt'),
+  );
+});
+
+test('Responses reconciler blocks ambiguous content-only tool matches', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  const first = {
+    ...toolItem(0),
+    arguments: '{"path":"same.txt"}',
+  };
+  const second = {
+    ...toolItem(1),
+    arguments: '{"path":"same.txt"}',
+  };
+  reconciler.onOutputItemDone(0, first);
+  reconciler.onOutputItemDone(1, second);
+
+  assert.throws(
+    () => reconciler.finish(response('resp_ambiguous_content', [{
+      ...first,
+      id: 'item_changed',
+      call_id: 'call_changed',
+    }]), 'response.completed'),
+    (error: unknown) =>
+      error instanceof RuntimeProtocolError &&
+      error.details.protocol?.code === 'ambiguousOutputReconciliation',
+  );
+});
+
+test('Responses reconciler tolerates terminal index shifts when reasoning is omitted', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, {
+    id: 'reasoning_0',
+    type: 'reasoning',
+    status: 'completed',
+    summary: [{ type: 'summary_text', text: 'Checked the workspace.' }],
+  } as unknown as ResponseOutputItem);
+  reconciler.onOutputItemDone(1, toolItem(0));
+
+  const terminal = reconciler.finish(response('resp_omitted_reasoning', [
+    toolItem(0),
+  ]), 'response.completed');
+
+  assert.deepEqual(
+    terminal.blocks.map((block) => [block.type, block.outputIndex]),
+    [
+      ['reasoning', 0],
+      ['toolCall', 1],
+    ],
+  );
+});
+
+test('Responses reconciler appends terminal-only items after streamed slots', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onReasoningDelta(
+    'summary',
+    0,
+    'reasoning_streamed',
+    'Working',
+  );
+
+  const terminal = reconciler.finish(response('resp_terminal_compensation', [
+    toolItem(0),
+  ]), 'response.completed');
+
+  assert.deepEqual(
+    terminal.blocks.map((block) => [block.type, block.outputIndex]),
+    [
+      ['reasoning', 0],
+      ['toolCall', 1],
+    ],
+  );
+});
+
 test('Responses reconciler blocks malformed tool calls before execution', () => {
   const reconciler = new OpenAiResponsesReconciler();
   reconciler.onOutputItemDone(0, {

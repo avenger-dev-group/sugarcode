@@ -1351,6 +1351,105 @@ test('OpenAI Responses completes a function call from output_item.done without a
   );
 });
 
+test('OpenAI Responses keeps streamed tool order when terminal output is reordered', async (context) => {
+  const firstCall = {
+    id: 'item_reordered_first',
+    type: 'function_call' as const,
+    call_id: 'call_reordered_first',
+    name: 'workspace_read',
+    arguments: '{"path":"first.txt","options":{"b":2,"a":1}}',
+    status: 'completed' as const,
+  };
+  const secondCall = {
+    id: 'item_reordered_second',
+    type: 'function_call' as const,
+    call_id: 'call_reordered_second',
+    name: 'workspace_read',
+    arguments: '{"path":"second.txt"}',
+    status: 'completed' as const,
+  };
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 1,
+          output_index: 0,
+          item: firstCall,
+        },
+      },
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 2,
+          output_index: 1,
+          item: secondCall,
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_reordered_tools_fixture',
+            status: 'completed',
+            output: [
+              {
+                ...secondCall,
+                id: 'terminal_item_reordered_second',
+                call_id: 'terminal_call_reordered_second',
+              },
+              {
+                ...firstCall,
+                id: 'terminal_item_reordered_first',
+                call_id: 'terminal_call_reordered_first',
+                arguments:
+                  '{ "options": { "a": 1, "b": 2 }, "path": "first.txt" }',
+              },
+            ],
+            usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [{
+      functionDeclarations: [{
+        name: 'workspace_read',
+        parametersJsonSchema: { type: 'object' },
+      }],
+    }],
+  };
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const calls = events.at(-1)?.content?.parts?.flatMap((part) =>
+    part.functionCall ? [part.functionCall] : []) ?? [];
+
+  assert.deepEqual(
+    calls.map((call) => [call.id, call.args]),
+    [
+      [
+        'call_reordered_first',
+        { path: 'first.txt', options: { b: 2, a: 1 } },
+      ],
+      ['call_reordered_second', { path: 'second.txt' }],
+    ],
+  );
+});
+
 test('OpenAI Responses restart replay keeps provider item ID separate from call_id', async (context) => {
   let requestIndex = 0;
   let replayBody: Record<string, unknown> | undefined;
