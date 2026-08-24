@@ -160,6 +160,7 @@ export const runtimeError = (
                 ? kind as ConversationTurnError['kind']
                 : 'stateUnavailable',
     retryable: error.retryable === true,
+    ...(error.protocol ? { protocol: error.protocol } : {}),
   };
 };
 

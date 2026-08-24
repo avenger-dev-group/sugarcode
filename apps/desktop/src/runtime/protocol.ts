@@ -861,6 +861,23 @@ export type RuntimeProviderError = Readonly<{
   code?: string;
   requestId?: string;
   retryAfterMs?: number;
+  protocol?: Readonly<{
+    stage:
+      | 'streamEvent'
+      | 'responseAssembly'
+      | 'outputNormalization'
+      | 'runtimeClassification';
+    code:
+      | 'wireMismatch'
+      | 'invalidEventShape'
+      | 'ambiguousOutputReconciliation'
+      | 'malformedToolCall'
+      | 'terminalLifecycleViolation'
+      | 'continuationOutputMismatch'
+      | 'outputIndexMismatch';
+    eventType?: string;
+    shapeSha256: string;
+  }>;
 }>;
 
 type RuntimeEventBase = Readonly<{

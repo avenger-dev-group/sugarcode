@@ -17,6 +17,13 @@ import {
   ContextManager,
   type RuntimeContextCheckpoint,
 } from './context-manager.ts';
+import {
+  contentFromStoredModelHistory,
+  encodeModelHistory,
+  parseStoredModelHistory,
+  type StoredModelHistoryV2,
+} from './model-history-codec.ts';
+import { RuntimeProtocolError } from './protocol-error.ts';
 import { buildAgentInstructions } from './agent-instructions.ts';
 import {
   composerIntentInstruction,
@@ -651,6 +658,9 @@ const providerError = (error: unknown): RuntimeProviderError => {
   if (error instanceof ProviderAdapterError) {
     return error.details;
   }
+  if (error instanceof RuntimeProtocolError) {
+    return error.details;
+  }
   if (error instanceof Error && error.name === 'AbortError') {
     return {
       kind: 'cancelled',
@@ -694,37 +704,6 @@ const usageFromEvent = (event: Event): RuntimeUsage | undefined => {
 type StoredAssetContent = Readonly<{
   asset: RuntimeAssetDescriptor;
   data: string;
-}>;
-
-type StoredHistoryPart =
-  | Readonly<{
-      type: 'text';
-      text: string;
-      reasoning: boolean;
-      metadata?: Readonly<Record<string, unknown>>;
-    }>
-  | Readonly<{
-      type: 'media';
-      mediaType: string;
-      data: string;
-      name?: string;
-    }>
-  | Readonly<{
-      type: 'toolCall';
-      id: string;
-      name: string;
-      arguments: Readonly<Record<string, unknown>>;
-    }>
-  | Readonly<{
-      type: 'toolResult';
-      id: string;
-      name: string;
-      result: Readonly<Record<string, unknown>>;
-    }>;
-
-type StoredModelHistory = Readonly<{
-  role: 'assistant' | 'user';
-  parts: readonly StoredHistoryPart[];
 }>;
 
 type ActiveTerminal = {
@@ -2633,6 +2612,7 @@ export class RuntimeHost {
             item.kind === 'turn.contextCheckpoint' &&
             typeof item.payload.summary === 'string'
               ? {
+                  version: 2 as const,
                   role: 'user' as const,
                   parts: [
                     {
@@ -2779,175 +2759,14 @@ export class RuntimeHost {
     );
   };
 
-  private storedModelHistory = (content: Content): StoredModelHistory => ({
-    role: content.role === 'model' ? 'assistant' : 'user',
-    parts: (content.parts ?? []).map((part): StoredHistoryPart => {
-      if (typeof part.text === 'string') {
-        return {
-          type: 'text',
-          text: part.text,
-          reasoning: part.thought === true,
-          ...(isRecord(part.partMetadata)
-            ? { metadata: part.partMetadata }
-            : {}),
-        };
-      }
-      if (part.inlineData?.mimeType && part.inlineData.data) {
-        return {
-          type: 'media',
-          mediaType: part.inlineData.mimeType,
-          data: part.inlineData.data,
-          ...(part.inlineData.displayName
-            ? { name: part.inlineData.displayName }
-            : {}),
-        };
-      }
-      if (part.functionCall?.id && part.functionCall.name) {
-        return {
-          type: 'toolCall',
-          id: part.functionCall.id,
-          name: part.functionCall.name,
-          arguments: part.functionCall.args ?? {},
-        };
-      }
-      if (part.functionResponse?.id && part.functionResponse.name) {
-        return {
-          type: 'toolResult',
-          id: part.functionResponse.id,
-          name: part.functionResponse.name,
-          result: part.functionResponse.response ?? {},
-        };
-      }
-      throw new Error('Model history contains an unsupported content part.');
-    }),
-  });
+  private storedModelHistory = (content: Content): StoredModelHistoryV2 =>
+    encodeModelHistory(content);
 
-  private parseStoredModelHistory = (value: unknown): StoredModelHistory => {
-    if (
-      !isRecord(value) ||
-      (value.role !== 'assistant' && value.role !== 'user') ||
-      !Array.isArray(value.parts)
-    ) {
-      throw new Error('Stored model history is invalid.');
-    }
-    const parts = value.parts.map((part): StoredHistoryPart => {
-      if (!isRecord(part) || typeof part.type !== 'string') {
-        throw new Error('Stored model history is invalid.');
-      }
-      if (
-        part.type === 'text' &&
-        typeof part.text === 'string' &&
-        typeof part.reasoning === 'boolean'
-      ) {
-        const metadata = part.metadata;
-        if (metadata === undefined) {
-          return {
-            type: 'text',
-            text: part.text,
-            reasoning: part.reasoning,
-          };
-        }
-        if (!isRecord(metadata)) {
-          throw new Error('Stored model history is invalid.');
-        }
-        return {
-          type: 'text',
-          text: part.text,
-          reasoning: part.reasoning,
-          metadata,
-        };
-      }
-      if (
-        part.type === 'media' &&
-        typeof part.mediaType === 'string' &&
-        typeof part.data === 'string'
-      ) {
-        const name = part.name;
-        if (name === undefined) {
-          return {
-            type: 'media',
-            mediaType: part.mediaType,
-            data: part.data,
-          };
-        }
-        if (typeof name !== 'string') {
-          throw new Error('Stored model history is invalid.');
-        }
-        return {
-          type: 'media',
-          mediaType: part.mediaType,
-          data: part.data,
-          name,
-        };
-      }
-      if (
-        part.type === 'toolCall' &&
-        typeof part.id === 'string' &&
-        typeof part.name === 'string' &&
-        isRecord(part.arguments)
-      ) {
-        return {
-          type: 'toolCall',
-          id: part.id,
-          name: part.name,
-          arguments: part.arguments,
-        };
-      }
-      if (
-        part.type === 'toolResult' &&
-        typeof part.id === 'string' &&
-        typeof part.name === 'string' &&
-        isRecord(part.result)
-      ) {
-        return {
-          type: 'toolResult',
-          id: part.id,
-          name: part.name,
-          result: part.result,
-        };
-      }
-      throw new Error('Stored model history is invalid.');
-    });
-    return { role: value.role, parts };
-  };
+  private parseStoredModelHistory = (value: unknown): StoredModelHistoryV2 =>
+    parseStoredModelHistory(value);
 
-  private contentFromHistory = (history: StoredModelHistory): Content => ({
-    role: history.role === 'assistant' ? 'model' : 'user',
-    parts: history.parts.map((part): Part => {
-      switch (part.type) {
-        case 'text':
-          return {
-            text: part.text,
-            thought: part.reasoning,
-            ...(part.metadata ? { partMetadata: part.metadata } : {}),
-          };
-        case 'media':
-          return {
-            inlineData: {
-              mimeType: part.mediaType,
-              data: part.data,
-              ...(part.name ? { displayName: part.name } : {}),
-            },
-          };
-        case 'toolCall':
-          return {
-            functionCall: {
-              id: part.id,
-              name: part.name,
-              args: part.arguments,
-            },
-          };
-        case 'toolResult':
-          return {
-            functionResponse: {
-              id: part.id,
-              name: part.name,
-              response: part.result,
-            },
-          };
-      }
-    }),
-  });
+  private contentFromHistory = (history: StoredModelHistoryV2): Content =>
+    contentFromStoredModelHistory(history);
 
   private resolveProfile = (command: TurnContextCommand): ResolvedProfile => {
     if ('provider' in command && command.provider) {

@@ -63,6 +63,7 @@ export type NormalizedToolCallPart = Readonly<{
   id: string;
   name: string;
   args: Readonly<Record<string, unknown>>;
+  metadata?: Readonly<Record<string, unknown>>;
 }>;
 
 export type NormalizedToolResultPart = Readonly<{

@@ -6,6 +6,7 @@ import {
 } from '@google/adk';
 import { FinishReason, type Part } from '@google/genai';
 import OpenAI from 'openai';
+import { toResponseInputItems } from 'openai/lib/responses/ResponseInputItems';
 import type {
   ChatCompletionContentPart,
   ChatCompletionMessageParam,
@@ -15,10 +16,10 @@ import type {
   EasyInputMessage,
   ResponseFunctionToolCall,
   ResponseInput,
+  ResponseInputItem,
   ResponseCompactionItemParam,
   ResponseInputAudio,
   ResponseInputContent,
-  ResponseOutputMessage,
   ResponseStreamEvent,
   Tool as OpenAiResponseTool,
 } from 'openai/resources/responses/responses';
@@ -27,8 +28,22 @@ import {
   DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
   DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
 } from '../../shared/model-metadata.ts';
+import {
+  RuntimeProtocolError,
+  protocolProviderError,
+  protocolShapeSha256,
+} from '../protocol-error.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
+import {
+  OpenAiResponsesReconciler,
+  type ReconciledResponsesBlock,
+} from './openai-responses-reconciler.ts';
+import {
+  openAiResponsesCompatibilityKey,
+  openAiResponsesPartReplay,
+  readOpenAiResponsesPartReplay,
+} from './openai-responses-replay.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import { modelItemMetadata } from './step-outcome.ts';
@@ -213,7 +228,7 @@ const responseInput = (
   request: NormalizedLlmRequest,
   compatibilityKey: string,
 ): ResponseInput => {
-  const result: Array<ResponseInput[number] | ResponseInputAudio> = [];
+  const result: Array<ResponseInputItem | ResponseInputAudio> = [];
   const names = providerNameByAdkName(request);
   let startIndex = 0;
   let checkpoint: ResponseCompactionItemParam | undefined;
@@ -242,6 +257,71 @@ const responseInput = (
     result.push(checkpoint);
   }
   for (const message of request.messages.slice(startIndex)) {
+    const replayItems: ResponseInputItem[] = [];
+    const replayReasoningIds = new Set<string>();
+    let replayable = message.role === 'assistant';
+    let sawReplay = false;
+    for (const part of message.parts) {
+      if (part.type !== 'text' && part.type !== 'toolCall') {
+        replayable = false;
+        continue;
+      }
+      const replay = readOpenAiResponsesPartReplay(part.metadata);
+      if (!replay) {
+        replayable = false;
+        continue;
+      }
+      sawReplay = true;
+      if (replay.compatibilityKey !== compatibilityKey) {
+        replayable = false;
+        continue;
+      }
+      if (part.type === 'text' && replay.block.type === 'reasoning') {
+        if (!replayReasoningIds.has(replay.block.item.id)) {
+          replayReasoningIds.add(replay.block.item.id);
+          replayItems.push(replay.block.item);
+        }
+      } else if (part.type === 'text' && replay.block.type === 'text') {
+        replayItems.push({
+          type: 'message',
+          id: replay.block.itemId,
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: part.text, annotations: [] }],
+          ...(replay.block.phase === 'commentary'
+            ? { phase: 'commentary' as const }
+            : replay.block.phase === 'final'
+              ? { phase: 'final_answer' as const }
+              : {}),
+        });
+      } else if (part.type === 'toolCall' && replay.block.type === 'toolCall') {
+        if (replay.block.callId !== part.id) {
+          throw new ProviderAdapterError(protocolProviderError(
+            'Stored Responses replay metadata does not match its tool call.',
+            {
+              stage: 'outputNormalization',
+              code: 'continuationOutputMismatch',
+              eventType: 'history.replay',
+              value: { part, replay: replay.block },
+            },
+          ));
+        }
+        replayItems.push({
+          type: 'function_call',
+          ...(replay.block.itemId ? { id: replay.block.itemId } : {}),
+          call_id: replay.block.callId,
+          name: names.get(part.name) ?? part.name,
+          arguments: jsonText(part.args),
+          status: 'completed',
+        });
+      } else {
+        replayable = false;
+      }
+    }
+    if (sawReplay && replayable && replayItems.length > 0) {
+      result.push(...replayItems);
+      continue;
+    }
     const content = responseMessageContent(message);
     if (content.length > 0) {
       const phase = message.role === 'assistant'
@@ -297,7 +377,29 @@ const responseInput = (
       }
     }
   }
-  return result as ResponseInput;
+  try {
+    const normalized: Array<ResponseInputItem | ResponseInputAudio> = [];
+    for (const item of result) {
+      if (item.type === 'input_audio') {
+        normalized.push(item);
+      } else {
+        normalized.push(...toResponseInputItems([item]));
+      }
+    }
+    return normalized as ResponseInput;
+  } catch (error) {
+    throw new ProviderAdapterError(protocolProviderError(
+      error instanceof Error
+        ? `Stored Responses history could not be normalized: ${error.message}`
+        : 'Stored Responses history could not be normalized.',
+      {
+        stage: 'outputNormalization',
+        code: 'continuationOutputMismatch',
+        eventType: 'history.replay',
+        value: result,
+      },
+    ));
+  }
 };
 
 const chatUserContent = (
@@ -471,6 +573,9 @@ const mapOpenAiError = (
   if (error instanceof ProviderAdapterError) {
     return error;
   }
+  if (error instanceof RuntimeProtocolError) {
+    return new ProviderAdapterError(error.details);
+  }
   if (error instanceof OpenAI.APIError) {
     const status = error.status;
     const contextWindowExceeded =
@@ -530,6 +635,70 @@ const compatibleReasoningDelta = (value: unknown): string | undefined => {
       : undefined;
 };
 
+const responseReasoningParts = (
+  blocks: readonly ReconciledResponsesBlock[],
+  compatibilityKey: string,
+  responseId: string,
+): readonly Part[] =>
+  blocks.flatMap((block): readonly Part[] => {
+    if (block.type !== 'reasoning') {
+      return [];
+    }
+    const replay = openAiResponsesPartReplay(
+      compatibilityKey,
+      responseId,
+      { type: 'reasoning', item: block.item },
+    );
+    const parts: Part[] = [];
+    const internal = (block.item.content ?? [])
+      .map((part) => part.text)
+      .join('');
+    const summary = block.item.summary.map((part) => part.text).join('');
+    if (internal) {
+      parts.push({
+        text: internal,
+        thought: true,
+        partMetadata: {
+          ...modelItemMetadata(block.item.id, {
+            phase: 'commentary',
+            reasoningVisibility: 'internal',
+          }),
+          ...replay,
+        },
+      });
+    }
+    if (summary) {
+      parts.push({
+        text: summary,
+        thought: true,
+        partMetadata: {
+          ...modelItemMetadata(block.item.id, {
+            phase: 'commentary',
+            reasoningVisibility: 'summary',
+          }),
+          ...replay,
+        },
+      });
+    }
+    if (
+      parts.length === 0 &&
+      typeof block.item.encrypted_content === 'string'
+    ) {
+      parts.push({
+        text: '',
+        thought: true,
+        partMetadata: {
+          ...modelItemMetadata(block.item.id, {
+            phase: 'commentary',
+            reasoningVisibility: 'internal',
+          }),
+          ...replay,
+        },
+      });
+    }
+    return parts;
+  });
+
 export class OpenAiLlm extends BaseLlm {
   static readonly supportedModels = [/^openai:/u];
 
@@ -549,13 +718,16 @@ export class OpenAiLlm extends BaseLlm {
 
   constructor(options: OpenAiLlmOptions) {
     super({ model: options.model });
+    const baseUrl = validateBaseUrl(options.baseUrl);
     this.wireApi = options.wireApi;
     this.parallelTools = options.parallelTools ?? false;
     this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
-    this.compatibilityKey = `${options.wireApi}:${validateBaseUrl(options.baseUrl)}`;
+    this.compatibilityKey = options.wireApi === 'openaiResponses'
+      ? openAiResponsesCompatibilityKey(baseUrl, options.model)
+      : `${options.wireApi}:${baseUrl}:${options.model}`;
     this.reasoningEffort = options.reasoningEffort === 'auto'
       ? undefined
       : options.reasoningEffort;
@@ -566,7 +738,7 @@ export class OpenAiLlm extends BaseLlm {
         : undefined;
     this.client = new OpenAI({
       apiKey: options.apiKey || 'sugarcode-no-key',
-      baseURL: validateBaseUrl(options.baseUrl),
+      baseURL: baseUrl,
       defaultHeaders: options.headers,
       timeout: this.timeoutMs,
       maxRetries: 0,
@@ -640,66 +812,10 @@ export class OpenAiLlm extends BaseLlm {
     settleRequestDeadline: () => void,
     abortSignal?: AbortSignal,
   ): AsyncGenerator<LlmResponse, void> {
-    const callIds = new Map<string, string>();
+    const reconciler = new OpenAiResponsesReconciler();
+    const streamDiagnostics = new Map<string, Set<string>>();
     const completedCalls: ToolCallAccumulator[] = [];
     const textItems = new Map<string, TextItemAccumulator>();
-    const textItemIdsByOutputIndex = new Map<number, string>();
-    const reconciledTextItemIds = new Set<string>();
-    const canonicalTextItemId = (
-      outputIndex: number,
-      observedItemId: string,
-    ): string => {
-      const itemId = textItemIdsByOutputIndex.get(outputIndex) ?? observedItemId;
-      textItemIdsByOutputIndex.set(outputIndex, itemId);
-      return itemId;
-    };
-    const reconcileTextOutput = (
-      outputIndex: number,
-      output: ResponseOutputMessage,
-      forcedPhase?: ModelTextPhase,
-    ): void => {
-      const authoritativeText = output.content
-        .flatMap((content) =>
-          content.type === 'output_text' ? [content.text] : [],
-        )
-        .join('');
-      const indexedItemId = textItemIdsByOutputIndex.get(outputIndex);
-      const exactCandidates = authoritativeText.length > 0
-        ? [...textItems.values()].filter(
-            (item) =>
-              !reconciledTextItemIds.has(item.id) &&
-              item.text === authoritativeText,
-          )
-        : [];
-      const itemId = textItems.get(output.id)?.text === authoritativeText
-        ? output.id
-        : indexedItemId &&
-            textItems.get(indexedItemId)?.text === authoritativeText
-          ? indexedItemId
-          : exactCandidates.length === 1
-            ? exactCandidates[0]?.id ?? output.id
-            : indexedItemId ?? output.id;
-      textItemIdsByOutputIndex.set(outputIndex, itemId);
-      reconciledTextItemIds.add(itemId);
-      const existing = textItems.get(itemId) ?? textItems.get(output.id);
-      textItems.set(itemId, {
-        id: itemId,
-        phase: forcedPhase ?? (output.phase === 'commentary'
-          ? 'commentary'
-          : output.phase === 'final_answer'
-            ? 'final'
-            : 'provisional'),
-        text: authoritativeText || existing?.text || '',
-      });
-      if (itemId !== output.id) {
-        textItems.delete(output.id);
-      }
-    };
-    let internalReasoning = '';
-    let internalReasoningItemId = '';
-    let reasoningSummary = '';
-    let reasoningSummaryItemId = '';
-    let completed = false;
     const stream = streamWithPreOutputRetry<ResponseStreamEvent>({
       signal: abortSignal,
       maxRetries: this.maxRetries,
@@ -736,26 +852,23 @@ export class OpenAiLlm extends BaseLlm {
         ),
     });
     for await (const event of stream) {
+      const fingerprints = streamDiagnostics.get(event.type) ?? new Set();
+      fingerprints.add(protocolShapeSha256(event));
+      streamDiagnostics.set(event.type, fingerprints);
       switch (event.type) {
         case 'response.output_text.delta': {
-          const itemId = canonicalTextItemId(
+          const itemId = reconciler.onTextDelta(
             event.output_index,
             event.item_id,
+            event.delta,
           );
-          const current = textItems.get(itemId) ?? {
-            id: itemId,
-            phase: 'provisional' as const,
-            text: '',
-          };
-          current.text += event.delta;
-          textItems.set(itemId, current);
           yield {
             content: {
               role: 'model',
               parts: [{
                 text: event.delta,
-                partMetadata: modelItemMetadata(current.id, {
-                  phase: current.phase,
+                partMetadata: modelItemMetadata(itemId, {
+                  phase: 'provisional',
                 }),
               }],
             },
@@ -763,9 +876,16 @@ export class OpenAiLlm extends BaseLlm {
           };
           break;
         }
-        case 'response.reasoning_summary_text.delta':
-          reasoningSummaryItemId ||= event.item_id;
-          reasoningSummary += event.delta;
+        case 'response.reasoning_summary_text.delta': {
+          const itemId = reconciler.onReasoningDelta(
+            'summary',
+            event.output_index,
+            event.item_id,
+            event.delta,
+          );
+          if (!itemId) {
+            break;
+          }
           yield {
             content: {
               role: 'model',
@@ -781,9 +901,17 @@ export class OpenAiLlm extends BaseLlm {
             partial: true,
           };
           break;
-        case 'response.reasoning_text.delta':
-          internalReasoningItemId ||= event.item_id;
-          internalReasoning += event.delta;
+        }
+        case 'response.reasoning_text.delta': {
+          const itemId = reconciler.onReasoningDelta(
+            'content',
+            event.output_index,
+            event.item_id,
+            event.delta,
+          );
+          if (!itemId) {
+            break;
+          }
           yield {
             content: {
               role: 'model',
@@ -799,45 +927,41 @@ export class OpenAiLlm extends BaseLlm {
             partial: true,
           };
           break;
+        }
         case 'response.output_item.added':
-          if (event.item.type === 'function_call') {
-            callIds.set(event.item.id, event.item.call_id);
-          } else if (event.item.type === 'message') {
-            const item = event.item as ResponseOutputMessage;
-            const itemId = canonicalTextItemId(event.output_index, item.id);
-            const existing = textItems.get(itemId) ?? textItems.get(item.id);
-            textItems.set(itemId, {
-              id: itemId,
-              phase: item.phase === 'commentary'
-                ? 'commentary'
-                : item.phase === 'final_answer'
-                  ? 'final'
-                  : 'provisional',
-              text: existing?.text ?? '',
-            });
-            if (itemId !== item.id) {
-              textItems.delete(item.id);
-            }
-          }
+          reconciler.onOutputItemAdded(event.output_index, event.item);
           break;
         case 'response.function_call_arguments.done': {
-          completedCalls.push({
+          reconciler.onFunctionCallArgumentsDone({
+            outputIndex: event.output_index,
             itemId: event.item_id,
-            id: callIds.get(event.item_id) ?? event.item_id,
             name: event.name,
             arguments: event.arguments,
           });
           break;
         }
+        case 'response.output_item.done':
+          reconciler.onOutputItemDone(event.output_index, event.item);
+          break;
         case 'response.completed': {
-          completed = true;
-          for (const [outputIndex, output] of (
-            event.response.output ?? []
-          ).entries()) {
-            if (output.type !== 'message') {
-              continue;
+          const terminal = reconciler.finish(event.response, event.type);
+          completedCalls.length = 0;
+          textItems.clear();
+          for (const block of terminal.blocks) {
+            if (block.type === 'text') {
+              textItems.set(block.itemId, {
+                id: block.itemId,
+                phase: block.phase,
+                text: block.text,
+              });
+            } else if (block.type === 'toolCall') {
+              completedCalls.push({
+                itemId: block.itemId ?? block.callId,
+                id: block.callId,
+                name: block.name,
+                arguments: block.arguments,
+              });
             }
-            reconcileTextOutput(outputIndex, output);
           }
           const hasTools = completedCalls.length > 0;
           const resolvedTextItems = [...textItems.values()].map((item) => ({
@@ -849,11 +973,7 @@ export class OpenAiLlm extends BaseLlm {
           const hasFinal = resolvedTextItems.some(
             (item) => item.phase === 'final' && item.text.trim().length > 0,
           );
-          const refused = (event.response.output ?? []).some(
-            (output) =>
-              output.type === 'message' &&
-              output.content.some((content) => content.type === 'refusal'),
-          );
+          const refused = terminal.refused;
           const outcome: ModelStepOutcome = refused
             ? {
                 kind: 'failed',
@@ -865,41 +985,26 @@ export class OpenAiLlm extends BaseLlm {
             : hasFinal
               ? { kind: 'final' }
               : { kind: 'continue', reason: 'commentaryOnly' };
-          const parts: Part[] = [];
-          if (internalReasoning) {
-            parts.push({
-              text: internalReasoning,
-              thought: true,
-              partMetadata: modelItemMetadata(
-                internalReasoningItemId || `reasoning_${event.response.id}`,
-                {
-                  phase: 'commentary',
-                  reasoningVisibility: 'internal',
-                },
-              ),
-            });
-          }
-          if (reasoningSummary) {
-            parts.push({
-              text: reasoningSummary,
-              thought: true,
-              partMetadata: modelItemMetadata(
-                reasoningSummaryItemId || `reasoning_summary_${event.response.id}`,
-                {
-                  phase: 'commentary',
-                  reasoningVisibility: 'summary',
-                },
-              ),
-            });
-          }
+          const parts: Part[] = [...responseReasoningParts(
+            terminal.blocks,
+            this.compatibilityKey,
+            terminal.responseId,
+          )];
           parts.push(...resolvedTextItems
             .filter((item) => item.text.length > 0)
             .map((item) => ({
               text: item.text,
-              partMetadata: modelItemMetadata(item.id, {
-                phase: item.phase,
-                outcome,
-              }),
+              partMetadata: {
+                ...modelItemMetadata(item.id, {
+                  phase: item.phase,
+                  outcome,
+                }),
+                ...openAiResponsesPartReplay(
+                  this.compatibilityKey,
+                  terminal.responseId,
+                  { type: 'text', itemId: item.id, phase: item.phase },
+                ),
+              },
             })));
           parts.push(
             ...completedCalls.map((call) => {
@@ -912,7 +1017,18 @@ export class OpenAiLlm extends BaseLlm {
                 name: parsed.name,
                 args: parsed.args,
               },
-              partMetadata: modelItemMetadata(call.itemId, { outcome }),
+              partMetadata: {
+                ...modelItemMetadata(call.itemId, { outcome }),
+                ...openAiResponsesPartReplay(
+                  this.compatibilityKey,
+                  terminal.responseId,
+                  {
+                    type: 'toolCall',
+                    itemId: call.itemId,
+                    callId: call.id,
+                  },
+                ),
+              },
               };
             }),
           );
@@ -924,22 +1040,20 @@ export class OpenAiLlm extends BaseLlm {
               }),
             });
           }
-          for (const output of event.response.output ?? []) {
-            if (output.type === 'compaction') {
-              parts.push({
-                text: '',
-                thought: true,
-                partMetadata: {
-                  openaiCompaction: {
-                    type: 'compaction',
-                    id: output.id,
-                    model: request.model,
-                    compatibilityKey: this.compatibilityKey,
-                    encrypted_content: output.encrypted_content,
-                  },
+          for (const output of terminal.compactions) {
+            parts.push({
+              text: '',
+              thought: true,
+              partMetadata: {
+                openaiCompaction: {
+                  type: 'compaction',
+                  id: output.id,
+                  model: request.model,
+                  compatibilityKey: this.compatibilityKey,
+                  encrypted_content: output.encrypted_content,
                 },
-              });
-            }
+              },
+            });
           }
           // ADK may pause this generator at the terminal yield while it runs
           // tool calls. Provider timeouts must not include that tool work.
@@ -954,63 +1068,56 @@ export class OpenAiLlm extends BaseLlm {
               provider: 'openai',
               wireApi: 'openaiResponses',
               responseId: event.response.id,
+              streamDiagnostics: [...streamDiagnostics.entries()].flatMap(
+                ([eventType, shapes]) => [...shapes].map((shapeSha256) => ({
+                  eventType,
+                  shapeSha256,
+                })),
+              ),
               ...(typeof event.response.usage?.input_tokens === 'number'
                 ? { contextInputTokens: event.response.usage.input_tokens }
                 : {}),
             },
           };
-          return;
+          break;
         }
         case 'response.incomplete': {
-          completed = true;
+          const terminal = reconciler.finish(event.response, event.type);
+          textItems.clear();
+          for (const block of terminal.blocks) {
+            if (block.type === 'text') {
+              textItems.set(block.itemId, {
+                id: block.itemId,
+                phase: 'commentary',
+                text: block.text,
+              });
+            }
+          }
           const outcome: ModelStepOutcome = {
             kind: 'continue',
             reason: 'maxOutputTokens',
           };
-          for (const [outputIndex, output] of (
-            event.response.output ?? []
-          ).entries()) {
-            if (output.type !== 'message') {
-              continue;
-            }
-            reconcileTextOutput(outputIndex, output, 'commentary');
-          }
-          const parts: Part[] = [];
-          if (internalReasoning) {
-            parts.push({
-              text: internalReasoning,
-              thought: true,
-              partMetadata: modelItemMetadata(
-                internalReasoningItemId || `reasoning_${event.response.id}`,
-                {
-                  phase: 'commentary',
-                  reasoningVisibility: 'internal',
-                },
-              ),
-            });
-          }
-          if (reasoningSummary) {
-            parts.push({
-              text: reasoningSummary,
-              thought: true,
-              partMetadata: modelItemMetadata(
-                reasoningSummaryItemId || `reasoning_summary_${event.response.id}`,
-                {
-                  phase: 'commentary',
-                  reasoningVisibility: 'summary',
-                },
-              ),
-            });
-          }
+          const parts: Part[] = [...responseReasoningParts(
+            terminal.blocks,
+            this.compatibilityKey,
+            terminal.responseId,
+          )];
           parts.push(
             ...[...textItems.values()]
               .filter((item) => item.text.length > 0)
               .map((item) => ({
                 text: item.text,
-                partMetadata: modelItemMetadata(item.id, {
-                  phase: 'commentary',
-                  outcome,
-                }),
+                partMetadata: {
+                  ...modelItemMetadata(item.id, {
+                    phase: 'commentary',
+                    outcome,
+                  }),
+                  ...openAiResponsesPartReplay(
+                    this.compatibilityKey,
+                    terminal.responseId,
+                    { type: 'text', itemId: item.id, phase: 'commentary' },
+                  ),
+                },
               })),
           );
           if (parts.length === 0) {
@@ -1031,15 +1138,30 @@ export class OpenAiLlm extends BaseLlm {
             turnComplete: true,
             finishReason: FinishReason.STOP,
             usageMetadata: openAiUsage(event.response.usage),
+            customMetadata: {
+              provider: 'openai',
+              wireApi: 'openaiResponses',
+              responseId: event.response.id,
+              streamDiagnostics: [...streamDiagnostics.entries()].flatMap(
+                ([eventType, shapes]) => [...shapes].map((shapeSha256) => ({
+                  eventType,
+                  shapeSha256,
+                })),
+              ),
+            },
           };
-          return;
+          break;
         }
         case 'response.failed':
-          throw new ProviderAdapterError({
-            kind: 'protocol',
-            retryable: false,
-            message: `OpenAI Responses ended with status ${event.response.status}.`,
-          });
+          throw new ProviderAdapterError(protocolProviderError(
+            `OpenAI Responses ended with status ${event.response.status}.`,
+            {
+              stage: 'streamEvent',
+              code: 'terminalLifecycleViolation',
+              eventType: event.type,
+              value: event.response,
+            },
+          ));
         case 'error':
           throw new ProviderAdapterError({
             kind: 'protocol',
@@ -1054,13 +1176,7 @@ export class OpenAiLlm extends BaseLlm {
     if (abortSignal?.aborted) {
       throw cancelledProviderError();
     }
-    if (!completed) {
-      throw new ProviderAdapterError({
-        kind: 'protocol',
-        retryable: false,
-        message: 'OpenAI Responses stream ended before response.completed.',
-      });
-    }
+    reconciler.assertTerminated();
   }
 
   private async *streamChatCompletions(

@@ -99,6 +99,7 @@ const normalizePart = (part: Part): NormalizedMessagePart | null => {
       id: part.functionCall.id ?? `call_${crypto.randomUUID()}`,
       name: part.functionCall.name,
       args: part.functionCall.args ?? {},
+      ...(part.partMetadata ? { metadata: part.partMetadata } : {}),
     };
   }
   if (part.functionResponse?.name) {

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { projectThread } from '../../../src/main/runtime/conversation-projection.ts';
+import {
+  projectThread,
+  runtimeError,
+} from '../../../src/main/runtime/conversation-projection.ts';
 import type { RuntimeThreadSnapshot } from '../../../src/runtime/protocol.ts';
 
 test('durable thread recovery preserves structured knowledge references', () => {
@@ -49,4 +52,29 @@ test('durable thread recovery preserves structured knowledge references', () => 
     knowledgeBaseId,
     name: '产品规范',
   }]);
+});
+
+test('runtime projection preserves safe protocol diagnostics', () => {
+  const projected = runtimeError({
+    kind: 'protocol',
+    retryable: false,
+    message: 'Model history contains an unsupported content-bearing Part.',
+    protocol: {
+      stage: 'outputNormalization',
+      code: 'invalidEventShape',
+      eventType: 'history.encode',
+      shapeSha256: 'a'.repeat(64),
+    },
+  });
+
+  assert.deepEqual(projected, {
+    kind: 'protocol',
+    retryable: false,
+    protocol: {
+      stage: 'outputNormalization',
+      code: 'invalidEventShape',
+      eventType: 'history.encode',
+      shapeSha256: 'a'.repeat(64),
+    },
+  });
 });

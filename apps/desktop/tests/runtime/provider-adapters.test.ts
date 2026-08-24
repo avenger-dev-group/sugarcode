@@ -5,7 +5,14 @@ import test from 'node:test';
 import type { LlmRequest, LlmResponse } from '@google/adk';
 
 import { AnthropicLlm } from '../../src/runtime/models/anthropic-llm.ts';
+import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import { OpenAiLlm } from '../../src/runtime/models/openai-llm.ts';
+import { readOpenAiResponsesPartReplay } from '../../src/runtime/models/openai-responses-replay.ts';
+import {
+  contentFromStoredModelHistory,
+  encodeModelHistory,
+  parseStoredModelHistory,
+} from '../../src/runtime/model-history-codec.ts';
 import {
   modelItemMetadata,
   readModelItemMetadata,
@@ -1260,5 +1267,343 @@ test('Anthropic releases its request deadline before a terminal tool call is con
   assert.equal(
     readModelStepOutcome(terminal.content?.parts ?? [])?.kind,
     'toolCalls',
+  );
+});
+
+test('OpenAI Responses completes a function call from output_item.done without arguments.done', async (context) => {
+  const toolItem = {
+    id: 'item_done_fixture',
+    type: 'function_call' as const,
+    call_id: 'call_done_fixture',
+    name: 'workspace_read',
+    arguments: '{"path":"README.md"}',
+    status: 'completed' as const,
+  };
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_item.added',
+        data: {
+          type: 'response.output_item.added',
+          sequence_number: 1,
+          output_index: 0,
+          item: { ...toolItem, arguments: '', status: 'in_progress' },
+        },
+      },
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 2,
+          output_index: 0,
+          item: toolItem,
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_done_fixture',
+            status: 'completed',
+            output: [toolItem],
+            usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [{
+      functionDeclarations: [{
+        name: 'workspace_read',
+        parametersJsonSchema: { type: 'object' },
+      }],
+    }],
+  };
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(request, true));
+  const calls = events.at(-1)?.content?.parts?.filter(
+    (part) => part.functionCall,
+  ) ?? [];
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.functionCall?.id, 'call_done_fixture');
+  assert.equal(calls[0]?.functionCall?.name, 'workspace_read');
+  assert.deepEqual(calls[0]?.functionCall?.args, { path: 'README.md' });
+  assert.deepEqual(
+    readOpenAiResponsesPartReplay(calls[0]?.partMetadata)?.block,
+    {
+      type: 'toolCall',
+      itemId: 'item_done_fixture',
+      callId: 'call_done_fixture',
+    },
+  );
+});
+
+test('OpenAI Responses restart replay keeps provider item ID separate from call_id', async (context) => {
+  let requestIndex = 0;
+  let replayBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    requestIndex += 1;
+    const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    if (requestIndex === 1) {
+      const call = {
+        id: 'item_replay_fixture',
+        type: 'function_call',
+        call_id: 'call_replay_fixture',
+        name: 'workspace_read',
+        arguments: '{"path":"README.md"}',
+        status: 'completed',
+      };
+      writeSse(response, [
+        {
+          event: 'response.output_item.done',
+          data: {
+            type: 'response.output_item.done',
+            sequence_number: 1,
+            output_index: 0,
+            item: call,
+          },
+        },
+        {
+          event: 'response.completed',
+          data: {
+            type: 'response.completed',
+            sequence_number: 2,
+            response: {
+              id: 'resp_replay_call_fixture',
+              status: 'completed',
+              output: [call],
+              usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+            },
+          },
+        },
+      ]);
+      return;
+    }
+    replayBody = body;
+    writeSse(response, [{
+      event: 'response.completed',
+      data: {
+        type: 'response.completed',
+        sequence_number: 1,
+        response: {
+          id: 'resp_replay_final_fixture',
+          status: 'completed',
+          output: [{
+            id: 'message_replay_final_fixture',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{
+              type: 'output_text',
+              text: 'Done',
+              annotations: [],
+            }],
+          }],
+          usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+        },
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+  const request = llmRequest();
+  request.config = {
+    ...request.config,
+    tools: [{
+      functionDeclarations: [{
+        name: 'workspace_read',
+        parametersJsonSchema: { type: 'object' },
+      }],
+    }],
+  };
+  const first = await collect(model.generateContentAsync(request, true));
+  const assistant = first.at(-1)?.content;
+  assert.ok(assistant);
+  const restoredAssistant = contentFromStoredModelHistory(
+    parseStoredModelHistory(JSON.parse(JSON.stringify(
+      encodeModelHistory(assistant),
+    ))),
+  );
+  const toolResult = contentFromStoredModelHistory(
+    parseStoredModelHistory(JSON.parse(JSON.stringify(encodeModelHistory({
+      role: 'user',
+      parts: [{
+        functionResponse: {
+          id: 'call_replay_fixture',
+          name: 'workspace_read',
+          response: { content: 'fixture' },
+        },
+      }],
+    })))),
+  );
+  const initial = request.contents[0];
+  assert.ok(initial);
+  await collect(model.generateContentAsync({
+    ...request,
+    contents: [
+      initial,
+      restoredAssistant,
+      toolResult,
+    ],
+  }, true));
+
+  const input = replayBody?.input as Array<Record<string, unknown>>;
+  const replayedCall = input.find((item) => item.type === 'function_call');
+  const replayedResult = input.find(
+    (item) => item.type === 'function_call_output',
+  );
+  assert.equal(replayedCall?.id, 'item_replay_fixture');
+  assert.equal(replayedCall?.call_id, 'call_replay_fixture');
+  assert.equal(replayedResult?.call_id, 'call_replay_fixture');
+});
+
+test('OpenAI Responses deterministically backfills a completed-only tool call', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [{
+      event: 'response.completed',
+      data: {
+        type: 'response.completed',
+        sequence_number: 1,
+        response: {
+          id: 'resp_completed_only_fixture',
+          status: 'completed',
+          output: [{
+            id: 'item_completed_only_fixture',
+            type: 'function_call',
+            call_id: 'call_completed_only_fixture',
+            name: 'workspace_read',
+            arguments: '{"path":"package.json"}',
+            status: 'completed',
+          }],
+          usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+        },
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+  const call = events.at(-1)?.content?.parts?.find(
+    (part) => part.functionCall,
+  )?.functionCall;
+
+  assert.equal(call?.id, 'call_completed_only_fixture');
+  assert.deepEqual(call?.args, { path: 'package.json' });
+});
+
+test('OpenAI Responses backfills reasoning encrypted content from response.completed', async (context) => {
+  const doneReasoning = {
+    id: 'reasoning_backfill_fixture',
+    type: 'reasoning' as const,
+    summary: [{ type: 'summary_text' as const, text: 'Checked the workspace' }],
+    status: 'completed' as const,
+  };
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 1,
+          output_index: 0,
+          item: doneReasoning,
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 2,
+          response: {
+            id: 'resp_reasoning_backfill_fixture',
+            status: 'completed',
+            output: [{
+              ...doneReasoning,
+              encrypted_content: 'encrypted-reasoning-fixture',
+            }],
+            usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+  const replay = readOpenAiResponsesPartReplay(
+    events.at(-1)?.content?.parts?.[0]?.partMetadata,
+  );
+
+  assert.equal(replay?.block.type, 'reasoning');
+  assert.equal(
+    replay?.block.type === 'reasoning'
+      ? replay.block.item.encrypted_content
+      : undefined,
+    'encrypted-reasoning-fixture',
+  );
+});
+
+test('OpenAI Responses reports a specific protocol error when the terminal event is missing', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [{
+      event: 'response.output_text.delta',
+      data: {
+        type: 'response.output_text.delta',
+        sequence_number: 1,
+        output_index: 0,
+        item_id: 'message_unterminated_fixture',
+        content_index: 0,
+        delta: 'partial',
+        logprobs: [],
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    maxRetries: 0,
+  });
+
+  await assert.rejects(
+    collect(model.generateContentAsync(llmRequest(), true)),
+    (error: unknown) =>
+      error instanceof ProviderAdapterError &&
+      error.details.kind === 'protocol' &&
+      error.details.protocol?.code === 'terminalLifecycleViolation' &&
+      error.details.protocol.eventType === 'stream.end' &&
+      /^[0-9a-f]{64}$/u.test(error.details.protocol.shapeSha256),
   );
 });
