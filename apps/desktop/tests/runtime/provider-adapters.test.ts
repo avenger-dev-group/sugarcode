@@ -100,6 +100,10 @@ const pauseAfterTerminalResponse = async (
   return terminal;
 };
 
+const TERMINAL_FIXTURE_REQUEST_TIMEOUT_MS = 250;
+const POST_TERMINAL_DEADLINE_PAUSE_MS = 500;
+const CONTINUOUS_STREAM_REQUEST_TIMEOUT_MS = 25;
+
 const readBody = async (request: IncomingMessage): Promise<string> => {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -637,13 +641,13 @@ test('OpenAI Responses releases its request deadline before a terminal tool call
     model: 'fixture-model',
     baseUrl: fixture.baseUrl,
     apiKey: 'test-key',
-    timeoutMs: 25,
+    timeoutMs: TERMINAL_FIXTURE_REQUEST_TIMEOUT_MS,
     maxRetries: 0,
   });
 
   const terminal = await pauseAfterTerminalResponse(
     model.generateContentAsync(llmRequest(), true),
-    75,
+    POST_TERMINAL_DEADLINE_PAUSE_MS,
   );
 
   assert.equal(terminal.turnComplete, true);
@@ -1135,7 +1139,7 @@ test('OpenAI SDK stops a continuously streaming response at the request deadline
     model: 'fixture-model',
     baseUrl: fixture.baseUrl,
     apiKey: 'test-key',
-    timeoutMs: 25,
+    timeoutMs: CONTINUOUS_STREAM_REQUEST_TIMEOUT_MS,
     maxRetries: 0,
   });
 
@@ -1356,13 +1360,13 @@ test('Anthropic releases its request deadline before a terminal tool call is con
     model: 'fixture-model',
     baseUrl: fixture.baseUrl,
     apiKey: 'test-key',
-    timeoutMs: 25,
+    timeoutMs: TERMINAL_FIXTURE_REQUEST_TIMEOUT_MS,
     maxRetries: 0,
   });
 
   const terminal = await pauseAfterTerminalResponse(
     model.generateContentAsync(llmRequest(), true),
-    75,
+    POST_TERMINAL_DEADLINE_PAUSE_MS,
   );
 
   assert.equal(terminal.turnComplete, true);
