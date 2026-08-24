@@ -2861,7 +2861,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sugarcode-desktop-native"
-version = "3.7.0"
+version = "3.8.0"
 dependencies = [
  "base64 0.22.1",
  "fs2",
@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "sugarcode-sandbox"
-version = "3.7.0"
+version = "3.8.0"
 dependencies = [
  "landlock",
  "libc",
@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "sugarcode-state"
-version = "3.7.0"
+version = "3.8.0"
 dependencies = [
  "sha2",
  "tempfile",
@@ -2917,7 +2917,7 @@ dependencies = [
 
 [[package]]
 name = "sugarcode-terminal"
-version = "3.7.0"
+version = "3.8.0"
 dependencies = [
  "libc",
  "portable-pty",
@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "sugarcode-tools"
-version = "3.7.0"
+version = "3.8.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
