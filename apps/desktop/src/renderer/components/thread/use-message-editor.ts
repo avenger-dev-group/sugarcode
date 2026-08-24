@@ -5,6 +5,7 @@ import type {
   ConversationPhase,
   ConversationTurn,
 } from '@/shared/conversation';
+import type { ModelRequestOptions } from '@/shared/model-config';
 
 import {
   isSameEditableMessageTarget,
@@ -19,6 +20,7 @@ type UseMessageEditorOptions = Readonly<{
   phase: ConversationPhase;
   isSending: boolean;
   selectedModelProfileId: string;
+  selectedModelRequest: ModelRequestOptions;
 }>;
 
 export const useMessageEditor = ({
@@ -28,6 +30,7 @@ export const useMessageEditor = ({
   phase,
   isSending,
   selectedModelProfileId,
+  selectedModelRequest,
 }: UseMessageEditorOptions): Readonly<{
   editableMessageTarget: ThreadStore['editableMessageTarget'];
   messageEditor: ThreadStore['messageEditor'];
@@ -142,6 +145,7 @@ export const useMessageEditor = ({
         ...(selectedModelProfileId
           ? { modelProfileId: selectedModelProfileId }
           : {}),
+        modelRequest: selectedModelRequest,
       });
       if (result.accepted) {
         setTurnId(null);

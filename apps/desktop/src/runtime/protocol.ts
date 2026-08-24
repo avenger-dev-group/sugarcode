@@ -2,11 +2,15 @@ import {
   isModelConfigActionResult,
   isModelConfigInspection,
   isModelConfigSaveRequest,
+  isModelRequestOptions,
   isModelDiscoveryResult,
   type ModelConfigActionResult,
   type ModelConfigInspection,
   type ModelConfigSaveRequest,
   type ModelDiscoveryResult,
+  type ModelReasoningEffort,
+  type ModelServiceTier,
+  type ModelRequestOptions,
   type ModelWireApi,
 } from '../shared/model-config.ts';
 import {
@@ -116,6 +120,8 @@ export type RuntimeProviderConfig = Readonly<{
   parallelTools: boolean;
   compactThresholdTokens?: number;
   nativeCompaction?: boolean;
+  reasoningEffort?: ModelReasoningEffort;
+  serviceTier?: ModelServiceTier;
 }>;
 
 export type RuntimeApprovalDecisionSource = 'user' | 'policy' | 'system';
@@ -188,6 +194,7 @@ export type RuntimeQueuedMessage = Readonly<{
   revision: number;
   content: readonly RuntimeContentPart[];
   modelProfileId?: string;
+  modelRequest?: ModelRequestOptions;
   createdAt: number;
   updatedAt: number;
 }>;
@@ -253,6 +260,8 @@ export type RuntimeModelSelection = Readonly<{
   autoCompaction?: 'auto' | 'enabled' | 'disabled';
   compactThresholdTokens?: number;
   nativeCompaction?: 'auto' | 'enabled' | 'disabled';
+  reasoningEffort?: ModelReasoningEffort;
+  serviceTier?: ModelServiceTier;
   effectiveCapabilities: Readonly<{
     toolCalls: boolean;
     strictTools: boolean;
@@ -394,6 +403,7 @@ export type RuntimeCommand =
       turnId: string;
       provider?: RuntimeProviderConfig;
       modelProfileId?: string;
+      modelRequest?: ModelRequestOptions;
       generateTitle?: boolean;
       content: readonly RuntimeContentPart[];
     }>
@@ -405,6 +415,7 @@ export type RuntimeCommand =
       queueItemId: string;
       content: readonly RuntimeContentPart[];
       modelProfileId?: string;
+      modelRequest?: ModelRequestOptions;
     }>
   | Readonly<{
       type: 'queue.messageUpdate';
@@ -415,6 +426,7 @@ export type RuntimeCommand =
       expectedRevision: number;
       content: readonly RuntimeContentPart[];
       modelProfileId?: string;
+      modelRequest?: ModelRequestOptions;
     }>
   | Readonly<{
       type: 'queue.messageDelete';
@@ -439,6 +451,7 @@ export type RuntimeCommand =
       queueItemId: string;
       expectedRevision: number;
       modelProfileId?: string;
+      modelRequest?: ModelRequestOptions;
       content: readonly RuntimeContentPart[];
     }>
   | Readonly<{
@@ -459,6 +472,7 @@ export type RuntimeCommand =
       replacedTurnId: string;
       provider?: RuntimeProviderConfig;
       modelProfileId?: string;
+      modelRequest?: ModelRequestOptions;
       generateTitle?: false;
       content: readonly RuntimeContentPart[];
     }>
@@ -477,6 +491,7 @@ export type RuntimeCommand =
       threadId: string;
       turnId: string;
       modelProfileId?: string;
+      modelRequest?: ModelRequestOptions;
       focus?: string;
     }>
   | Readonly<{
@@ -1489,7 +1504,11 @@ const isProviderConfig = (value: unknown): value is RuntimeProviderConfig =>
     (Number.isInteger(value.compactThresholdTokens) &&
       Number(value.compactThresholdTokens) >= 4_096)) &&
   (value.nativeCompaction === undefined ||
-    typeof value.nativeCompaction === 'boolean');
+    typeof value.nativeCompaction === 'boolean') &&
+  (value.reasoningEffort === undefined ||
+    isModelRequestOptions({ reasoningEffort: value.reasoningEffort })) &&
+  (value.serviceTier === undefined ||
+    isModelRequestOptions({ serviceTier: value.serviceTier }));
 
 export const isRuntimeContentPart = (
   value: unknown,
@@ -1654,6 +1673,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
                 /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))))) &&
         (value.generateTitle === undefined ||
           typeof value.generateTitle === 'boolean') &&
+        (value.modelRequest === undefined ||
+          isModelRequestOptions(value.modelRequest)) &&
         (value.type !== 'turn.revise' ||
           (typeof value.replacedTurnId === 'string' &&
             value.replacedTurnId.length > 0 &&
@@ -1670,6 +1691,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.modelProfileId === undefined ||
           (typeof value.modelProfileId === 'string' &&
             /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        (value.modelRequest === undefined ||
+          isModelRequestOptions(value.modelRequest)) &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
@@ -1684,6 +1707,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.modelProfileId === undefined ||
           (typeof value.modelProfileId === 'string' &&
             /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        (value.modelRequest === undefined ||
+          isModelRequestOptions(value.modelRequest)) &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
@@ -1713,6 +1738,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.modelProfileId === undefined ||
           (typeof value.modelProfileId === 'string' &&
             /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        (value.modelRequest === undefined ||
+          isModelRequestOptions(value.modelRequest)) &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
@@ -1741,6 +1768,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         (value.modelProfileId === undefined ||
           (typeof value.modelProfileId === 'string' &&
             /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+        (value.modelRequest === undefined ||
+          isModelRequestOptions(value.modelRequest)) &&
         (value.focus === undefined ||
           (typeof value.focus === 'string' &&
             utf8ByteLength(value.focus) <= 4_096))
@@ -2656,6 +2685,8 @@ const isRuntimeThreadQueue = (value: unknown): value is RuntimeThreadQueue =>
       (message.modelProfileId === undefined ||
         (typeof message.modelProfileId === 'string' &&
           /^[A-Za-z0-9_-]{1,64}$/u.test(message.modelProfileId))) &&
+      (message.modelRequest === undefined ||
+        isModelRequestOptions(message.modelRequest)) &&
       Number.isInteger(message.createdAt) &&
       Number.isInteger(message.updatedAt),
   );

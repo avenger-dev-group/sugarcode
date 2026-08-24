@@ -12,6 +12,20 @@ export type ModelWireApi =
   | 'anthropicMessages';
 
 export type ModelCapabilityMode = 'auto' | 'enabled' | 'disabled';
+export type ModelReasoningEffort =
+  | 'auto'
+  | 'none'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
+export type ModelServiceTier = 'auto' | 'standard' | 'fast';
+export type ModelRequestOptions = Readonly<{
+  reasoningEffort?: ModelReasoningEffort;
+  serviceTier?: ModelServiceTier;
+}>;
 export type ModelContinuationMode = 'localReplay' | 'providerManaged';
 export type ModelApiKeyStatus = 'notConfigured' | 'present';
 
@@ -34,6 +48,8 @@ export type ModelProfileValue = Readonly<{
   autoCompaction?: ModelCapabilityMode;
   compactThresholdTokens?: number;
   nativeCompaction?: ModelCapabilityMode;
+  reasoningEffort?: ModelReasoningEffort;
+  serviceTier?: ModelServiceTier;
   toolCalls: ModelCapabilityMode;
   strictTools: ModelCapabilityMode;
   parallelTools: ModelCapabilityMode;
@@ -160,6 +176,37 @@ const CAPABILITY_MODES: readonly ModelCapabilityMode[] = [
   'disabled',
 ];
 
+export const MODEL_REASONING_EFFORTS: readonly ModelReasoningEffort[] = [
+  'auto',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+];
+
+export const MODEL_SERVICE_TIERS: readonly ModelServiceTier[] = [
+  'auto',
+  'standard',
+  'fast',
+];
+
+export const isModelRequestOptions = (
+  value: unknown,
+): value is ModelRequestOptions =>
+  isRecord(value) &&
+  Object.keys(value).every((key) =>
+    ['reasoningEffort', 'serviceTier'].includes(key),
+  ) &&
+  (value.reasoningEffort === undefined ||
+    MODEL_REASONING_EFFORTS.includes(
+      value.reasoningEffort as ModelReasoningEffort,
+    )) &&
+  (value.serviceTier === undefined ||
+    MODEL_SERVICE_TIERS.includes(value.serviceTier as ModelServiceTier));
+
 const LEGACY_MEDIA_TRANSPORTS = [
   'auto',
   'inline',
@@ -218,6 +265,8 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
       'autoCompaction',
       'compactThresholdTokens',
       'nativeCompaction',
+      'reasoningEffort',
+      'serviceTier',
       'videoInput',
       'audioInput',
     ],
@@ -240,6 +289,12 @@ const isProfile = (value: unknown): value is ModelProfileValue =>
       (value.compactThresholdTokens as number) <= 2_097_152)) &&
   (value.nativeCompaction === undefined ||
     CAPABILITY_MODES.includes(value.nativeCompaction as ModelCapabilityMode)) &&
+  (value.reasoningEffort === undefined ||
+    MODEL_REASONING_EFFORTS.includes(
+      value.reasoningEffort as ModelReasoningEffort,
+    )) &&
+  (value.serviceTier === undefined ||
+    MODEL_SERVICE_TIERS.includes(value.serviceTier as ModelServiceTier)) &&
   CAPABILITY_MODES.includes(value.toolCalls as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.strictTools as ModelCapabilityMode) &&
   CAPABILITY_MODES.includes(value.parallelTools as ModelCapabilityMode) &&

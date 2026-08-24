@@ -362,6 +362,8 @@ export class AnthropicLlm extends BaseLlm {
   private nativeCompaction: boolean;
   private readonly compactThresholdTokens?: number;
   private readonly compatibilityKey: string;
+  private readonly reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  private readonly fastMode: boolean;
 
   constructor(options: ProviderAdapterOptions) {
     super({ model: options.model });
@@ -370,6 +372,22 @@ export class AnthropicLlm extends BaseLlm {
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
     this.compatibilityKey = `anthropicMessages:${validateBaseUrl(options.baseUrl)}`;
+    if (
+      options.reasoningEffort !== undefined &&
+      !['auto', 'low', 'medium', 'high', 'max'].includes(
+        options.reasoningEffort,
+      )
+    ) {
+      throw new ProviderAdapterError({
+        kind: 'invalidRequest',
+        retryable: false,
+        message: `Anthropic does not support reasoning effort "${options.reasoningEffort}". Choose Auto, Low, Medium, High, or Max.`,
+      });
+    }
+    this.reasoningEffort = options.reasoningEffort === 'auto'
+      ? undefined
+      : options.reasoningEffort as typeof this.reasoningEffort;
+    this.fastMode = options.serviceTier === 'fast';
     this.client = new Anthropic({
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
@@ -435,7 +453,7 @@ export class AnthropicLlm extends BaseLlm {
               65_536,
             ),
           );
-          if (!this.nativeCompaction) {
+          if (!this.nativeCompaction && !this.fastMode) {
             const stream = await this.client.messages.create(
               {
                 model: request.model,
@@ -443,6 +461,9 @@ export class AnthropicLlm extends BaseLlm {
                 messages: [...anthropicMessages(request, this.compatibilityKey)] as RegularMessageParam[],
                 system: request.system || undefined,
                 tools: [...anthropicTools(request.tools)] as RegularAnthropicTool[],
+                ...(this.reasoningEffort
+                  ? { output_config: { effort: this.reasoningEffort } }
+                  : {}),
                 stream: true,
               },
               { signal: deadline.signal },
@@ -450,6 +471,12 @@ export class AnthropicLlm extends BaseLlm {
             return stream as AsyncIterable<RegularRawMessageStreamEvent> as
               AsyncIterable<RawMessageStreamEvent>;
           }
+          const betas = [
+            ...(this.nativeCompaction
+              ? ['context-management-2025-06-27' as const]
+              : []),
+            ...(this.fastMode ? ['fast-mode-2026-02-01' as const] : []),
+          ];
           return this.client.beta.messages.create(
             {
               model: request.model,
@@ -457,21 +484,29 @@ export class AnthropicLlm extends BaseLlm {
               messages: [...anthropicMessages(request, this.compatibilityKey)],
               system: request.system || undefined,
               tools: [...anthropicTools(request.tools)],
-              betas: ['context-management-2025-06-27'],
-              context_management: {
-                edits: [{
-                  type: 'compact_20260112',
-                  pause_after_compaction: true,
-                  ...(this.compactThresholdTokens === undefined
-                    ? {}
-                    : {
-                        trigger: {
-                          type: 'input_tokens',
-                          value: this.compactThresholdTokens,
-                        },
-                      }),
-                }],
-              },
+              betas,
+              ...(this.reasoningEffort
+                ? { output_config: { effort: this.reasoningEffort } }
+                : {}),
+              ...(this.fastMode ? { speed: 'fast' as const } : {}),
+              ...(this.nativeCompaction
+                ? {
+                    context_management: {
+                      edits: [{
+                        type: 'compact_20260112' as const,
+                        pause_after_compaction: true,
+                        ...(this.compactThresholdTokens === undefined
+                          ? {}
+                          : {
+                              trigger: {
+                                type: 'input_tokens' as const,
+                                value: this.compactThresholdTokens,
+                              },
+                            }),
+                      }],
+                    },
+                  }
+                : {}),
               stream: true,
             },
             { signal: deadline.signal },

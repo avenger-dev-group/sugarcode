@@ -282,6 +282,71 @@ export const ModelProfileSettings = ({ store }: ModelProfileSettingsProps) => {
             ))}
           </div>
 
+          <section className="rounded-lg border px-3.5 py-3 text-sm">
+            <div className="mb-3">
+              <h3 className="font-medium text-primary">推理与速度</h3>
+              <p className="mt-1 text-xs text-tertiary">
+                作为新请求的默认值发送给模型 API；实际可用档位由模型服务决定。
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1">
+                <span className="text-secondary">推理强度</span>
+                <Select
+                  value={store.selectedProfile.reasoningEffort ?? 'auto'}
+                  onValueChange={(value) =>
+                    store.updateSelectedProfile({
+                      reasoningEffort: value as NonNullable<
+                        typeof store.selectedProfile.reasoningEffort
+                      >,
+                    })
+                  }
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">自动（不发送）</SelectItem>
+                    {store.selectedConnection.providerFamily === 'openai' ? (
+                      <>
+                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="minimal">Minimal</SelectItem>
+                      </>
+                    ) : null}
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
+                    {store.selectedConnection.providerFamily === 'openai' ? (
+                      <SelectItem value="xhigh">XHigh</SelectItem>
+                    ) : null}
+                    <SelectItem value="max">Max</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className="grid gap-1">
+                <span className="text-secondary">服务速度</span>
+                <Select
+                  value={store.selectedProfile.serviceTier ?? 'auto'}
+                  onValueChange={(value) =>
+                    store.updateSelectedProfile({
+                      serviceTier: value as NonNullable<
+                        typeof store.selectedProfile.serviceTier
+                      >,
+                    })
+                  }
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">自动（不发送）</SelectItem>
+                    <SelectItem value="standard">标准</SelectItem>
+                    <SelectItem value="fast">Fast</SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+            </div>
+            <p className="mt-3 text-xs text-tertiary">
+              Fast 可能需要供应商单独开通并产生更高费用；SugarCode 不会在失败时静默降级。
+            </p>
+          </section>
+
           <details className="rounded-lg border px-3.5 py-2.5 text-sm">
             <summary className="cursor-pointer select-none text-secondary">
               上下文压缩

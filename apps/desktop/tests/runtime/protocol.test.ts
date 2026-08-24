@@ -6,6 +6,26 @@ import {
   isRuntimeEvent,
 } from '../../src/runtime/protocol.ts';
 
+test('private runtime validates per-turn reasoning and speed controls', () => {
+  const base = {
+    type: 'turn.start',
+    requestId: 'request-turn',
+    workspaceId: 'workspace-1',
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    modelProfileId: 'profile-1',
+    content: [{ type: 'text', text: 'Hello' }],
+  } as const;
+  assert.equal(isRuntimeCommand({
+    ...base,
+    modelRequest: { reasoningEffort: 'xhigh', serviceTier: 'fast' },
+  }), true);
+  assert.equal(isRuntimeCommand({
+    ...base,
+    modelRequest: { reasoningEffort: 'extreme' },
+  }), false);
+});
+
 test('private runtime validates bounded image preview messages', () => {
   const sha256 = 'a'.repeat(64);
   const asset = {

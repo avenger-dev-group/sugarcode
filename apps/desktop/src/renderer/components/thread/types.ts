@@ -17,6 +17,11 @@ import type {
   ConversationThreadQueue,
   ConversationQueuedMessage,
 } from '@/shared/conversation';
+import type {
+  ModelReasoningEffort,
+  ModelRequestOptions,
+  ModelServiceTier,
+} from '@/shared/model-config';
 import type { ComposerReference } from '@/shared/composer';
 
 import type { EditableMessageTarget } from './message-edit';
@@ -286,6 +291,7 @@ export type ThreadStore = Readonly<{
     itemId: string | null;
     draft: string;
     modelProfileId: string;
+    modelRequest: ModelRequestOptions;
     pendingIds: readonly string[];
   }>;
   editableMessageTarget: EditableMessageTarget | null;
@@ -307,8 +313,11 @@ export type ThreadStore = Readonly<{
     profileId: string;
     label: string;
     available: boolean;
+    providerFamily?: 'openai' | 'anthropic';
   }>[];
   selectedModelProfileId: string;
+  selectedModelRequest: ModelRequestOptions;
+  selectedModelProviderFamily: 'openai' | 'anthropic';
   modelSelectionDisabled: boolean;
   modelSwitchConfirmation: Readonly<{
     sourceName: string;
@@ -323,6 +332,8 @@ export type ThreadStore = Readonly<{
   removeAttachment: (id: string) => void;
   toggleProjectExpanded: (projectId: string) => void;
   setSelectedModelProfileId: (profileId: string) => void;
+  setReasoningEffort: (value: ModelReasoningEffort) => void;
+  setServiceTier: (value: ModelServiceTier) => void;
   confirmModelSwitch: () => void;
   cancelModelSwitch: () => void;
   startNewThread: () => Promise<void>;
@@ -337,6 +348,8 @@ export type ThreadStore = Readonly<{
   beginQueueEdit: (message: ConversationQueuedMessage) => void;
   setQueueEditDraft: (value: string) => void;
   setQueueEditModel: (profileId: string) => void;
+  setQueueEditReasoningEffort: (value: ModelReasoningEffort) => void;
+  setQueueEditServiceTier: (value: ModelServiceTier) => void;
   cancelQueueEdit: () => void;
   saveQueueEdit: () => Promise<void>;
   deleteQueueMessage: (message: ConversationQueuedMessage) => Promise<void>;

@@ -17,6 +17,7 @@ import type {
   ConversationWorkspaceReadActivity,
   ConversationWorkspaceSearchActivity,
 } from './activities.ts';
+import type { ModelRequestOptions } from '../model-config.ts';
 
 export type ConversationQueuedMessage = Readonly<{
   id: string;
@@ -25,6 +26,7 @@ export type ConversationQueuedMessage = Readonly<{
   input: string;
   attachments: readonly import('./activities.ts').ConversationAttachment[];
   modelProfileId?: string;
+  modelRequest?: ModelRequestOptions;
   createdAt: number;
   updatedAt: number;
 }>;

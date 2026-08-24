@@ -78,15 +78,24 @@ fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
                         &format!("queue-{index}"),
                         &content(index),
                         Some("profile-1"),
+                        Some(r#"{"reasoningEffort":"high","serviceTier":"fast"}"#),
                     )
                     .expect("enqueue"),
             )
             .expect("queue JSON");
             assert_eq!(queue["messages"].as_array().expect("messages").len(), index);
+            assert_eq!(
+                queue["messages"][index - 1]["modelRequest"]["reasoningEffort"],
+                "high"
+            );
+            assert_eq!(
+                queue["messages"][index - 1]["modelRequest"]["serviceTier"],
+                "fast"
+            );
         }
         assert!(
             store
-                .create_queued_message_json("thread-1", "queue-11", &content(11), None)
+                .create_queued_message_json("thread-1", "queue-11", &content(11), None, None)
                 .expect_err("queue capacity")
                 .to_string()
                 .contains("queueFull")
@@ -100,14 +109,19 @@ fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
                     1,
                     &content(101),
                     Some("profile-2"),
+                    Some(r#"{"reasoningEffort":"low","serviceTier":"standard"}"#),
                 )
                 .expect("update queue head"),
         )
         .expect("updated queue JSON");
         assert_eq!(updated["messages"][0]["revision"], 2);
+        assert_eq!(
+            updated["messages"][0]["modelRequest"]["reasoningEffort"],
+            "low"
+        );
         assert!(
             store
-                .update_queued_message_json("thread-1", "queue-1", 1, &content(102), None)
+                .update_queued_message_json("thread-1", "queue-1", 1, &content(102), None, None)
                 .expect_err("stale revision")
                 .to_string()
                 .contains("queueRevisionMismatch")
@@ -117,7 +131,7 @@ fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
             .delete_queued_message_json("thread-1", "queue-2", 1)
             .expect("delete queued message");
         store
-            .create_queued_message_json("thread-1", "queue-11", &content(11), None)
+            .create_queued_message_json("thread-1", "queue-11", &content(11), None, None)
             .expect("reuse queue capacity");
 
         let promoted: Value = serde_json::from_str(
@@ -1120,7 +1134,7 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 17);
+    assert_eq!(version, 18);
 }
 
 #[test]
@@ -1148,6 +1162,7 @@ fn schema_sixteen_database_migrates_to_video_assets() {
              SELECT asset_id, sha256, media_type, original_name, size_bytes, kind, pdf_pages, created_at
                FROM content_assets_v17;
              DROP TABLE content_assets_v17;
+             ALTER TABLE queued_messages DROP COLUMN model_request_json;
              PRAGMA user_version = 16;",
         )
         .expect("downgrade content asset schema");
@@ -1159,7 +1174,7 @@ fn schema_sixteen_database_migrates_to_video_assets() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 17);
+    assert_eq!(version, 18);
 }
 
 #[test]
@@ -1200,6 +1215,7 @@ fn schema_fourteen_database_migrates_to_durable_knowledge_index_jobs() {
              ALTER TABLE knowledge_chunks DROP COLUMN start_line;
              ALTER TABLE knowledge_chunks DROP COLUMN language;
              ALTER TABLE knowledge_chunks DROP COLUMN content_kind;
+             ALTER TABLE queued_messages DROP COLUMN model_request_json;
              PRAGMA user_version = 14;",
         )
         .expect("downgrade to v14 fixture");
@@ -1210,7 +1226,7 @@ fn schema_fourteen_database_migrates_to_durable_knowledge_index_jobs() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 17);
+    assert_eq!(version, 18);
     let job_table: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_index_jobs'",
@@ -1287,6 +1303,7 @@ fn schema_fifteen_migration_preserves_existing_semantic_vectors_and_indexes() {
                  FROM knowledge_semantic_indexes_v16;
              DROP TABLE knowledge_semantic_indexes_v16;
              ALTER TABLE knowledge_bases DROP COLUMN semantic_enabled;
+             ALTER TABLE queued_messages DROP COLUMN model_request_json;
              PRAGMA user_version = 15;",
         )
         .expect("downgrade to v15 fixture");

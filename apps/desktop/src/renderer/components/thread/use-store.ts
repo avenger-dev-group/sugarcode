@@ -62,6 +62,11 @@ import {
   type ConversationWorkspaceReadActivity,
   type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
+import type {
+  ModelReasoningEffort,
+  ModelRequestOptions,
+  ModelServiceTier,
+} from '@/shared/model-config';
 
 import type {
   AgentMessagePresentationState,
@@ -1374,12 +1379,23 @@ export const useStore = (): ThreadStore => {
     itemId: string | null;
     draft: string;
     modelProfileId: string;
-  }>({ itemId: null, draft: '', modelProfileId: '' });
+    modelRequest: ModelRequestOptions;
+  }>({
+    itemId: null,
+    draft: '',
+    modelProfileId: '',
+    modelRequest: { reasoningEffort: 'auto', serviceTier: 'auto' },
+  });
   const [queuePendingIds, setQueuePendingIds] = useState<readonly string[]>([]);
   const [modelInspection, setModelInspection] =
     useState<Awaited<ReturnType<typeof getModelConfig>> | null>(null);
   const [selectedModelProfileId, setSelectedModelProfileId] =
     useState<string>('');
+  const [selectedModelRequest, setSelectedModelRequest] =
+    useState<ModelRequestOptions>({
+      reasoningEffort: 'auto',
+      serviceTier: 'auto',
+    });
   const [pendingModelProfileId, setPendingModelProfileId] =
     useState<string | null>(null);
   const drafts = useRef(
@@ -1393,6 +1409,7 @@ export const useStore = (): ThreadStore => {
   );
   const draftKey = useRef<string>('new');
   const modelSelections = useRef(new Map<string, string>());
+  const modelRequestSelections = useRef(new Map<string, ModelRequestOptions>());
   const sendInFlight = useRef(false);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
   const thread = useMemo<ThreadViewModel>(() => {
@@ -1407,6 +1424,7 @@ export const useStore = (): ThreadStore => {
     phase: snapshot.phase,
     isSending,
     selectedModelProfileId,
+    selectedModelRequest,
   });
 
   useEffect(() => {
@@ -1481,6 +1499,42 @@ export const useStore = (): ThreadStore => {
     );
   }, [modelInspection, snapshot.threadId, snapshot.turns]);
 
+  useEffect(() => {
+    const catalog = modelInspection?.config;
+    if (!catalog || !selectedModelProfileId) {
+      return;
+    }
+    const key = snapshot.threadId ?? 'new';
+    const explicit = modelRequestSelections.current.get(key);
+    const latestModel = snapshot.turns.findLast((turn) => turn.model)?.model;
+    const profile = catalog.profiles.find(
+      (candidate) => candidate.id === selectedModelProfileId,
+    );
+    setSelectedModelRequest(
+      explicit ?? {
+        reasoningEffort:
+          latestModel?.reasoningEffort ?? profile?.reasoningEffort ?? 'auto',
+        serviceTier:
+          latestModel?.serviceTier ?? profile?.serviceTier ?? 'auto',
+      },
+    );
+  }, [modelInspection, selectedModelProfileId, snapshot.threadId, snapshot.turns]);
+
+  const selectModelRequest = (next: ModelRequestOptions): void => {
+    modelRequestSelections.current.set(snapshot.threadId ?? 'new', next);
+    setSelectedModelRequest(next);
+  };
+
+  const resetModelRequestForProfile = (profileId: string): void => {
+    const profile = modelInspection?.config?.profiles.find(
+      (candidate) => candidate.id === profileId,
+    );
+    selectModelRequest({
+      reasoningEffort: profile?.reasoningEffort ?? 'auto',
+      serviceTier: profile?.serviceTier ?? 'auto',
+    });
+  };
+
   const selectModelProfile = (profileId: string): void => {
     if (profileId === selectedModelProfileId) {
       return;
@@ -1491,6 +1545,7 @@ export const useStore = (): ThreadStore => {
     }
     modelSelections.current.set(snapshot.threadId ?? 'new', profileId);
     setSelectedModelProfileId(profileId);
+    resetModelRequestForProfile(profileId);
   };
 
   const confirmModelSwitch = (): void => {
@@ -1502,6 +1557,7 @@ export const useStore = (): ThreadStore => {
       pendingModelProfileId,
     );
     setSelectedModelProfileId(pendingModelProfileId);
+    resetModelRequestForProfile(pendingModelProfileId);
     setPendingModelProfileId(null);
   };
 
@@ -1644,6 +1700,7 @@ export const useStore = (): ThreadStore => {
             }
           : {}),
         modelProfileId: selectedModelProfileId,
+        modelRequest: selectedModelRequest,
       });
       if (result.accepted) {
         setDraft('');
@@ -1689,6 +1746,7 @@ export const useStore = (): ThreadStore => {
       itemId: message.id,
       draft: message.input,
       modelProfileId: message.modelProfileId ?? selectedModelProfileId,
+      modelRequest: message.modelRequest ?? selectedModelRequest,
     });
     setActionError(null);
   };
@@ -1719,9 +1777,15 @@ export const useStore = (): ThreadStore => {
         ...(queueEditor.modelProfileId
           ? { modelProfileId: queueEditor.modelProfileId }
           : {}),
+        modelRequest: queueEditor.modelRequest,
       });
       if (result.accepted) {
-        setQueueEditor({ itemId: null, draft: '', modelProfileId: '' });
+        setQueueEditor({
+          itemId: null,
+          draft: '',
+          modelProfileId: '',
+          modelRequest: { reasoningEffort: 'auto', serviceTier: 'auto' },
+        });
       } else {
         setActionError(
           result.reason === 'queueRevisionMismatch'
@@ -1751,7 +1815,12 @@ export const useStore = (): ThreadStore => {
       if (!result.accepted) {
         setActionError('该队列消息未能删除，队列可能已经更新。');
       } else if (queueEditor.itemId === message.id) {
-        setQueueEditor({ itemId: null, draft: '', modelProfileId: '' });
+        setQueueEditor({
+          itemId: null,
+          draft: '',
+          modelProfileId: '',
+          modelRequest: { reasoningEffort: 'auto', serviceTier: 'auto' },
+        });
       }
     } catch {
       setActionError('该队列消息未能删除。');
@@ -1847,6 +1916,7 @@ export const useStore = (): ThreadStore => {
       const result = await sendConversationMessage({
         input: '实施此计划',
         modelProfileId: selectedModelProfileId,
+        modelRequest: selectedModelRequest,
       });
       if (!result.accepted) {
         setActionError('无法开始实施该计划，请重试。');
@@ -2021,6 +2091,7 @@ export const useStore = (): ThreadStore => {
         profileId: profile.id,
         label: profile.displayName,
         available: connection?.enabled === true,
+        providerFamily: connection?.providerFamily,
       };
     });
     if (
@@ -2033,10 +2104,15 @@ export const useStore = (): ThreadStore => {
         profileId: selectedModelProfileId,
         label: '当前模型不可用',
         available: false,
+        providerFamily: 'openai',
       });
     }
     return available;
   }, [modelInspection, selectedModelProfileId]);
+  const selectedModelProviderFamily =
+    modelOptions.find(
+      (option) => option.profileId === selectedModelProfileId,
+    )?.providerFamily ?? 'openai';
   const modelSwitchConfirmation = useMemo(() => {
     const catalog = modelInspection?.config;
     if (!catalog || !pendingModelProfileId) {
@@ -2098,6 +2174,8 @@ export const useStore = (): ThreadStore => {
     },
     modelOptions,
     selectedModelProfileId,
+    selectedModelRequest,
+    selectedModelProviderFamily,
     modelSelectionDisabled:
       isSending ||
       messageEditing.active,
@@ -2111,6 +2189,10 @@ export const useStore = (): ThreadStore => {
     removeAttachment,
     toggleProjectExpanded,
     setSelectedModelProfileId: selectModelProfile,
+    setReasoningEffort: (reasoningEffort: ModelReasoningEffort) =>
+      selectModelRequest({ ...selectedModelRequest, reasoningEffort }),
+    setServiceTier: (serviceTier: ModelServiceTier) =>
+      selectModelRequest({ ...selectedModelRequest, serviceTier }),
     confirmModelSwitch,
     cancelModelSwitch,
     startNewThread,
@@ -2124,8 +2206,35 @@ export const useStore = (): ThreadStore => {
     stop,
     beginQueueEdit,
     setQueueEditDraft: (value) => setQueueEditor((current) => ({ ...current, draft: value })),
-    setQueueEditModel: (profileId) => setQueueEditor((current) => ({ ...current, modelProfileId: profileId })),
-    cancelQueueEdit: () => setQueueEditor({ itemId: null, draft: '', modelProfileId: '' }),
+    setQueueEditModel: (profileId) => {
+      const profile = modelInspection?.config?.profiles.find(
+        (candidate) => candidate.id === profileId,
+      );
+      setQueueEditor((current) => ({
+        ...current,
+        modelProfileId: profileId,
+        modelRequest: {
+          reasoningEffort: profile?.reasoningEffort ?? 'auto',
+          serviceTier: profile?.serviceTier ?? 'auto',
+        },
+      }));
+    },
+    setQueueEditReasoningEffort: (reasoningEffort: ModelReasoningEffort) =>
+      setQueueEditor((current) => ({
+        ...current,
+        modelRequest: { ...current.modelRequest, reasoningEffort },
+      })),
+    setQueueEditServiceTier: (serviceTier: ModelServiceTier) =>
+      setQueueEditor((current) => ({
+        ...current,
+        modelRequest: { ...current.modelRequest, serviceTier },
+      })),
+    cancelQueueEdit: () => setQueueEditor({
+      itemId: null,
+      draft: '',
+      modelProfileId: '',
+      modelRequest: { reasoningEffort: 'auto', serviceTier: 'auto' },
+    }),
     saveQueueEdit,
     deleteQueueMessage,
     steerQueueMessage,

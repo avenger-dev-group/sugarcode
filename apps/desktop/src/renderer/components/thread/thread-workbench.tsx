@@ -4,6 +4,7 @@ import {
   CircleAlert,
   FileText,
   Folder,
+  Gauge,
   LoaderCircle,
   Paperclip,
   ListOrdered,
@@ -374,6 +375,53 @@ const QueueDock = ({
                         ))}
                       </SelectContent>
                     </Select>
+                    <Select
+                      value={store.queueEditor.modelRequest.reasoningEffort ?? 'auto'}
+                      onValueChange={(value) =>
+                        store.setQueueEditReasoningEffort(
+                          value as Parameters<typeof store.setQueueEditReasoningEffort>[0],
+                        )
+                      }
+                      disabled={pending}
+                    >
+                      <SelectTrigger className="h-8 w-28 text-xs" aria-label="队列消息推理强度">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">推理：自动</SelectItem>
+                        {(store.modelOptions.find((option) => option.profileId === store.queueEditor.modelProfileId)?.providerFamily ?? 'openai') === 'openai' ? (
+                          <>
+                            <SelectItem value="none">None</SelectItem>
+                            <SelectItem value="minimal">Minimal</SelectItem>
+                          </>
+                        ) : null}
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        {(store.modelOptions.find((option) => option.profileId === store.queueEditor.modelProfileId)?.providerFamily ?? 'openai') === 'openai' ? (
+                          <SelectItem value="xhigh">XHigh</SelectItem>
+                        ) : null}
+                        <SelectItem value="max">Max</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={store.queueEditor.modelRequest.serviceTier ?? 'auto'}
+                      onValueChange={(value) =>
+                        store.setQueueEditServiceTier(
+                          value as Parameters<typeof store.setQueueEditServiceTier>[0],
+                        )
+                      }
+                      disabled={pending}
+                    >
+                      <SelectTrigger className="h-8 w-24 text-xs" aria-label="队列消息服务速度">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">速度：自动</SelectItem>
+                        <SelectItem value="standard">标准</SelectItem>
+                        <SelectItem value="fast">Fast</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <Button
                       type="button"
                       size="sm"
@@ -412,6 +460,15 @@ const QueueDock = ({
                     </p>
                     <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-tertiary">
                       <span>{modelLabel(message.modelProfileId)}</span>
+                      {message.modelRequest?.reasoningEffort &&
+                      message.modelRequest.reasoningEffort !== 'auto' ? (
+                        <span className="rounded-md bg-surface px-1.5 py-0.5">
+                          {message.modelRequest.reasoningEffort}
+                        </span>
+                      ) : null}
+                      {message.modelRequest?.serviceTier === 'fast' ? (
+                        <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300">Fast</span>
+                      ) : null}
                       {message.attachments.map((attachment) => (
                         <span
                           key={attachment.assetId}
@@ -1261,6 +1318,61 @@ export const ThreadWorkbenchView = ({
                                 {option.label}
                               </SelectItem>
                             ))}
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={store.selectedModelRequest.reasoningEffort ?? 'auto'}
+                          onValueChange={(value) =>
+                            store.setReasoningEffort(
+                              value as Parameters<typeof store.setReasoningEffort>[0],
+                            )
+                          }
+                          disabled={store.modelSelectionDisabled}
+                        >
+                          <SelectTrigger
+                            className="h-8 w-auto min-w-24 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
+                            aria-label="Reasoning effort for next turn"
+                          >
+                            <Gauge className="size-3.5" aria-hidden="true" />
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">自动</SelectItem>
+                            {store.selectedModelProviderFamily === 'openai' ? (
+                              <>
+                                <SelectItem value="none">None</SelectItem>
+                                <SelectItem value="minimal">Minimal</SelectItem>
+                              </>
+                            ) : null}
+                            <SelectItem value="low">Low</SelectItem>
+                            <SelectItem value="medium">Medium</SelectItem>
+                            <SelectItem value="high">High</SelectItem>
+                            {store.selectedModelProviderFamily === 'openai' ? (
+                              <SelectItem value="xhigh">XHigh</SelectItem>
+                            ) : null}
+                            <SelectItem value="max">Max</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={store.selectedModelRequest.serviceTier ?? 'auto'}
+                          onValueChange={(value) =>
+                            store.setServiceTier(
+                              value as Parameters<typeof store.setServiceTier>[0],
+                            )
+                          }
+                          disabled={store.modelSelectionDisabled}
+                        >
+                          <SelectTrigger
+                            className="h-8 w-auto min-w-20 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
+                            aria-label="Service speed for next turn"
+                            title="Fast 可能需要单独开通并产生更高费用"
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="auto">自动速度</SelectItem>
+                            <SelectItem value="standard">标准</SelectItem>
+                            <SelectItem value="fast">Fast</SelectItem>
                           </SelectContent>
                         </Select>
                         {permissionControl}

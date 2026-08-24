@@ -541,6 +541,11 @@ export class OpenAiLlm extends BaseLlm {
   private nativeCompaction: boolean;
   private readonly compactThresholdTokens?: number;
   private readonly compatibilityKey: string;
+  private readonly reasoningEffort?: Exclude<
+    ProviderAdapterOptions['reasoningEffort'],
+    'auto' | undefined
+  >;
+  private readonly serviceTier?: 'default' | 'priority';
 
   constructor(options: OpenAiLlmOptions) {
     super({ model: options.model });
@@ -551,6 +556,14 @@ export class OpenAiLlm extends BaseLlm {
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
     this.compatibilityKey = `${options.wireApi}:${validateBaseUrl(options.baseUrl)}`;
+    this.reasoningEffort = options.reasoningEffort === 'auto'
+      ? undefined
+      : options.reasoningEffort;
+    this.serviceTier = options.serviceTier === 'fast'
+      ? 'priority'
+      : options.serviceTier === 'standard'
+        ? 'default'
+        : undefined;
     this.client = new OpenAI({
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
@@ -700,6 +713,12 @@ export class OpenAiLlm extends BaseLlm {
             tools: [...responseTools(request.tools)],
             parallel_tool_calls: this.parallelTools,
             max_output_tokens: maxOutputTokens(request),
+            ...(this.reasoningEffort
+              ? { reasoning: { effort: this.reasoningEffort } }
+              : {}),
+            ...(this.serviceTier
+              ? { service_tier: this.serviceTier }
+              : {}),
             ...(this.nativeCompaction
               ? {
                   context_management: [{
@@ -1068,6 +1087,12 @@ export class OpenAiLlm extends BaseLlm {
             tools: [...chatTools(request.tools)],
             parallel_tool_calls: this.parallelTools,
             max_completion_tokens: maxOutputTokens(request),
+            ...(this.reasoningEffort
+              ? { reasoning_effort: this.reasoningEffort }
+              : {}),
+            ...(this.serviceTier
+              ? { service_tier: this.serviceTier }
+              : {}),
             stream: true,
             stream_options: { include_usage: true },
           },

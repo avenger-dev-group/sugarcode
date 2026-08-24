@@ -24,6 +24,7 @@ import type {
   ConversationSendRequest,
 } from '../api.ts';
 import { hasBoundedText, isId, isRecord } from './primitives.ts';
+import { isModelRequestOptions } from '../../model-config.ts';
 
 const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'accepted',
@@ -128,7 +129,7 @@ export const isConversationSendRequest = (
 ): value is ConversationSendRequest =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['input', 'attachments', 'modelProfileId'].includes(key),
+    ['input', 'attachments', 'modelProfileId', 'modelRequest'].includes(key),
   ) &&
   typeof value.input === 'string' &&
   new TextEncoder().encode(value.input).byteLength <=
@@ -141,14 +142,16 @@ export const isConversationSendRequest = (
       value.attachments.every(isConversationAttachmentUpload))) &&
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
-      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+  (value.modelRequest === undefined ||
+    isModelRequestOptions(value.modelRequest));
 
 export const isConversationReviseTurnRequest = (
   value: unknown,
 ): value is ConversationReviseTurnRequest =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['threadId', 'turnId', 'text', 'modelProfileId'].includes(key),
+    ['threadId', 'turnId', 'text', 'modelProfileId', 'modelRequest'].includes(key),
   ) &&
   isId(value.threadId) &&
   isId(value.turnId) &&
@@ -157,7 +160,9 @@ export const isConversationReviseTurnRequest = (
     MAX_CONVERSATION_INPUT_BYTES &&
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
-      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+  (value.modelRequest === undefined ||
+    isModelRequestOptions(value.modelRequest));
 
 export const isConversationQueuedMessageMutationRequest = (
   value: unknown,
@@ -182,6 +187,7 @@ export const isConversationQueuedMessageUpdateRequest = (
       'expectedRevision',
       'input',
       'modelProfileId',
+      'modelRequest',
     ].includes(key),
   ) &&
   isId(value.threadId) &&
@@ -191,7 +197,9 @@ export const isConversationQueuedMessageUpdateRequest = (
   isValidConversationInput(value.input) &&
   (value.modelProfileId === undefined ||
     (typeof value.modelProfileId === 'string' &&
-      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId)));
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+  (value.modelRequest === undefined ||
+    isModelRequestOptions(value.modelRequest));
 
 export const isConversationSteerQueuedMessageRequest = (
   value: unknown,

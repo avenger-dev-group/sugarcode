@@ -14,7 +14,7 @@ use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 const MAX_QUEUED_MESSAGES: i64 = 10;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
@@ -269,11 +269,23 @@ pub(super) struct QueuedMessageRow {
     pub(super) content: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) model_profile_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) model_request: Option<Value>,
     pub(super) created_at: i64,
     pub(super) updated_at: i64,
 }
 
-type QueuedMessageSqlRow = (String, String, i64, i64, String, Option<String>, i64, i64);
+type QueuedMessageSqlRow = (
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+);
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1325,10 +1337,12 @@ impl Store {
         message_id: &str,
         content_json: &str,
         model_profile_id: Option<&str>,
+        model_request_json: Option<&str>,
     ) -> Result<String> {
         validate_id("thread_id", thread_id)?;
         validate_id("queue_message_id", message_id)?;
         validate_model_profile_id(model_profile_id)?;
+        let model_request = validate_model_request_json(model_request_json)?;
         let content = validate_queued_content(content_json)?;
         let transaction = self
             .connection
@@ -1363,14 +1377,15 @@ impl Store {
         )?;
         transaction.execute(
             "INSERT INTO queued_messages \
-             (id, thread_id, position, revision, content_json, model_profile_id) \
-             VALUES (?1, ?2, ?3, 1, ?4, ?5)",
+             (id, thread_id, position, revision, content_json, model_profile_id, model_request_json) \
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)",
             params![
                 message_id,
                 thread_id,
                 position,
                 serde_json::to_string(&content)?,
-                model_profile_id
+                model_profile_id,
+                model_request.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
         transaction.execute(
@@ -1389,10 +1404,12 @@ impl Store {
         expected_revision: i64,
         content_json: &str,
         model_profile_id: Option<&str>,
+        model_request_json: Option<&str>,
     ) -> Result<String> {
         validate_id("thread_id", thread_id)?;
         validate_id("queue_message_id", message_id)?;
         validate_model_profile_id(model_profile_id)?;
+        let model_request = validate_model_request_json(model_request_json)?;
         if expected_revision < 1 {
             return Err(PersistenceError::InvalidInput(
                 "queue revision is invalid".to_owned(),
@@ -1403,7 +1420,7 @@ impl Store {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let updated = transaction.execute(
-            "UPDATE queued_messages SET content_json = ?4, model_profile_id = ?5, \
+            "UPDATE queued_messages SET content_json = ?4, model_profile_id = ?5, model_request_json = ?6, \
              revision = revision + 1, updated_at = unixepoch() \
              WHERE id = ?1 AND thread_id = ?2 AND revision = ?3",
             params![
@@ -1411,7 +1428,8 @@ impl Store {
                 thread_id,
                 expected_revision,
                 serde_json::to_string(&content)?,
-                model_profile_id
+                model_profile_id,
+                model_request.as_ref().map(serde_json::to_string).transpose()?
             ],
         )?;
         if updated == 0 {
@@ -4136,6 +4154,15 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 17;",
         )?;
         transaction.commit()?;
+        version = 17;
+    }
+    if version == 17 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "ALTER TABLE queued_messages ADD COLUMN model_request_json TEXT; \
+             PRAGMA user_version = 18;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -4282,6 +4309,36 @@ fn validate_model_profile_id(value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn validate_model_request_json(value: Option<&str>) -> Result<Option<Value>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let parsed: Value = serde_json::from_str(value)?;
+    let Some(object) = parsed.as_object() else {
+        return Err(PersistenceError::InvalidInput(
+            "model request options are invalid".to_owned(),
+        ));
+    };
+    if object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "reasoningEffort" | "serviceTier"))
+        || object.get("reasoningEffort").is_some_and(|effort| {
+            !matches!(
+                effort.as_str(),
+                Some("auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max")
+            )
+        })
+        || object
+            .get("serviceTier")
+            .is_some_and(|tier| !matches!(tier.as_str(), Some("auto" | "standard" | "fast")))
+    {
+        return Err(PersistenceError::InvalidInput(
+            "model request options are invalid".to_owned(),
+        ));
+    }
+    Ok(Some(parsed))
+}
+
 fn validate_queued_content(value: &str) -> Result<Value> {
     let content: Value = serde_json::from_str(value)?;
     let Some(parts) = content.as_array() else {
@@ -4403,6 +4460,7 @@ fn queued_message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMe
         row.get(5)?,
         row.get(6)?,
         row.get(7)?,
+        row.get(8)?,
     ))
 }
 
@@ -4413,13 +4471,13 @@ fn load_queued_message(
 ) -> Result<Option<QueuedMessageRow>> {
     connection
         .query_row(
-            "SELECT id, thread_id, position, revision, content_json, model_profile_id, created_at, updated_at \
+            "SELECT id, thread_id, position, revision, content_json, model_profile_id, model_request_json, created_at, updated_at \
              FROM queued_messages WHERE thread_id = ?1 AND id = ?2",
             params![thread_id, message_id],
             queued_message_from_row,
         )
         .optional()?
-        .map(|(id, thread_id, position, revision, content, model_profile_id, created_at, updated_at)| {
+        .map(|(id, thread_id, position, revision, content, model_profile_id, model_request, created_at, updated_at)| {
             Ok(QueuedMessageRow {
                 id,
                 thread_id,
@@ -4427,6 +4485,9 @@ fn load_queued_message(
                 revision,
                 content: serde_json::from_str(&content)?,
                 model_profile_id,
+                model_request: model_request
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?,
                 created_at,
                 updated_at,
             })
@@ -4444,7 +4505,7 @@ fn load_thread_queue(connection: &Connection, thread_id: &str) -> Result<ThreadQ
         .optional()?
         .unwrap_or(false);
     let mut statement = connection.prepare(
-        "SELECT id, thread_id, position, revision, content_json, model_profile_id, created_at, updated_at \
+        "SELECT id, thread_id, position, revision, content_json, model_profile_id, model_request_json, created_at, updated_at \
          FROM queued_messages WHERE thread_id = ?1 ORDER BY position, id",
     )?;
     let messages = statement
@@ -4457,6 +4518,7 @@ fn load_thread_queue(connection: &Connection, thread_id: &str) -> Result<ThreadQ
                 revision,
                 content,
                 model_profile_id,
+                model_request,
                 created_at,
                 updated_at,
             ) = row?;
@@ -4467,6 +4529,9 @@ fn load_thread_queue(connection: &Connection, thread_id: &str) -> Result<ThreadQ
                 revision,
                 content: serde_json::from_str(&content)?,
                 model_profile_id,
+                model_request: model_request
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?,
                 created_at,
                 updated_at,
             })
