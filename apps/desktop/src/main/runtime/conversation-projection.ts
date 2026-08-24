@@ -282,6 +282,7 @@ export const projectThreadQueue = (
       ...(message.modelProfileId
         ? { modelProfileId: message.modelProfileId }
         : {}),
+      ...(message.modelRequest ? { modelRequest: message.modelRequest } : {}),
       createdAt: message.createdAt,
       updatedAt: message.updatedAt,
     };

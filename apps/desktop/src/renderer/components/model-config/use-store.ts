@@ -41,6 +41,8 @@ const INITIAL_PROFILE: ModelProfileValue = {
   modelId: '',
   autoCompaction: 'auto',
   nativeCompaction: 'auto',
+  reasoningEffort: 'auto',
+  serviceTier: 'auto',
   toolCalls: 'auto',
   strictTools: 'auto',
   parallelTools: 'auto',
@@ -373,13 +375,24 @@ export const useStore = ({
               }
             : connection,
         ),
-        profiles: current.profiles.map((profile) =>
-          profile.connectionId === selectedConnection.id &&
-          preset.wireApi === 'openaiChatCompletions' &&
-          profile.pdfInput === 'enabled'
-            ? { ...profile, pdfInput: 'auto' }
-            : profile,
-        ),
+        profiles: current.profiles.map((profile) => {
+          if (profile.connectionId !== selectedConnection.id) {
+            return profile;
+          }
+          return {
+            ...profile,
+            ...(preset.wireApi === 'openaiChatCompletions' &&
+            profile.pdfInput === 'enabled'
+              ? { pdfInput: 'auto' as const }
+              : {}),
+            ...(preset.providerFamily === 'anthropic' &&
+            ['none', 'minimal', 'xhigh'].includes(
+              profile.reasoningEffort ?? 'auto',
+            )
+              ? { reasoningEffort: 'auto' as const }
+              : {}),
+          };
+        }),
       }));
       if (preset.wireApi === 'openaiChatCompletions') {
         setNotice(

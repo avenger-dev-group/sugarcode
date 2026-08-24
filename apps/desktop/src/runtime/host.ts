@@ -295,6 +295,8 @@ const defaultCreateModel = (provider: RuntimeProviderConfig): BaseLlm => {
     parallelTools: provider.parallelTools,
     compactThresholdTokens: provider.compactThresholdTokens,
     nativeCompaction: provider.nativeCompaction,
+    reasoningEffort: provider.reasoningEffort,
+    serviceTier: provider.serviceTier,
   };
   return provider.wireApi === 'anthropicMessages'
     ? new AnthropicLlm(common)
@@ -1014,6 +1016,9 @@ export class RuntimeHost {
             command.queueItemId,
             JSON.stringify(content),
             command.modelProfileId,
+            command.modelRequest
+              ? JSON.stringify(command.modelRequest)
+              : undefined,
           ),
         );
         this.emit({
@@ -1042,6 +1047,9 @@ export class RuntimeHost {
             command.expectedRevision,
             JSON.stringify(content),
             command.modelProfileId,
+            command.modelRequest
+              ? JSON.stringify(command.modelRequest)
+              : undefined,
           ),
         );
         this.emit({
@@ -2962,6 +2970,8 @@ export class RuntimeHost {
           contextWindowTokens: DEFAULT_CONTEXT_WINDOW_TOKENS,
           autoCompaction: 'disabled',
           nativeCompaction: 'disabled',
+          reasoningEffort: command.provider.reasoningEffort ?? 'auto',
+          serviceTier: command.provider.serviceTier ?? 'auto',
           effectiveCapabilities: {
             toolCalls: true,
             strictTools: false,
@@ -2972,10 +2982,16 @@ export class RuntimeHost {
         },
       };
     }
-    return this.resolveConfiguredProfile(command.modelProfileId);
+    return this.resolveConfiguredProfile(
+      command.modelProfileId,
+      'modelRequest' in command ? command.modelRequest : undefined,
+    );
   };
 
-  private resolveConfiguredProfile = (profileId?: string): ResolvedProfile => {
+  private resolveConfiguredProfile = (
+    profileId?: string,
+    modelRequest?: import('../shared/model-config.ts').ModelRequestOptions,
+  ): ResolvedProfile => {
     const resolved = this.parseNativeJson<unknown>(
       this.requireNative().modelProfileJson(profileId),
     );
@@ -3029,6 +3045,20 @@ export class RuntimeHost {
         ? { compactThresholdTokens: profile.compactThresholdTokens }
         : {}),
       nativeCompaction: capabilityMode(profile.nativeCompaction),
+      reasoningEffort:
+        modelRequest?.reasoningEffort ??
+        (typeof profile.reasoningEffort === 'string' &&
+        ['auto', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(
+          profile.reasoningEffort,
+        )
+          ? profile.reasoningEffort as RuntimeModelSelection['reasoningEffort']
+          : 'auto'),
+      serviceTier:
+        modelRequest?.serviceTier ??
+        (typeof profile.serviceTier === 'string' &&
+        ['auto', 'standard', 'fast'].includes(profile.serviceTier)
+          ? profile.serviceTier as RuntimeModelSelection['serviceTier']
+          : 'auto'),
       effectiveCapabilities: {
         toolCalls: capabilityEnabled(profile.toolCalls),
         strictTools: profile.strictTools === 'enabled',
@@ -3069,6 +3099,8 @@ export class RuntimeHost {
           ? { compactThresholdTokens: effectiveCompactThreshold }
           : {}),
         nativeCompaction,
+        reasoningEffort: selection.reasoningEffort,
+        serviceTier: selection.serviceTier,
       },
       mediaCapabilities: {
         videoInput: capabilityMode(profile.videoInput),

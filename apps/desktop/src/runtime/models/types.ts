@@ -2,6 +2,10 @@ import type {
   FunctionDeclaration,
   GenerateContentConfig,
 } from '@google/genai';
+import type {
+  ModelReasoningEffort,
+  ModelServiceTier,
+} from '../../shared/model-config.ts';
 
 export type ProviderAdapterOptions = Readonly<{
   model: string;
@@ -13,6 +17,8 @@ export type ProviderAdapterOptions = Readonly<{
   maxRetries?: number;
   compactThresholdTokens?: number;
   nativeCompaction?: boolean;
+  reasoningEffort?: ModelReasoningEffort;
+  serviceTier?: ModelServiceTier;
 }>;
 
 export const INVALID_TOOL_ARGUMENTS_TOOL_NAME =

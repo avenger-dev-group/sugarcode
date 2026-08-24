@@ -429,6 +429,7 @@ export class RuntimeConversationController {
         ...(input.modelProfileId
           ? { modelProfileId: input.modelProfileId }
           : {}),
+        ...(input.modelRequest ? { modelRequest: input.modelRequest } : {}),
         ...(submission.text.trim() ? { focus: submission.text.trim() } : {}),
       });
       this.refreshNavigator();
@@ -517,6 +518,7 @@ export class RuntimeConversationController {
             ...(input.modelProfileId
               ? { modelProfileId: input.modelProfileId }
               : {}),
+            ...(input.modelRequest ? { modelRequest: input.modelRequest } : {}),
           },
           'queue.changed',
         );
@@ -569,6 +571,7 @@ export class RuntimeConversationController {
         ...(input.modelProfileId
           ? { modelProfileId: input.modelProfileId }
           : {}),
+        ...(input.modelRequest ? { modelRequest: input.modelRequest } : {}),
         ...(generateTitle ? { generateTitle: true } : {}),
         content,
       });
@@ -660,6 +663,7 @@ export class RuntimeConversationController {
           ...(input.modelProfileId
             ? { modelProfileId: input.modelProfileId }
             : {}),
+          ...(input.modelRequest ? { modelRequest: input.modelRequest } : {}),
         },
         'queue.changed',
       );
@@ -879,6 +883,7 @@ export class RuntimeConversationController {
           ...(input.modelProfileId
             ? { modelProfileId: input.modelProfileId }
             : {}),
+          ...(input.modelRequest ? { modelRequest: input.modelRequest } : {}),
           content,
         },
         'turn.revised',
@@ -2354,6 +2359,7 @@ export class RuntimeConversationController {
         queueItemId: head.id,
         expectedRevision: head.revision,
         ...(head.modelProfileId ? { modelProfileId: head.modelProfileId } : {}),
+        ...(head.modelRequest ? { modelRequest: head.modelRequest } : {}),
         content: head.content,
       });
       this.publishThreadProjection(threadId, true);

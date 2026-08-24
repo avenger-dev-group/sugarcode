@@ -67,6 +67,23 @@ test('compaction settings remain optional and validate threshold bounds', () => 
   }), false);
 });
 
+test('reasoning effort and service tier accept only supported request controls', () => {
+  const configured = catalog();
+  const profile = configured.profiles[0];
+  assert.equal(isModelConfigValue({
+    ...configured,
+    profiles: [{ ...profile, reasoningEffort: 'xhigh', serviceTier: 'fast' }],
+  }), true);
+  assert.equal(isModelConfigValue({
+    ...configured,
+    profiles: [{ ...profile, reasoningEffort: 'extreme' }],
+  }), false);
+  assert.equal(isModelConfigValue({
+    ...configured,
+    profiles: [{ ...profile, serviceTier: 'turbo' }],
+  }), false);
+});
+
 test('save request carries one credential action per connection without a key echo', () => {
   assert.equal(
     isModelConfigSaveRequest({

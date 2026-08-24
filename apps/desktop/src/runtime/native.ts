@@ -207,6 +207,7 @@ export type NativeRuntimeBinding = Readonly<{
     messageId: string,
     contentJson: string,
     modelProfileId?: string,
+    modelRequestJson?: string,
   ) => string;
   updateQueuedMessageJson?: (
     threadId: string,
@@ -214,6 +215,7 @@ export type NativeRuntimeBinding = Readonly<{
     expectedRevision: number,
     contentJson: string,
     modelProfileId?: string,
+    modelRequestJson?: string,
   ) => string;
   deleteQueuedMessageJson?: (
     threadId: string,

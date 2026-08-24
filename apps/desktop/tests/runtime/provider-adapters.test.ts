@@ -184,6 +184,8 @@ test('OpenAI Chat Completions SDK streams text and usage into ADK responses', as
     model: 'fixture-model',
     baseUrl: fixture.baseUrl,
     apiKey: 'test-key',
+    reasoningEffort: 'xhigh',
+    serviceTier: 'fast',
   });
 
   const events = await collect(model.generateContentAsync(llmRequest(), true));
@@ -191,6 +193,8 @@ test('OpenAI Chat Completions SDK streams text and usage into ADK responses', as
   assert.equal(receivedBody?.model, 'fixture-model');
   assert.equal(receivedBody?.stream, true);
   assert.equal(receivedBody?.max_completion_tokens, 32_768);
+  assert.equal(receivedBody?.reasoning_effort, 'xhigh');
+  assert.equal(receivedBody?.service_tier, 'priority');
   assert.equal(events[0]?.content?.parts?.[0]?.text, 'Hello');
   assert.equal(events.at(-1)?.turnComplete, true);
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 6);
@@ -369,6 +373,8 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
     model: 'fixture-model',
     baseUrl: fixture.baseUrl,
     apiKey: 'test-key',
+    reasoningEffort: 'max',
+    serviceTier: 'fast',
   });
 
   const events = await collect(model.generateContentAsync(request, true));
@@ -380,6 +386,8 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(receivedBody?.max_output_tokens, 32_768);
+  assert.deepEqual(receivedBody?.reasoning, { effort: 'max' });
+  assert.equal(receivedBody?.service_tier, 'priority');
   assert.equal(events.at(-1)?.turnComplete, true);
 });
 
@@ -1035,9 +1043,12 @@ test('OpenAI SDK stops a continuously streaming response at the request deadline
 });
 
 test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK responses', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  let receivedBeta = '';
   const fixture = await serve(async (request, response) => {
-    assert.equal(request.url, '/v1/messages');
-    await readBody(request);
+    assert.equal(request.url, '/v1/messages?beta=true');
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    receivedBeta = String(request.headers['anthropic-beta'] ?? '');
     writeSse(response, [
       {
         event: 'message_start',
@@ -1148,6 +1159,8 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
     model: 'fixture-model',
     baseUrl: fixture.baseUrl,
     apiKey: 'test-key',
+    reasoningEffort: 'high',
+    serviceTier: 'fast',
   });
 
   const events = await collect(model.generateContentAsync(request, true));
@@ -1161,6 +1174,9 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
     'internal',
   );
   assert.equal(functionCall?.name, 'workspace/read');
+  assert.deepEqual(receivedBody?.output_config, { effort: 'high' });
+  assert.equal(receivedBody?.speed, 'fast');
+  assert.match(receivedBeta, /fast-mode-2026-02-01/u);
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 8);
   assert.equal(events.at(-1)?.turnComplete, true);

@@ -1832,6 +1832,7 @@ impl NativeRuntime {
         message_id: String,
         content_json: String,
         model_profile_id: Option<String>,
+        model_request_json: Option<String>,
     ) -> Result<String> {
         self.with_store(|store| {
             store.create_queued_message_json(
@@ -1839,6 +1840,7 @@ impl NativeRuntime {
                 &message_id,
                 &content_json,
                 model_profile_id.as_deref(),
+                model_request_json.as_deref(),
             )
         })
     }
@@ -1851,6 +1853,7 @@ impl NativeRuntime {
         expected_revision: u32,
         content_json: String,
         model_profile_id: Option<String>,
+        model_request_json: Option<String>,
     ) -> Result<String> {
         self.with_store(|store| {
             store.update_queued_message_json(
@@ -1859,6 +1862,7 @@ impl NativeRuntime {
                 i64::from(expected_revision),
                 &content_json,
                 model_profile_id.as_deref(),
+                model_request_json.as_deref(),
             )
         })
     }

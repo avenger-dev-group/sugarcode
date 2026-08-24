@@ -10,6 +10,7 @@ import type {
   ConversationThreadProjectionListener,
   ConversationThreadProjectionSnapshot,
 } from './projection.ts';
+import type { ModelRequestOptions } from '../model-config.ts';
 
 export type ConversationAttachmentFailure =
   | 'sourceUnavailable'
@@ -117,6 +118,7 @@ export type ConversationSendRequest = Readonly<{
   input: string;
   attachments?: readonly ConversationAttachmentUpload[];
   modelProfileId?: string;
+  modelRequest?: ModelRequestOptions;
 }>;
 
 export type ConversationReviseTurnRequest = Readonly<{
@@ -124,6 +126,7 @@ export type ConversationReviseTurnRequest = Readonly<{
   turnId: string;
   text: string;
   modelProfileId?: string;
+  modelRequest?: ModelRequestOptions;
 }>;
 
 export type ConversationQueuedMessageUpdateRequest = Readonly<{
@@ -132,6 +135,7 @@ export type ConversationQueuedMessageUpdateRequest = Readonly<{
   expectedRevision: number;
   input: string;
   modelProfileId?: string;
+  modelRequest?: ModelRequestOptions;
 }>;
 
 export type ConversationQueuedMessageMutationRequest = Readonly<{

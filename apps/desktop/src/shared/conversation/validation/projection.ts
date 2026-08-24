@@ -34,6 +34,7 @@ import {
   isWorkspaceSearchActivity,
 } from './activities.ts';
 import { isId, isRecord } from './primitives.ts';
+import { isModelRequestOptions } from '../../model-config.ts';
 
 const PHASES = new Set<ConversationPhase>([
   'idle',
@@ -73,6 +74,7 @@ const isThreadQueue = (value: unknown): value is ConversationThreadQueue => {
           'input',
           'attachments',
           'modelProfileId',
+          'modelRequest',
           'createdAt',
           'updatedAt',
         ].includes(key),
@@ -89,6 +91,8 @@ const isThreadQueue = (value: unknown): value is ConversationThreadQueue => {
       Array.isArray(message.attachments) &&
       message.attachments.every(isConversationAttachment) &&
       (message.modelProfileId === undefined || isId(message.modelProfileId)) &&
+      (message.modelRequest === undefined ||
+        isModelRequestOptions(message.modelRequest)) &&
       Number.isSafeInteger(message.createdAt) &&
       Number.isSafeInteger(message.updatedAt),
   );
@@ -147,6 +151,12 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         typeof value.model.displayName !== 'string' ||
         !Number.isInteger(value.model.contextWindowTokens) ||
         (value.model.contextWindowTokens as number) < 4_096 ||
+        (value.model.reasoningEffort !== undefined &&
+          !isModelRequestOptions({
+            reasoningEffort: value.model.reasoningEffort,
+          })) ||
+        (value.model.serviceTier !== undefined &&
+          !isModelRequestOptions({ serviceTier: value.model.serviceTier })) ||
         !isRecord(value.model.effectiveCapabilities) ||
         ![
           'toolCalls',

@@ -1,3 +1,8 @@
+import type {
+  ModelReasoningEffort,
+  ModelServiceTier,
+} from '../model-config.ts';
+
 export type ConversationPhase =
   'idle' | 'starting' | 'inProgress' | 'stopping' | 'ready' | 'unavailable';
 
@@ -537,6 +542,8 @@ export type ConversationModelSelection = Readonly<{
   autoCompaction?: 'auto' | 'enabled' | 'disabled';
   compactThresholdTokens?: number;
   nativeCompaction?: 'auto' | 'enabled' | 'disabled';
+  reasoningEffort?: ModelReasoningEffort;
+  serviceTier?: ModelServiceTier;
   effectiveCapabilities: Readonly<{
     toolCalls: boolean;
     strictTools: boolean;
