@@ -48,6 +48,7 @@ import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import { modelItemMetadata } from './step-outcome.ts';
 import { normalizeToolArguments } from './tool-arguments.ts';
+import { classifyTransportError } from './transport-error.ts';
 import type {
   ModelStepOutcome,
   ModelTextPhase,
@@ -576,6 +577,20 @@ const mapOpenAiError = (
   if (error instanceof RuntimeProtocolError) {
     return new ProviderAdapterError(error.details);
   }
+  if (error instanceof OpenAI.APIConnectionTimeoutError) {
+    return new ProviderAdapterError({
+      kind: 'timeout',
+      retryable: true,
+      message: error.message,
+    });
+  }
+  if (error instanceof OpenAI.APIConnectionError) {
+    return new ProviderAdapterError({
+      kind: 'connection',
+      retryable: true,
+      message: error.message,
+    });
+  }
   if (error instanceof OpenAI.APIError) {
     const status = error.status;
     const contextWindowExceeded =
@@ -603,18 +618,15 @@ const mapOpenAiError = (
         : {}),
     });
   }
-  if (error instanceof OpenAI.APIConnectionTimeoutError) {
+  const transport = classifyTransportError(error);
+  if (transport) {
     return new ProviderAdapterError({
-      kind: 'timeout',
+      kind: transport.kind,
       retryable: true,
-      message: error.message,
-    });
-  }
-  if (error instanceof OpenAI.APIConnectionError) {
-    return new ProviderAdapterError({
-      kind: 'connection',
-      retryable: true,
-      message: error.message,
+      message: error instanceof Error
+        ? error.message
+        : 'The model connection ended unexpectedly.',
+      ...(transport.code ? { code: transport.code } : {}),
     });
   }
   return new ProviderAdapterError({
@@ -820,6 +832,10 @@ export class OpenAiLlm extends BaseLlm {
       signal: abortSignal,
       maxRetries: this.maxRetries,
       shouldRetry: (error) => mapOpenAiError(error, abortSignal).details.retryable,
+      countsAsOutput: (event) =>
+        event.type !== 'response.created' &&
+        event.type !== 'response.in_progress' &&
+        event.type !== 'response.queued',
       create: async () =>
         this.client.responses.create(
           {

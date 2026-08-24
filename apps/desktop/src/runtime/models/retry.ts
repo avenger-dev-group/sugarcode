@@ -24,6 +24,7 @@ const waitForRetry = async (
 
 export const streamWithPreOutputRetry = async function* <T>(options: {
   create: () => Promise<AsyncIterable<T>>;
+  countsAsOutput?: (event: T) => boolean;
   shouldRetry: (error: unknown) => boolean;
   signal?: AbortSignal;
   maxRetries?: number;
@@ -38,7 +39,7 @@ export const streamWithPreOutputRetry = async function* <T>(options: {
     try {
       const stream = await options.create();
       for await (const event of stream) {
-        emitted = true;
+        emitted ||= options.countsAsOutput?.(event) ?? true;
         yield event;
       }
       return;

@@ -470,6 +470,108 @@ test('OpenAI Responses preserves extracted audio as a dedicated input item', asy
   });
 });
 
+test('OpenAI Responses retries a terminated stream after lifecycle-only events', async (context) => {
+  let requestCount = 0;
+  const fixture = await serve(async (_request, response) => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(
+        `event: response.created\ndata: ${JSON.stringify({
+          type: 'response.created',
+          sequence_number: 0,
+          response: {
+            id: 'resp_terminated_fixture',
+            status: 'in_progress',
+            output: [],
+          },
+        })}\n\n`,
+      );
+      response.destroy();
+      return;
+    }
+    writeSse(response, [{
+      event: 'response.completed',
+      data: {
+        type: 'response.completed',
+        sequence_number: 1,
+        response: {
+          id: 'resp_retried_fixture',
+          status: 'completed',
+          output: [{
+            id: 'message_retried_fixture',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{
+              type: 'output_text',
+              text: 'Recovered after reconnect.',
+              annotations: [],
+            }],
+          }],
+          usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+        },
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    maxRetries: 1,
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+
+  assert.equal(requestCount, 2);
+  assert.equal(
+    events.at(-1)?.content?.parts?.find((part) => part.text)?.text,
+    'Recovered after reconnect.',
+  );
+});
+
+test('OpenAI Responses does not retry a terminated stream after visible output', async (context) => {
+  let requestCount = 0;
+  const fixture = await serve(async (_request, response) => {
+    requestCount += 1;
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write(
+      `event: response.output_text.delta\ndata: ${JSON.stringify({
+        type: 'response.output_text.delta',
+        sequence_number: 1,
+        output_index: 0,
+        item_id: 'message_visible_fixture',
+        content_index: 0,
+        delta: 'Visible output',
+        logprobs: [],
+      })}\n\n`,
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    response.destroy();
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    maxRetries: 1,
+  });
+
+  await assert.rejects(
+    collect(model.generateContentAsync(llmRequest(), true)),
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderAdapterError);
+      assert.equal(error.details.kind, 'connection');
+      assert.equal(error.details.retryable, true);
+      return true;
+    },
+  );
+  assert.equal(requestCount, 1);
+});
+
 test('Anthropic Messages rejects direct video without silently dropping it', async () => {
   const model = new AnthropicLlm({
     model: 'fixture-model',

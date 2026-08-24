@@ -29,6 +29,7 @@ import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
 import { modelItemMetadata } from './step-outcome.ts';
+import { classifyTransportError } from './transport-error.ts';
 import { normalizeToolArguments } from './tool-arguments.ts';
 import type {
   ModelStepOutcome,
@@ -306,6 +307,20 @@ const mapAnthropicError = (
   if (error instanceof ProviderAdapterError) {
     return error;
   }
+  if (error instanceof Anthropic.APIConnectionTimeoutError) {
+    return new ProviderAdapterError({
+      kind: 'timeout',
+      retryable: true,
+      message: error.message,
+    });
+  }
+  if (error instanceof Anthropic.APIConnectionError) {
+    return new ProviderAdapterError({
+      kind: 'connection',
+      retryable: true,
+      message: error.message,
+    });
+  }
   if (error instanceof Anthropic.APIError) {
     const status = error.status;
     const contextWindowExceeded =
@@ -331,18 +346,15 @@ const mapAnthropicError = (
         : {}),
     });
   }
-  if (error instanceof Anthropic.APIConnectionTimeoutError) {
+  const transport = classifyTransportError(error);
+  if (transport) {
     return new ProviderAdapterError({
-      kind: 'timeout',
+      kind: transport.kind,
       retryable: true,
-      message: error.message,
-    });
-  }
-  if (error instanceof Anthropic.APIConnectionError) {
-    return new ProviderAdapterError({
-      kind: 'connection',
-      retryable: true,
-      message: error.message,
+      message: error instanceof Error
+        ? error.message
+        : 'The model connection ended unexpectedly.',
+      ...(transport.code ? { code: transport.code } : {}),
     });
   }
   return new ProviderAdapterError({
