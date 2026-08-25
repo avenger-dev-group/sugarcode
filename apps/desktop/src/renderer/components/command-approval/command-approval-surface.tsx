@@ -143,9 +143,14 @@ export const CommandApprovalView = ({
         >
           {request.description}
         </p>
-        <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface px-3 py-2.5 font-mono text-xs leading-5 text-secondary">
-          {commandApprovalDisplayCommand(request)}
-        </pre>
+        <details className="group mt-3">
+          <summary className="w-fit cursor-pointer select-none text-xs text-tertiary transition-colors hover:text-secondary">
+            查看{request.operationKind === 'workspacePatch' ? '修改内容' : '命令'}
+          </summary>
+          <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-surface px-3 py-2.5 font-mono text-xs leading-5 text-secondary">
+            {commandApprovalDisplayCommand(request)}
+          </pre>
+        </details>
       </div>
 
       <footer className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-border-subtle px-3 py-2">

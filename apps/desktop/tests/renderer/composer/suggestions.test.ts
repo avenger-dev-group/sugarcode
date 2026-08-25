@@ -119,18 +119,17 @@ test('the token being edited stays regular text until selection completes', () =
   );
 });
 
-test('Figma links and the aggregate application receive distinct display segments', () => {
+test('Figma URLs stay in content while the aggregate application is a control', () => {
   assert.deepEqual(
     composerDisplaySegments(
-      '@https://www.figma.com/design/example?node-id=1-2\n$figma',
+      'https://www.figma.com/design/example?node-id=1-2\n$figma',
       null,
     ),
     [
       {
-        kind: 'link',
-        text: '@https://www.figma.com/design/example?node-id=1-2',
+        kind: 'text',
+        text: 'https://www.figma.com/design/example?node-id=1-2\n',
       },
-      { kind: 'text', text: '\n' },
       { kind: 'application', text: '$figma' },
     ],
   );

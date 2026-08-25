@@ -280,6 +280,7 @@ type RecoveredApprovalRecord = Readonly<{
 type RecoveredApprovalPresentation =
   | Readonly<{
       kind: 'command';
+      purpose: string;
       argumentsSummary: string;
       fullAccess: boolean;
       projectEnvironmentTrust?: true;
@@ -288,6 +289,7 @@ type RecoveredApprovalPresentation =
       kind: 'mcp';
       serverId: string;
       name: string;
+      purpose: string;
       argumentsBytes: number;
       argumentsSha256: string;
       inventorySha256: string;
@@ -5379,6 +5381,7 @@ export class RuntimeHost {
       .digest('hex');
     const approvalPresentation = {
       kind: 'command' as const,
+      purpose: this.approvalPurpose(toolName, argumentsValue),
       argumentsSummary: this.approvalArgumentsSummary(
         toolName,
         argumentsValue,
@@ -5432,6 +5435,7 @@ export class RuntimeHost {
             approvalId,
             operationId,
             toolName,
+            purpose: approvalPresentation.purpose,
             argumentsSummary: approvalPresentation.argumentsSummary,
             fullAccess: approvalPresentation.fullAccess,
             ...(approvalPresentation.projectEnvironmentTrust
@@ -5559,6 +5563,7 @@ export class RuntimeHost {
       kind: 'mcp' as const,
       serverId: request.serverId,
       name: request.name,
+      purpose: request.purpose,
       argumentsBytes: Buffer.byteLength(argumentsJson, 'utf8'),
       argumentsSha256,
       inventorySha256: request.inventorySha256,
@@ -5593,6 +5598,7 @@ export class RuntimeHost {
             operationId,
             serverId: request.serverId,
             name: request.name,
+            purpose: request.purpose,
             argumentsJson,
             argumentsBytes: approvalPresentation.argumentsBytes,
             argumentsSha256,
@@ -5722,6 +5728,7 @@ export class RuntimeHost {
               approvalId: record.approvalId,
               operationId: record.operationId,
               toolName: record.toolName,
+              purpose: presentation.purpose,
               argumentsSummary: presentation.argumentsSummary,
               fullAccess: presentation.fullAccess,
               ...(presentation.projectEnvironmentTrust
@@ -5740,6 +5747,7 @@ export class RuntimeHost {
               operationId: record.operationId,
               serverId: presentation.serverId,
               name: presentation.name,
+              purpose: presentation.purpose,
               argumentsJson: record.argumentsJson,
               argumentsBytes: presentation.argumentsBytes,
               argumentsSha256: presentation.argumentsSha256,
@@ -5821,6 +5829,7 @@ export class RuntimeHost {
           argumentsValue.mode === 'fullAccess');
       const computed: RecoveredApprovalPresentation = {
         kind: 'command',
+        purpose: this.approvalPurpose(record.toolName, argumentsValue),
         argumentsSummary: this.approvalArgumentsSummary(
           record.toolName,
           argumentsValue,
@@ -5837,6 +5846,7 @@ export class RuntimeHost {
       const legacyArgumentsSummary = `${record.toolName} (${Buffer.byteLength(record.argumentsJson, 'utf8')} bytes)`;
       return isRecord(payload) &&
         payload.kind === 'command' &&
+        (payload.purpose === undefined || payload.purpose === computed.purpose) &&
         (payload.argumentsSummary === computed.argumentsSummary ||
           (record.toolName === 'workspace_apply_patch' &&
             payload.argumentsSummary === legacyArgumentsSummary)) &&
@@ -5865,6 +5875,12 @@ export class RuntimeHost {
       kind: 'mcp',
       serverId: payload.serverId,
       name: payload.name,
+      purpose:
+        typeof payload.purpose === 'string' &&
+        payload.purpose.trim().length > 0 &&
+        Buffer.byteLength(payload.purpose, 'utf8') <= 512
+          ? payload.purpose.trim()
+          : `使用 ${payload.serverId} 完成当前任务。`,
       argumentsBytes: payload.argumentsBytes,
       argumentsSha256: record.requestHash,
       inventorySha256: payload.inventorySha256,
@@ -6184,6 +6200,25 @@ export class RuntimeHost {
       argumentsValue.mode === 'fullAccess' ? 'Full Access' : 'Sandboxed';
     const summary = `${prefix}: ${rendered}`;
     return summary.length <= 4_096 ? summary : `${summary.slice(0, 4_093)}...`;
+  };
+
+  private approvalPurpose = (
+    toolName: string,
+    argumentsValue: Readonly<Record<string, unknown>>,
+  ): string => {
+    if (typeof argumentsValue.approvalPurpose === 'string') {
+      const purpose = argumentsValue.approvalPurpose.trim();
+      if (purpose.length > 0 && Buffer.byteLength(purpose, 'utf8') <= 512) {
+        return purpose;
+      }
+    }
+    if (toolName === 'project_environment_trust') {
+      return '信任并运行当前项目声明的环境配置。';
+    }
+    if (toolName === 'workspace_apply_patch') {
+      return '将 Agent 准备的更改应用到当前项目文件。';
+    }
+    return '运行当前任务所需的终端操作。';
   };
 
   private emitCompleted = (

@@ -9,13 +9,13 @@ export const composerRequiresFigmaMcp = (
   content.some(
     (part) =>
       part.type === 'text' &&
-      parseComposerSubmission(part.text).references.some(
+      (parseComposerSubmission(part.text).references.some(
         (reference) =>
           reference.target === 'figma' ||
           (reference.kind === 'skill' &&
-            reference.target.startsWith('figma-')) ||
-          (reference.kind === 'link' && isFigmaUrl(reference.target)),
-      ),
+            reference.target.startsWith('figma-')),
+      ) ||
+        (part.text.match(/https?:\/\/[^\s@$]+/giu) ?? []).some(isFigmaUrl)),
   );
 
 const COMMAND_INTENT: Readonly<Record<string, string>> = {
@@ -59,7 +59,7 @@ export const composerTurnMode = (
 export const composerModelText = (value: string): string => {
   const submission = parseComposerSubmission(value);
   if (submission.references.length === 0) {
-    return value;
+    return submission.text;
   }
   return [
     '# Composer selections',
@@ -86,7 +86,6 @@ export const composerIntentInstruction = (
     (reference) => reference.kind === 'application',
   );
   const files = references.filter((reference) => reference.kind === 'file');
-  const links = references.filter((reference) => reference.kind === 'link');
   const sections = [
     '# Explicit Composer selections',
     'Treat this explicit Composer notation as control metadata for this Turn, not as incidental prose. Apply it within the user\'s plain-text request; when that request explicitly narrows or contradicts a selection, the plain-text request remains authoritative.',
@@ -120,13 +119,6 @@ export const composerIntentInstruction = (
       '## Workspace file references',
       'Inspect these exact workspace-relative regular files with workspace_read before substantive work when they are relevant to the request:',
       ...files.map((file) => `- ${file.target}`),
-    );
-  }
-  if (links.length > 0) {
-    sections.push(
-      '## External links',
-      'Use these user-provided URLs as external resource identifiers. Do not pass them to workspace_read or describe them as local files:',
-      ...links.map((link) => `- ${link.target}`),
     );
   }
   return sections.join('\n\n');

@@ -33,7 +33,6 @@ export type ComposerDisplaySegment = Readonly<{
     | 'command'
     | 'skill'
     | 'knowledge'
-    | 'link'
     | 'file';
   text: string;
 }>;

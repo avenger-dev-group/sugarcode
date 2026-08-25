@@ -20,6 +20,7 @@ type PendingApproval = {
   readonly threadId: string;
   readonly turnId: string;
   readonly toolName: string;
+  readonly purpose: string;
   readonly argumentsSummary: string;
   readonly fullAccess: boolean;
   readonly projectEnvironmentTrust: boolean;
@@ -223,6 +224,7 @@ export class RuntimeApprovalController {
         threadId: event.threadId,
         turnId: event.turnId,
         toolName: event.toolName,
+        purpose: event.purpose,
         argumentsSummary: event.argumentsSummary,
         fullAccess: event.fullAccess,
         projectEnvironmentTrust: event.projectEnvironmentTrust === true,
@@ -414,14 +416,7 @@ export class RuntimeApprovalController {
           : pending.toolName === 'workspace_apply_patch'
             ? 'workspacePatch'
             : 'shell',
-      description:
-        pending.projectEnvironmentTrust
-          ? 'This project requests permission to run the complete setup and environment configuration shown below. Trust is bound to this project path and exact configuration hash.'
-          : pending.toolName === 'workspace_apply_patch'
-          ? 'Agent 请求修改以下项目文件。批准后，这批更改会原子应用。'
-          : pending.fullAccess
-            ? 'Allow this command to run with Full Access?'
-            : 'Allow this sandboxed command to run?',
+      description: pending.purpose,
       command: pending.argumentsSummary,
       cwd: root,
       fullAccess: pending.fullAccess,

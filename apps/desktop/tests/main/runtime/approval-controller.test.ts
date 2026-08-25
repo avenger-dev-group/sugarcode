@@ -47,6 +47,7 @@ test('runtime approvals preserve the existing approval UI contract', async () =>
     approvalId: 'approval-1',
     operationId: 'operation-1',
     toolName: 'workspace_apply_patch',
+    purpose: '更新当前项目文件，应用 Agent 已准备好的修改。',
     argumentsSummary: 'workspace_apply_patch (128 bytes)',
     fullAccess: false,
   });
@@ -58,7 +59,7 @@ test('runtime approvals preserve the existing approval UI contract', async () =>
   assert.equal(pending.request?.operationKind, 'workspacePatch');
   assert.equal(
     pending.request?.description,
-    'Agent 请求修改以下项目文件。批准后，这批更改会原子应用。',
+    '更新当前项目文件，应用 Agent 已准备好的修改。',
   );
 
   assert.equal((await controller.approve('approval-1', 'thread')).accepted, true);
@@ -102,6 +103,7 @@ test('thread Full Access automatically approves later operations only in that th
     approvalId: 'approval-full',
     operationId: 'operation-full',
     toolName: 'shell_exec',
+    purpose: '在项目目录中创建 fixture.txt，用于验证完整访问授权。',
     argumentsSummary: 'Full Access: touch fixture.txt',
     fullAccess: true,
   });
@@ -112,7 +114,7 @@ test('thread Full Access automatically approves later operations only in that th
   assert.equal(pending.request?.fullAccess, true);
   assert.equal(
     pending.request?.description,
-    'Allow this command to run with Full Access?',
+    '在项目目录中创建 fixture.txt，用于验证完整访问授权。',
   );
 
   assert.equal((await controller.approve('approval-full', 'thread')).accepted, true);
@@ -140,6 +142,7 @@ test('thread Full Access automatically approves later operations only in that th
     approvalId: 'approval-later',
     operationId: 'operation-later',
     toolName: 'workspace_apply_patch',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'workspace_apply_patch (32 bytes)',
     fullAccess: false,
   });
@@ -174,6 +177,7 @@ test('thread Full Access automatically approves later operations only in that th
     approvalId: 'approval-other-thread',
     operationId: 'operation-other-thread',
     toolName: 'shell_exec',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'Full Access: pnpm test',
     fullAccess: true,
   });
@@ -212,6 +216,7 @@ test('workspace Full Access automatically approves every thread only in that wor
     approvalId: 'approval-workspace-one',
     operationId: 'operation-workspace-one',
     toolName: 'shell_exec',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'Full Access: pnpm test',
     fullAccess: true,
   });
@@ -246,6 +251,7 @@ test('workspace Full Access automatically approves every thread only in that wor
     approvalId: 'approval-workspace-two',
     operationId: 'operation-workspace-two',
     toolName: 'workspace_apply_patch',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'workspace_apply_patch (32 bytes)',
     fullAccess: false,
   });
@@ -272,6 +278,7 @@ test('concurrent threads expose and resolve their own approval requests independ
       approvalId: `approval-${index + 1}`,
       operationId: `operation-${index + 1}`,
       toolName: 'shell_exec',
+      purpose: '完成当前任务所需的操作。',
       argumentsSummary: `Full Access: command-${index + 1}`,
       fullAccess: true,
     });
@@ -312,6 +319,7 @@ test('Full Access grants are retained per scope and release matching queued requ
       approvalId: `approval-queued-${index + 1}`,
       operationId: `operation-queued-${index + 1}`,
       toolName: 'shell_exec',
+      purpose: '完成当前任务所需的操作。',
       argumentsSummary: `Full Access: queued-${index + 1}`,
       fullAccess: true,
     });
@@ -366,6 +374,7 @@ test('recovered runtime approval waits for the existing UI surface and deduplica
     approvalId: 'approval-recovered',
     operationId: 'operation-recovered',
     toolName: 'workspace_apply_patch',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'workspace_apply_patch (64 bytes)',
     fullAccess: false,
     recovered: true,
@@ -397,6 +406,7 @@ test('runtime approval timeout allows the operation and does not block shutdown 
     approvalId: 'approval-timeout',
     operationId: 'operation-timeout',
     toolName: 'workspace_apply_patch',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'Update fixture.txt',
     fullAccess: false,
   });
@@ -425,6 +435,7 @@ test('runtime approval timeout allows the operation and does not block shutdown 
     approvalId: 'approval-timeout',
     operationId: 'operation-timeout',
     toolName: 'workspace_apply_patch',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'Update fixture.txt',
     fullAccess: false,
     recovered: true,
@@ -449,6 +460,7 @@ test('runtime approval timeout allows the operation and does not block shutdown 
     approvalId: 'approval-shutdown',
     operationId: 'operation-shutdown',
     toolName: 'shell_exec',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'Full Access: pnpm test',
     fullAccess: true,
   });
@@ -478,6 +490,7 @@ test('project environment trust ignores inherited access and fails closed on tim
     approvalId: 'approval-trust',
     operationId: 'operation-trust',
     toolName: 'project_environment_trust',
+    purpose: '完成当前任务所需的操作。',
     argumentsSummary: 'Trust .sugarcode/project.json\n\n# setup\npnpm install',
     fullAccess: true,
     projectEnvironmentTrust: true,

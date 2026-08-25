@@ -30,6 +30,7 @@ test('runtime MCP approval keeps the existing UI contract and resolves by stable
     operationId: 'operation-fixture',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{"value":"hello"}',
     argumentsBytes: 17,
     argumentsSha256: 'a'.repeat(64),
@@ -39,6 +40,10 @@ test('runtime MCP approval keeps the existing UI contract and resolves by stable
   assert.equal(isMcpApprovalStateSnapshot(pending), true);
   assert.equal(pending.request?.projectTitle, 'project');
   assert.equal(pending.request?.queueCount, 1);
+  assert.equal(
+    pending.request?.purpose,
+    '读取完成当前任务所需的上下文。',
+  );
 
   assert.deepEqual(await controller.approve('approval-fixture'), {
     accepted: true,
@@ -84,6 +89,7 @@ test('concurrent MCP approvals can be resolved from either active thread', async
       operationId: `operation-${index + 1}`,
       serverId: 'fixture',
       name: 'mcp__fixture__echo',
+      purpose: '读取完成当前任务所需的上下文。',
       argumentsJson: '{}',
       argumentsBytes: 2,
       argumentsSha256: 'a'.repeat(64),
@@ -126,6 +132,7 @@ test('recovered MCP approval remains pending until the UI surface is ready', asy
     operationId: 'operation-recovered',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{}',
     argumentsBytes: 2,
     argumentsSha256: 'a'.repeat(64),
@@ -179,6 +186,7 @@ test('MCP approval follows the shared thread and workspace Full Access policy', 
     operationId: 'operation-trusted',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{}',
     argumentsBytes: 2,
     argumentsSha256: 'a'.repeat(64),
@@ -216,6 +224,7 @@ test('MCP approval follows the shared thread and workspace Full Access policy', 
     operationId: 'operation-untrusted',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{}',
     argumentsBytes: 2,
     argumentsSha256: 'a'.repeat(64),
@@ -253,6 +262,7 @@ test('MCP approvals already waiting are released when Full Access policy changes
     operationId: 'operation-waiting',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{}',
     argumentsBytes: 2,
     argumentsSha256: 'a'.repeat(64),
@@ -297,6 +307,7 @@ test('MCP approval timeout allows the call by default', async () => {
     operationId: 'operation-timeout',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{}',
     argumentsBytes: 2,
     argumentsSha256: 'a'.repeat(64),

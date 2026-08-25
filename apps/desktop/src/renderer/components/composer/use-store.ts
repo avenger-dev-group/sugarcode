@@ -15,6 +15,7 @@ import {
 } from '@/renderer/services/workspace';
 import type { SkillSummary } from '@/shared/skills';
 import type { KnowledgeBaseSummary } from '@/shared/knowledge';
+import { normalizeComposerContentLinks } from '@/shared/composer';
 
 import {
   commandSuggestions,
@@ -241,15 +242,25 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
   };
 
   const handleChange: ComposerSuggestionStore['handleChange'] = (event) => {
-    const value = event.currentTarget.value;
+    const rawValue = event.currentTarget.value;
+    const rawCaret = event.currentTarget.selectionStart;
+    const value = normalizeComposerContentLinks(rawValue);
+    const caret = normalizeComposerContentLinks(
+      rawValue.slice(0, rawCaret),
+    ).length;
     props.onValueChange(value);
     const hasSuggestionTrigger =
       value.includes('/') || value.includes('$') || value.includes('@');
     setToken(
       props.disabled || !hasSuggestionTrigger
         ? null
-        : findComposerToken(value, event.currentTarget.selectionStart),
+        : findComposerToken(value, caret),
     );
+    if (value !== rawValue) {
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.setSelectionRange(caret, caret);
+      });
+    }
   };
 
   const handleKeyDown: ComposerSuggestionStore['handleKeyDown'] = (event) => {

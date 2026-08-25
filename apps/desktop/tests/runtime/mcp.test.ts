@@ -58,7 +58,13 @@ test('RuntimeMcpManager discovers and invokes an ADK MCPToolset behind approval'
   assert.deepEqual(manager.getActiveServerIds(), ['fixture']);
 
   let approval:
-    | Readonly<{ serverId: string; name: string; inventorySha256: string }>
+    | Readonly<{
+        serverId: string;
+        name: string;
+        purpose: string;
+        argumentsValue: Readonly<Record<string, unknown>>;
+        inventorySha256: string;
+      }>
     | undefined;
   const tools = manager.toolsForTurn(async (request) => {
     approval = request;
@@ -66,14 +72,28 @@ test('RuntimeMcpManager discovers and invokes an ADK MCPToolset behind approval'
   });
   assert.equal(tools.length, 1);
   assert.equal(tools[0].name, 'mcp__fixture__echo');
+  const declaration = tools[0]._getDeclaration();
+  assert.equal(
+    declaration.parameters?.properties?.sugarcodeApprovalPurpose?.type,
+    'STRING',
+  );
+  assert.equal(
+    declaration.parameters?.required?.includes('sugarcodeApprovalPurpose'),
+    true,
+  );
   const response = await tools[0].runAsync({
-    args: { value: 'hello' },
+    args: {
+      value: 'hello',
+      sugarcodeApprovalPurpose: '读取当前设计节点，为实现页面提供布局信息。',
+    },
     toolContext: {
       abortSignal: new AbortController().signal,
     },
   } as unknown as Parameters<(typeof tools)[number]['runAsync']>[0]);
   assert.equal(approval?.serverId, 'fixture');
   assert.equal(approval?.name, 'mcp__fixture__echo');
+  assert.equal(approval?.purpose, '读取当前设计节点，为实现页面提供布局信息。');
+  assert.deepEqual(approval?.argumentsValue, { value: 'hello' });
   assert.match(approval?.inventorySha256 ?? '', /^[0-9a-f]{64}$/u);
   assert.deepEqual(response, {
     content: [{ type: 'text', text: '{"value":"hello"}' }],
@@ -151,7 +171,10 @@ test('RuntimeMcpManager discovers and invokes a loopback Streamable HTTP MCP ser
     assert.equal(tools[0].name, 'mcp__figma-desktop__echo');
     assert.deepEqual(
       await tools[0].runAsync({
-        args: { value: 'local-figma' },
+        args: {
+          value: 'local-figma',
+          sugarcodeApprovalPurpose: '读取 Figma 当前选区，获取界面设计上下文。',
+        },
         toolContext: {
           abortSignal: new AbortController().signal,
         },

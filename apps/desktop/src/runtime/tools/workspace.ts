@@ -173,8 +173,13 @@ const commandSchema = {
       type: Type.INTEGER,
       description: 'Full Access timeout in milliseconds, from 1 through 600000.',
     },
+    approvalPurpose: {
+      type: Type.STRING,
+      description:
+        '用用户当前使用的语言，简洁说明本次命令将完成什么、为什么需要执行以及可能产生的可见影响。写 1–2 句具体的人话，不要复述命令代码。此说明会直接显示在授权提示中。',
+    },
   },
-  required: ['mode', 'command'],
+  required: ['mode', 'command', 'approvalPurpose'],
 } satisfies Schema;
 
 const projectActionSchema = {
@@ -1071,9 +1076,16 @@ export const createWorkspaceTools = (
         : undefined;
       const cwdValue = 'cwd' in input ? input.cwd : undefined;
       const timeoutValue = 'timeoutMs' in input ? input.timeoutMs : undefined;
+      const approvalPurposeValue = 'approvalPurpose' in input
+        ? input.approvalPurpose
+        : undefined;
       const commandArguments = optionalStringArray(commandArgumentsValue);
       const cwd = optionalString(cwdValue, '.');
       const timeoutMs = optionalInteger(timeoutValue, 300_000);
+      const approvalPurpose =
+        typeof approvalPurposeValue === 'string'
+          ? approvalPurposeValue.trim()
+          : '';
       const mode = input.mode;
       const command = input.command;
       const argumentError = shellExecArgumentError(
@@ -1114,6 +1126,7 @@ export const createWorkspaceTools = (
         arguments: commandArguments,
         cwd,
         timeoutMs,
+        ...(approvalPurpose.length > 0 ? { approvalPurpose } : {}),
         ...(operationToolName === 'project_environment_trust'
           ? {
               expectedHash: projectConfigHash,

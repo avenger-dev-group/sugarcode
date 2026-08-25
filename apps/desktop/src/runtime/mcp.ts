@@ -4,6 +4,7 @@ import {
   type MCPConnectionParams,
   type RunAsyncToolRequest,
 } from '@google/adk';
+import { Type } from '@google/genai';
 import { createHash } from 'node:crypto';
 
 import type {
@@ -15,10 +16,35 @@ import type {
 export type McpToolApproval = Readonly<{
   serverId: string;
   name: string;
+  purpose: string;
   argumentsValue: Readonly<Record<string, unknown>>;
   inventorySha256: string;
   execute: () => Promise<unknown>;
 }>;
+
+const APPROVAL_PURPOSE_ARGUMENT = 'sugarcodeApprovalPurpose';
+const MAX_APPROVAL_PURPOSE_BYTES = 512;
+
+const approvalPurpose = (
+  value: unknown,
+  serverId: string,
+  toolName: string,
+): string => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (
+      trimmed.length > 0 &&
+      Buffer.byteLength(trimmed, 'utf8') <= MAX_APPROVAL_PURPOSE_BYTES
+    ) {
+      return trimmed;
+    }
+  }
+  const prefix = `mcp__${serverId}__`;
+  const displayName = toolName.startsWith(prefix)
+    ? toolName.slice(prefix.length)
+    : toolName;
+  return `使用 ${serverId} 的 ${displayName} 完成当前任务。`;
+};
 
 type ActiveServer = Readonly<{
   id: string;
@@ -119,16 +145,45 @@ class ApprovedMcpTool extends BaseTool {
   }
 
   override _getDeclaration() {
-    return this.delegate._getDeclaration();
+    const declaration = this.delegate._getDeclaration();
+    const parameters = declaration.parameters;
+    return {
+      ...declaration,
+      parameters: {
+        ...parameters,
+        properties: {
+          ...(parameters?.properties ?? {}),
+          [APPROVAL_PURPOSE_ARGUMENT]: {
+            type: Type.STRING,
+            description:
+              '用用户当前使用的语言，简洁说明本次调用将完成什么、为什么需要它以及可见结果。写 1–2 句具体的人话，不要复述工具名、参数或实现机制。此说明会直接显示在授权提示中。',
+          },
+        },
+        required: [
+          ...new Set([
+            ...(parameters?.required ?? []),
+            APPROVAL_PURPOSE_ARGUMENT,
+          ]),
+        ],
+      },
+    };
   }
 
   override runAsync(request: RunAsyncToolRequest): Promise<unknown> {
+    const {
+      [APPROVAL_PURPOSE_ARGUMENT]: purposeValue,
+      ...argumentsValue
+    } = request.args;
     return this.approve({
       serverId: this.serverId,
       name: this.name,
-      argumentsValue: request.args,
+      purpose: approvalPurpose(purposeValue, this.serverId, this.name),
+      argumentsValue,
       inventorySha256: this.inventorySha256,
-      execute: () => this.delegate.runAsync(request),
+      execute: () => this.delegate.runAsync({
+        ...request,
+        args: argumentsValue,
+      }),
     });
   }
 }

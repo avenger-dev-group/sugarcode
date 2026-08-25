@@ -59,9 +59,10 @@ task clearly requires them. Skills guide the Agent but do not by themselves
 claim that a server is connected.
 
 An explicit `$figma` selection automatically activates a configured Figma
-Desktop server for that Turn. A Figma URL prefixed with `@` is presented as an
-external **链接**, never as a workspace file, and is passed to the Agent as the
-target resource identifier.
+Desktop server for that Turn. Figma URLs remain part of the user's message
+content rather than becoming file/reference chips. A legacy `@` immediately
+before an HTTP URL is removed when the message is normalized. The URL still
+activates the configured Figma service automatically.
 
 ## Troubleshooting
 

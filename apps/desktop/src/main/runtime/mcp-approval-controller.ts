@@ -271,6 +271,7 @@ export class RuntimeMcpApprovalController {
       conversationTitle: pending.threadId,
       serverId: pending.serverId,
       name: pending.name,
+      purpose: pending.purpose,
       argumentsJson: pending.argumentsJson,
       argumentsBytes: pending.argumentsBytes,
       argumentsSha256: pending.argumentsSha256,

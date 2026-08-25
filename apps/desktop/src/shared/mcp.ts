@@ -116,6 +116,7 @@ export type McpApprovalViewModel = Readonly<{
   conversationTitle: string;
   serverId: string;
   name: string;
+  purpose: string;
   argumentsJson: string;
   argumentsBytes: number;
   argumentsSha256: string;
@@ -439,6 +440,7 @@ const isMcpApprovalViewModel = (
         'conversationTitle',
         'serverId',
         'name',
+        'purpose',
         'argumentsJson',
         'argumentsBytes',
         'argumentsSha256',
@@ -461,6 +463,9 @@ const isMcpApprovalViewModel = (
     isMcpServerId(request.serverId) &&
     typeof request.name === 'string' &&
     request.name.startsWith(`mcp__${request.serverId}__`) &&
+    typeof request.purpose === 'string' &&
+    request.purpose.trim().length > 0 &&
+    byteLength(request.purpose) <= 512 &&
     typeof request.argumentsJson === 'string' &&
     Number.isSafeInteger(request.argumentsBytes) &&
     (request.argumentsBytes as number) >= 2 &&

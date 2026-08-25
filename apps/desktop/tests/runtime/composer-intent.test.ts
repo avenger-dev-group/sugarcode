@@ -43,7 +43,7 @@ test('ordinary messages add no Composer control instruction', () => {
   );
 });
 
-test('Figma application and URL metadata preserve MCP semantics', () => {
+test('Figma application metadata preserves the URL as user content', () => {
   const url = 'https://www.figma.com/design/example?node-id=435-10640';
   const instruction = composerIntentInstruction([
     {
@@ -54,10 +54,12 @@ test('Figma application and URL metadata preserve MCP semantics', () => {
 
   assert.match(instruction, /## Applications/u);
   assert.match(instruction, /\$figma/u);
-  assert.match(instruction, /## External links/u);
-  assert.match(instruction, new RegExp(url.replace(/[?]/gu, '\\?'), 'u'));
+  assert.doesNotMatch(instruction, /## External links/u);
   assert.doesNotMatch(instruction, /Workspace file references/u);
-  assert.match(instruction, /Do not pass them to workspace_read/u);
+  assert.match(
+    composerModelText(`实现这个界面\n@${url}\n$figma`),
+    new RegExp(url.replace(/[?]/gu, '\\?'), 'u'),
+  );
   assert.equal(
     composerRequiresFigmaMcp([
       { type: 'text', text: `实现这个界面\n@${url}` },

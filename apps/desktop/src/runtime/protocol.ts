@@ -1120,6 +1120,7 @@ export type RuntimeEvent =
         approvalId: string;
         operationId: string;
         toolName: string;
+        purpose: string;
         argumentsSummary: string;
         fullAccess: boolean;
         projectEnvironmentTrust?: true;
@@ -1146,6 +1147,7 @@ export type RuntimeEvent =
         operationId: string;
         serverId: string;
         name: string;
+        purpose: string;
         argumentsJson: string;
         argumentsBytes: number;
         argumentsSha256: string;
@@ -2422,6 +2424,9 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.approvalId === 'string' &&
         typeof value.operationId === 'string' &&
         typeof value.toolName === 'string' &&
+        typeof value.purpose === 'string' &&
+        value.purpose.trim().length > 0 &&
+        utf8ByteLength(value.purpose) <= 512 &&
         typeof value.argumentsSummary === 'string' &&
         typeof value.fullAccess === 'boolean' &&
         (value.projectEnvironmentTrust === undefined ||
@@ -2445,6 +2450,9 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         typeof value.serverId === 'string' &&
         typeof value.name === 'string' &&
         value.name.startsWith(`mcp__${value.serverId}__`) &&
+        typeof value.purpose === 'string' &&
+        value.purpose.trim().length > 0 &&
+        utf8ByteLength(value.purpose) <= 512 &&
         typeof value.argumentsJson === 'string' &&
         Number.isSafeInteger(value.argumentsBytes) &&
         Number(value.argumentsBytes) >= 2 &&

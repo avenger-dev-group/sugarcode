@@ -34,8 +34,6 @@ const referenceKindLabel = (
       return 'Skill';
     case 'knowledge':
       return '知识库';
-    case 'link':
-      return '链接';
     case 'file':
       return '文件';
   }
@@ -45,6 +43,25 @@ type UserMessageView = Extract<
   TranscriptMessageViewModel,
   { role: 'user' }
 >['message'];
+
+const CONTENT_URL_PATTERN = /(https?:\/\/[^\s]+)/giu;
+
+const MessageContentText = ({ text }: Readonly<{ text: string }>) => (
+  <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
+    {text.split(CONTENT_URL_PATTERN).map((segment, index) =>
+      /^https?:\/\//iu.test(segment) ? (
+        <span
+          key={`${index}:${segment}`}
+          className="break-all font-medium text-link"
+        >
+          {segment}
+        </span>
+      ) : (
+        segment
+      ),
+    )}
+  </p>
+);
 
 const EditorAttachments = ({
   message,
@@ -138,9 +155,7 @@ const UserMessageContent = ({
           }
         >
           {message.text ? (
-            <p className="whitespace-pre-wrap break-words text-sm font-normal leading-[22px]">
-              {message.text}
-            </p>
+            <MessageContentText text={message.text} />
           ) : null}
         </div>
         {canCollapse && !expanded ? (

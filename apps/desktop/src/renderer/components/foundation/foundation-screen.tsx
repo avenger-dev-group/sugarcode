@@ -32,6 +32,9 @@ export const FoundationScreen = () => {
     (request) =>
       isApprovalVisibleForThread(request.threadId, activeThreadId),
   );
+  const activeMcpApproval = mcpStore.approvalRequests.find((request) =>
+    isApprovalVisibleForThread(request.threadId, activeThreadId),
+  );
   const approvalThreadIds = Array.from(
     new Set(
       [
@@ -99,6 +102,11 @@ export const FoundationScreen = () => {
                   store={commandApprovalStore}
                   activeThreadId={activeThreadId}
                 />
+              ) : activeMcpApproval ? (
+                <McpApprovalSurface
+                  store={mcpStore}
+                  activeThreadId={activeThreadId}
+                />
               ) : undefined
             }
             navigationFooter={
@@ -146,10 +154,6 @@ export const FoundationScreen = () => {
           />
         </main>
       </OrchestrationStoreProvider>
-      <McpApprovalSurface
-        store={mcpStore}
-        activeThreadId={activeThreadId}
-      />
       <GlobalSearch
         open={foundation.searchOpen}
         onOpenChange={(open) => open ? foundation.openSearch() : foundation.closeSearch()}

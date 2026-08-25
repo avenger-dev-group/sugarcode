@@ -953,6 +953,7 @@ test('private MCP protocol keeps configuration and approval events provider-neut
     operationId: 'operation-fixture',
     serverId: 'fixture',
     name: 'mcp__fixture__echo',
+    purpose: '读取完成当前任务所需的上下文。',
     argumentsJson: '{"value":"hello"}',
     argumentsBytes: 17,
     argumentsSha256: 'a'.repeat(64),

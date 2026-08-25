@@ -3,7 +3,6 @@ export type ComposerReferenceKind =
   | 'command'
   | 'skill'
   | 'knowledge'
-  | 'link'
   | 'file';
 
 export type ComposerReference = Readonly<{
@@ -35,6 +34,9 @@ export const isFigmaUrl = (value: string): boolean => {
     return false;
   }
 };
+
+export const normalizeComposerContentLinks = (value: string): string =>
+  value.replace(/(^|\s)@(?=https?:\/\/)/giu, '$1');
 
 export const isComposerLineLeading = (
   value: string,
@@ -87,13 +89,7 @@ const referenceFromMatch = (
     };
   }
   if (value.startsWith('@http://') || value.startsWith('@https://')) {
-    return {
-      kind: 'link',
-      value,
-      target: value.slice(1),
-      start,
-      end: start + value.length,
-    };
+    return null;
   }
   return {
     kind: 'file',
@@ -162,8 +158,7 @@ export const parseComposerSubmission = (value: string): ComposerSubmission => {
     offset += line.length + 1;
   }
   return {
-    text: lines
-      .join('\n')
+    text: normalizeComposerContentLinks(lines.join('\n'))
       .replace(/^(?:[ \t]*\r?\n)+/u, '')
       .replace(/(?:\r?\n[ \t]*)+$/u, ''),
     references,

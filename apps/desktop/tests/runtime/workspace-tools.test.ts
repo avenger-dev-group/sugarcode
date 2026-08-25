@@ -607,6 +607,42 @@ test('shell_exec rejects sandboxed shell syntax with repair guidance before appr
   assert.equal(approvalRequests, 0);
 });
 
+test('shell_exec carries the Agent purpose into a Full Access approval', async () => {
+  let approvedArguments: Readonly<Record<string, unknown>> | undefined;
+  const tools = createWorkspaceTools(
+    {
+      inspectProjectEnvironmentJson: () => JSON.stringify({ state: 'absent' }),
+    } as unknown as NativeRuntimeBinding,
+    'workspace-fixture',
+    async (_toolName, argumentsValue) => {
+      approvedArguments = argumentsValue;
+      return { ok: true };
+    },
+  );
+  const shellTool = tools.find((tool) => tool.name === 'shell_exec');
+  assert.ok(shellTool);
+  assert.equal(
+    shellTool._getDeclaration().parameters?.required?.includes(
+      'approvalPurpose',
+    ),
+    true,
+  );
+
+  await shellTool.runAsync({
+    args: {
+      mode: 'fullAccess',
+      command: 'pnpm test',
+      approvalPurpose: '运行项目测试，确认本次修改没有破坏现有功能。',
+    },
+    toolContext: {} as never,
+  });
+
+  assert.equal(
+    approvedArguments?.approvalPurpose,
+    '运行项目测试，确认本次修改没有破坏现有功能。',
+  );
+});
+
 test('shell_exec rejects find predicates without an explicit search root', async () => {
   let approvalRequests = 0;
   const tools = createWorkspaceTools(
