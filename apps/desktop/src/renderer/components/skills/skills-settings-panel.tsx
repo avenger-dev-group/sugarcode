@@ -91,7 +91,11 @@ export const SkillsSettingsPanel = ({
                       </span>
                     </span>
                     <span className="hidden shrink-0 rounded-md bg-surface px-2 py-1 font-mono text-[10px] text-tertiary sm:block">
-                      {skill.source === 'project' ? '项目' : '个人'}
+                      {skill.source === 'project'
+                        ? '项目'
+                        : skill.source === 'bundled'
+                          ? '内置'
+                          : '个人'}
                     </span>
                   </button>
                   <Checkbox

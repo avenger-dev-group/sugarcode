@@ -20,6 +20,7 @@ import {
   commandSuggestions,
   findComposerToken,
   replaceComposerToken,
+  skillSuggestions,
 } from './suggestions';
 import type {
   ComposerInputProps,
@@ -28,15 +29,6 @@ import type {
   ComposerSuggestionStore,
   ComposerToken,
 } from './types';
-
-const skillSuggestion = (skill: SkillSummary): ComposerSuggestion => ({
-  id: skill.id,
-  kind: 'skill',
-  label: skill.name,
-  description: skill.description,
-  detail: skill.source === 'project' ? '项目 Skill' : '个人 Skill',
-  insertion: `$${skill.name}`,
-});
 
 const fileSuggestion = (path: string): ComposerSuggestion => ({
   id: `file:${path}`,
@@ -144,16 +136,7 @@ export const useStore = (props: ComposerInputProps): ComposerSuggestionStore => 
       void load
         .then((skills) => {
           if (requestId.current !== currentRequest) return;
-          const query = token.query.toLocaleLowerCase();
-          setRemoteSuggestions(
-            skills
-              .filter((skill) =>
-                `${skill.name} ${skill.description}`
-                  .toLocaleLowerCase()
-                  .includes(query),
-              )
-              .map(skillSuggestion),
-          );
+          setRemoteSuggestions(skillSuggestions(skills, token.query));
           setStatus('ready');
           setMessage(skills.length === 0 ? '没有已启用的 Skill。' : null);
         })

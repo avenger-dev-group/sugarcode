@@ -89,6 +89,7 @@ export type McpSessionActionResult = Readonly<{
     | 'turnActive'
     | 'approvalPending'
     | 'busy'
+    | 'connectionFailed'
     | 'unavailable';
 }>;
 
@@ -183,6 +184,7 @@ const SESSION_REASONS = new Set<McpSessionActionResult['reason']>([
   'turnActive',
   'approvalPending',
   'busy',
+  'connectionFailed',
   'unavailable',
 ]);
 const APPROVAL_STATUSES = new Set<McpApprovalStatus>([

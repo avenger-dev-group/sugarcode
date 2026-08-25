@@ -51,6 +51,17 @@ test('Turn Skills freeze inventory and inline an explicit selection', async () =
   );
 });
 
+test('the Figma application loads its aggregate Skill instructions', () => {
+  const turn = createTurnSkills(
+    nativeWithSkills(['figma', 'figma-design-to-code']),
+    'workspace-1',
+    [{ type: 'text', text: '$figma\n实现链接中的页面' }],
+  );
+
+  assert.match(turn.instruction, /Selected Skill: \$figma/u);
+  assert.doesNotMatch(turn.instruction, /Selected Skill: \$figma-design-to-code/u);
+});
+
 test('Turn Skills reject over-selection and cap on-demand loads', async () => {
   const names = ['one', 'two', 'three', 'four', 'five'];
   assert.throws(

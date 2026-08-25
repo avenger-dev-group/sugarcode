@@ -1,15 +1,43 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { RuntimeMcpManager } from '../../src/runtime/mcp.ts';
 
-const fixture = path.join(
+const fixtureDirectory = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'fixtures',
-  'mcp-server.mjs',
 );
+const fixture = path.join(fixtureDirectory, 'mcp-server.mjs');
+const httpFixture = path.join(fixtureDirectory, 'mcp-http-server.mjs');
+
+const createLoopbackFixture = async () => {
+  const fixtureProcess = spawn(process.execPath, [httpFixture], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+  const lines = createInterface({ input: fixtureProcess.stdout });
+  const endpoint = await Promise.race([
+    once(lines, 'line').then(([line]) => String(line)),
+    once(fixtureProcess, 'exit').then(([code]) => {
+      throw new Error(`HTTP MCP fixture exited before listening (${code}).`);
+    }),
+  ]);
+
+  return {
+    endpoint,
+    close: async () => {
+      lines.close();
+      if (fixtureProcess.exitCode === null) {
+        fixtureProcess.kill();
+        await once(fixtureProcess, 'exit');
+      }
+    },
+  };
+};
 
 test('RuntimeMcpManager discovers and invokes an ADK MCPToolset behind approval', async () => {
   const manager = new RuntimeMcpManager();
@@ -97,4 +125,46 @@ test('RuntimeMcpManager rejects an HTTP server combined with another selection',
     accepted: false,
     reason: 'incompatibleSelection',
   });
+});
+
+test('RuntimeMcpManager discovers and invokes a loopback Streamable HTTP MCP server', async () => {
+  const fixtureServer = await createLoopbackFixture();
+  const manager = new RuntimeMcpManager();
+
+  try {
+    manager.configure({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [{
+        id: 'figma-desktop',
+        transport: 'loopbackStreamableHttp',
+        endpoint: fixtureServer.endpoint,
+      }],
+    });
+
+    assert.deepEqual(await manager.ensureApplicationActive('figma'), {
+      accepted: true,
+      reason: 'accepted',
+    });
+    const tools = manager.toolsForTurn((request) => request.execute());
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].name, 'mcp__figma-desktop__echo');
+    assert.deepEqual(
+      await tools[0].runAsync({
+        args: { value: 'local-figma' },
+        toolContext: {
+          abortSignal: new AbortController().signal,
+        },
+      } as unknown as Parameters<(typeof tools)[number]['runAsync']>[0]),
+      {
+        content: [{
+          type: 'text',
+          text: '{"value":"local-figma"}',
+        }],
+      },
+    );
+  } finally {
+    await manager.close();
+    await fixtureServer.close();
+  }
 });

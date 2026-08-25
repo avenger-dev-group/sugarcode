@@ -307,6 +307,11 @@ const startApplication = async (): Promise<void> => {
       log(`[runtime] ${event.message}`);
     } else if (event.type === 'runtime.ready') {
       console.info(`[runtime] protocol ${event.protocolVersion} ready`);
+    } else if (
+      event.type === 'mcp.sessionAction' &&
+      event.action.accepted
+    ) {
+      runtimeMcpSessionController?.synchronizeActive(event.activeServerIds);
     }
   });
   runtimeSupervisor.start();
@@ -343,9 +348,9 @@ const startApplication = async (): Promise<void> => {
           'mcp.sessionAction',
           45_000,
         );
-        return event?.action.accepted === true;
+        return event?.action ?? { accepted: false, reason: 'unavailable' };
       } catch {
-        return false;
+        return { accepted: false, reason: 'unavailable' };
       }
     },
   });

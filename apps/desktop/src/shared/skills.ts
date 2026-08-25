@@ -6,7 +6,7 @@ export const SKILLS_EXPORT_CHANNEL = 'skills:export';
 export const SKILLS_IMPORT_ZIP_CHANNEL = 'skills:import-zip';
 export const SKILLS_EXPORT_ZIP_CHANNEL = 'skills:export-zip';
 
-export type SkillSource = 'user' | 'project';
+export type SkillSource = 'bundled' | 'user' | 'project';
 
 export type SkillSummary = Readonly<{
   id: string;
@@ -54,7 +54,9 @@ export const isSkillSummary = (value: unknown): value is SkillSummary =>
   /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value.name) &&
   typeof value.description === 'string' &&
   value.description.length <= 1_024 &&
-  (value.source === 'user' || value.source === 'project') &&
+  (value.source === 'bundled' ||
+    value.source === 'user' ||
+    value.source === 'project') &&
   typeof value.path === 'string' &&
   value.path.length > 0 &&
   value.path.length <= 2_048 &&

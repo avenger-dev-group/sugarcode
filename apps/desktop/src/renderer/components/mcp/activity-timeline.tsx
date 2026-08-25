@@ -23,56 +23,56 @@ const PRESENTATION: Record<
   }>
 > = {
   awaiting: {
-    label: 'Awaiting approval',
-    detail: 'No execution attempt is recorded.',
+    label: '等待授权',
+    detail: '尚未记录执行尝试。',
     Icon: CircleDashed,
     tone: 'text-process',
   },
   denied: {
-    label: 'Denied',
-    detail: 'The durable decision refused this call.',
+    label: '已拒绝',
+    detail: '已记录拒绝本次调用的决定。',
     Icon: Ban,
     tone: 'text-destructive',
   },
   approved: {
-    label: 'Approved',
-    detail: 'The call is queued; no attempt is recorded yet.',
+    label: '已允许',
+    detail: '调用已进入队列，尚未记录执行尝试。',
     Icon: ShieldCheck,
     tone: 'text-process',
   },
   attempted: {
-    label: 'Attempt recorded',
-    detail: 'Execution may have started; the outcome is pending.',
+    label: '已开始尝试',
+    detail: '执行可能已经开始，结果仍在等待中。',
     Icon: CircleDashed,
     tone: 'text-process',
   },
   succeeded: {
-    label: 'Completed',
-    detail: 'A durable MCP result receipt was recorded.',
+    label: '已完成',
+    detail: '已记录可持久保存的 MCP 结果凭据。',
     Icon: Check,
     tone: 'text-foreground',
   },
   toolError: {
-    label: 'Tool reported an error',
-    detail: 'The server completed the call with isError true.',
+    label: '工具返回错误',
+    detail: '服务完成调用，但将结果标记为错误。',
     Icon: TriangleAlert,
     tone: 'text-destructive',
   },
   failed: {
-    label: 'Call failed',
-    detail: 'A stable transport or protocol error was recorded.',
+    label: '调用失败',
+    detail: '已记录连接或协议错误。',
     Icon: TriangleAlert,
     tone: 'text-destructive',
   },
   stopped: {
-    label: 'Stopped',
-    detail: 'The Turn ended before a complete result was recorded.',
+    label: '已停止',
+    detail: '任务在完整结果记录前已经结束。',
     Icon: Ban,
     tone: 'text-secondary',
   },
   uncertain: {
-    label: 'Outcome unknown',
-    detail: 'An attempt exists without a durable result receipt.',
+    label: '结果未知',
+    detail: '存在执行尝试，但没有可持久保存的结果凭据。',
     Icon: CircleHelp,
     tone: 'text-destructive',
   },
@@ -83,15 +83,15 @@ export const McpActivityTimeline = ({
 }: McpActivityTimelineProps) => (
   <section
     className="ml-0 rounded-xl border bg-surface/55 sm:ml-10"
-    aria-label={`${activities.length} MCP tool ${activities.length === 1 ? 'call' : 'calls'}`}
+    aria-label={`${activities.length} 次 MCP 工具调用`}
   >
     <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
       <div className="flex items-center gap-2">
         <PlugZap className="size-4 text-tertiary" aria-hidden="true" />
-        <h3 className="text-sm font-medium">MCP activity</h3>
+        <h3 className="text-sm font-medium">MCP 调用记录</h3>
       </div>
       <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-tertiary">
-        {activities.length}/4 calls
+        {activities.length}/4 次调用
       </span>
     </header>
     <ol className="divide-y">
@@ -122,46 +122,46 @@ export const McpActivityTimeline = ({
               </p>
               <dl className="mt-3 grid gap-x-4 gap-y-2 font-mono text-[10px] leading-4 text-tertiary sm:grid-cols-2">
                 <div className="min-w-0">
-                  <dt className="uppercase tracking-[0.1em]">Server</dt>
+                  <dt className="uppercase tracking-[0.1em]">服务</dt>
                   <dd className="break-all text-secondary">{activity.serverId}</dd>
                 </div>
                 <div>
-                  <dt className="uppercase tracking-[0.1em]">Arguments</dt>
-                  <dd className="text-secondary">{activity.argumentsBytes} bytes</dd>
+                  <dt className="uppercase tracking-[0.1em]">参数</dt>
+                  <dd className="text-secondary">{activity.argumentsBytes} 字节</dd>
                 </div>
                 <div className="min-w-0 sm:col-span-2">
-                  <dt className="uppercase tracking-[0.1em]">Arguments receipt</dt>
+                  <dt className="uppercase tracking-[0.1em]">参数凭据</dt>
                   <dd className="break-all">{activity.argumentsSha256}</dd>
                 </div>
                 {activity.receipt?.type === 'completed' ? (
                   <>
                     <div>
-                      <dt className="uppercase tracking-[0.1em]">Retained result</dt>
+                      <dt className="uppercase tracking-[0.1em]">保留结果</dt>
                       <dd className="text-secondary">
-                        {activity.receipt.retainedBytes} bytes
-                        {activity.receipt.truncated ? ' · truncated' : ''}
+                        {activity.receipt.retainedBytes} 字节
+                        {activity.receipt.truncated ? ' · 已截断' : ''}
                       </dd>
                     </div>
                     <div>
-                      <dt className="uppercase tracking-[0.1em]">Blocks</dt>
+                      <dt className="uppercase tracking-[0.1em]">内容块</dt>
                       <dd className="text-secondary">
                         {activity.receipt.contentBlocks}
-                        {activity.receipt.structuredContent ? ' · structured' : ''}
+                        {activity.receipt.structuredContent ? ' · 结构化内容' : ''}
                       </dd>
                     </div>
                     <div className="min-w-0 sm:col-span-2">
-                      <dt className="uppercase tracking-[0.1em]">Result receipt</dt>
+                      <dt className="uppercase tracking-[0.1em]">结果凭据</dt>
                       <dd className="break-all">{activity.receipt.sha256}</dd>
                     </div>
                   </>
                 ) : activity.receipt?.type === 'error' ? (
                   <>
                     <div>
-                      <dt className="uppercase tracking-[0.1em]">Error kind</dt>
+                      <dt className="uppercase tracking-[0.1em]">错误类型</dt>
                       <dd className="break-all text-secondary">{activity.receipt.kind}</dd>
                     </div>
                     <div>
-                      <dt className="uppercase tracking-[0.1em]">Request state</dt>
+                      <dt className="uppercase tracking-[0.1em]">请求状态</dt>
                       <dd className="break-all text-secondary">{activity.receipt.requestState}</dd>
                     </div>
                   </>

@@ -35,17 +35,19 @@ const INITIAL_APPROVAL: McpApprovalStateSnapshot = {
 const sessionFailure = (reason: McpSessionActionResult['reason']): string => {
   switch (reason) {
     case 'incompatibleSelection':
-      return 'Select up to two stdio servers or one loopback HTTP server.';
+      return '最多选择 2 个本地命令服务，或单独选择 1 个本地 HTTP 服务。';
     case 'turnActive':
-      return 'Finish or stop the active Turn before changing MCP servers.';
+      return '请等待当前任务结束或停止后再更改 MCP 服务。';
     case 'approvalPending':
-      return 'Resolve the pending approval before changing MCP servers.';
+      return '请先处理正在等待的 MCP 调用授权。';
     case 'busy':
-      return 'The local Agent is already changing sessions.';
+      return '本地智能体正在切换连接，请稍后重试。';
+    case 'connectionFailed':
+      return '无法连接本地 MCP 服务。请确认服务已启动；使用 Figma Desktop 时，请打开设计文件、进入 Dev Mode 并启用 MCP Server 后重试。';
     case 'invalid':
-      return 'Choose at least one compatible configured server.';
+      return '请至少选择一个可用且兼容的服务。';
     case 'unavailable':
-      return 'The MCP session could not be changed safely.';
+      return 'MCP 运行时暂不可用，请稍后重试。';
     case 'accepted':
       return '';
   }
@@ -96,10 +98,10 @@ export const useStore = (): McpStore => {
     const unsubscribeSession = onMcpSessionStateChanged(acceptSession);
     const unsubscribeApproval = onMcpApprovalStateChanged(acceptApproval);
     void getMcpSessionState().then(acceptSession).catch(() => {
-      setActionError('MCP session state is unavailable.');
+      setActionError('无法读取 MCP 连接状态。');
     });
     void getMcpApprovalState().then(acceptApproval).catch(() => {
-      setActionError('MCP approval is unavailable.');
+      setActionError('无法读取 MCP 授权状态。');
     });
     return () => {
       unsubscribeSession();
@@ -132,7 +134,7 @@ export const useStore = (): McpStore => {
           setSessionActionPending(false);
         }
       } catch {
-        setActionError('The MCP session could not be changed safely.');
+        setActionError('SugarCode 无法提交 MCP 连接请求，请重启应用后重试。');
         setSessionActionPending(false);
       }
     },
@@ -180,15 +182,15 @@ export const useStore = (): McpStore => {
         if (!response.accepted) {
           setActionError(
             response.reason === 'stale'
-              ? 'This MCP request is no longer active.'
-              : 'MCP approval is unavailable.',
+              ? '这次 MCP 调用已经失效。'
+              : 'MCP 授权暂不可用。',
           );
           setApprovalActionPendingIds((current) =>
             current.filter((id) => id !== request.presentationId),
           );
         }
       } catch {
-        setActionError('MCP approval is unavailable.');
+        setActionError('MCP 授权暂不可用。');
         setApprovalActionPendingIds((current) =>
           current.filter((id) => id !== request.presentationId),
         );

@@ -1,4 +1,10 @@
-export type ComposerReferenceKind = 'command' | 'skill' | 'knowledge' | 'file';
+export type ComposerReferenceKind =
+  | 'application'
+  | 'command'
+  | 'skill'
+  | 'knowledge'
+  | 'link'
+  | 'file';
 
 export type ComposerReference = Readonly<{
   kind: ComposerReferenceKind;
@@ -14,7 +20,21 @@ export type ComposerSubmission = Readonly<{
 }>;
 
 const REFERENCE_PATTERN =
-  /\/(?:plan|review|fix|test|explain|init|draw|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@知识库(?::)?`[^`\r\n]+`|@知识库:[^\s@$]+|@知识库[^\s@$:`]+|@`[^`\r\n]+`|@[^\s@$]+/gu;
+  /\/(?:plan|review|fix|test|explain|init|draw|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@https?:\/\/[^\s@$]+|@知识库(?::)?`[^`\r\n]+`|@知识库:[^\s@$]+|@知识库[^\s@$:`]+|@`[^`\r\n]+`|@[^\s@$]+/gu;
+
+const APPLICATION_SKILLS = new Set(['figma']);
+
+export const isFigmaUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      (url.hostname === 'figma.com' || url.hostname.endsWith('.figma.com'))
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const isComposerLineLeading = (
   value: string,
@@ -44,10 +64,11 @@ const referenceFromMatch = (
       : null;
   }
   if (value.startsWith('$')) {
+    const target = value.slice(1);
     return {
-      kind: 'skill',
+      kind: APPLICATION_SKILLS.has(target) ? 'application' : 'skill',
       value,
-      target: value.slice(1),
+      target,
       start,
       end: start + value.length,
     };
@@ -61,6 +82,15 @@ const referenceFromMatch = (
       kind: 'knowledge',
       value,
       target: rawTarget.startsWith('`') ? rawTarget.slice(1, -1) : rawTarget,
+      start,
+      end: start + value.length,
+    };
+  }
+  if (value.startsWith('@http://') || value.startsWith('@https://')) {
+    return {
+      kind: 'link',
+      value,
+      target: value.slice(1),
       start,
       end: start + value.length,
     };

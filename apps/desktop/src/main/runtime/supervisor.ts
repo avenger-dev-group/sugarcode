@@ -293,11 +293,14 @@ export class RuntimeSupervisor {
     } else if (value.type === 'mcp.sessionAction') {
       const command = this.pendingMcpSessionCommands.get(value.requestId);
       this.pendingMcpSessionCommands.delete(value.requestId);
-      if (command && value.action.accepted) {
-        this.activeMcpSession = {
-          ...command,
-          serverIds: [...value.activeServerIds],
-        };
+      if (value.action.accepted) {
+        this.activeMcpSession = command
+          ? { ...command, serverIds: [...value.activeServerIds] }
+          : {
+              type: 'mcp.sessionSet',
+              requestId: value.requestId,
+              serverIds: [...value.activeServerIds],
+            };
       }
     } else if (
       value.type === 'approval.requested' ||

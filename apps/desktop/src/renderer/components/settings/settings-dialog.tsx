@@ -3,7 +3,6 @@ import {
   Cpu,
   Monitor,
   Moon,
-  PlugZap,
   Settings,
   Sun,
   X,
@@ -30,21 +29,12 @@ import { CommandEnvironmentSettings } from './command-environment-settings';
 import { useStore } from './use-store';
 
 const SETTINGS_SECTIONS: readonly Readonly<{
-  id: SettingsSection | 'mcp';
+  id: SettingsSection;
   label: string;
   icon: typeof Monitor;
-  disabled?: boolean;
-  notice?: string;
 }>[] = [
   { id: 'general', label: '通用', icon: Monitor },
   { id: 'model', label: '模型', icon: Cpu },
-  {
-    id: 'mcp',
-    label: 'MCP',
-    icon: PlugZap,
-    disabled: true,
-    notice: '即将推出',
-  },
   { id: 'about', label: '关于', icon: CircleHelp },
 ];
 
@@ -174,7 +164,7 @@ export const SettingsDialog = ({
             设置
           </DialogTitle>
           <DialogDescription className="sr-only">
-            配置 SugarCode 桌面端、模型连接、MCP 服务和应用信息。
+            配置 SugarCode 桌面端、模型连接和应用信息。
           </DialogDescription>
           <DialogClose asChild>
             <Button
@@ -194,26 +184,18 @@ export const SettingsDialog = ({
             className="border-b bg-surface/45 p-2 sm:border-r sm:border-b-0"
             aria-label="设置分类"
           >
-            <div className="grid grid-cols-4 gap-1 sm:block sm:space-y-1">
+            <div className="grid grid-cols-3 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const Icon = section.icon;
-                const current =
-                  section.id !== 'mcp' && store.section === section.id;
+                const current = store.section === section.id;
                 return (
                   <button
                     key={section.id}
                     type="button"
-                    disabled={section.disabled}
                     aria-current={current ? 'page' : undefined}
-                    onClick={() => {
-                      if (section.id !== 'mcp') {
-                        store.setSection(section.id);
-                      }
-                    }}
+                    onClick={() => store.setSection(section.id)}
                     className={`flex w-full min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:justify-start sm:gap-2.5 sm:px-3 sm:text-left ${
-                      section.disabled
-                        ? 'cursor-not-allowed border-transparent text-tertiary'
-                        : current
+                      current
                         ? 'border-brand/25 bg-brand/10 text-brand'
                         : 'border-transparent text-secondary hover:bg-surface-hover hover:text-foreground'
                     }`}
@@ -221,11 +203,6 @@ export const SettingsDialog = ({
                     <Icon className="size-4 text-tertiary" aria-hidden="true" />
                     <span className="min-w-0 leading-5">
                       <span className="block">{section.label}</span>
-                      {section.notice ? (
-                        <span className="block text-[10px] leading-3 font-medium text-warning">
-                          {section.notice}
-                        </span>
-                      ) : null}
                     </span>
                   </button>
                 );

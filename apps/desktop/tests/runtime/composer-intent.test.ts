@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   composerIntentInstruction,
   composerModelText,
+  composerRequiresFigmaMcp,
   composerTurnMode,
 } from '../../src/runtime/composer-intent.ts';
 
@@ -39,6 +40,41 @@ test('ordinary messages add no Composer control instruction', () => {
   assert.equal(
     composerIntentInstruction([{ type: 'text', text: '解释这段代码' }]),
     '',
+  );
+});
+
+test('Figma application and URL metadata preserve MCP semantics', () => {
+  const url = 'https://www.figma.com/design/example?node-id=435-10640';
+  const instruction = composerIntentInstruction([
+    {
+      type: 'text',
+      text: `实现这个界面\n@${url}\n$figma`,
+    },
+  ]);
+
+  assert.match(instruction, /## Applications/u);
+  assert.match(instruction, /\$figma/u);
+  assert.match(instruction, /## External links/u);
+  assert.match(instruction, new RegExp(url.replace(/[?]/gu, '\\?'), 'u'));
+  assert.doesNotMatch(instruction, /Workspace file references/u);
+  assert.match(instruction, /Do not pass them to workspace_read/u);
+  assert.equal(
+    composerRequiresFigmaMcp([
+      { type: 'text', text: `实现这个界面\n@${url}` },
+    ]),
+    true,
+  );
+  assert.equal(
+    composerRequiresFigmaMcp([
+      { type: 'text', text: '$figma-design-to-code\n实现当前选区' },
+    ]),
+    true,
+  );
+  assert.equal(
+    composerRequiresFigmaMcp([
+      { type: 'text', text: '@https://example.com/design\n解释链接' },
+    ]),
+    false,
   );
 });
 

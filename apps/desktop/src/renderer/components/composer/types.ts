@@ -17,16 +17,24 @@ export type ComposerToken = Readonly<{
 
 export type ComposerSuggestion = Readonly<{
   id: string;
-  kind: 'command' | 'skill' | 'knowledge' | 'file';
+  kind: 'application' | 'command' | 'skill' | 'knowledge' | 'file';
   label: string;
   alias?: string;
+  brand?: 'figma';
   description: string;
   detail?: string;
   insertion: string;
 }>;
 
 export type ComposerDisplaySegment = Readonly<{
-  kind: 'text' | 'command' | 'skill' | 'knowledge' | 'file';
+  kind:
+    | 'text'
+    | 'application'
+    | 'command'
+    | 'skill'
+    | 'knowledge'
+    | 'link'
+    | 'file';
   text: string;
 }>;
 

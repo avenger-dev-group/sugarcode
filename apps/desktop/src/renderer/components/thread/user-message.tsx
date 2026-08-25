@@ -22,6 +22,25 @@ import { UserMessageAttachments } from './user-message-attachments';
 const COLLAPSED_USER_MESSAGE_HEIGHT = 220;
 const MAX_MESSAGE_EDITOR_HEIGHT = 320;
 
+const referenceKindLabel = (
+  kind: UserMessageView['references'][number]['kind'],
+): string => {
+  switch (kind) {
+    case 'application':
+      return '应用';
+    case 'command':
+      return '命令';
+    case 'skill':
+      return 'Skill';
+    case 'knowledge':
+      return '知识库';
+    case 'link':
+      return '链接';
+    case 'file':
+      return '文件';
+  }
+};
+
 type UserMessageView = Extract<
   TranscriptMessageViewModel,
   { role: 'user' }
@@ -73,13 +92,7 @@ const MessageReferences = ({
           title={reference.target}
         >
           <span className="text-tertiary">
-            {reference.kind === 'command'
-              ? '命令'
-              : reference.kind === 'skill'
-                ? 'Skill'
-                : reference.kind === 'knowledge'
-                  ? '知识库'
-                  : '文件'}
+            {referenceKindLabel(reference.kind)}
           </span>
           <span className="truncate font-medium">{reference.value}</span>
         </span>

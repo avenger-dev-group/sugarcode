@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   isSkillContent,
+  isSkillSummary,
   isSkillsActionResult,
   isSkillsInspection,
 } from '../../src/shared/skills.ts';
@@ -32,6 +33,17 @@ test('Skills bridge contracts bound inventory and verified content', () => {
   );
   assert.equal(isSkillContent({ skill, content: '你好\n' }), true);
   assert.equal(isSkillContent({ skill, content: 'short' }), false);
+});
+
+test('Skills inventory accepts bundled product Skills', () => {
+  assert.equal(
+    isSkillSummary({
+      ...skill,
+      source: 'bundled',
+      path: '内置/figma-design-to-code/SKILL.md',
+    }),
+    true,
+  );
 });
 
 test('Skills actions accept only the bounded result union', () => {

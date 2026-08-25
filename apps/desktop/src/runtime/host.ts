@@ -28,6 +28,7 @@ import { buildAgentInstructions } from './agent-instructions.ts';
 import {
   composerIntentInstruction,
   composerModelText,
+  composerRequiresFigmaMcp,
   composerTurnMode,
 } from './composer-intent.ts';
 import {
@@ -3855,6 +3856,21 @@ export class RuntimeHost {
         void this.generateTitle(command, resolved, controller.signal);
       }
       const turnMode = composerTurnMode(turnContent);
+      let applicationMcpInstruction = '';
+      if (composerRequiresFigmaMcp(turnContent)) {
+        const action = await this.mcp.ensureApplicationActive('figma');
+        if (action.accepted) {
+          this.emit({
+            type: 'mcp.sessionAction',
+            requestId: command.requestId,
+            action,
+            activeServerIds: this.mcp.getActiveServerIds(),
+          });
+        } else {
+          applicationMcpInstruction =
+            '# Figma capability availability\n\nThe request includes a Figma application, Skill, or link, but the configured Figma Desktop MCP server could not be activated for this Turn. State that exact connection problem and ask the user to confirm Figma Desktop Dev Mode MCP is running. Do not invent Figma tool names, suggest a Figma CLI, or fabricate design context.';
+        }
+      }
       const turnAccess =
         turnMode === 'execute'
           ? ('workspaceWrite' as const)
@@ -4142,6 +4158,7 @@ export class RuntimeHost {
           collaborationEnabled: collaborationTools.length > 0,
           composerInstruction,
           skillInstruction: [turnSkills.instruction, turnKnowledge.instruction]
+            .concat(applicationMcpInstruction)
             .filter(Boolean)
             .join('\n\n'),
         }),

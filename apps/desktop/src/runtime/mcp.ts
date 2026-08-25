@@ -76,6 +76,25 @@ const connectionParams = (server: McpServerConfig): MCPConnectionParams =>
         terminateOnClose: true,
       };
 
+const isFigmaDesktopServer = (server: McpServerConfig): boolean => {
+  if (server.id.toLocaleLowerCase().includes('figma')) {
+    return true;
+  }
+  if (server.transport !== 'loopbackStreamableHttp') {
+    return false;
+  }
+  try {
+    const endpoint = new URL(server.endpoint);
+    return (
+      ['127.0.0.1', 'localhost'].includes(endpoint.hostname) &&
+      endpoint.port === '3845' &&
+      endpoint.pathname === '/mcp'
+    );
+  } catch {
+    return false;
+  }
+};
+
 class ApprovedMcpTool extends BaseTool {
   private readonly delegate: BaseTool;
   private readonly serverId: string;
@@ -125,6 +144,27 @@ export class RuntimeMcpManager {
   getActiveServerIds = (): readonly string[] =>
     this.active.map((server) => server.id);
 
+  ensureApplicationActive = async (
+    application: string,
+  ): Promise<McpSessionActionResult> => {
+    if (application !== 'figma' || !this.inspection) {
+      return result('unavailable');
+    }
+    const server =
+      this.inspection.servers.find(
+        (candidate) =>
+          candidate.transport === 'loopbackStreamableHttp' &&
+          isFigmaDesktopServer(candidate),
+      ) ?? this.inspection.servers.find(isFigmaDesktopServer);
+    if (!server) {
+      return result('unavailable');
+    }
+    if (this.active.some((candidate) => candidate.id === server.id)) {
+      return result('accepted');
+    }
+    return this.setActive([server.id]);
+  };
+
   setActive = async (
     serverIds: readonly string[],
   ): Promise<McpSessionActionResult> => {
@@ -162,7 +202,13 @@ export class RuntimeMcpManager {
       }
     } catch {
       await Promise.allSettled(next.map(({ toolset }) => toolset.close()));
-      return result('unavailable');
+      return result(
+        selected.some(
+          (server) => server.transport === 'loopbackStreamableHttp',
+        )
+          ? 'connectionFailed'
+          : 'unavailable',
+      );
     }
     const previous = this.active;
     this.active = next;

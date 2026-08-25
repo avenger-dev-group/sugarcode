@@ -2,6 +2,7 @@ import {
   CommandApprovalModeControl,
   CommandApprovalView,
 } from '@/renderer/components/command-approval/command-approval-surface';
+import { CapabilityCenter } from '@/renderer/components/capabilities/capability-center';
 import { useStore as useCommandApprovalStore } from '@/renderer/components/command-approval/use-store';
 import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
 import { useStore as useMcpStore } from '@/renderer/components/mcp/use-store';
@@ -11,7 +12,6 @@ import { useStore as useThreadStore } from '@/renderer/components/thread/use-sto
 import { OrchestrationStoreProvider } from '@/renderer/components/orchestration/use-store';
 import { UpdateAction } from '@/renderer/components/update/update-action';
 import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
-import { SkillsCenter } from '@/renderer/components/skills/skills-center';
 import { KnowledgeCenter } from '@/renderer/components/knowledge/knowledge-center';
 import { GlobalSearch } from '@/renderer/components/search/global-search';
 import { useEffect, useState } from 'react';
@@ -62,7 +62,7 @@ export const FoundationScreen = () => {
   };
   const openSkills = (skillId?: string): void => {
     setSkillTargetId(skillId);
-    foundation.setSurface('skills');
+    foundation.setSurface('capabilities');
   };
 
   return (
@@ -135,8 +135,9 @@ export const FoundationScreen = () => {
                   initialKnowledgeBaseId={knowledgeTargetId}
                   onInitialKnowledgeBaseHandled={() => setKnowledgeTargetId(undefined)}
                 />
-              ) : foundation.surface === 'skills' ? (
-                <SkillsCenter
+              ) : foundation.surface === 'capabilities' ? (
+                <CapabilityCenter
+                  turnBusy={turnBusy}
                   initialSkillId={skillTargetId}
                   onInitialSkillHandled={() => setSkillTargetId(undefined)}
                 />

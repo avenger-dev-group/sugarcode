@@ -14,7 +14,9 @@ type RestartBlock =
 
 type McpSessionControllerOptions = Readonly<{
   getRestartBlock: () => RestartBlock;
-  restart: (serverIds: readonly string[]) => Promise<boolean>;
+  restart: (
+    serverIds: readonly string[],
+  ) => Promise<McpSessionActionResult>;
 }>;
 
 const result = (
@@ -30,6 +32,7 @@ const sortIds = (ids: Iterable<string>): string[] =>
   );
 
 export class McpSessionController {
+  private readonly options: McpSessionControllerOptions;
   private readonly listeners = new Set<
     (snapshot: McpSessionStateSnapshot) => void
   >();
@@ -40,7 +43,9 @@ export class McpSessionController {
   private activeServerIds: string[] = [];
   private actionNotice: string | undefined;
 
-  constructor(private readonly options: McpSessionControllerOptions) {}
+  constructor(options: McpSessionControllerOptions) {
+    this.options = options;
+  }
 
   getSnapshot = (): McpSessionStateSnapshot => ({
     revision: this.revision,
@@ -74,6 +79,15 @@ export class McpSessionController {
   };
 
   getActiveServerIds = (): readonly string[] => this.activeServerIds;
+
+  synchronizeActive = (serverIds: readonly string[]): void => {
+    const configured = new Set(this.servers.map((server) => server.id));
+    const active = sortIds(serverIds.filter((id) => configured.has(id)));
+    this.selectedServerIds = active;
+    this.activeServerIds = active;
+    this.actionNotice = undefined;
+    this.publish(active.length > 0 ? 'enabled' : 'disabled');
+  };
 
   toggle = (serverId: unknown): McpSessionActionResult => {
     if (typeof serverId !== 'string') {
@@ -150,25 +164,29 @@ export class McpSessionController {
     const previous = [...this.activeServerIds];
     this.actionNotice = undefined;
     this.publish(pendingStatus);
-    if (await this.options.restart(nextServerIds)) {
+    const attempt = await this.options.restart(nextServerIds);
+    if (attempt.accepted) {
       this.activeServerIds = [...nextServerIds];
       this.selectedServerIds = [...nextServerIds];
       this.publish(nextServerIds.length > 0 ? 'enabled' : 'disabled');
       return result('accepted');
     }
     this.actionNotice =
-      'The selected MCP servers could not be enabled. Restoring the previous session.';
+      attempt.reason === 'connectionFailed'
+        ? '无法连接所选的本地 MCP 服务，请确认服务已启动后重试。'
+        : '所选 MCP 服务未能启用，正在恢复之前的连接。';
     this.publish('rollingBack');
-    if (await this.options.restart(previous)) {
+    const rollback = await this.options.restart(previous);
+    if (rollback.accepted) {
       this.activeServerIds = previous;
-      this.selectedServerIds = previous;
+      this.selectedServerIds = [...nextServerIds];
       this.publish(previous.length > 0 ? 'enabled' : 'disabled');
-      return result('unavailable');
+      return result(attempt.reason);
     }
     this.activeServerIds = [];
     this.selectedServerIds = [];
     this.actionNotice =
-      'The local Agent and its previous MCP session could not be restored.';
+      '本地智能体和之前的 MCP 连接均未能恢复。';
     this.publish('unavailable');
     return result('unavailable');
   };

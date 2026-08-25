@@ -932,6 +932,16 @@ test('private MCP protocol keeps configuration and approval events provider-neut
     }),
     false,
   );
+  assert.equal(
+    isRuntimeEvent({
+      type: 'mcp.sessionAction',
+      sequence: 3,
+      requestId: 'request-session',
+      action: { accepted: false, reason: 'connectionFailed' },
+      activeServerIds: [],
+    }),
+    true,
+  );
   const recoveredApproval = {
     type: 'mcp.approvalRequested',
     sequence: 4,

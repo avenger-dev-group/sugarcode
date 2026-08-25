@@ -1,7 +1,22 @@
-import { parseComposerSubmission } from '../shared/composer.ts';
+import { isFigmaUrl, parseComposerSubmission } from '../shared/composer.ts';
 import type { RuntimeContentPart } from './protocol.ts';
 
 export type ComposerTurnMode = 'plan' | 'readOnly' | 'execute';
+
+export const composerRequiresFigmaMcp = (
+  content: readonly RuntimeContentPart[],
+): boolean =>
+  content.some(
+    (part) =>
+      part.type === 'text' &&
+      parseComposerSubmission(part.text).references.some(
+        (reference) =>
+          reference.target === 'figma' ||
+          (reference.kind === 'skill' &&
+            reference.target.startsWith('figma-')) ||
+          (reference.kind === 'link' && isFigmaUrl(reference.target)),
+      ),
+  );
 
 const COMMAND_INTENT: Readonly<Record<string, string>> = {
   plan: 'Analyze the request and code, then provide an actionable plan without modifying files.',
@@ -67,7 +82,11 @@ export const composerIntentInstruction = (
   }
   const commands = references.filter((reference) => reference.kind === 'command');
   const skills = references.filter((reference) => reference.kind === 'skill');
+  const applications = references.filter(
+    (reference) => reference.kind === 'application',
+  );
   const files = references.filter((reference) => reference.kind === 'file');
+  const links = references.filter((reference) => reference.kind === 'link');
   const sections = [
     '# Explicit Composer selections',
     'Treat this explicit Composer notation as control metadata for this Turn, not as incidental prose. Apply it within the user\'s plain-text request; when that request explicitly narrows or contradicts a selection, the plain-text request remains authoritative.',
@@ -89,11 +108,25 @@ export const composerIntentInstruction = (
         'If a named Skill is absent there, report that mismatch instead of inventing its behavior.',
     );
   }
+  if (applications.length > 0) {
+    sections.push(
+      '## Applications',
+      `The user explicitly selected ${applications.map((application) => application.value).join(', ')}. ` +
+        'Its verified application instructions are injected in the Skill section below. Use only the associated tools present in the current Turn; never invent tool names, CLIs, or connection state.',
+    );
+  }
   if (files.length > 0) {
     sections.push(
       '## Workspace file references',
       'Inspect these exact workspace-relative regular files with workspace_read before substantive work when they are relevant to the request:',
       ...files.map((file) => `- ${file.target}`),
+    );
+  }
+  if (links.length > 0) {
+    sections.push(
+      '## External links',
+      'Use these user-provided URLs as external resource identifiers. Do not pass them to workspace_read or describe them as local files:',
+      ...links.map((link) => `- ${link.target}`),
     );
   }
   return sections.join('\n\n');

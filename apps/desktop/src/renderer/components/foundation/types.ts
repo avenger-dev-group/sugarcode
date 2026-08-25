@@ -4,7 +4,7 @@ import type {
 } from 'react';
 
 export type Theme = 'light' | 'dark';
-export type AppSurface = 'workbench' | 'knowledge' | 'skills';
+export type AppSurface = 'workbench' | 'knowledge' | 'capabilities';
 
 export type PanelResizeHandle = Readonly<{
   dragging: boolean;

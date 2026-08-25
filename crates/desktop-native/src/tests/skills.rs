@@ -59,7 +59,20 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
             .expect("inspect Skills"),
     );
     assert_eq!(inspection["workspaceAvailable"], true);
-    assert_eq!(inspection["skills"].as_array().map(Vec::len), Some(2));
+    assert_eq!(inspection["skills"].as_array().map(Vec::len), Some(6));
+    for name in [
+        "figma",
+        "figma-code-connect",
+        "figma-design-to-code",
+        "figma-selection-context",
+    ] {
+        let bundled = inspection["skills"]
+            .as_array()
+            .and_then(|skills| skills.iter().find(|skill| skill["name"] == name))
+            .expect("bundled Figma Skill");
+        assert_eq!(bundled["source"], "bundled");
+        assert_eq!(bundled["enabled"], true);
+    }
     let review = inspection["skills"]
         .as_array()
         .and_then(|skills| skills.iter().find(|skill| skill["name"] == "review"))
@@ -92,8 +105,12 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
             .skills_context_json("workspace-1".to_owned())
             .expect("Skills context"),
     );
-    assert_eq!(context["skills"].as_array().map(Vec::len), Some(1));
-    assert_eq!(context["skills"][0]["name"], "testing");
+    assert_eq!(context["skills"].as_array().map(Vec::len), Some(5));
+    assert!(
+        context["skills"]
+            .as_array()
+            .is_some_and(|skills| skills.iter().any(|skill| skill["name"] == "testing"))
+    );
 
     fs::write(
         workspace.path().join(".agents/skills/review/SKILL.md"),
@@ -150,6 +167,52 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
             .as_ref()
     );
     assert!(destination.path().join("imported/SKILL.md").is_file());
+}
+
+#[test]
+fn native_bundled_figma_skill_can_be_disabled_and_exported() {
+    let data = tempfile::tempdir().expect("data directory");
+    let runtime =
+        NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
+    let inspection = json(
+        runtime
+            .inspect_skills_json(None)
+            .expect("inspect bundled Skills"),
+    );
+    let skill = inspection["skills"]
+        .as_array()
+        .and_then(|skills| {
+            skills
+                .iter()
+                .find(|skill| skill["name"] == "figma-design-to-code")
+        })
+        .expect("bundled design-to-code Skill");
+    let skill_id = skill["id"].as_str().expect("bundled Skill id").to_owned();
+
+    let disabled = json(
+        runtime
+            .set_skill_enabled_json(None, skill_id.clone(), false)
+            .expect("disable bundled Skill"),
+    );
+    assert_eq!(
+        disabled["skills"]
+            .as_array()
+            .and_then(|skills| skills.iter().find(|skill| skill["id"] == skill_id))
+            .and_then(|skill| skill["enabled"].as_bool()),
+        Some(false)
+    );
+
+    let destination = tempfile::tempdir().expect("export destination");
+    runtime
+        .export_skill_json(
+            None,
+            skill_id,
+            destination.path().to_string_lossy().into_owned(),
+        )
+        .expect("export bundled Skill");
+    let exported = fs::read_to_string(destination.path().join("figma-design-to-code/SKILL.md"))
+        .expect("read exported bundled Skill");
+    assert!(exported.contains("name: figma-design-to-code"));
 }
 
 #[cfg(unix)]

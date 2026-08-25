@@ -1,4 +1,5 @@
 import {
+  Blocks,
   CircleAlert,
   CircleCheck,
   CircleHelp,
@@ -10,7 +11,6 @@ import {
   Plus,
   Search,
   LibraryBig,
-  Sparkles,
   ShieldQuestion,
   Trash2,
 } from 'lucide-react';
@@ -527,9 +527,9 @@ export const ThreadNavigator = ({
               onClick={onOpenKnowledge}
             />
             <NavigatorSurfaceButton
-              active={surface === 'skills'}
-              icon={Sparkles}
-              label="技能"
+              active={surface === 'capabilities'}
+              icon={Blocks}
+              label="能力中心"
               onClick={onOpenSkills}
             />
           </div>

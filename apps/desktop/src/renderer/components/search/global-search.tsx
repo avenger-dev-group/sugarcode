@@ -1,4 +1,5 @@
 import {
+  Blocks,
   Folder,
   Import,
   LibraryBig,
@@ -162,8 +163,8 @@ export const GlobalSearch = ({
         activate: closeAnd(async () => { await importSkill(); onOpenSkills(); }),
       },
       {
-        id: 'action:skills', group: '快捷操作', label: '打开技能',
-        description: '查看和管理本地 Skills', keywords: ['import', 'export'], icon: Zap,
+        id: 'action:skills', group: '快捷操作', label: '打开能力中心',
+        description: '管理技能与 MCP 工具连接', keywords: ['skill', 'mcp', 'import', 'export'], icon: Blocks,
         activate: closeAnd(() => onOpenSkills()),
       },
     ];

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   findComposerReferences,
+  isFigmaUrl,
   parseComposerSubmission,
 } from '../../src/shared/composer.ts';
 
@@ -95,4 +96,28 @@ test('legacy knowledge references with a colon remain readable', () => {
     submission.references.map(({ kind, target }) => ({ kind, target })),
     [{ kind: 'knowledge', target: '产品规范' }],
   );
+});
+
+test('Figma URLs are external links and the Figma aggregate is an application', () => {
+  const url =
+    'https://www.figma.com/design/Z6YHudXOmLXVtu1fZRoSSQ/OMELINK-v4.0?node-id=435-10640&m=dev';
+  const submission = parseComposerSubmission(
+    `实现这个界面，使用 html\n@${url}\n$figma`,
+  );
+
+  assert.equal(submission.text, '实现这个界面，使用 html');
+  assert.deepEqual(
+    submission.references.map(({ kind, value, target }) => ({
+      kind,
+      value,
+      target,
+    })),
+    [
+      { kind: 'link', value: `@${url}`, target: url },
+      { kind: 'application', value: '$figma', target: 'figma' },
+    ],
+  );
+  assert.equal(isFigmaUrl(url), true);
+  assert.equal(isFigmaUrl('https://example.com/design/file'), false);
+  assert.equal(isFigmaUrl('not-a-url'), false);
 });

@@ -2,6 +2,7 @@ import {
   findComposerReferences,
   isComposerLineLeading,
 } from '../../../shared/composer.ts';
+import type { SkillSummary } from '../../../shared/skills.ts';
 
 import type {
   ComposerSuggestion,
@@ -77,6 +78,64 @@ const COMMANDS: readonly ComposerSuggestion[] = [
   },
 ];
 
+const FIGMA_SKILL_LABELS: Readonly<Record<string, string>> = {
+  'figma-code-connect': 'Figma: Code Connect',
+  'figma-design-to-code': 'Figma: 设计转代码',
+  'figma-selection-context': 'Figma: 读取设计上下文',
+};
+
+const skillSourceLabel = (skill: SkillSummary): string =>
+  skill.source === 'project'
+    ? '项目 Skill'
+    : skill.source === 'bundled'
+      ? '内置 Skill'
+      : '个人 Skill';
+
+const skillSuggestion = (skill: SkillSummary): ComposerSuggestion => {
+  if (skill.name === 'figma') {
+    return {
+      id: `application:${skill.id}`,
+      kind: 'application',
+      label: 'Figma',
+      alias: '$figma',
+      brand: 'figma',
+      description: '连接 Figma Desktop 画布，读取设计并协助构建产品界面',
+      detail: '应用',
+      insertion: '$figma',
+    };
+  }
+  const figmaLabel = FIGMA_SKILL_LABELS[skill.name];
+  return {
+    id: skill.id,
+    kind: 'skill',
+    label: figmaLabel ?? skill.name,
+    alias: figmaLabel ? `$${skill.name}` : undefined,
+    brand: figmaLabel ? 'figma' : undefined,
+    description: skill.description,
+    detail: skillSourceLabel(skill),
+    insertion: `$${skill.name}`,
+  };
+};
+
+export const skillSuggestions = (
+  skills: readonly SkillSummary[],
+  query: string,
+): readonly ComposerSuggestion[] => {
+  const normalized = query.trim().toLocaleLowerCase();
+  return skills
+    .map(skillSuggestion)
+    .filter((suggestion) =>
+      `${suggestion.label} ${suggestion.alias ?? ''} ${suggestion.description}`
+        .toLocaleLowerCase()
+        .includes(normalized),
+    )
+    .sort((left, right) => {
+      const leftRank = left.kind === 'application' ? 0 : left.brand === 'figma' ? 1 : 2;
+      const rightRank = right.kind === 'application' ? 0 : right.brand === 'figma' ? 1 : 2;
+      return leftRank - rightRank;
+    });
+};
+
 const isTrigger = (value: string): value is ComposerTrigger =>
   value === '/' || value === '$' || value === '@';
 
@@ -95,6 +154,9 @@ export const findComposerToken = (
   }
   const trigger = marker;
   const query = match[2] ?? '';
+  if (trigger === '@' && /^https?:\/\//iu.test(query)) {
+    return null;
+  }
   const start = beforeCaret.length - query.length - 1;
   if (trigger === '/' && !isComposerLineLeading(beforeCaret, start)) {
     return null;

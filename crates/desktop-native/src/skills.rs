@@ -30,10 +30,26 @@ struct SkillEntry {
     bytes: usize,
     enabled: bool,
     #[serde(skip_serializing)]
-    source_directory: PathBuf,
+    source_directory: Option<PathBuf>,
     #[serde(skip_serializing)]
     content: String,
 }
+
+const BUNDLED_SKILLS: &[(&str, &str)] = &[
+    ("figma", include_str!("../bundled-skills/figma/SKILL.md")),
+    (
+        "figma-code-connect",
+        include_str!("../bundled-skills/figma-code-connect/SKILL.md"),
+    ),
+    (
+        "figma-design-to-code",
+        include_str!("../bundled-skills/figma-design-to-code/SKILL.md"),
+    ),
+    (
+        "figma-selection-context",
+        include_str!("../bundled-skills/figma-selection-context/SKILL.md"),
+    ),
+];
 
 pub(super) fn inspect_skills_json(
     user_root: &Path,
@@ -220,45 +236,54 @@ pub(super) fn export_skill_zip(
     if destination.exists() {
         return Err("The export ZIP already exists.".to_owned());
     }
-    validate_copy_tree(&skill.source_directory)?;
     let file = File::create(destination).map_err(|error| error.to_string())?;
     let mut writer = ZipWriter::new(file);
     let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
-    let mut pending = vec![skill.source_directory.clone()];
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|error| error.to_string())?;
-            if file_type.is_symlink() {
-                return Err("Skill directories cannot contain symbolic links.".to_owned());
+    if let Some(source_directory) = &skill.source_directory {
+        validate_copy_tree(source_directory)?;
+        let mut pending = vec![source_directory.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                let path = entry.path();
+                let file_type = entry.file_type().map_err(|error| error.to_string())?;
+                if file_type.is_symlink() {
+                    return Err("Skill directories cannot contain symbolic links.".to_owned());
+                }
+                if file_type.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(source_directory)
+                    .map_err(|error| error.to_string())?;
+                let archive_name = format!(
+                    "{}/{}",
+                    skill.name,
+                    relative.to_string_lossy().replace('\\', "/")
+                );
+                writer
+                    .start_file(archive_name, options)
+                    .map_err(|error| error.to_string())?;
+                let mut source = File::open(&path).map_err(|error| error.to_string())?;
+                let mut buffer = Vec::new();
+                source
+                    .read_to_end(&mut buffer)
+                    .map_err(|error| error.to_string())?;
+                writer
+                    .write_all(&buffer)
+                    .map_err(|error| error.to_string())?;
             }
-            if file_type.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            let relative = path
-                .strip_prefix(&skill.source_directory)
-                .map_err(|error| error.to_string())?;
-            let archive_name = format!(
-                "{}/{}",
-                skill.name,
-                relative.to_string_lossy().replace('\\', "/")
-            );
-            writer
-                .start_file(archive_name, options)
-                .map_err(|error| error.to_string())?;
-            let mut source = File::open(&path).map_err(|error| error.to_string())?;
-            let mut buffer = Vec::new();
-            source
-                .read_to_end(&mut buffer)
-                .map_err(|error| error.to_string())?;
-            writer
-                .write_all(&buffer)
-                .map_err(|error| error.to_string())?;
         }
+    } else {
+        writer
+            .start_file(format!("{}/SKILL.md", skill.name), options)
+            .map_err(|error| error.to_string())?;
+        writer
+            .write_all(skill.content.as_bytes())
+            .map_err(|error| error.to_string())?;
     }
     writer.finish().map_err(|error| error.to_string())?;
     Ok(json!({ "path": destination.to_string_lossy() }))
@@ -277,13 +302,21 @@ pub(super) fn export_skill(
     if destination.exists() {
         return Err("The export destination already contains this Skill.".to_owned());
     }
-    if destination.starts_with(&skill.source_directory) {
-        return Err("A Skill cannot be exported inside its own directory.".to_owned());
+    if let Some(source_directory) = &skill.source_directory {
+        if destination.starts_with(source_directory) {
+            return Err("A Skill cannot be exported inside its own directory.".to_owned());
+        }
+        validate_copy_tree(source_directory)?;
+        copy_tree(source_directory, &destination).inspect_err(|_| {
+            let _ = fs::remove_dir_all(&destination);
+        })?;
+    } else {
+        fs::create_dir(&destination).map_err(|error| error.to_string())?;
+        fs::write(destination.join("SKILL.md"), skill.content.as_bytes()).map_err(|error| {
+            let _ = fs::remove_dir_all(&destination);
+            error.to_string()
+        })?;
     }
-    validate_copy_tree(&skill.source_directory)?;
-    copy_tree(&skill.source_directory, &destination).inspect_err(|_| {
-        let _ = fs::remove_dir_all(&destination);
-    })?;
     Ok(json!({ "path": destination.to_string_lossy() }))
 }
 
@@ -304,6 +337,10 @@ fn discover(
     }
     let mut effective = BTreeMap::<String, SkillEntry>::new();
     let mut observed = 0usize;
+    for skill in bundled_skills(preferences)? {
+        observed += 1;
+        effective.insert(skill.name.clone(), skill);
+    }
     for (source, root, display_root) in roots {
         if !root.exists() {
             continue;
@@ -355,13 +392,47 @@ fn discover(
                     path,
                     sha256,
                     bytes,
-                    source_directory,
+                    source_directory: Some(source_directory),
                     content,
                 },
             );
         }
     }
     Ok(effective.into_values().collect())
+}
+
+fn bundled_skills(preferences: &HashMap<String, bool>) -> Result<Vec<SkillEntry>, String> {
+    BUNDLED_SKILLS
+        .iter()
+        .map(|(expected_name, content)| {
+            let bytes = content.len();
+            let definition = parse_workspace_skill_definition(content)
+                .map_err(|kind| format!("Invalid bundled SKILL.md frontmatter: {kind:?}."))?;
+            if definition.name != *expected_name {
+                return Err("Bundled Skill folder and frontmatter names differ.".to_owned());
+            }
+            let id = bundled_skill_id(expected_name);
+            Ok(SkillEntry {
+                enabled: preferences.get(&id).copied().unwrap_or(true),
+                id,
+                name: definition.name,
+                description: definition.description,
+                source: "bundled",
+                path: format!("内置/{expected_name}/SKILL.md"),
+                sha256: format!("{:x}", Sha256::digest(content.as_bytes())),
+                bytes,
+                source_directory: None,
+                content: (*content).to_owned(),
+            })
+        })
+        .collect()
+}
+
+fn bundled_skill_id(name: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"sugarcode-bundled-skill-v1\0");
+    digest.update(name.as_bytes());
+    format!("skl_{:x}", digest.finalize())
 }
 
 fn read_definition(

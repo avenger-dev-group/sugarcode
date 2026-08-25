@@ -30,6 +30,11 @@ pnpm dev
 pnpm check
 ```
 
+## Figma Desktop MCP
+
+SugarCode can connect to Figma Desktop's local MCP server without browser
+authorization or OAuth. See the [Figma Desktop MCP setup guide](docs/figma-desktop-mcp.md).
+
 ## Trusted project environments
 
 Repositories can declare task setup, exported environment variables, and named

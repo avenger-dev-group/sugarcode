@@ -113,7 +113,7 @@ const selectedSkillNames = (
   const available = new Set(skills.map((skill) => skill.name));
   const selected: string[] = [];
   for (const reference of findComposerReferences(input)) {
-    if (reference.kind !== 'skill') {
+    if (reference.kind !== 'skill' && reference.kind !== 'application') {
       continue;
     }
     const name = reference.target;

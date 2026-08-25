@@ -23,8 +23,9 @@ export const SkillsCenter = ({
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <MainSurfaceHeader
         icon={<Sparkles className="size-5" aria-hidden="true" />}
-        title="技能"
-        description="管理本地 Skills，可查看、启停，并通过目录或 ZIP 导入和导出。"
+        title="技能配置"
+        description="管理内置、个人与项目 Skills 的启用状态和内容。"
+        compact
         actions={(
           <>
             <Popover
