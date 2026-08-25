@@ -53,6 +53,35 @@ test('tool argument compatibility repair never changes unrelated tools', () => {
   );
 });
 
+test('workspace_list repairs one bounded concatenated path batch', () => {
+  assert.deepEqual(
+    normalizeToolArguments(
+      'workspace_list',
+      '{"path":"app"}{"path":"routes"}{"path":"database"}',
+    ),
+    {
+      name: 'workspace_list',
+      args: { paths: ['app', 'routes', 'database'] },
+    },
+  );
+});
+
+test('workspace_list rejects an ambiguous concatenated argument batch', () => {
+  assert.deepEqual(
+    normalizeToolArguments(
+      'workspace_list',
+      '{"path":"app"}{"path":"routes","depth":2}',
+    ),
+    {
+      name: 'sugarcode_invalid_tool_arguments',
+      args: {
+        toolName: 'workspace_list',
+        argumentsText: '{"path":"app"}{"path":"routes","depth":2}',
+      },
+    },
+  );
+});
+
 test('collaboration_dispatch repairs one bounded string-encoded tasks array', () => {
   const tasks = [{
     clientTaskKey: 'implementation',

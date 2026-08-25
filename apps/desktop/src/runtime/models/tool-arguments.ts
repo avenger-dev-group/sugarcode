@@ -2,6 +2,7 @@ import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from './types.ts';
 
 const MAX_ARGUMENT_TEXT_BYTES = 4_096;
 const MAX_WORKSPACE_READ_PATHS = 8;
+const MAX_WORKSPACE_LIST_PATHS = 8;
 const MAX_COLLABORATION_TASKS = 12;
 const MAX_COLLABORATION_TASKS_TEXT_BYTES = 64 * 1024;
 
@@ -143,6 +144,22 @@ export const normalizeToolArguments = (
     toolName === 'workspace_read' &&
     concatenated &&
     concatenated.length <= MAX_WORKSPACE_READ_PATHS &&
+    concatenated.every(
+      (entry) =>
+        Object.keys(entry).length === 1 &&
+        typeof entry.path === 'string' &&
+        entry.path.length > 0,
+    )
+  ) {
+    return {
+      name: toolName,
+      args: { paths: concatenated.map((entry) => entry.path as string) },
+    };
+  }
+  if (
+    toolName === 'workspace_list' &&
+    concatenated &&
+    concatenated.length <= MAX_WORKSPACE_LIST_PATHS &&
     concatenated.every(
       (entry) =>
         Object.keys(entry).length === 1 &&

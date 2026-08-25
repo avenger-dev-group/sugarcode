@@ -371,6 +371,7 @@ export class AnthropicLlm extends BaseLlm {
   private readonly client: Anthropic;
   private readonly maxRetries: number;
   private readonly timeoutMs: number;
+  private readonly parallelTools: boolean;
   private nativeCompaction: boolean;
   private readonly compactThresholdTokens?: number;
   private readonly compatibilityKey: string;
@@ -381,6 +382,7 @@ export class AnthropicLlm extends BaseLlm {
     super({ model: options.model });
     this.maxRetries = options.maxRetries ?? 2;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
+    this.parallelTools = options.parallelTools ?? false;
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
     this.compatibilityKey = `anthropicMessages:${validateBaseUrl(options.baseUrl)}`;
@@ -473,6 +475,14 @@ export class AnthropicLlm extends BaseLlm {
                 messages: [...anthropicMessages(request, this.compatibilityKey)] as RegularMessageParam[],
                 system: request.system || undefined,
                 tools: [...anthropicTools(request.tools)] as RegularAnthropicTool[],
+                ...(request.tools.length > 0
+                  ? {
+                      tool_choice: {
+                        type: 'auto' as const,
+                        disable_parallel_tool_use: !this.parallelTools,
+                      },
+                    }
+                  : {}),
                 ...(this.reasoningEffort
                   ? { output_config: { effort: this.reasoningEffort } }
                   : {}),
@@ -496,6 +506,14 @@ export class AnthropicLlm extends BaseLlm {
               messages: [...anthropicMessages(request, this.compatibilityKey)],
               system: request.system || undefined,
               tools: [...anthropicTools(request.tools)],
+              ...(request.tools.length > 0
+                ? {
+                    tool_choice: {
+                      type: 'auto' as const,
+                      disable_parallel_tool_use: !this.parallelTools,
+                    },
+                  }
+                : {}),
               betas,
               ...(this.reasoningEffort
                 ? { output_config: { effort: this.reasoningEffort } }

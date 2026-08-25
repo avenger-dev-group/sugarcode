@@ -1234,6 +1234,32 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
       },
       { event: 'content_block_stop', data: { type: 'content_block_stop', index: 1 } },
       {
+        event: 'content_block_start',
+        data: {
+          type: 'content_block_start',
+          index: 2,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_list_fixture',
+            name: 'workspace_list',
+            input: {},
+            caller: { type: 'direct' },
+          },
+        },
+      },
+      {
+        event: 'content_block_delta',
+        data: {
+          type: 'content_block_delta',
+          index: 2,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"path":"app"}{"path":"routes"}',
+          },
+        },
+      },
+      { event: 'content_block_stop', data: { type: 'content_block_stop', index: 2 } },
+      {
         event: 'message_delta',
         data: {
           type: 'message_delta',
@@ -1265,6 +1291,15 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
               required: ['path'],
             },
           },
+          {
+            name: 'workspace_list',
+            description: 'List workspace directories.',
+            parametersJsonSchema: {
+              type: 'object',
+              properties: { path: { type: 'string' } },
+              required: ['path'],
+            },
+          },
         ],
       },
     ],
@@ -1280,6 +1315,9 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   const events = await collect(model.generateContentAsync(request, true));
   const parts = events.flatMap((event) => event.content?.parts ?? []);
   const functionCall = parts.find((part) => part.functionCall)?.functionCall;
+  const listCall = parts.find(
+    (part) => part.functionCall?.name === 'workspace_list',
+  )?.functionCall;
 
   const thinking = parts.find((part) => part.thought && part.text === 'Check.');
   assert.equal(thinking?.text, 'Check.');
@@ -1290,8 +1328,13 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(receivedBody?.output_config, { effort: 'high' });
   assert.equal(receivedBody?.speed, 'fast');
+  assert.deepEqual(receivedBody?.tool_choice, {
+    type: 'auto',
+    disable_parallel_tool_use: true,
+  });
   assert.match(receivedBeta, /fast-mode-2026-02-01/u);
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
+  assert.deepEqual(listCall?.args, { paths: ['app', 'routes'] });
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 8);
   assert.equal(events.at(-1)?.turnComplete, true);
 });

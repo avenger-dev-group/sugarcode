@@ -17,6 +17,8 @@ import {
 
 const MAX_DECLARED_WORKSPACE_READ_PATHS = 8;
 const MAX_COMPATIBLE_WORKSPACE_READ_PATHS = 16;
+const MAX_DECLARED_WORKSPACE_LIST_PATHS = 8;
+const MAX_COMPATIBLE_WORKSPACE_LIST_PATHS = 16;
 
 const pathProperty = {
   type: Type.STRING,
@@ -29,10 +31,20 @@ const readPathProperty = {
     'Workspace-relative path to one UTF-8 regular file. Never pass a directory; use workspace_list for an entry whose kind is directory.',
 } satisfies Schema;
 
-const pathSchema = {
+const listSchema = {
   type: Type.OBJECT,
-  properties: { path: pathProperty },
-  required: ['path'],
+  properties: {
+    path: pathProperty,
+    paths: {
+      type: Type.ARRAY,
+      items: pathProperty,
+      minItems: '1',
+      maxItems: String(MAX_DECLARED_WORKSPACE_LIST_PATHS),
+      description:
+        `List 1 through ${MAX_DECLARED_WORKSPACE_LIST_PATHS} workspace-relative directories in one call. Use either path or paths, never both.`,
+    },
+  },
+  description: 'Provide exactly one of path or paths.',
 } satisfies Schema;
 
 const readSchema = {
@@ -51,16 +63,30 @@ const readSchema = {
   description: 'Provide exactly one of path or paths.',
 } satisfies Schema;
 
-const pathArgument = (input: unknown): string => {
-  if (
-    typeof input !== 'object' ||
-    input === null ||
-    !('path' in input) ||
-    typeof input.path !== 'string'
-  ) {
-    throw new Error('path must be a string');
+const listPathArguments = (input: unknown): readonly string[] => {
+  if (typeof input !== 'object' || input === null) {
+    throw new Error('path or paths must be provided');
   }
-  return input.path;
+  const path = 'path' in input ? input.path : undefined;
+  const paths = 'paths' in input ? input.paths : undefined;
+  if (typeof path === 'string' && paths === undefined) {
+    return [path];
+  }
+  if (
+    path === undefined &&
+    Array.isArray(paths) &&
+    paths.length >= 1 &&
+    paths.length <= MAX_COMPATIBLE_WORKSPACE_LIST_PATHS &&
+    paths.every((entry) => typeof entry === 'string')
+  ) {
+    return paths;
+  }
+  const requested = Array.isArray(paths) ? paths.length : undefined;
+  throw new Error(
+    requested !== undefined && requested > MAX_COMPATIBLE_WORKSPACE_LIST_PATHS
+      ? `Requested ${requested} paths; the hard limit is ${MAX_COMPATIBLE_WORKSPACE_LIST_PATHS}. Split them across multiple workspace_list calls.`
+      : `Provide either one path or a paths array. Use no more than ${MAX_DECLARED_WORKSPACE_LIST_PATHS} paths per call.`,
+  );
 };
 
 const readPathArguments = (input: unknown): readonly string[] => {
@@ -816,15 +842,44 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'workspace_list',
     description:
-      'List the direct children of a directory inside the open workspace.',
-    parameters: pathSchema,
+      `List the direct children of one directory, or up to ${MAX_DECLARED_WORKSPACE_LIST_PATHS} directories, inside the open workspace.`,
+    parameters: listSchema,
     execute: async (input) => {
-      const path = pathArgument(input);
-      const warnings = instructionContext?.warningsForRead([path]) ?? [];
-      return withInstructionWarnings(
-        parseNativeResult(await nativeRuntime.workspaceList(nativeWorkspaceId, path)),
-        warnings,
-      );
+      const paths = listPathArguments(input);
+      const warnings = instructionContext?.warningsForRead(paths) ?? [];
+      if (paths.length === 1) {
+        return withInstructionWarnings(
+          parseNativeResult(
+            await nativeRuntime.workspaceList(nativeWorkspaceId, paths[0] ?? ''),
+          ),
+          warnings,
+        );
+      }
+      const directories: Readonly<Record<string, unknown>>[] = [];
+      for (
+        let offset = 0;
+        offset < paths.length;
+        offset += MAX_DECLARED_WORKSPACE_LIST_PATHS
+      ) {
+        const batch = paths.slice(
+          offset,
+          offset + MAX_DECLARED_WORKSPACE_LIST_PATHS,
+        );
+        directories.push(...await Promise.all(
+          batch.map(async (path) => {
+            const result = parseNativeResult(
+              await nativeRuntime.workspaceList(nativeWorkspaceId, path),
+            );
+            return isRecord(result)
+              ? { ...result, path }
+              : { path, result };
+          }),
+        ));
+      }
+      return withInstructionWarnings({
+        ok: directories.every((directory) => directory.ok !== false),
+        directories,
+      }, warnings);
     },
   }),
   new FunctionTool({

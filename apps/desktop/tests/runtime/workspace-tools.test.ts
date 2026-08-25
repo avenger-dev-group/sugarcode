@@ -60,6 +60,46 @@ test('workspace_read accepts a bounded batch and preserves each path', async () 
   });
 });
 
+test('workspace_list accepts a bounded batch and preserves each path', async () => {
+  const requestedPaths: string[] = [];
+  const tools = createWorkspaceTools(
+    {
+      workspaceList: async (_workspaceId, path) => {
+        requestedPaths.push(path);
+        return JSON.stringify({
+          ok: true,
+          entries: [{ name: `entry:${path}`, kind: 'file' }],
+        });
+      },
+    } as NativeRuntimeBinding,
+    'workspace-fixture',
+  );
+  const listTool = tools.find((tool) => tool.name === 'workspace_list');
+  assert.ok(listTool);
+
+  const result = await listTool.runAsync({
+    args: { paths: ['app', 'routes'] },
+    toolContext: {} as never,
+  });
+
+  assert.deepEqual(requestedPaths, ['app', 'routes']);
+  assert.deepEqual(result, {
+    ok: true,
+    directories: [
+      {
+        ok: true,
+        entries: [{ name: 'entry:app', kind: 'file' }],
+        path: 'app',
+      },
+      {
+        ok: true,
+        entries: [{ name: 'entry:routes', kind: 'file' }],
+        path: 'routes',
+      },
+    ],
+  });
+});
+
 test('drawio_generate validates native XML and saves it through the workspace boundary', async () => {
   let operationTool = '';
   let approvedPatch = '';
