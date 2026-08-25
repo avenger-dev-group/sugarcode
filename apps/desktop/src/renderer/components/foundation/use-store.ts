@@ -115,6 +115,19 @@ export const useStore = (
         : { ...current, contextRailOpen: true },
     );
   }, [contextRailScopeKey]);
+  const closeContextRail = useCallback((): void => {
+    if (contextRailScopeKey !== null) {
+      setContextRailVisibility((current) =>
+        updateContextRailVisibility(current, contextRailScopeKey, false),
+      );
+      return;
+    }
+    setLayout((current) =>
+      current.contextRailOpen
+        ? { ...current, contextRailOpen: false }
+        : current,
+    );
+  }, [contextRailScopeKey]);
   const navigatorResize = usePanelResize({
     width: layout.navigatorWidth,
     minWidth: NAVIGATOR_WIDTH.min,
@@ -154,6 +167,7 @@ export const useStore = (
     contextRailResize,
     surface,
     searchOpen,
+    closeContextRail,
     openContextRail,
     openSearch: () => setSearchOpen(true),
     closeSearch: () => setSearchOpen(false),

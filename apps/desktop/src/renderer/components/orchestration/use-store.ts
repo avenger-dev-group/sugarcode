@@ -21,6 +21,7 @@ import {
   openDrawioForSession,
   type DrawioSessionRegistry,
 } from './drawio-session-state';
+import { hasRemainingContextTabs } from './context-tab-state';
 
 export type BrowserContextTab = Readonly<{
   id: string;
@@ -99,10 +100,12 @@ const OrchestrationTaskStateContext =
 
 export const OrchestrationStoreProvider = ({
   children,
+  onRequestClose,
   onRequestOpen,
   scopeKey,
 }: Readonly<{
   children: ReactNode;
+  onRequestClose: () => void;
   onRequestOpen: () => void;
   scopeKey: string | null;
 }>) => {
@@ -132,6 +135,22 @@ export const OrchestrationStoreProvider = ({
   const [requestedFile, setRequestedFile] =
     useState<ContextFileRequest | null>(null);
   const [taskDockOpen, setTaskDockOpen] = useState(false);
+  const tabInventory = useMemo(
+    () => ({
+      files: filesTabOpen,
+      browserCount: browserTabs.length,
+      resource: selectedResource !== null,
+      plan: selectedPlan !== null,
+      agent: selectedTask !== null,
+    }),
+    [
+      browserTabs.length,
+      filesTabOpen,
+      selectedPlan,
+      selectedResource,
+      selectedTask,
+    ],
+  );
 
   if (stateScopeKey !== scopeKey) {
     const nextDrawioPath = getSelectedDrawioPath(drawioSessions, scopeKey);
@@ -173,7 +192,15 @@ export const OrchestrationStoreProvider = ({
                 : 'launcher'
         : current,
     );
-  }, [browserTabs, filesTabOpen, selectedPlan, selectedResource]);
+    if (!hasRemainingContextTabs(tabInventory, 'agent')) onRequestClose();
+  }, [
+    browserTabs,
+    filesTabOpen,
+    onRequestClose,
+    selectedPlan,
+    selectedResource,
+    tabInventory,
+  ]);
 
   const closeResourceTab = useCallback(() => {
     if (selectedResource?.kind === 'drawio') {
@@ -197,14 +224,17 @@ export const OrchestrationStoreProvider = ({
                 : 'launcher'
         : current,
     );
+    if (!hasRemainingContextTabs(tabInventory, 'resource')) onRequestClose();
   }, [
     browserTabs,
     drawioSessions,
     filesTabOpen,
+    onRequestClose,
     scopeKey,
     selectedPlan,
     selectedResource,
     selectedTask,
+    tabInventory,
   ]);
 
   const closePlanTab = useCallback(() => {
@@ -222,7 +252,15 @@ export const OrchestrationStoreProvider = ({
                 : 'launcher'
         : current,
     );
-  }, [browserTabs, filesTabOpen, selectedResource, selectedTask]);
+    if (!hasRemainingContextTabs(tabInventory, 'plan')) onRequestClose();
+  }, [
+    browserTabs,
+    filesTabOpen,
+    onRequestClose,
+    selectedResource,
+    selectedTask,
+    tabInventory,
+  ]);
 
   const openFile = useCallback(
     (path: string) => {
@@ -308,7 +346,8 @@ export const OrchestrationStoreProvider = ({
           : 'launcher'
         : current,
     );
-  }, [browserTabs]);
+    if (!hasRemainingContextTabs(tabInventory, 'files')) onRequestClose();
+  }, [browserTabs, onRequestClose, tabInventory]);
 
   const closePreviewTab = useCallback((id: string) => {
     setBrowserTabs((current) => current.filter((tab) => tab.id !== id));
@@ -320,7 +359,8 @@ export const OrchestrationStoreProvider = ({
       const next = remaining.at(-1);
       return next ? `browser:${next.id}` : filesTabOpen ? 'files' : 'launcher';
     });
-  }, [browserTabs, filesTabOpen]);
+    if (!hasRemainingContextTabs(tabInventory, 'browser')) onRequestClose();
+  }, [browserTabs, filesTabOpen, onRequestClose, tabInventory]);
 
   const setPreviewTitle = useCallback((id: string, title: string) => {
     setBrowserTabs((current) => {

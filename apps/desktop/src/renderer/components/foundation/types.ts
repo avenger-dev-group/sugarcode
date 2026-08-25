@@ -23,6 +23,7 @@ export type FoundationStore = {
   contextRailResize: PanelResizeHandle;
   surface: AppSurface;
   searchOpen: boolean;
+  closeContextRail: () => void;
   openContextRail: () => void;
   openSearch: () => void;
   closeSearch: () => void;
