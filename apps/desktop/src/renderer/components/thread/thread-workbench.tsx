@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   ArrowUp,
+  ChevronRight,
   CircleAlert,
   FileText,
   Folder,
@@ -980,14 +981,58 @@ export const ThreadWorkbenchView = ({
                 <PanelLeftOpen aria-hidden="true" />
               </Button>
             ) : null}
-            {conversationTitle ? (
-              <p
-                className="window-no-drag min-w-0 truncate text-sm font-normal tracking-[-0.015em]"
-                title={conversationTitle}
-              >
-                {conversationTitle}
-              </p>
-            ) : null}
+            <div className="window-no-drag flex min-w-0 items-center gap-1">
+              {composerProjectName ? (
+                <div className="group/project flex min-w-0 items-center">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 min-w-0 gap-1.5 rounded-lg px-2 text-sm font-normal text-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={workspace.busy}
+                    onClick={() => void workspace.chooseProject()}
+                    aria-label={`切换项目文件夹，当前为 ${composerProjectName}`}
+                    title="切换项目文件夹"
+                  >
+                    <Folder
+                      className="size-3.5 shrink-0 text-tertiary"
+                      aria-hidden="true"
+                    />
+                    <span className="max-w-48 truncate">
+                      {composerProjectName}
+                    </span>
+                  </Button>
+                  {draftProjectRemovable ? (
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      className="-ml-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={workspace.busy}
+                      onClick={() => void workspace.activateChat()}
+                      aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
+                      title="移除项目并切换到聊天模式"
+                    >
+                      <X className="size-3" aria-hidden="true" />
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              {composerProjectName && conversationTitle ? (
+                <ChevronRight
+                  className="size-3.5 shrink-0 text-tertiary/70"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {conversationTitle ? (
+                <p
+                  className="min-w-0 truncate px-1 text-sm font-normal tracking-[-0.015em]"
+                  title={conversationTitle}
+                >
+                  {conversationTitle}
+                </p>
+              ) : null}
+            </div>
             <TerminalWorkbench
               navigatorOffset={
                 navigatorOpen ? navigatorWidth + (navigatorResize ? 1 : 0) : 0
@@ -1172,40 +1217,6 @@ export const ThreadWorkbenchView = ({
                       event.target.value = '';
                     }}
                   />
-                  {composerProjectName ? (
-                    <div className="group/project mx-3 mt-3 flex h-8 w-fit max-w-[calc(100%_-_1.5rem)] items-center rounded-lg bg-surface">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        className="flex h-full min-w-0 items-center gap-2 rounded-lg px-2.5 text-sm font-normal text-navigation transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-                        disabled={workspace.busy}
-                        onClick={() => void workspace.chooseProject()}
-                        aria-label={`重新选择项目文件夹，当前为 ${composerProjectName}`}
-                        title="重新选择项目文件夹"
-                      >
-                        <Folder
-                          className="size-4 shrink-0 text-tertiary"
-                          aria-hidden="true"
-                        />
-                        <span className="truncate">{composerProjectName}</span>
-                      </Button>
-                      {draftProjectRemovable ? (
-                        <Button
-                          type="button"
-                          size="icon-xs"
-                          variant="ghost"
-                          className="mr-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
-                          disabled={workspace.busy}
-                          onClick={() => void workspace.activateChat()}
-                          aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
-                          title="移除项目并切换到聊天模式"
-                        >
-                          <X className="size-3.5" aria-hidden="true" />
-                        </Button>
-                      ) : null}
-                    </div>
-                  ) : null}
                   {store.attachments.length > 0 ? (
                     <div className="flex gap-2 overflow-x-auto px-3 pt-3">
                       {store.attachments.map((attachment) => (
