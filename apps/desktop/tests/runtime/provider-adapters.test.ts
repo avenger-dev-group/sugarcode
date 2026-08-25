@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import test from 'node:test';
 
 import type { LlmRequest, LlmResponse } from '@google/adk';
+import type { ResponseOutputMessage } from 'openai/resources/responses/responses';
 
 import { AnthropicLlm } from '../../src/runtime/models/anthropic-llm.ts';
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
@@ -1786,7 +1787,7 @@ test('OpenAI Responses tolerates gateway reasoning drift between done and comple
     encrypted_content: 'stream-encrypted-reasoning',
     status: 'completed' as const,
   };
-  const completedMessage = {
+  const completedMessage: ResponseOutputMessage = {
     id: 'message_drift_fixture',
     type: 'message' as const,
     role: 'assistant' as const,
