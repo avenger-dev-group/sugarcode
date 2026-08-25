@@ -645,52 +645,22 @@ export class OpenAiResponsesReconciler {
         const existingContent = (existing.item.content ?? [])
           .map((part) => part.text)
           .join('\n');
-        const incomingContent = (normalized.content ?? [])
-          .map((part) => part.text)
-          .join('\n');
         const existingSummary = existing.item.summary
           .map((part) => part.text)
           .join('\n');
-        const incomingSummary = normalized.summary
-          .map((part) => part.text)
-          .join('\n');
-        const encryptedConflict =
-          typeof existing.item.encrypted_content === 'string' &&
-          typeof normalized.encrypted_content === 'string' &&
-          existing.item.encrypted_content !== normalized.encrypted_content;
-        if (
-          existing.done &&
-          ((existingContent &&
-            incomingContent &&
-            existingContent !== incomingContent) ||
-            (existingSummary &&
-              incomingSummary &&
-              existingSummary !== incomingSummary) ||
-            encryptedConflict)
-        ) {
-          throw this.protocolError(
-            'OpenAI Responses returned conflicting completed reasoning content.',
-            'ambiguousOutputReconciliation',
-            {
-              contentConflict:
-                Boolean(existingContent && incomingContent) &&
-                existingContent !== incomingContent,
-              summaryConflict:
-                Boolean(existingSummary && incomingSummary) &&
-                existingSummary !== incomingSummary,
-              encryptedContentConflict: encryptedConflict,
-            },
-            eventType,
-          );
-        }
         this.rememberAlias(existing, item.id);
+        // Responses-compatible gateways sometimes serialize the same reasoning
+        // item differently in output_item.done and response.completed. Reasoning
+        // is not executable output, so keep the first completed representation
+        // and only backfill fields that it omitted. Visible text and tool-call
+        // conflicts remain strict in their respective branches.
         existing.item = existing.done
           ? {
               ...existing.item,
-              ...(!existingContent && incomingContent
+              ...(!existingContent && (normalized.content ?? []).length > 0
                 ? { content: normalized.content }
                 : {}),
-              ...(!existingSummary && incomingSummary
+              ...(!existingSummary && normalized.summary.length > 0
                 ? { summary: normalized.summary }
                 : {}),
               encrypted_content:

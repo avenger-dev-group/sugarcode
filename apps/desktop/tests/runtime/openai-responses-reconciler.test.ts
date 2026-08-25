@@ -207,6 +207,41 @@ test('Responses reconciler tolerates terminal index shifts when reasoning is omi
   );
 });
 
+test('Responses reconciler tolerates conflicting duplicate reasoning from compatible gateways', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, {
+    id: 'reasoning_gateway',
+    type: 'reasoning',
+    status: 'completed',
+    content: [{ type: 'reasoning_text', text: 'Streamed reasoning' }],
+    summary: [],
+    encrypted_content: 'streamed-encrypted-content',
+  } as unknown as ResponseOutputItem);
+
+  const terminal = reconciler.finish(response('resp_reasoning_drift', [{
+    id: 'reasoning_gateway',
+    type: 'reasoning',
+    status: 'completed',
+    content: [{ type: 'reasoning_text', text: 'Terminal reasoning' }],
+    summary: [{ type: 'summary_text', text: 'Terminal summary' }],
+    encrypted_content: 'terminal-encrypted-content',
+  } as unknown as ResponseOutputItem]), 'response.completed');
+
+  assert.equal(terminal.blocks[0]?.type, 'reasoning');
+  if (terminal.blocks[0]?.type === 'reasoning') {
+    assert.deepEqual(terminal.blocks[0].item.content, [
+      { type: 'reasoning_text', text: 'Streamed reasoning' },
+    ]);
+    assert.deepEqual(terminal.blocks[0].item.summary, [
+      { type: 'summary_text', text: 'Terminal summary' },
+    ]);
+    assert.equal(
+      terminal.blocks[0].item.encrypted_content,
+      'streamed-encrypted-content',
+    );
+  }
+});
+
 test('Responses reconciler appends terminal-only items after streamed slots', () => {
   const reconciler = new OpenAiResponsesReconciler();
   reconciler.onReasoningDelta(

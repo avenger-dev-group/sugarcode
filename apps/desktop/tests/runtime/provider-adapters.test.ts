@@ -1778,6 +1778,94 @@ test('OpenAI Responses backfills reasoning encrypted content from response.compl
   );
 });
 
+test('OpenAI Responses tolerates gateway reasoning drift between done and completed', async (context) => {
+  const streamedReasoning = {
+    id: 'reasoning_drift_fixture',
+    type: 'reasoning' as const,
+    summary: [{ type: 'summary_text' as const, text: 'Stream summary' }],
+    encrypted_content: 'stream-encrypted-reasoning',
+    status: 'completed' as const,
+  };
+  const completedMessage = {
+    id: 'message_drift_fixture',
+    type: 'message' as const,
+    role: 'assistant' as const,
+    status: 'completed' as const,
+    phase: 'final_answer' as const,
+    content: [{
+      type: 'output_text' as const,
+      text: 'Hello from the compatible gateway',
+      annotations: [],
+      logprobs: [],
+    }],
+  };
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 1,
+          output_index: 0,
+          item: streamedReasoning,
+        },
+      },
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 2,
+          output_index: 1,
+          item: completedMessage,
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_reasoning_drift_fixture',
+            status: 'completed',
+            output: [{
+              ...streamedReasoning,
+              summary: [{
+                type: 'summary_text',
+                text: 'Different terminal summary',
+              }],
+              encrypted_content: 'different-terminal-encrypted-reasoning',
+            }, completedMessage],
+            usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+  const finalParts = events.at(-1)?.content?.parts ?? [];
+  const reasoningReplay = readOpenAiResponsesPartReplay(
+    finalParts[0]?.partMetadata,
+  );
+
+  assert.equal(finalParts.at(-1)?.text, 'Hello from the compatible gateway');
+  assert.equal(reasoningReplay?.block.type, 'reasoning');
+  assert.equal(
+    reasoningReplay?.block.type === 'reasoning'
+      ? reasoningReplay.block.item.summary[0]?.text
+      : undefined,
+    'Stream summary',
+  );
+  assert.deepEqual(readModelStepOutcome(finalParts), { kind: 'final' });
+});
+
 test('OpenAI Responses reports a specific protocol error when the terminal event is missing', async (context) => {
   const fixture = await serve(async (_request, response) => {
     writeSse(response, [{

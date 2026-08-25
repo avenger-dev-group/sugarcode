@@ -105,7 +105,9 @@ export const FoundationScreen = () => {
               ) : activeMcpApproval ? (
                 <McpApprovalSurface
                   store={mcpStore}
+                  permissionStore={commandApprovalStore}
                   activeThreadId={activeThreadId}
+                  activeWorkspaceId={threadStore.thread.workspaceIdentity}
                 />
               ) : undefined
             }

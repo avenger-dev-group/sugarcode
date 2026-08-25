@@ -7,6 +7,7 @@ import type {
   ConversationMcpResultReceipt,
   ConversationTurnStatus,
 } from '@/shared/conversation';
+import type { CommandApprovalStore } from '@/renderer/components/command-approval/types';
 
 export type McpStore = Readonly<{
   session: McpSessionStateSnapshot;
@@ -31,7 +32,9 @@ export type McpSessionPanelProps = Readonly<{
 
 export type McpApprovalSurfaceProps = Readonly<{
   store: McpStore;
+  permissionStore: CommandApprovalStore;
   activeThreadId: string | null;
+  activeWorkspaceId: string | null;
 }>;
 
 export type McpActivityState =

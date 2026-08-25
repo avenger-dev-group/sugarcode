@@ -2,7 +2,14 @@ import { Clock3, PlugZap } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 
 import { Button } from '@/renderer/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from '@/renderer/components/ui/select';
 import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility';
+import type { CommandApprovalMode } from '@/shared/command-approval';
 
 import type { McpApprovalSurfaceProps } from './types';
 
@@ -11,9 +18,35 @@ const displayToolName = (serverId: string, name: string): string => {
   return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 };
 
+const APPROVAL_MODES: readonly CommandApprovalMode[] = [
+  'ask',
+  'thread',
+  'workspace',
+];
+
+const APPROVAL_MODE_COPY: Record<
+  CommandApprovalMode,
+  Readonly<{ label: string; description: string }>
+> = {
+  ask: {
+    label: '允许本次',
+    description: '仅允许当前这一次 MCP 调用',
+  },
+  thread: {
+    label: '本次会话完全访问',
+    description: '此对话后续的 MCP 与完整访问操作将自动允许',
+  },
+  workspace: {
+    label: '当前项目完全访问',
+    description: '此项目内后续的 MCP 与完整访问操作将自动允许',
+  },
+};
+
 const McpApprovalView = ({
   store,
+  permissionStore,
   activeThreadId,
+  activeWorkspaceId,
 }: McpApprovalSurfaceProps) => {
   const denyRef = useRef<HTMLButtonElement>(null);
   const request = store.approvalRequests.find((item) =>
@@ -24,6 +57,7 @@ const McpApprovalView = ({
   const submitting =
     request?.actionState === 'submittingApproval' ||
     request?.actionState === 'submittingDenial';
+  const actionPending = submitting || permissionStore.modePending;
 
   useEffect(() => {
     if (request && canApprove) {
@@ -50,7 +84,7 @@ const McpApprovalView = ({
       className="flex max-h-[min(20rem,42vh)] min-h-40 flex-col overflow-hidden rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] animate-in fade-in-0 slide-in-from-bottom-1 duration-200 motion-reduce:animate-none"
       aria-labelledby={`${request.presentationId}:title`}
       aria-describedby={`${request.presentationId}:description`}
-      aria-busy={submitting}
+      aria-busy={actionPending}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && canApprove) {
           event.preventDefault();
@@ -94,9 +128,9 @@ const McpApprovalView = ({
           aria-live="polite"
           aria-atomic="true"
         >
-          {store.actionError ? (
+          {store.actionError || permissionStore.actionError ? (
             <span className="text-destructive" role="alert">
-              {store.actionError}
+              {store.actionError ?? permissionStore.actionError}
             </span>
           ) : (
             pendingMessage
@@ -116,14 +150,57 @@ const McpApprovalView = ({
             Esc
           </kbd>
         </Button>
-        <Button
-          type="button"
-          size="sm"
-          disabled={!canApprove}
-          onClick={() => void store.approve(request)}
-        >
-          {submitting ? '处理中…' : '允许本次'}
-        </Button>
+        <div className="flex items-center rounded-lg bg-brand text-brand-foreground">
+          <Button
+            type="button"
+            size="sm"
+            className="rounded-r-none border-r border-brand-foreground/20 px-3 hover:bg-brand-hover"
+            disabled={!canApprove || permissionStore.modePending}
+            onClick={() => void store.approve(request)}
+          >
+            {actionPending ? '处理中…' : '允许本次'}
+          </Button>
+          <Select
+            value="ask"
+            disabled={!canApprove || permissionStore.modePending}
+            onValueChange={(value) => {
+              const mode = value as CommandApprovalMode;
+              if (mode === 'ask') {
+                void store.approve(request);
+                return;
+              }
+              void permissionStore.changeMode(
+                mode,
+                request.threadId,
+                activeWorkspaceId ?? undefined,
+              );
+            }}
+          >
+            <SelectTrigger
+              className="h-7 w-8 justify-center gap-0 rounded-l-none border-0 border-l border-brand-foreground/20 bg-brand p-0 text-brand-foreground shadow-none hover:bg-brand-hover focus-visible:ring-brand-foreground/40 [&>svg]:m-0 [&>svg]:size-3.5 [&>svg]:text-brand-foreground"
+              aria-label="选择 MCP 授权范围"
+              title="选择授权范围"
+            />
+            <SelectContent side="top" align="end" className="w-56">
+              {APPROVAL_MODES.map((mode) => (
+                <SelectItem
+                  key={mode}
+                  value={mode}
+                  disabled={mode === 'workspace' && !activeWorkspaceId}
+                >
+                  <span className="flex flex-col">
+                    <span className="text-sm text-foreground">
+                      {APPROVAL_MODE_COPY[mode].label}
+                    </span>
+                    <span className="text-[11px] leading-4 text-tertiary">
+                      {APPROVAL_MODE_COPY[mode].description}
+                    </span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </footer>
     </section>
   );
