@@ -1,6 +1,4 @@
 export type DrawioSessionState = {
-  autoOpenedPaths: Set<string>;
-  dismissedPaths: Set<string>;
   selectedPath: string | null;
 };
 
@@ -21,8 +19,6 @@ const getSession = (
   const existing = registry.get(key);
   if (existing || !create) return existing;
   const session: DrawioSessionState = {
-    autoOpenedPaths: new Set(),
-    dismissedPaths: new Set(),
     selectedPath: null,
   };
   registry.set(key, session);
@@ -43,20 +39,9 @@ export const openDrawioForSession = (
   registry: DrawioSessionRegistry,
   scopeKey: string | null,
   path: string,
-  automatic: boolean,
-): boolean => {
+): void => {
   const session = getSession(registry, scopeKey, true);
-  if (!session) return false;
-  if (
-    automatic &&
-    (session.dismissedPaths.has(path) || session.autoOpenedPaths.has(path))
-  ) {
-    return false;
-  }
-  session.dismissedPaths.delete(path);
-  session.autoOpenedPaths.add(path);
-  session.selectedPath = path;
-  return true;
+  if (session) session.selectedPath = path;
 };
 
 export const closeDrawioForSession = (
@@ -65,7 +50,6 @@ export const closeDrawioForSession = (
   path: string,
 ): void => {
   const session = getSession(registry, scopeKey, true);
-  session?.dismissedPaths.add(path);
   if (session?.selectedPath === path) session.selectedPath = null;
 };
 

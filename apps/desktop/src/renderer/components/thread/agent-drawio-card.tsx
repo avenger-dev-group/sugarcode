@@ -1,5 +1,4 @@
 import { ArrowRight, FileCode2, Workflow } from 'lucide-react';
-import { useEffect } from 'react';
 
 import { useOrchestrationActions } from '@/renderer/components/orchestration/use-store';
 import { Button } from '@/renderer/components/ui/button';
@@ -10,11 +9,8 @@ export const AgentDrawioCard = ({
   path,
   language,
 }: Readonly<{ path: string; language: ProcessLanguage }>) => {
-  const { autoOpenDrawio, openDrawio, openFile } = useOrchestrationActions();
+  const { openDrawio, openFile } = useOrchestrationActions();
   const chinese = language === 'zh';
-  useEffect(() => {
-    autoOpenDrawio(path);
-  }, [autoOpenDrawio, path]);
   return (
     <section
       className="agent-result-card overflow-hidden rounded-xl border border-[#bfd9cc] bg-[linear-gradient(115deg,#edf7f1,var(--background)_70%)] dark:border-[#315c49] dark:bg-[linear-gradient(115deg,#173428,var(--background)_72%)]"
@@ -33,7 +29,7 @@ export const AgentDrawioCard = ({
         <div className="agent-result-card__actions">
           <Button type="button" size="sm" className="h-8 gap-1.5 px-3 text-xs" onClick={() => openDrawio(path)}>
             <ArrowRight className="size-3.5" aria-hidden="true" />
-            {chinese ? '右侧打开' : 'Open canvas'}
+            {chinese ? '查看图表' : 'View diagram'}
           </Button>
           <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5 px-3 text-xs" onClick={() => openFile(path)}>
             <FileCode2 className="size-3.5" aria-hidden="true" />

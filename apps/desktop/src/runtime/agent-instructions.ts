@@ -126,7 +126,7 @@ const toolInstruction = (availableTools: readonly string[]): string => {
   }
   if (names.includes('drawio_generate')) {
     guidance.push(
-      'For a requested diagram, use drawio_generate with complete native, uncompressed mxGraph XML and a new workspace-relative .drawio path. Prefer a descriptive file in the workspace root unless you verified that a target directory exists. Generate mxCell nodes, mxGeometry positions, styles, and edges directly; do not convert from Mermaid or another intermediate format. If the user requests animated flow, add `flowAnimation=1;` to each mxCell edge style that should visibly flow; do not put it on vertex styles. After the tool succeeds, append exactly one final metadata line `::draw{path="generated-file.drawio"}` so SugarCode can offer the diagram in its right-side canvas.',
+      'For a requested diagram, use drawio_generate with complete native, uncompressed mxGraph XML and a new workspace-relative .drawio path. Prefer a descriptive file in the workspace root unless you verified that a target directory exists. Generate mxCell nodes, mxGeometry positions, styles, and edges directly; do not convert from Mermaid or another intermediate format. If the user requests animated flow, add `flowAnimation=1;` to each mxCell edge style that should visibly flow; do not put it on vertex styles. After the tool succeeds, append exactly one final metadata line `::draw{path="generated-file.drawio"}` so SugarCode can offer the diagram for viewing.',
     );
   }
   if (names.includes('shell_exec')) {

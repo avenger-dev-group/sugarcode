@@ -54,7 +54,6 @@ type OrchestrationStore = Readonly<{
   closeFilesTab: () => void;
   closePreviewTab: (id: string) => void;
   closeResourceTab: () => void;
-  autoOpenDrawio: (path: string) => void;
   openDiff: (
     path: string,
     changes: readonly import('../workspace/types').FileChangeReviewFile[],
@@ -76,7 +75,6 @@ type OrchestrationStore = Readonly<{
 
 type OrchestrationActions = Pick<
   OrchestrationStore,
-  | 'autoOpenDrawio'
   | 'openDiff'
   | 'openDrawio'
   | 'openFile'
@@ -251,17 +249,7 @@ export const OrchestrationStoreProvider = ({
 
   const openDrawio = useCallback(
     (path: string) => {
-      openDrawioForSession(drawioSessions, scopeKey, path, false);
-      setSelectedResource({ kind: 'drawio', path });
-      setActiveTab('resource');
-      onRequestOpen();
-    },
-    [drawioSessions, onRequestOpen, scopeKey],
-  );
-
-  const autoOpenDrawio = useCallback(
-    (path: string) => {
-      if (!openDrawioForSession(drawioSessions, scopeKey, path, true)) return;
+      openDrawioForSession(drawioSessions, scopeKey, path);
       setSelectedResource({ kind: 'drawio', path });
       setActiveTab('resource');
       onRequestOpen();
@@ -367,7 +355,6 @@ export const OrchestrationStoreProvider = ({
   const value = useMemo<OrchestrationStore>(
     () => ({
       activeTab,
-      autoOpenDrawio,
       browserTabs,
       closeAgentTab,
       closeFilesTab,
@@ -395,7 +382,6 @@ export const OrchestrationStoreProvider = ({
     }),
     [
       activeTab,
-      autoOpenDrawio,
       browserTabs,
       closeAgentTab,
       closeFilesTab,
@@ -423,7 +409,6 @@ export const OrchestrationStoreProvider = ({
 
   const actions = useMemo<OrchestrationActions>(
     () => ({
-      autoOpenDrawio,
       openDiff,
       openDrawio,
       openFile,
@@ -435,7 +420,6 @@ export const OrchestrationStoreProvider = ({
       selectTask,
     }),
     [
-      autoOpenDrawio,
       openDiff,
       openDrawio,
       openFile,
