@@ -86,6 +86,7 @@ type DeleteRequest =
       kind: 'thread';
       threadId: string;
       title: string;
+      workspaceKind: 'project' | 'chat';
     }>;
 
 const EAGER_PROJECT_THREAD_COUNT = 8;
@@ -336,7 +337,9 @@ export const ThreadNavigator = ({
       setDeleteError(
         request.kind === 'project'
           ? '无法从列表移除这个项目，请稍后重试。'
-          : '无法删除这个对话，请确认任务已经停止后重试。',
+          : request.workspaceKind === 'chat'
+            ? '无法删除这个对话或清理对应的本地文件夹，请确认任务已经停止后重试。'
+            : '无法删除这个对话，请确认任务已经停止后重试。',
       );
     }
     setDeletePending(false);
@@ -362,6 +365,7 @@ export const ThreadNavigator = ({
     threadTitles: Readonly<Record<string, string>>,
     active: boolean,
     onSelect: (threadId: string) => Promise<void>,
+    workspaceKind: 'project' | 'chat',
     nested = false,
     renderedThreadCount = threadIds.length,
   ): ReactNode => {
@@ -434,6 +438,7 @@ export const ThreadNavigator = ({
                   threadTitles[requestedThreadId] ??
                   workspace.state.chatTitles?.[requestedThreadId] ??
                   '新对话',
+                workspaceKind,
               });
             }}
             pendingMutation={store.navigator.pendingMutation}
@@ -656,6 +661,7 @@ export const ThreadNavigator = ({
                                 active,
                                 (threadId) =>
                                   selectProjectThread(project.id, threadId),
+                                'project',
                                 true,
                                 renderedThreadCount,
                               )
@@ -691,6 +697,7 @@ export const ThreadNavigator = ({
                 workspace.state.chatTitles ?? {},
                 chatActive,
                 selectChatThread,
+                'chat',
               )}
             </section>
 
@@ -804,11 +811,15 @@ export const ThreadNavigator = ({
             <AlertDialogTitle>
               {deleteRequest?.kind === 'project'
                 ? '从列表移除这个项目？'
+                : deleteRequest?.workspaceKind === 'chat'
+                  ? '删除这个对话和本地文件？'
                 : '删除这个对话？'}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteRequest?.kind === 'project'
                 ? `只会从项目列表移除“${deleteRequest.name}”，不会删除本地文件或历史会话。重新打开该文件夹即可恢复。`
+                : deleteRequest?.workspaceKind === 'chat'
+                  ? `删除“${deleteRequest.title}”后无法恢复，对应的本地聊天文件夹及其中所有文件也会被永久删除。`
                 : `删除“${deleteRequest?.title ?? '新对话'}”后无法恢复，确定要继续吗？`}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -846,7 +857,9 @@ export const ThreadNavigator = ({
                   : '正在删除…'
                 : deleteRequest?.kind === 'project'
                   ? '移除'
-                  : '删除'}
+                  : deleteRequest?.workspaceKind === 'chat'
+                    ? '删除对话和文件'
+                    : '删除'}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -388,6 +388,234 @@ test('cold startup restores navigation without selecting or reordering projects'
   );
 });
 
+test('deleting a chat removes its managed folder and every contained file', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-chat-delete-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const chatRootPath = path.join(root, 'Documents', 'SugarCode');
+  const chatDirectory = path.join(
+    chatRootPath,
+    '2026-08-07',
+    CHAT_THREAD_ID,
+  );
+  const nestedDirectory = path.join(chatDirectory, 'artifacts', 'nested');
+  const sessionPath = path.join(root, 'workspace-session.json');
+  const workspaceId = 'd'.repeat(64);
+  await mkdir(nestedDirectory, { recursive: true });
+  await writeFile(
+    path.join(nestedDirectory, 'result.txt'),
+    'managed chat output',
+    'utf8',
+  );
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      projects: [],
+      active: {
+        kind: 'chat',
+        directory: chatDirectory,
+        threadId: CHAT_THREAD_ID,
+      },
+      chats: [
+        {
+          threadId: CHAT_THREAD_ID,
+          directory: chatDirectory,
+          workspaceId,
+          title: 'Disposable chat',
+        },
+      ],
+    })}\n`,
+    'utf8',
+  );
+
+  const deletedThreads: Array<{ workspaceId: string; threadId: string }> = [];
+  const supervisor = {
+    subscribe: (): (() => void) => () => undefined,
+    getWorkspaceSwitchBlock: (): null => null,
+    getWorkspaceBindingId: (): null => null,
+    deleteThread: async (
+      requestedWorkspaceId: string,
+      threadId: string,
+    ): Promise<'deleted'> => {
+      deletedThreads.push({ workspaceId: requestedWorkspaceId, threadId });
+      return 'deleted';
+    },
+    conversation: {
+      getSnapshot: (): ConversationStateSnapshot => ({
+        revision: 0,
+        phase: 'idle',
+        turns: [],
+        navigator: {
+          status: 'ready',
+          activeThreadIds: [],
+          activeThreadTitles: {},
+          activeTruncated: false,
+          runningThreadIds: [],
+          search: {
+            query: '',
+            status: 'idle',
+            threadIds: [],
+            threadTitles: {},
+            truncated: false,
+          },
+        },
+      }),
+    },
+  } as unknown as WorkspaceRuntimeBoundary;
+  const controller = new WorkspaceController({
+    threadRegistry: new ThreadRegistry(),
+    supervisor,
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
+    },
+    getMainWindow: () => ({}) as BrowserWindow,
+    sessionPath,
+    chatRootPath,
+  });
+
+  await controller.restore();
+  assert.deepEqual(await controller.deleteTask(CHAT_THREAD_ID), {
+    accepted: true,
+  });
+  assert.deepEqual(deletedThreads, [
+    { workspaceId, threadId: CHAT_THREAD_ID },
+  ]);
+  await assert.rejects(realpath(chatDirectory), { code: 'ENOENT' });
+  assert.deepEqual(controller.getSnapshot().chatThreadIds, []);
+  await assert.rejects(readFile(sessionPath, 'utf8'), { code: 'ENOENT' });
+});
+
+test('deleting the active chat switches away before removing its folder', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-active-chat-delete-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const chatRootPath = path.join(root, 'Documents', 'SugarCode');
+  const chatDirectory = path.join(
+    chatRootPath,
+    '2026-08-07',
+    CHAT_THREAD_ID,
+  );
+  const sessionPath = path.join(root, 'workspace-session.json');
+  await mkdir(chatDirectory, { recursive: true });
+  await writeFile(
+    path.join(chatDirectory, 'result.drawio'),
+    '<mxGraphModel/>',
+    'utf8',
+  );
+  const storedWorkspaceId = createHash('sha256')
+    .update(await realpath(chatDirectory))
+    .digest('hex');
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      projects: [],
+      active: {
+        kind: 'chat',
+        directory: chatDirectory,
+        threadId: CHAT_THREAD_ID,
+      },
+      chats: [
+        {
+          threadId: CHAT_THREAD_ID,
+          directory: chatDirectory,
+          workspaceId: storedWorkspaceId,
+          title: 'Active disposable chat',
+        },
+      ],
+    })}\n`,
+    'utf8',
+  );
+
+  let bindingId: string | null = null;
+  let currentThreadId: string | null = null;
+  let switchCount = 0;
+  let beforeSwitchCount = 0;
+  const supervisor = {
+    subscribe: (): (() => void) => () => undefined,
+    getWorkspaceSwitchBlock: (): null => null,
+    switchWorkspace: async (
+      workspacePath: string,
+      kind: 'project' | 'chat',
+      threadId?: string,
+    ): Promise<boolean> => {
+      assert.equal(kind, 'chat');
+      switchCount += 1;
+      bindingId = createHash('sha256').update(workspacePath).digest('hex');
+      currentThreadId = threadId ?? null;
+      return true;
+    },
+    getWorkspaceBindingId: (): string | null => bindingId,
+    deleteThread: async (): Promise<'deleted'> => {
+      currentThreadId = null;
+      return 'deleted';
+    },
+    conversation: {
+      getSnapshot: (): ConversationStateSnapshot => ({
+        revision: 0,
+        ...(bindingId ? { workspaceId: bindingId } : {}),
+        ...(currentThreadId ? { threadId: currentThreadId } : {}),
+        phase: currentThreadId ? 'ready' : 'idle',
+        turns: [],
+        navigator: {
+          status: 'ready',
+          activeThreadIds: currentThreadId ? [currentThreadId] : [],
+          activeThreadTitles: {},
+          activeTruncated: false,
+          runningThreadIds: [],
+          search: {
+            query: '',
+            status: 'idle',
+            threadIds: [],
+            threadTitles: {},
+            truncated: false,
+          },
+        },
+      }),
+    },
+  } as unknown as WorkspaceRuntimeBoundary;
+  const controller = new WorkspaceController({
+    threadRegistry: new ThreadRegistry(),
+    supervisor,
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
+    },
+    getMainWindow: () => ({}) as BrowserWindow,
+    sessionPath,
+    chatRootPath,
+    beforeWorkspaceSwitch: async () => {
+      beforeSwitchCount += 1;
+    },
+    now: () => new Date(2026, 7, 7, 10, 11, 12),
+    randomId: () => 'replacement',
+  });
+
+  await controller.restore();
+  assert.deepEqual(await controller.activateChat({ threadId: CHAT_THREAD_ID }), {
+    accepted: true,
+  });
+  assert.deepEqual(await controller.deleteTask(CHAT_THREAD_ID), {
+    accepted: true,
+  });
+
+  await assert.rejects(realpath(chatDirectory), { code: 'ENOENT' });
+  const replacementDirectory = await realpath(
+    path.join(chatRootPath, '2026-08-07', 'chat-101112-replacement'),
+  );
+  assert.deepEqual(controller.getLaunchContext(), {
+    generation: 2,
+    workspaceId: createHash('sha256')
+      .update(replacementDirectory)
+      .digest('hex'),
+    path: replacementDirectory,
+    name: '聊天文件',
+    threadId: null,
+  });
+  assert.equal(switchCount, 2);
+  assert.equal(beforeSwitchCount, 2);
+});
+
 test('chat activation creates a dated managed directory and one atomic launch binding', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-chat-workspace-'));
   t.after(() => rm(root, { recursive: true, force: true }));

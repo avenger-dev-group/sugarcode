@@ -27,6 +27,7 @@ import {
   readFile,
   realpath,
   rename,
+  rm,
   unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -496,7 +497,8 @@ export class WorkspaceController {
           (project) => projectOwnerKey(project.id) === ownerKey,
         )
       : undefined;
-    const chatOwned = ownerKey ? this.chatOwners.has(ownerKey) : false;
+    const chatOwner = ownerKey ? this.chatOwners.get(ownerKey) : undefined;
+    const chatOwned = Boolean(chatOwner);
     if (!projectOwner && !chatOwned) {
       return { accepted: false, reason: 'invalid' };
     }
@@ -550,6 +552,50 @@ export class WorkspaceController {
       return { accepted: false, reason: 'failed' };
     }
 
+    const chatThreadIds = ownerKey
+      ? this.options.threadRegistry.getOwnerView(ownerKey).threadIds
+      : [];
+    const removesChatDirectory = Boolean(
+      chatOwner?.directory &&
+      chatThreadIds.length === 1 &&
+      chatThreadIds[0] === threadId,
+    );
+    const persistedActiveChatDirectory =
+      removesChatDirectory && this.persistedActive?.kind === 'chat'
+        ? await this.validateChatDirectory(this.persistedActive.directory)
+        : null;
+    const persistedActiveReferencesDeletedChat = Boolean(
+      this.persistedActive?.kind === 'chat' &&
+      (this.persistedActive.threadId === threadId ||
+        (chatOwner?.directory &&
+          persistedActiveChatDirectory === chatOwner.directory)),
+    );
+    const deletingActiveDirectory = Boolean(
+      removesChatDirectory &&
+      chatOwner?.directory &&
+      this.workspaceKind === 'chat' &&
+      this.workspacePath === chatOwner.directory,
+    );
+    if (removesChatDirectory && chatOwner?.directory) {
+      if (deletingActiveDirectory) {
+        const replacement = await this.activateChat({});
+        if (!replacement.accepted) {
+          this.publish(
+            this.workspacePath ? 'failed' : 'unselected',
+            'The conversation was deleted, but SugarCode could not leave its chat folder before removing local files.',
+          );
+          return { accepted: false, reason: 'failed' };
+        }
+      }
+      if (!(await this.deleteManagedChatDirectory(chatOwner.directory))) {
+        this.publish(
+          this.workspacePath ? 'failed' : 'unselected',
+          'The conversation was deleted, but its managed chat folder could not be removed.',
+        );
+        return { accepted: false, reason: 'failed' };
+      }
+    }
+
     if (chatOwned) {
       if (this.activeChatThreadId === threadId) {
         this.activeChatThreadId = null;
@@ -572,6 +618,13 @@ export class WorkspaceController {
       this.options.threadRegistry.getOwnerView(ownerKey).threadIds.length === 0
     ) {
       this.chatOwners.delete(ownerKey);
+      if (
+        removesChatDirectory &&
+        !deletingActiveDirectory &&
+        persistedActiveReferencesDeletedChat
+      ) {
+        this.persistedActive = this.getFallbackPersistedActive();
+      }
     }
 
     try {
@@ -1111,6 +1164,26 @@ export class WorkspaceController {
       !path.isAbsolute(relative)
       ? directory
       : null;
+  };
+
+  private deleteManagedChatDirectory = async (
+    candidate: string,
+  ): Promise<boolean> => {
+    const directory = await this.validateChatDirectory(candidate);
+    if (!directory) {
+      try {
+        await lstat(candidate);
+        return false;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === 'ENOENT';
+      }
+    }
+    try {
+      await rm(directory, { recursive: true, force: false });
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    }
   };
 
   private handleRegistryChange = (): void => {
