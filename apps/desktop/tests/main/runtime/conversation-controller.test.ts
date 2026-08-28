@@ -367,6 +367,14 @@ test('creating a Goal immediately projects its objective as a user message', asy
     fixture.sent.filter((command) => command.type === 'turn.startGoal').length,
     1,
   );
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.startGoal' }> =>
+      command.type === 'turn.startGoal',
+  );
+  assert.equal(started?.generateTitle, true);
+  assert.deepEqual(started?.content, [
+    { type: 'text', text: '迁移 Admin 模块并完成验证' },
+  ]);
 });
 
 class SnapshotFixtureRuntime {

@@ -22,8 +22,11 @@ import { FinishReason, type Part } from '@google/genai';
 
 import {
   DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
-  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
 } from '../../shared/model-metadata.ts';
+import {
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+  MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
+} from '../../shared/model-request-limits.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
@@ -369,7 +372,7 @@ export class AnthropicLlm extends BaseLlm {
   static readonly supportedModels = [/^anthropic:/u];
 
   private readonly client: Anthropic;
-  private readonly maxRetries: number;
+  private readonly maxRetries?: number;
   private readonly timeoutMs: number;
   private readonly parallelTools: boolean;
   private nativeCompaction: boolean;
@@ -380,7 +383,7 @@ export class AnthropicLlm extends BaseLlm {
 
   constructor(options: ProviderAdapterOptions) {
     super({ model: options.model });
-    this.maxRetries = options.maxRetries ?? 2;
+    this.maxRetries = options.maxRetries;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
     this.parallelTools = options.parallelTools ?? false;
     this.nativeCompaction = options.nativeCompaction === true;
@@ -406,7 +409,10 @@ export class AnthropicLlm extends BaseLlm {
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: validateBaseUrl(options.baseUrl),
       defaultHeaders: options.headers,
-      timeout: this.timeoutMs,
+      timeout: Math.min(
+        this.timeoutMs,
+        MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
+      ),
       maxRetries: 0,
     });
   }
@@ -459,6 +465,7 @@ export class AnthropicLlm extends BaseLlm {
         maxRetries: this.maxRetries,
         shouldRetry: (error) =>
           mapAnthropicError(error, deadline.signal).details.retryable,
+        countsAsOutput: (event) => event.type !== 'message_start',
         create: async () => {
           const maxTokens = Math.max(
             1,

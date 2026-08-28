@@ -1,4 +1,5 @@
 import { isGoalObjective } from './goals.ts';
+import { findComposerReferences } from './composer.ts';
 
 export type GoalCommand =
   | Readonly<{ action: 'view' }>
@@ -8,9 +9,23 @@ export type GoalCommand =
   | Readonly<{ action: 'invalid'; reason: 'missingObjective' | 'tooLong' }>;
 
 export const parseGoalCommand = (value: string): GoalCommand | null => {
-  const match = /^\s*\/goal(?:\s+([\s\S]*?))?\s*$/u.exec(value);
-  if (!match) return null;
-  const argument = (match[1] ?? '').trim();
+  const references = findComposerReferences(value);
+  const goalReferences = references.filter(
+    (reference) =>
+      reference.kind === 'command' && reference.target === 'goal',
+  );
+  if (
+    goalReferences.length !== 1 ||
+    references.some(
+      (reference) =>
+        reference.kind === 'command' && reference.target !== 'goal',
+    )
+  ) {
+    return null;
+  }
+  const reference = goalReferences[0];
+  if (!reference) return null;
+  const argument = `${value.slice(0, reference.start)}${value.slice(reference.end)}`.trim();
   if (!argument) return { action: 'view' };
   if (argument === 'pause' || argument === 'resume' || argument === 'clear') {
     return { action: argument };

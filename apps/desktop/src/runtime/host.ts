@@ -45,10 +45,10 @@ import { discoverModels } from './models/discovery.ts';
 import { OpenAiLlm } from './models/openai-llm.ts';
 import {
   DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
-  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
   knownContextWindowTokens,
   supportsNativeCompaction,
 } from '../shared/model-metadata.ts';
+import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../shared/model-request-limits.ts';
 import {
   readModelItemMetadata,
   readModelStepOutcome,
@@ -2953,7 +2953,10 @@ export class RuntimeHost {
         ...(typeof resolved.apiKey === 'string'
           ? { apiKey: resolved.apiKey }
           : {}),
-        timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
+        timeoutMs:
+          typeof connection.requestTimeoutMs === 'number'
+            ? connection.requestTimeoutMs
+            : DEFAULT_PROVIDER_TIMEOUT_MS,
         parallelTools: selection.effectiveCapabilities.parallelTools,
         ...(effectiveCompactThreshold >= 4_096
           ? { compactThresholdTokens: effectiveCompactThreshold }

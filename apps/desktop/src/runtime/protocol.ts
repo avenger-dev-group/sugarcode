@@ -13,6 +13,7 @@ import {
   type ModelRequestOptions,
   type ModelWireApi,
 } from '../shared/model-config.ts';
+import { MAX_MODEL_REQUEST_TIMEOUT_MS } from '../shared/model-request-limits.ts';
 import {
   isGitCommitResponse,
   isGitDiffResponse,
@@ -432,6 +433,7 @@ export type RuntimeCommand =
       expectedRevision: number;
       modelProfileId: string;
       modelRequest: ModelRequestOptions;
+      generateTitle?: boolean;
       reconciliation?: boolean;
       content: readonly RuntimeContentPart[];
     }>
@@ -1553,7 +1555,7 @@ const isProviderConfig = (value: unknown): value is RuntimeProviderConfig =>
   typeof value.timeoutMs === 'number' &&
   Number.isInteger(value.timeoutMs) &&
   value.timeoutMs >= 1_000 &&
-  value.timeoutMs <= 600_000 &&
+  value.timeoutMs <= MAX_MODEL_REQUEST_TIMEOUT_MS &&
   typeof value.parallelTools === 'boolean' &&
   (value.compactThresholdTokens === undefined ||
     (Number.isInteger(value.compactThresholdTokens) &&
@@ -1757,6 +1759,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         typeof value.modelProfileId === 'string' &&
         /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId) &&
         isModelRequestOptions(value.modelRequest) &&
+        (value.generateTitle === undefined ||
+          typeof value.generateTitle === 'boolean') &&
         Array.isArray(value.content) &&
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart) &&

@@ -7,6 +7,7 @@ import {
   type ModelConnectionValue,
   type ModelProfileValue,
 } from '@/shared/model-config';
+import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '@/shared/model-request-limits';
 import {
   deleteModelApiKey,
   getModelConfig,
@@ -32,6 +33,7 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   enabled: true,
   wireApi: DEFAULT_NEW_MODEL_WIRE_API,
   continuationMode: 'localReplay',
+  requestTimeoutMs: DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
 };
 
 const INITIAL_PROFILE: ModelProfileValue = {

@@ -8,6 +8,7 @@ import { FinishReason, type Part } from '@google/genai';
 import OpenAI from 'openai';
 import { toResponseInputItems } from 'openai/lib/responses/ResponseInputItems';
 import type {
+  ChatCompletionChunk,
   ChatCompletionContentPart,
   ChatCompletionMessageParam,
   ChatCompletionTool,
@@ -26,8 +27,11 @@ import type {
 
 import {
   DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
-  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
 } from '../../shared/model-metadata.ts';
+import {
+  DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
+  MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
+} from '../../shared/model-request-limits.ts';
 import {
   RuntimeProtocolError,
   protocolProviderError,
@@ -90,6 +94,23 @@ const maxOutputTokens = (request: NormalizedLlmRequest): number =>
       MAX_OUTPUT_TOKENS,
     ),
   );
+
+const chatCompletionChunkCountsAsOutput = (
+  chunk: ChatCompletionChunk,
+): boolean =>
+  (chunk.usage !== null && chunk.usage !== undefined) ||
+  chunk.choices.some((choice) => {
+    const reasoning = compatibleReasoningDelta(choice.delta);
+    return (
+      choice.finish_reason !== null ||
+      (typeof choice.delta.content === 'string' &&
+        choice.delta.content.length > 0) ||
+      (reasoning?.length ?? 0) > 0 ||
+      (choice.delta.tool_calls?.length ?? 0) > 0 ||
+      (typeof choice.delta.refusal === 'string' &&
+        choice.delta.refusal.length > 0)
+    );
+  });
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -717,7 +738,7 @@ export class OpenAiLlm extends BaseLlm {
   private readonly client: OpenAI;
   private readonly wireApi: OpenAiWireApi;
   private readonly parallelTools: boolean;
-  private readonly maxRetries: number;
+  private readonly maxRetries?: number;
   private readonly timeoutMs: number;
   private nativeCompaction: boolean;
   private readonly compactThresholdTokens?: number;
@@ -733,7 +754,7 @@ export class OpenAiLlm extends BaseLlm {
     const baseUrl = validateBaseUrl(options.baseUrl);
     this.wireApi = options.wireApi;
     this.parallelTools = options.parallelTools ?? false;
-    this.maxRetries = options.maxRetries ?? 2;
+    this.maxRetries = options.maxRetries;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
     this.nativeCompaction = options.nativeCompaction === true;
     this.compactThresholdTokens = options.compactThresholdTokens;
@@ -752,7 +773,10 @@ export class OpenAiLlm extends BaseLlm {
       apiKey: options.apiKey || 'sugarcode-no-key',
       baseURL: baseUrl,
       defaultHeaders: options.headers,
-      timeout: this.timeoutMs,
+      timeout: Math.min(
+        this.timeoutMs,
+        MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
+      ),
       maxRetries: 0,
     });
   }
@@ -1211,6 +1235,7 @@ export class OpenAiLlm extends BaseLlm {
       signal: abortSignal,
       maxRetries: this.maxRetries,
       shouldRetry: (error) => mapOpenAiError(error, abortSignal).details.retryable,
+      countsAsOutput: chatCompletionChunkCountsAsOutput,
       create: async () =>
         this.client.chat.completions.create(
           {

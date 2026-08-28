@@ -1,3 +1,8 @@
+import {
+  MAX_MODEL_REQUEST_TIMEOUT_MS,
+  MIN_MODEL_REQUEST_TIMEOUT_MS,
+} from './model-request-limits.ts';
+
 export const MODEL_CONFIG_GET_CHANNEL = 'model-config:get';
 export const MODEL_CONFIG_SAVE_CHANNEL = 'model-config:save';
 export const MODEL_CONFIG_DELETE_API_KEY_CHANNEL =
@@ -37,6 +42,7 @@ export type ModelConnectionValue = Readonly<{
   enabled: boolean;
   wireApi: ModelWireApi;
   continuationMode: ModelContinuationMode;
+  requestTimeoutMs?: number;
 }>;
 
 export type ModelProfileValue = Readonly<{
@@ -226,7 +232,7 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
       'wireApi',
       'continuationMode',
     ],
-    ['mediaTransport'],
+    ['mediaTransport', 'requestTimeoutMs'],
   ) &&
   isId(value.id) &&
   PROVIDER_FAMILIES.includes(
@@ -240,6 +246,10 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
   ['localReplay', 'providerManaged'].includes(
     value.continuationMode as ModelContinuationMode,
   ) &&
+  (value.requestTimeoutMs === undefined ||
+    (Number.isInteger(value.requestTimeoutMs) &&
+      (value.requestTimeoutMs as number) >= MIN_MODEL_REQUEST_TIMEOUT_MS &&
+      (value.requestTimeoutMs as number) <= MAX_MODEL_REQUEST_TIMEOUT_MS)) &&
   (value.mediaTransport === undefined ||
     LEGACY_MEDIA_TRANSPORTS.includes(
       value.mediaTransport as (typeof LEGACY_MEDIA_TRANSPORTS)[number],

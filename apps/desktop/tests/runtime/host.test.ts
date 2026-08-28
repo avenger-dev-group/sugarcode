@@ -10,7 +10,7 @@ import {
 } from '@google/adk';
 import { FinishReason } from '@google/genai';
 
-import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../../src/shared/model-metadata.ts';
+import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../../src/shared/model-request-limits.ts';
 import {
   isFutureActionOnlyFinal,
   planSubmissionIssue,
@@ -1445,6 +1445,78 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+});
+
+test('RuntimeHost applies the selected connection request deadline', async () => {
+  let resolvedTimeoutMs: number | undefined;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    ...turnNativeFixture(),
+    modelProfileJson: () => JSON.stringify({
+      profile: {
+        id: 'profile-long-wait',
+        connectionId: 'connection-long-wait',
+        displayName: 'Long wait model',
+        modelId: 'fixture-model',
+        toolCalls: 'auto',
+        strictTools: 'auto',
+        parallelTools: 'auto',
+        imageInput: 'auto',
+        pdfInput: 'auto',
+      },
+      connection: {
+        id: 'connection-long-wait',
+        providerFamily: 'openai',
+        displayName: 'Long wait connection',
+        baseUrl: 'http://127.0.0.1:1/v1',
+        enabled: true,
+        wireApi: 'openaiResponses',
+        continuationMode: 'localReplay',
+        requestTimeoutMs: 3_600_000,
+      },
+    }),
+  } as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: (provider) => {
+      resolvedTimeoutMs = provider.timeoutMs;
+      return new FixtureLlm({ model: provider.model });
+    },
+    loadNative: () => native,
+    postEvent: (event) => {
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-long-wait',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-long-wait-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-long-wait',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-long-wait-fixture',
+    modelProfileId: 'profile-long-wait',
+    generateTitle: false,
+    content: [{ type: 'text', text: 'Hello' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for Turn.')), 2_000),
+    ),
+  ]);
+  assert.equal(resolvedTimeoutMs, 3_600_000);
 });
 
 test('RuntimeHost delegates image understanding to the configured analysis model', async () => {

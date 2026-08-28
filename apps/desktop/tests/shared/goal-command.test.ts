@@ -18,6 +18,12 @@ test('Goal commands are parsed independently from ordinary composer commands', (
     objective: '新目标',
   });
   assert.deepEqual(parseGoalCommand('/goal pause'), { action: 'pause' });
+  assert.deepEqual(parseGoalCommand('完成迁移\n\n/goal '), {
+    action: 'create',
+    objective: '完成迁移',
+  });
+  assert.equal(parseGoalCommand('说明文字中提到 /goal 但不是命令'), null);
+  assert.equal(parseGoalCommand('/goal 完成迁移\n/test'), null);
   assert.equal(parseGoalCommand('/test'), null);
 });
 

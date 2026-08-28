@@ -1,6 +1,6 @@
 import { cancelledProviderError } from './errors.ts';
 
-const DEFAULT_RETRY_DELAYS_MS = [250, 1_000] as const;
+const DEFAULT_RETRY_DELAYS_MS = [250, 1_000, 5_000, 10_000, 30_000] as const;
 
 const waitForRetry = async (
   delayMs: number,
@@ -10,15 +10,15 @@ const waitForRetry = async (
     throw cancelledProviderError();
   }
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, delayMs);
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timeout);
-        reject(cancelledProviderError());
-      },
-      { once: true },
-    );
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      reject(cancelledProviderError());
+    };
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 };
 
@@ -29,10 +29,11 @@ export const streamWithPreOutputRetry = async function* <T>(options: {
   signal?: AbortSignal;
   maxRetries?: number;
 }): AsyncGenerator<T, void> {
-  const maxRetries = Math.max(
-    0,
-    Math.min(options.maxRetries ?? DEFAULT_RETRY_DELAYS_MS.length, 4),
-  );
+  const maxRetries = options.maxRetries === undefined
+    ? options.signal === undefined
+      ? DEFAULT_RETRY_DELAYS_MS.length
+      : Number.POSITIVE_INFINITY
+    : Math.max(0, Math.min(options.maxRetries, 4));
   let attempt = 0;
   for (;;) {
     let emitted = false;

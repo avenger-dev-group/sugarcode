@@ -19,9 +19,26 @@ test('private runtime validates Goal mutation, execution, and projection events'
       expectedRevision: 3,
       modelProfileId: 'default',
       modelRequest,
+      generateTitle: true,
       content: [{ type: 'text', text: 'hidden' }],
     }),
     true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'turn.startGoal',
+      requestId: 'request-invalid-goal-title',
+      workspaceId: 'workspace-1',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      goalId: 'goal-1',
+      expectedRevision: 3,
+      modelProfileId: 'default',
+      modelRequest,
+      generateTitle: 'yes',
+      content: [{ type: 'text', text: 'hidden' }],
+    }),
+    false,
   );
   assert.equal(
     isRuntimeCommand({
@@ -59,6 +76,29 @@ test('private runtime validates per-turn reasoning and speed controls', () => {
   assert.equal(isRuntimeCommand({
     ...base,
     modelRequest: { reasoningEffort: 'extreme' },
+  }), false);
+});
+
+test('private runtime accepts provider wait deadlines up to sixty minutes', () => {
+  const command = {
+    type: 'turn.start',
+    requestId: 'request-long-wait',
+    workspaceId: 'workspace-1',
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    provider: {
+      wireApi: 'openaiChatCompletions',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:18080/v1',
+      timeoutMs: 3_600_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: 'Hello' }],
+  } as const;
+  assert.equal(isRuntimeCommand(command), true);
+  assert.equal(isRuntimeCommand({
+    ...command,
+    provider: { ...command.provider, timeoutMs: 3_600_001 },
   }), false);
 });
 

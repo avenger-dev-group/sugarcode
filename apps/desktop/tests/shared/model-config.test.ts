@@ -49,6 +49,27 @@ test('context window rejects out-of-range and fractional values', () => {
   assert.equal(isModelConfigValue(catalog(131_072.5)), false);
 });
 
+test('connection request timeout is optional and bounded to sixty minutes', () => {
+  const configured = catalog();
+  const connection = configured.connections[0];
+  assert.equal(isModelConfigValue({
+    ...configured,
+    connections: [{ ...connection, requestTimeoutMs: 60_000 }],
+  }), true);
+  assert.equal(isModelConfigValue({
+    ...configured,
+    connections: [{ ...connection, requestTimeoutMs: 3_600_000 }],
+  }), true);
+  assert.equal(isModelConfigValue({
+    ...configured,
+    connections: [{ ...connection, requestTimeoutMs: 59_999 }],
+  }), false);
+  assert.equal(isModelConfigValue({
+    ...configured,
+    connections: [{ ...connection, requestTimeoutMs: 3_600_001 }],
+  }), false);
+});
+
 test('compaction settings remain optional and validate threshold bounds', () => {
   const configured = catalog(128_000);
   const profile = configured.profiles[0];

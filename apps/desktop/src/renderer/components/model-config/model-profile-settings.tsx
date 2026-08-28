@@ -13,6 +13,7 @@ import {
   DEFAULT_AGENT_MAX_OUTPUT_TOKENS,
   knownContextWindowTokens,
 } from '@/shared/model-metadata';
+import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '@/shared/model-request-limits';
 
 import { PROVIDER_PRESETS } from './provider-presets';
 import type { ModelConfigStore } from './types';
@@ -215,6 +216,30 @@ export const ModelProfileSettings = ({ store }: ModelProfileSettingsProps) => {
                 })
               }
             />
+          </label>
+
+          <label className="grid gap-1 text-sm">
+            <span className="text-secondary">最长等待（分钟）</span>
+            <Input
+              type="number"
+              min={1}
+              max={60}
+              step={1}
+              value={
+                (store.selectedConnection.requestTimeoutMs ??
+                  DEFAULT_MODEL_REQUEST_TIMEOUT_MS) / 60_000
+              }
+              onChange={(event) =>
+                store.updateConnection({
+                  requestTimeoutMs: event.target.value
+                    ? Number(event.target.value) * 60_000
+                    : undefined,
+                })
+              }
+            />
+            <span className="text-xs leading-5 text-tertiary">
+              普通对话与目标模式共用。等待期间仅在尚未产生正文或工具调用时自动重试，最多 60 分钟。
+            </span>
           </label>
 
           <label className="grid gap-1 text-sm">

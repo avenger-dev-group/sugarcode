@@ -2338,8 +2338,11 @@ export class RuntimeConversationController {
       expectedRevision: goal.revision,
       modelProfileId: goal.model.profileId,
       modelRequest: goal.model.request,
+      ...(firstGoalTurn && thread.title === null
+        ? { generateTitle: true }
+        : {}),
       ...(reconciliation ? { reconciliation: true } : {}),
-      content: [{ type: 'text', text: `Continue Goal ${goal.id}.` }],
+      content: [{ type: 'text', text: goal.objective }],
     });
     this.refreshNavigator();
     this.publishThreadProjection(goal.threadId, true);
