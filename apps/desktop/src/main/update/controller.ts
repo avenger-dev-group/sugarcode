@@ -7,6 +7,7 @@ import {
 import {
   lstat,
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -202,6 +203,23 @@ const isSafeInstallerName = (
   return value.endsWith(
     platform === 'darwin-arm64' ? '-macos-arm64.dmg' : '-macos-x64.dmg',
   );
+};
+
+const installerVersion = (
+  installerName: string,
+  platform: UpdatePlatform,
+): string | null => {
+  if (!isSafeInstallerName(installerName, platform)) {
+    return null;
+  }
+  const suffix =
+    platform === 'win32-x64'
+      ? '-windows-x64-Setup.exe'
+      : platform === 'darwin-arm64'
+        ? '-macos-arm64.dmg'
+        : '-macos-x64.dmg';
+  const version = installerName.slice('SugarCode-'.length, -suffix.length);
+  return parseSemver(version) ? version : null;
 };
 
 const parseManifest = (
@@ -730,7 +748,7 @@ export class UpdateController {
       if (
         compareUpdateVersions(value.version, this.options.currentVersion) <= 0
       ) {
-        await this.removeInstalledUpdate(value);
+        await this.removeInstalledUpdate();
         return;
       }
 
@@ -769,14 +787,44 @@ export class UpdateController {
     );
   };
 
-  private removeInstalledUpdate = async (
-    pending: PendingUpdate,
-  ): Promise<void> => {
+  private removeInstalledUpdate = async (): Promise<void> => {
     try {
-      await removeIfPresent(pending.installerPath);
+      await this.removeInstalledPackages();
       await removeIfPresent(this.options.pendingStatePath);
     } catch {
       // Keep the state file so cleanup is retried on the next application start.
+    }
+  };
+
+  private removeInstalledPackages = async (): Promise<void> => {
+    const platform = this.options.platform;
+    if (!platform) {
+      return;
+    }
+    let installerNames: string[];
+    try {
+      installerNames = await readdir(this.options.downloadsDirectory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return;
+      }
+      throw error;
+    }
+    for (const installerName of installerNames) {
+      const version = installerVersion(installerName, platform);
+      if (
+        version &&
+        compareUpdateVersions(version, this.options.currentVersion) <= 0
+      ) {
+        const installerPath = path.join(
+          this.options.downloadsDirectory,
+          installerName,
+        );
+        const metadata = await lstat(installerPath);
+        if (metadata.isFile() && !metadata.isSymbolicLink()) {
+          await removeIfPresent(installerPath);
+        }
+      }
     }
   };
 

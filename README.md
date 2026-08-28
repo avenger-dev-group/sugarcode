@@ -97,8 +97,9 @@ The desktop application checks GitCode and GitHub together and selects the
 highest available stable version, preferring GitCode when both sources publish
 the same version. A release is downloaded silently to the user's Downloads
 directory and verified against the manifest before the update button appears.
-After the upgraded application starts successfully, its installer is deleted;
-an installer superseded by a newer downloaded release is deleted immediately.
+After the upgraded application starts successfully, installers for the current
+platform up to and including the installed version are deleted; an installer
+superseded by a newer downloaded release is deleted immediately.
 After repeated failures, the same button opens the GitCode releases page.
 
 The release workflow builds these installers from one source revision:

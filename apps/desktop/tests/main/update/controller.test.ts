@@ -478,9 +478,24 @@ test('removes the installer after the updated application starts', async () => {
     fixture.downloadsDirectory,
     fixture.installerName,
   );
+  const legacyInstallerPath = path.join(
+    fixture.downloadsDirectory,
+    'SugarCode-3.0.8-macos-arm64.dmg',
+  );
+  const futureInstallerPath = path.join(
+    fixture.downloadsDirectory,
+    'SugarCode-3.2.0-macos-arm64.dmg',
+  );
+  const unrelatedPath = path.join(
+    fixture.downloadsDirectory,
+    'SugarCode-notes.txt',
+  );
   await mkdir(fixture.downloadsDirectory, { recursive: true });
   await mkdir(path.dirname(fixture.pendingStatePath), { recursive: true });
   await writeFile(installerPath, fixture.installer);
+  await writeFile(legacyInstallerPath, 'legacy installer');
+  await writeFile(futureInstallerPath, 'future installer');
+  await writeFile(unrelatedPath, 'keep me');
   await writeFile(
     fixture.pendingStatePath,
     JSON.stringify({
@@ -511,7 +526,10 @@ test('removes the installer after the updated application starts', async () => {
     await controller.start();
     assert.equal(controller.getSnapshot().status, 'upToDate');
     await assert.rejects(readFile(installerPath), { code: 'ENOENT' });
+    await assert.rejects(readFile(legacyInstallerPath), { code: 'ENOENT' });
     await assert.rejects(readFile(fixture.pendingStatePath), { code: 'ENOENT' });
+    assert.equal(await readFile(futureInstallerPath, 'utf8'), 'future installer');
+    assert.equal(await readFile(unrelatedPath, 'utf8'), 'keep me');
   } finally {
     controller.stop();
     await rm(fixture.root, { recursive: true, force: true });
