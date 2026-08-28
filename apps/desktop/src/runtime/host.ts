@@ -150,6 +150,12 @@ import type {
   TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
 import { isModelConfigInspection } from '../shared/model-config.ts';
+import type { GoalSnapshot } from '../shared/goals.ts';
+import {
+  createUpdateGoalTool,
+  GoalTurnSession,
+  goalTurnRuntimeContent,
+} from './goals.ts';
 import {
   MAX_CONVERSATION_ATTACHMENT_BYTES,
   MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
@@ -354,6 +360,7 @@ type ResolvedProfile = Readonly<{
 
 type TurnExecutionCommand =
   | Extract<RuntimeCommand, { type: 'turn.start' }>
+  | Extract<RuntimeCommand, { type: 'turn.startGoal' }>
   | Extract<RuntimeCommand, { type: 'turn.startQueued' }>
   | Extract<RuntimeCommand, { type: 'turn.revise' }>;
 
@@ -742,6 +749,7 @@ export class RuntimeHost {
     RuntimeModelSelection
   >();
   private readonly activeTurnSkills = new Map<string, TurnSkills>();
+  private readonly activeGoalSessions = new Map<string, GoalTurnSession>();
   private readonly pendingSteersByTurn = new Map<
     string,
     RuntimeContentPart[][]
@@ -977,11 +985,38 @@ export class RuntimeHost {
         break;
       }
       case 'turn.start':
+      case 'turn.startGoal':
       case 'turn.startQueued':
       case 'turn.revise':
         this.requireReady(command.requestId);
         void this.startTurn(command);
         break;
+      case 'goal.mutate': {
+        this.requireReady(command.requestId);
+        const native = this.requireNative();
+        if (!native.mutateGoalJson) {
+          throw new Error('The native runtime does not support Goals.');
+        }
+        const goal = this.parseNativeJson<GoalSnapshot | null>(
+          native.mutateGoalJson(
+            command.threadId,
+            JSON.stringify({ ...command.mutation, goalId: command.goalId }),
+          ),
+        );
+        if (goal) {
+          for (const session of this.activeGoalSessions.values()) {
+            session.refresh(goal);
+          }
+        }
+        this.emit({
+          type: 'goal.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          goal,
+        });
+        break;
+      }
       case 'queue.messageCreate': {
         this.requireReady(command.requestId);
         const content = this.nativeRuntime
@@ -2585,7 +2620,10 @@ export class RuntimeHost {
           .filter((item) => item.turnId === turn.id)
           .sort((left, right) => left.sequence - right.sequence);
         for (const item of items) {
-          if (item.kind === 'turn.userMessage') {
+          if (
+            item.kind === 'turn.userMessage' ||
+            item.kind === 'turn.goalContext'
+          ) {
             const content = item.payload.content;
             if (
               !Array.isArray(content) ||
@@ -3662,6 +3700,8 @@ export class RuntimeHost {
       return;
     }
     const controller = new AbortController();
+    let goalTurnStartedAt: number | undefined;
+    let goalSession: GoalTurnSession | undefined;
     let revisionCommitted = false;
     let turnContent =
       command.type === 'turn.startQueued'
@@ -3724,7 +3764,72 @@ export class RuntimeHost {
           this.activeTurnSkills.set(command.turnId, queuedTurnSkills);
         }
       }
-      if (command.type === 'turn.revise') {
+      if (command.type === 'turn.startGoal') {
+        const native = this.requireNative();
+        if (
+          !native.currentGoalJson ||
+          !native.claimGoalTurnJson ||
+          !native.settleGoalTurnJson
+        ) {
+          throw new Error('The native runtime does not support Goal Turns.');
+        }
+        withDurableStateWrite(() =>
+          native.ensureThread(command.threadId, command.workspaceId),
+        );
+        await this.ensureSession(command, resolved.selection);
+        const currentGoal = this.parseNativeJson<GoalSnapshot | null>(
+          native.currentGoalJson(command.threadId),
+        );
+        if (
+          !currentGoal ||
+          currentGoal.id !== command.goalId ||
+          currentGoal.revision !== command.expectedRevision ||
+          currentGoal.status !== 'active'
+        ) {
+          throw new Error('goalRevisionMismatch');
+        }
+        turnContent = goalTurnRuntimeContent(
+          currentGoal,
+          command.reconciliation === true,
+        );
+        const claimedGoal = this.parseNativeJson<GoalSnapshot | null>(
+          withDurableStateWrite(() =>
+            native.claimGoalTurnJson?.(
+              command.goalId,
+              command.expectedRevision,
+              command.turnId,
+              command.threadId,
+              command.requestId,
+              resolved.provider.wireApi,
+              resolved.provider.model,
+              JSON.stringify({
+                goalId: command.goalId,
+                revision: command.expectedRevision,
+                content: turnContent,
+              }),
+            ) ?? 'null',
+          ),
+        );
+        if (
+          !claimedGoal ||
+          claimedGoal.status !== 'active' ||
+          claimedGoal.activeTurnId !== command.turnId
+        ) {
+          if (claimedGoal) {
+            this.emit({
+              type: 'goal.changed',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              goal: claimedGoal,
+            });
+          }
+          throw new Error('Goal budget prevented the next Turn.');
+        }
+        goalSession = new GoalTurnSession(claimedGoal);
+        goalTurnStartedAt = Date.now();
+        this.activeGoalSessions.set(command.turnId, goalSession);
+      } else if (command.type === 'turn.revise') {
         // Resolve and validate every retained asset before replacing durable history.
         // Once the transaction commits, later provider failures belong to the new Turn.
         this.contentFromParts(command.content, resolved.selection);
@@ -3827,6 +3932,9 @@ export class RuntimeHost {
         threadId: command.threadId,
         turnId: command.turnId,
         model: resolved.selection,
+        ...(command.type === 'turn.startGoal'
+          ? { goalId: command.goalId }
+          : {}),
       });
       const userMessageEvent = {
         type: 'turn.userMessage',
@@ -3837,7 +3945,9 @@ export class RuntimeHost {
         itemId: `${command.turnId}:user`,
         content: turnContent,
       } as const;
-      if (
+      if (command.type === 'turn.startGoal') {
+        // The hidden user context was persisted atomically with the Goal claim.
+      } else if (
         command.type === 'turn.revise' ||
         command.type === 'turn.startQueued'
       ) {
@@ -3993,6 +4103,24 @@ export class RuntimeHost {
         });
       };
       const composerInstruction = composerIntentInstruction(turnContent);
+      const contextualGoal =
+        command.type !== 'turn.startGoal' && this.nativeRuntime?.currentGoalJson
+          ? this.parseNativeJson<GoalSnapshot | null>(
+              this.nativeRuntime.currentGoalJson(command.threadId),
+            )
+          : null;
+      const goalContextInstruction = contextualGoal
+        ? [
+            '# Current durable Goal',
+            'The following objective is user-authored context for this conversation. Help the user in a way that preserves progress toward it, but this ordinary Turn does not require update_goal.',
+            `Goal objective (JSON string): ${JSON.stringify(contextualGoal.objective)}`,
+            contextualGoal.progress
+              ? `Goal progress (JSON): ${JSON.stringify(contextualGoal.progress)}`
+              : '',
+          ]
+            .filter(Boolean)
+            .join('\n\n')
+        : '';
       const workspaceInstructions = this.nativeRuntime
         ? new WorkspaceInstructionContext(this.nativeRuntime, nativeWorkspaceId)
         : undefined;
@@ -4098,6 +4226,7 @@ export class RuntimeHost {
           invalidArgumentGuard,
           turnKnowledge.tools.length > 0,
         ),
+        ...(goalSession ? [createUpdateGoalTool(goalSession)] : []),
         this.requestUserInputTool(
           command,
           userInputFinalGuard,
@@ -4159,7 +4288,11 @@ export class RuntimeHost {
           availableTools: mainTools.map((tool) => tool.name),
           collaborationEnabled: collaborationTools.length > 0,
           composerInstruction,
-          skillInstruction: [turnSkills.instruction, turnKnowledge.instruction]
+          skillInstruction: [
+            turnSkills.instruction,
+            turnKnowledge.instruction,
+            goalContextInstruction,
+          ]
             .concat(applicationMcpInstruction)
             .filter(Boolean)
             .join('\n\n'),
@@ -4298,6 +4431,8 @@ export class RuntimeHost {
             initialMessage: driverMessage,
             signal: controller.signal,
             onEvent: (event, textItems) => {
+              const goalUsage = usageFromEvent(event);
+              if (goalUsage) goalSession?.addTokens(goalUsage.totalTokens);
               this.observeToolProgress(invalidArgumentGuard, event);
               this.publishAgentEvent(
                 command,
@@ -4335,6 +4470,8 @@ export class RuntimeHost {
                   part.functionResponse.response.ok === true,
               ),
             validateFinalCandidate: (candidateText) => {
+              const goalIssue = goalSession?.finalIssue();
+              if (goalIssue) return goalIssue;
               if (turnMode === 'plan' && !planSubmissionGuard.proposal) {
                 return 'Planning mode requires the completed plan to be submitted with submit_plan before the Turn can finish.';
               }
@@ -4380,13 +4517,45 @@ export class RuntimeHost {
           };
         }
       }
-      this.emitCompleted(
-        command,
-        controller.signal.aborted ? 'interrupted' : 'completed',
-        controller.signal.aborted
-          ? this.cancellationError(command.turnId)
-          : undefined,
-      );
+      if (goalSession && !controller.signal.aborted) {
+        const update = goalSession.stagedUpdate();
+        if (!update) {
+          throw new ProviderAdapterError({
+            kind: 'protocol',
+            retryable: false,
+            message: 'The Goal Turn ended without update_goal.',
+          });
+        }
+        const goal = this.parseNativeJson<GoalSnapshot | null>(
+          this.requireNative().settleGoalTurnJson?.(
+            command.type === 'turn.startGoal' ? command.goalId : '',
+            goalSession.snapshot().revision,
+            command.turnId,
+            JSON.stringify(update),
+            goalSession.tokenUsage(),
+            Math.min(
+              Date.now() - (goalTurnStartedAt ?? Date.now()),
+              0xffff_ffff,
+            ),
+          ) ?? 'null',
+        );
+        this.emit({
+          type: 'goal.changed',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          goal,
+        });
+        this.emitCompleted(command, 'completed', undefined, false);
+      } else {
+        this.emitCompleted(
+          command,
+          controller.signal.aborted ? 'interrupted' : 'completed',
+          controller.signal.aborted
+            ? this.cancellationError(command.turnId)
+            : undefined,
+        );
+      }
     } catch (error) {
       this.collaboration.cancelTurn(command.turnId);
       const details = providerError(error);
@@ -4398,12 +4567,77 @@ export class RuntimeHost {
           message: details.message,
         });
       }
+      if (goalSession && details.kind !== 'cancelled') {
+        try {
+          const goal = this.parseNativeJson<GoalSnapshot | null>(
+            this.requireNative().settleGoalTurnJson?.(
+              command.type === 'turn.startGoal' ? command.goalId : '',
+              goalSession.snapshot().revision,
+              command.turnId,
+              JSON.stringify({
+                status: 'failed',
+                pauseReason:
+                  details.kind === 'protocol'
+                    ? 'protocolViolation'
+                    : 'failure',
+              }),
+              goalSession.tokenUsage(),
+              Math.min(
+                Date.now() - (goalTurnStartedAt ?? Date.now()),
+                0xffff_ffff,
+              ),
+            ) ?? 'null',
+          );
+          this.emit({
+            type: 'goal.changed',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            goal,
+          });
+        } catch {
+          // A concurrent Goal mutation owns the durable state.
+        }
+      } else if (
+        command.type === 'turn.startGoal' &&
+        details.message.includes('modelUnavailable')
+      ) {
+        try {
+          const native = this.requireNative();
+          const current = this.parseNativeJson<GoalSnapshot | null>(
+            native.currentGoalJson?.(command.threadId) ?? 'null',
+          );
+          if (current?.status === 'active') {
+            const goal = this.parseNativeJson<GoalSnapshot | null>(
+              native.mutateGoalJson?.(
+                command.threadId,
+                JSON.stringify({
+                  action: 'pause',
+                  goalId: current.id,
+                  expectedRevision: current.revision,
+                  pauseReason: 'modelUnavailable',
+                }),
+              ) ?? 'null',
+            );
+            this.emit({
+              type: 'goal.changed',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              goal,
+            });
+          }
+        } catch {
+          // A concurrent mutation already owns the Goal state.
+        }
+      }
       this.emitCompleted(
         command,
         details.kind === 'cancelled' ? 'interrupted' : 'failed',
         details.kind === 'cancelled'
           ? (this.cancellationError(command.turnId) ?? details)
           : details,
+        !goalSession || details.kind === 'cancelled',
       );
     } finally {
       this.collaboration.releaseTurn(command.turnId);
@@ -4415,6 +4649,7 @@ export class RuntimeHost {
       }
       this.activeTurnSelections.delete(command.turnId);
       this.activeTurnSkills.delete(command.turnId);
+      this.activeGoalSessions.delete(command.turnId);
       this.pendingSteersByTurn.delete(command.turnId);
       this.cancellationSources.delete(command.turnId);
     }
@@ -6225,13 +6460,16 @@ export class RuntimeHost {
     command: TurnContextCommand,
     status: 'completed' | 'interrupted' | 'failed',
     error?: RuntimeProviderError,
+    persist = true,
   ): void => {
     try {
-      this.nativeRuntime?.finishTurn(
-        command.turnId,
-        status,
-        error ? JSON.stringify(error) : undefined,
-      );
+      if (persist) {
+        this.nativeRuntime?.finishTurn(
+          command.turnId,
+          status,
+          error ? JSON.stringify(error) : undefined,
+        );
+      }
     } catch (persistenceError) {
       this.emit({
         type: 'runtime.log',

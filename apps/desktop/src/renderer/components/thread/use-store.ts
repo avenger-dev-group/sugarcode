@@ -17,6 +17,7 @@ import {
   steerQueuedConversationMessage,
   resumeConversationQueue,
   respondToConversationUserInput,
+  mutateConversationGoal,
   sendConversationMessage,
   startNewConversationThread,
   stopConversationTurn,
@@ -58,10 +59,12 @@ import {
   type ConversationThreadNavigatorSnapshot,
   type ConversationQueuedMessage,
   type ConversationTurnStatus,
+  type ConversationGoalMutation,
   type ConversationWorkspaceListActivity,
   type ConversationWorkspaceReadActivity,
   type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
+import { parseGoalCommand } from '@/shared/goal-command';
 import type {
   ModelReasoningEffort,
   ModelRequestOptions,
@@ -1085,6 +1088,7 @@ export const toThreadViewModel = (
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&
+      previousTurn.origin === turn.origin &&
       previousTurn.verifiedFilePaths === verifiedFilePaths &&
       previousTurn.processLanguage === processLanguage &&
       previousTurn.durationLabel === durationLabel &&
@@ -1110,6 +1114,7 @@ export const toThreadViewModel = (
     return {
       id: turn.id,
       status: turn.status,
+      ...(turn.origin ? { origin: turn.origin } : {}),
       processLanguage,
       verifiedFilePaths,
       ...(durationLabel ? { durationLabel } : {}),
@@ -1145,6 +1150,7 @@ export const toThreadViewModel = (
     threadIdentity: snapshot.threadId ?? null,
     turns: stableTurns,
     queue: snapshot.queue ?? { paused: false, messages: [] },
+    ...(snapshot.goal ? { goal: snapshot.goal } : {}),
     isEmpty: stableTurns.length === 0,
     ...(snapshot.notice ? { notice: snapshot.notice.summary } : {}),
   };
@@ -1654,6 +1660,93 @@ export const useStore = (): ThreadStore => {
     );
   };
 
+  const mutateGoal = async (
+    mutation: ConversationGoalMutation,
+  ): Promise<boolean> => {
+    try {
+      const result = await mutateConversationGoal(mutation);
+      if (result.accepted) return true;
+      setActionError(
+        result.reason === 'goalConflict'
+          ? '当前会话已有未结束的 Goal；请使用 /goal edit、pause 或 clear。'
+          : result.reason === 'goalRevisionMismatch'
+            ? 'Goal 已在其他操作中更新，请基于最新状态重试。'
+            : result.reason === 'modelUnavailable'
+              ? 'Goal 固定的模型当前不可用，请先编辑模型。'
+              : 'Goal 操作未能安全完成。',
+      );
+      return false;
+    } catch {
+      setActionError('Desktop could not update the Goal safely.');
+      return false;
+    }
+  };
+
+  const submitGoalCommand = async (): Promise<boolean | null> => {
+    const command = parseGoalCommand(draft);
+    if (!command) return null;
+    if (attachments.length > 0) {
+      setActionError('Goal 命令不支持附件。');
+      return false;
+    }
+    if (command.action === 'invalid') {
+      setActionError(
+        command.reason === 'missingObjective'
+          ? '请提供 Goal 目标内容。'
+          : 'Goal 最多可包含 4,000 个 Unicode 字符。',
+      );
+      return false;
+    }
+    const goal = snapshot.goal;
+    if (command.action === 'view') {
+      if (!goal) setActionError('当前会话还没有 Goal。');
+      else {
+        setDraft('');
+        window.requestAnimationFrame(() => {
+          document
+            .getElementById('conversation-goal')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        });
+      }
+      return Boolean(goal);
+    }
+    let mutation: ConversationGoalMutation;
+    if (command.action === 'create') {
+      mutation = {
+        action: 'create',
+        objective: command.objective,
+        modelProfileId: selectedModelProfileId,
+        modelRequest: selectedModelRequest,
+      };
+    } else {
+      if (!goal || !snapshot.threadId) {
+        setActionError('当前会话没有可操作的 Goal。');
+        return false;
+      }
+      mutation =
+        command.action === 'edit'
+          ? {
+              action: 'edit',
+              threadId: snapshot.threadId,
+              goalId: goal.id,
+              expectedRevision: goal.revision,
+              objective: command.objective,
+            }
+          : {
+              action: command.action,
+              threadId: snapshot.threadId,
+              goalId: goal.id,
+              expectedRevision: goal.revision,
+            };
+    }
+    const accepted = await mutateGoal(mutation);
+    if (accepted) {
+      setDraft('');
+      setAttachments([]);
+    }
+    return accepted;
+  };
+
   const send = async (): Promise<void> => {
     if (!canSend || sendInFlight.current) {
       return;
@@ -1681,6 +1774,8 @@ export const useStore = (): ThreadStore => {
             .catch((): undefined => undefined);
         }
       }
+      const goalCommandResult = await submitGoalCommand();
+      if (goalCommandResult !== null) return;
       const result = await sendConversationMessage({
         input: draft,
         ...(attachments.length > 0
@@ -2204,6 +2299,7 @@ export const useStore = (): ThreadStore => {
     confirmThreadRename,
     send,
     stop,
+    mutateGoal,
     beginQueueEdit,
     setQueueEditDraft: (value) => setQueueEditor((current) => ({ ...current, draft: value })),
     setQueueEditModel: (profileId) => {

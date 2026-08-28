@@ -202,6 +202,26 @@ export type NativeRuntimeBinding = Readonly<{
     status: string,
     errorJson?: string,
   ) => boolean;
+  currentGoalJson?: (threadId: string) => string;
+  mutateGoalJson?: (threadId: string, mutationJson: string) => string;
+  claimGoalTurnJson?: (
+    goalId: string,
+    expectedRevision: number,
+    turnId: string,
+    threadId: string,
+    requestId: string,
+    providerWireApi: string,
+    model: string,
+    contextJson: string,
+  ) => string;
+  settleGoalTurnJson?: (
+    goalId: string,
+    expectedRevision: number,
+    turnId: string,
+    settlementJson: string,
+    tokens: number,
+    durationMs: number,
+  ) => string;
   createQueuedMessageJson?: (
     threadId: string,
     messageId: string,

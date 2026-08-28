@@ -97,6 +97,31 @@ class FixtureRuntime {
         },
       } as RuntimeEvent;
     }
+    if (command.type === 'goal.mutate' && command.mutation.action === 'create') {
+      return {
+        type: 'goal.changed',
+        requestId: command.requestId,
+        sequence: 3,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        goal: {
+          id: command.goalId,
+          threadId: command.threadId,
+          objective: command.mutation.objective,
+          status: 'active',
+          revision: 1,
+          model: {
+            profileId: command.mutation.modelProfileId,
+            request: command.mutation.modelRequest,
+          },
+          budget: command.mutation.budget ?? {},
+          activationUsage: { turns: 0, activeDurationMs: 0, tokens: 0 },
+          lifetimeUsage: { turns: 0, activeDurationMs: 0, tokens: 0 },
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      } as RuntimeEvent;
+    }
     if (command.type === 'thread.rename') {
       return {
         type: 'thread.mutated',
@@ -310,6 +335,39 @@ class FixtureRuntime {
     }
   }
 }
+
+test('creating a Goal immediately projects its objective as a user message', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(
+    fixture as unknown as RuntimeSupervisor,
+  );
+  assert.equal(await controller.switchWorkspace(WORKSPACE_ID), true);
+
+  assert.equal(
+    (
+      await controller.mutateGoal({
+        action: 'create',
+        objective: '迁移 Admin 模块并完成验证',
+        modelProfileId: 'profile-1',
+        modelRequest: { reasoningEffort: 'high', serviceTier: 'auto' },
+      })
+    ).accepted,
+    true,
+  );
+
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.turns[0]?.origin, 'goal');
+  assert.deepEqual(snapshot.turns[0]?.messages, [{
+    id: `${snapshot.turns[0]?.id}:goal-objective`,
+    role: 'user',
+    text: '迁移 Admin 模块并完成验证',
+    status: 'inProgress',
+  }]);
+  assert.equal(
+    fixture.sent.filter((command) => command.type === 'turn.startGoal').length,
+    1,
+  );
+});
 
 class SnapshotFixtureRuntime {
   private readonly listeners = new Set<(event: RuntimeEvent) => void>();

@@ -63,6 +63,7 @@ type OrchestrationStore = Readonly<{
   openFile: (path: string) => void;
   openPlan: (plan: ContextRailPlan) => void;
   openFiles: () => void;
+  openGoal: () => void;
   openPreview: (url?: string) => string;
   openSkill: (
     skill: Extract<ContextRailResource, { kind: 'skill' }>,
@@ -80,6 +81,7 @@ type OrchestrationActions = Pick<
   | 'openDrawio'
   | 'openFile'
   | 'openFiles'
+  | 'openGoal'
   | 'openPlan'
   | 'openPreview'
   | 'openSkill'
@@ -295,6 +297,13 @@ export const OrchestrationStoreProvider = ({
     [drawioSessions, onRequestOpen, scopeKey],
   );
 
+  const openGoal = useCallback(() => {
+    clearSelectedDrawioForSession(drawioSessions, scopeKey);
+    setSelectedResource({ kind: 'goal' });
+    setActiveTab('resource');
+    onRequestOpen();
+  }, [drawioSessions, onRequestOpen, scopeKey]);
+
   const openPlan = useCallback(
     (plan: ContextRailPlan) => {
       setSelectedPlan(plan);
@@ -405,6 +414,7 @@ export const OrchestrationStoreProvider = ({
       openDrawio,
       openFile,
       openFiles,
+      openGoal,
       openPlan,
       openPreview,
       openSkill,
@@ -432,6 +442,7 @@ export const OrchestrationStoreProvider = ({
       openDrawio,
       openFile,
       openFiles,
+      openGoal,
       openPlan,
       openPreview,
       openSkill,
@@ -453,6 +464,7 @@ export const OrchestrationStoreProvider = ({
       openDrawio,
       openFile,
       openFiles,
+      openGoal,
       openPlan,
       openPreview,
       openSkill,
@@ -464,6 +476,7 @@ export const OrchestrationStoreProvider = ({
       openDrawio,
       openFile,
       openFiles,
+      openGoal,
       openPlan,
       openPreview,
       openSkill,

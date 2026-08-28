@@ -110,6 +110,7 @@ test('cold startup restores navigation without selecting or reordering projects'
   let bindingId: string | null = null;
   let preferredThreadId: string | undefined;
   let selectedThreadId: string | null = null;
+  const selectedThreadIds: string[] = [];
   let runningThreadIds: string[] = [];
   const threadRegistry = new ThreadRegistry();
   const renameRequests: Array<{
@@ -184,6 +185,7 @@ test('cold startup restores navigation without selecting or reordering projects'
             }
           : null,
       selectThread: async (threadId: string) => {
+        selectedThreadIds.push(threadId);
         selectedThreadId = threadId;
         return { accepted: true, reason: 'accepted' as const };
       },
@@ -256,9 +258,11 @@ test('cold startup restores navigation without selecting or reordering projects'
     'Renamed without selection',
   );
 
+  runningThreadIds = [CHAT_THREAD_ID];
   assert.equal((await controller.focusTask(PROJECT_THREAD_ID)).accepted, true);
-  assert.equal(preferredThreadId, PROJECT_THREAD_ID);
+  assert.equal(preferredThreadId, undefined);
   assert.equal(selectedThreadId, PROJECT_THREAD_ID);
+  assert.deepEqual(selectedThreadIds, [PROJECT_THREAD_ID]);
   assert.deepEqual(controller.getLaunchContext(), {
     generation: 1,
     workspaceId: 'a'.repeat(64),
@@ -311,6 +315,8 @@ test('cold startup restores navigation without selecting or reordering projects'
   assert.equal(chatFocus.accepted, true);
   assert.equal(chatFocus.commit?.selection.threadId, CHAT_THREAD_ID);
   assert.equal(chatFocus.commit?.thread?.threadId, CHAT_THREAD_ID);
+  assert.deepEqual(selectedThreadIds, [PROJECT_THREAD_ID, CHAT_THREAD_ID]);
+  runningThreadIds = [];
 
   assert.equal((await controller.select()).accepted, true);
   assert.equal(controller.getSnapshot().projects?.[0]?.name, 'project-gamma');
@@ -486,6 +492,120 @@ test('deleting a chat removes its managed folder and every contained file', asyn
   await assert.rejects(readFile(sessionPath, 'utf8'), { code: 'ENOENT' });
 });
 
+test('opening history recreates a missing managed chat directory without changing Workspace identity', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-chat-restore-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const chatRootPath = path.join(root, 'Documents', 'SugarCode');
+  const chatDirectory = path.join(
+    chatRootPath,
+    '2026-08-07',
+    'chat-091011-fixture',
+  );
+  const sessionPath = path.join(root, 'workspace-session.json');
+  await mkdir(chatDirectory, { recursive: true });
+  const canonicalChatDirectory = await realpath(chatDirectory);
+  const workspaceId = createHash('sha256')
+    .update(canonicalChatDirectory)
+    .digest('hex');
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      projects: [],
+      active: {
+        kind: 'chat',
+        directory: canonicalChatDirectory,
+        threadId: CHAT_THREAD_ID,
+      },
+      chats: [{
+        threadId: CHAT_THREAD_ID,
+        directory: canonicalChatDirectory,
+        workspaceId,
+        title: 'Recoverable chat',
+      }],
+    })}\n`,
+    'utf8',
+  );
+
+  let bindingId: string | null = null;
+  let selectedThreadId: string | null = null;
+  const openedPaths: string[] = [];
+  const threadRegistry = new ThreadRegistry();
+  const supervisor = {
+    subscribe: (): (() => void) => () => undefined,
+    getWorkspaceSwitchBlock: (): null => null,
+    switchWorkspace: async (workspacePath: string): Promise<boolean> => {
+      openedPaths.push(workspacePath);
+      bindingId = createHash('sha256').update(workspacePath).digest('hex');
+      return true;
+    },
+    getWorkspaceBindingId: (): string | null => bindingId,
+    conversation: {
+      getSnapshot: (): ConversationStateSnapshot => ({
+        revision: 1,
+        ...(bindingId ? { workspaceId: bindingId } : {}),
+        phase: selectedThreadId ? 'ready' : 'idle',
+        ...(selectedThreadId ? { threadId: selectedThreadId } : {}),
+        turns: [],
+        navigator: {
+          status: 'ready',
+          activeThreadIds: [CHAT_THREAD_ID],
+          activeThreadTitles: { [CHAT_THREAD_ID]: 'Recoverable chat' },
+          activeTruncated: false,
+          runningThreadIds: [],
+          search: {
+            query: '',
+            status: 'idle',
+            threadIds: [],
+            threadTitles: {},
+            truncated: false,
+          },
+        },
+      }),
+      selectThread: async (threadId: string) => {
+        if (bindingId !== workspaceId || threadId !== CHAT_THREAD_ID) {
+          return { accepted: false, reason: 'unknownThread' as const };
+        }
+        selectedThreadId = threadId;
+        return { accepted: true, reason: 'accepted' as const };
+      },
+      getThreadProjection: (
+        threadId: string,
+      ): ConversationThreadProjectionSnapshot | null =>
+        bindingId === workspaceId && threadId === selectedThreadId
+          ? {
+              revision: 1,
+              workspaceId,
+              threadId,
+              phase: 'ready',
+              turns: [],
+            }
+          : null,
+    },
+  } as unknown as WorkspaceRuntimeBoundary;
+  const controller = new WorkspaceController({
+    threadRegistry,
+    supervisor,
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
+    },
+    getMainWindow: () => ({}) as BrowserWindow,
+    sessionPath,
+    chatRootPath,
+  });
+
+  await controller.restore();
+  await rm(chatDirectory, { recursive: true });
+  const focused = await controller.focusTask(CHAT_THREAD_ID);
+
+  assert.equal(focused.accepted, true);
+  assert.equal(await realpath(chatDirectory), canonicalChatDirectory);
+  assert.deepEqual(openedPaths, [canonicalChatDirectory]);
+  assert.equal(focused.commit?.selection.workspaceId, workspaceId);
+  assert.equal(focused.commit?.selection.threadId, CHAT_THREAD_ID);
+});
+
 test('deleting the active chat switches away before removing its folder', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-active-chat-delete-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -572,6 +692,10 @@ test('deleting the active chat switches away before removing its folder', async 
           },
         },
       }),
+      selectThread: async (threadId: string) => {
+        currentThreadId = threadId;
+        return { accepted: true, reason: 'accepted' as const };
+      },
     },
   } as unknown as WorkspaceRuntimeBoundary;
   const controller = new WorkspaceController({

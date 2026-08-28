@@ -9,6 +9,7 @@ export const CONVERSATION_THREAD_DELTA_CHANNEL =
 export const CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL =
   'conversation-attachment:preview';
 export const CONVERSATION_SEND_CHANNEL = 'conversation:send';
+export const CONVERSATION_GOAL_MUTATE_CHANNEL = 'conversation-goal:mutate';
 export const CONVERSATION_REVISE_CHANNEL = 'conversation:revise';
 export const CONVERSATION_QUEUE_UPDATE_CHANNEL = 'conversation-queue:update';
 export const CONVERSATION_QUEUE_DELETE_CHANNEL = 'conversation-queue:delete';

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, Menu, powerSaveBlocker, shell, Tray } from 'electron';
 import started from 'electron-squirrel-startup';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +10,7 @@ import { registerCommandApprovalIpc } from '@/main/ipc/command-approval';
 import { registerCommandEnvironmentIpc } from '@/main/ipc/command-environment';
 import { registerConnectionIpc } from '@/main/ipc/connection';
 import { registerConversationIpc } from '@/main/ipc/conversation';
+import { registerExperimentalIpc } from '@/main/ipc/experimental';
 import { registerGitIpc } from '@/main/ipc/git';
 import { registerMcpIpc } from '@/main/ipc/mcp';
 import { registerModelConfigIpc } from '@/main/ipc/model-config';
@@ -27,6 +28,7 @@ import { registerTerminalIpc } from '@/main/terminal/ipc';
 import { RuntimeSupervisor } from '@/main/runtime/supervisor';
 import { RuntimeModelConfigController } from '@/main/runtime/model-config-controller';
 import { RuntimeConversationController } from '@/main/runtime/conversation-controller';
+import { GoalPowerSaveController } from '@/main/runtime/goal-power-save-controller';
 import { RuntimeConnectionController } from '@/main/runtime/connection-controller';
 import { RuntimeApprovalController } from '@/main/runtime/approval-controller';
 import { RuntimeCommandEnvironmentController } from '@/main/runtime/command-environment-controller';
@@ -57,6 +59,8 @@ let disposeConnectionIpc: (() => void) | null = null;
 let disposeCommandApprovalIpc: (() => void) | null = null;
 let disposeCommandEnvironmentIpc: (() => void) | null = null;
 let disposeConversationIpc: (() => void) | null = null;
+let disposeExperimentalIpc: (() => void) | null = null;
+let goalPowerSaveController: GoalPowerSaveController | null = null;
 let disposeMcpIpc: (() => void) | null = null;
 let disposeModelConfigIpc: (() => void) | null = null;
 let disposeSkillsIpc: (() => void) | null = null;
@@ -318,8 +322,10 @@ const startApplication = async (): Promise<void> => {
   runtimeConnectionController = new RuntimeConnectionController(
     runtimeSupervisor,
   );
+  goalPowerSaveController = new GoalPowerSaveController(powerSaveBlocker);
   runtimeConversationController = new RuntimeConversationController(
     runtimeSupervisor,
+    goalPowerSaveController,
   );
   runtimeApprovalController = new RuntimeApprovalController(runtimeSupervisor);
   runtimeMcpApprovalController = new RuntimeMcpApprovalController(
@@ -433,6 +439,11 @@ const startApplication = async (): Promise<void> => {
   });
   disposeConversationIpc = registerConversationIpc({
     controller: runtimeConversationController,
+    getMainWindow: () => mainWindow,
+    isAllowedUrl: isAllowedRendererUrl,
+  });
+  disposeExperimentalIpc = registerExperimentalIpc({
+    powerSave: goalPowerSaveController,
     getMainWindow: () => mainWindow,
     isAllowedUrl: isAllowedRendererUrl,
   });
@@ -616,6 +627,7 @@ if (started) {
 
   app.on('before-quit', () => {
     isQuitting = true;
+    goalPowerSaveController?.dispose();
     runtimeSupervisor?.shutdown();
     terminalController?.shutdown();
     previewController?.shutdown();
@@ -629,6 +641,10 @@ if (started) {
     runtimeSupervisor?.shutdown();
     runtimeSupervisor = null;
     runtimeConversationController = null;
+    disposeExperimentalIpc?.();
+    disposeExperimentalIpc = null;
+    goalPowerSaveController?.dispose();
+    goalPowerSaveController = null;
     runtimeConnectionController = null;
     runtimeApprovalController = null;
     runtimeGitAdapter = null;

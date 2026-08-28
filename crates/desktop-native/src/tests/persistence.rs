@@ -63,6 +63,268 @@ fn seeded_store(directory: &tempfile::TempDir) -> Store {
 }
 
 #[test]
+fn durable_goals_enforce_cas_budget_soft_clear_and_restart_recovery() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = seeded_store(&directory);
+    let created: Value = serde_json::from_str(
+        &store
+            .mutate_goal_json(
+                "thread-1",
+                &serde_json::json!({
+                    "action": "create",
+                    "goalId": "goal-1",
+                    "objective": "Ship durable Goal mode",
+                    "modelProfileId": "default",
+                    "modelRequest": {"reasoningEffort":"high","serviceTier":"auto"},
+                    "budget": {"maxTokens": 10}
+                })
+                .to_string(),
+            )
+            .expect("create goal"),
+    )
+    .expect("goal JSON");
+    assert_eq!(created["status"], "active");
+    assert_eq!(created["revision"], 1);
+    assert!(
+        store
+            .mutate_goal_json(
+                "thread-1",
+                &serde_json::json!({
+                    "action":"edit",
+                    "goalId":"goal-1",
+                    "expectedRevision": 99,
+                    "objective":"stale"
+                })
+                .to_string(),
+            )
+            .is_err()
+    );
+
+    let claimed: Value = serde_json::from_str(
+        &store
+            .claim_goal_turn_json(
+                "goal-1",
+                1,
+                "turn-goal-1",
+                "thread-1",
+                "request-1",
+                "openaiResponses",
+                "fixture",
+                &serde_json::json!({
+                    "content":[{"type":"text","text":"hidden Goal context"}]
+                })
+                .to_string(),
+            )
+            .expect("claim goal turn"),
+    )
+    .expect("claimed JSON");
+    assert_eq!(claimed["activeTurnId"], "turn-goal-1");
+    let claimed_snapshot: Value = serde_json::from_str(
+        &store
+            .load_thread_json("thread-1")
+            .expect("load claimed Goal Turn"),
+    )
+    .expect("claimed thread JSON");
+    let objective_item = claimed_snapshot["items"]
+        .as_array()
+        .expect("claimed Turn items")
+        .iter()
+        .find(|item| item["kind"] == "turn.goalObjective")
+        .expect("visible Goal objective");
+    assert_eq!(
+        objective_item["payload"]["content"][0]["text"],
+        "Ship durable Goal mode"
+    );
+    let settled: Value = serde_json::from_str(
+        &store
+            .settle_goal_turn_json(
+                "goal-1",
+                1,
+                "turn-goal-1",
+                &serde_json::json!({
+                    "status":"in_progress",
+                    "summary":"implemented storage",
+                    "nextStep":"wire runtime"
+                })
+                .to_string(),
+                12,
+                250,
+            )
+            .expect("settle goal turn"),
+    )
+    .expect("settled JSON");
+    assert_eq!(settled["status"], "paused");
+    assert_eq!(settled["pauseReason"], "budget");
+    assert_eq!(settled["activationUsage"]["tokens"], 12);
+
+    let resumed: Value = serde_json::from_str(
+        &store
+            .mutate_goal_json(
+                "thread-1",
+                &serde_json::json!({
+                    "action":"resume",
+                    "goalId":"goal-1",
+                    "expectedRevision": settled["revision"]
+                })
+                .to_string(),
+            )
+            .expect("resume goal"),
+    )
+    .expect("resumed JSON");
+    assert_eq!(resumed["activationUsage"]["tokens"], 0);
+    assert_eq!(resumed["lifetimeUsage"]["tokens"], 12);
+    drop(store);
+
+    let mut reopened = Store::open(directory.path()).expect("reopen store");
+    let recovered: Value = serde_json::from_str(
+        &reopened
+            .current_goal_json("thread-1")
+            .expect("recovered goal"),
+    )
+    .expect("recovered JSON");
+    assert_eq!(recovered["status"], "paused");
+    assert_eq!(recovered["pauseReason"], "restart");
+    let cleared: Value = serde_json::from_str(
+        &reopened
+            .mutate_goal_json(
+                "thread-1",
+                &serde_json::json!({
+                    "action":"clear",
+                    "goalId":"goal-1",
+                    "expectedRevision": recovered["revision"]
+                })
+                .to_string(),
+            )
+            .expect("soft clear"),
+    )
+    .expect("cleared JSON");
+    assert!(cleared.is_null());
+    drop(reopened);
+    let inspection =
+        Connection::open(Store::database_path(directory.path())).expect("open goal database");
+    let retained: i64 = inspection
+        .query_row(
+            "SELECT COUNT(*) FROM goals WHERE id = 'goal-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("retained goal history");
+    assert_eq!(retained, 1);
+}
+
+#[test]
+fn durable_goal_objective_is_visible_only_on_the_first_automatic_turn() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let mut store = seeded_store(&directory);
+    let created: Value = serde_json::from_str(
+        &store
+            .mutate_goal_json(
+                "thread-1",
+                &serde_json::json!({
+                    "action": "create",
+                    "goalId": "goal-visible",
+                    "objective": "Visible once",
+                    "modelProfileId": "default",
+                    "modelRequest": {"reasoningEffort":"high","serviceTier":"auto"}
+                })
+                .to_string(),
+            )
+            .expect("create visible Goal"),
+    )
+    .expect("created Goal JSON");
+    store
+        .claim_goal_turn_json(
+            "goal-visible",
+            created["revision"].as_i64().expect("created revision"),
+            "turn-visible-1",
+            "thread-1",
+            "request-visible-1",
+            "openaiResponses",
+            "fixture",
+            &serde_json::json!({
+                "content":[{"type":"text","text":"hidden Goal context"}]
+            })
+            .to_string(),
+        )
+        .expect("claim first visible Goal Turn");
+    let settled: Value = serde_json::from_str(
+        &store
+            .settle_goal_turn_json(
+                "goal-visible",
+                created["revision"].as_i64().expect("claimed revision"),
+                "turn-visible-1",
+                &serde_json::json!({
+                    "status":"in_progress",
+                    "summary":"first checkpoint",
+                    "nextStep":"continue"
+                })
+                .to_string(),
+                0,
+                1,
+            )
+            .expect("settle first visible Goal Turn"),
+    )
+    .expect("settled Goal JSON");
+    store
+        .claim_goal_turn_json(
+            "goal-visible",
+            settled["revision"].as_i64().expect("settled revision"),
+            "turn-visible-2",
+            "thread-1",
+            "request-visible-2",
+            "openaiResponses",
+            "fixture",
+            &serde_json::json!({
+                "content":[{"type":"text","text":"next hidden Goal context"}]
+            })
+            .to_string(),
+        )
+        .expect("claim second visible Goal Turn");
+
+    let snapshot: Value = serde_json::from_str(
+        &store
+            .load_thread_json("thread-1")
+            .expect("load visible Goal thread"),
+    )
+    .expect("visible Goal thread JSON");
+    let objective_items = snapshot["items"]
+        .as_array()
+        .expect("visible Goal items")
+        .iter()
+        .filter(|item| item["kind"] == "turn.goalObjective")
+        .collect::<Vec<_>>();
+    assert_eq!(objective_items.len(), 1);
+    assert_eq!(objective_items[0]["turnId"], "turn-visible-1");
+}
+
+#[test]
+fn schema_eighteen_database_migrates_to_durable_goals() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    drop(seeded_store(&directory));
+    let database_path = Store::database_path(directory.path());
+    let connection = Connection::open(&database_path).expect("database");
+    connection
+        .execute_batch("DROP TABLE goals; PRAGMA user_version = 18;")
+        .expect("downgrade to v18 fixture");
+    drop(connection);
+
+    drop(Store::open(directory.path()).expect("migrate v18 store"));
+    let connection = Connection::open(database_path).expect("migrated database");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("schema version");
+    assert_eq!(version, 19);
+    let goal_table: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'goals'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("goal table");
+    assert_eq!(goal_table, 1);
+}
+
+#[test]
 fn durable_thread_queue_enforces_fifo_revisions_capacity_and_restart_pause() {
     let directory = tempfile::tempdir().expect("tempdir");
     let content = |index: usize| {
@@ -1134,7 +1396,7 @@ fn schema_one_database_migrates_to_model_configuration_schema() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
 }
 
 #[test]
@@ -1174,7 +1436,7 @@ fn schema_sixteen_database_migrates_to_video_assets() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
 }
 
 #[test]
@@ -1226,7 +1488,7 @@ fn schema_fourteen_database_migrates_to_durable_knowledge_index_jobs() {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("schema version");
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
     let job_table: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_index_jobs'",

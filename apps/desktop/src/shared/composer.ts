@@ -19,7 +19,7 @@ export type ComposerSubmission = Readonly<{
 }>;
 
 const REFERENCE_PATTERN =
-  /\/(?:plan|review|fix|test|explain|init|draw|compact)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@https?:\/\/[^\s@$]+|@知识库(?::)?`[^`\r\n]+`|@知识库:[^\s@$]+|@知识库[^\s@$:`]+|@`[^`\r\n]+`|@[^\s@$]+/gu;
+  /\/(?:plan|review|fix|test|explain|init|draw|compact|goal)(?=\s|$|[.,!?;:，。！？；：])|\$[a-z0-9]+(?:-[a-z0-9]+)*(?=\s|$|[.,!?;:，。！？；：])|@https?:\/\/[^\s@$]+|@知识库(?::)?`[^`\r\n]+`|@知识库:[^\s@$]+|@知识库[^\s@$:`]+|@`[^`\r\n]+`|@[^\s@$]+/gu;
 
 const APPLICATION_SKILLS = new Set(['figma']);
 

@@ -16,6 +16,7 @@ import type {
   ConversationTurnStatus,
   ConversationThreadQueue,
   ConversationQueuedMessage,
+  ConversationGoalMutation,
 } from '@/shared/conversation';
 import type {
   ModelReasoningEffort,
@@ -23,6 +24,7 @@ import type {
   ModelServiceTier,
 } from '@/shared/model-config';
 import type { ComposerReference } from '@/shared/composer';
+import type { GoalSnapshot } from '@/shared/goals';
 
 import type { EditableMessageTarget } from './message-edit';
 
@@ -211,6 +213,7 @@ export type ProcessLanguage = 'en' | 'zh';
 export type TurnViewModel = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  origin?: 'goal';
   verifiedFilePaths: readonly string[];
   processLanguage: ProcessLanguage;
   durationLabel?: string;
@@ -237,6 +240,7 @@ export type ThreadViewModel = Readonly<{
   threadIdentity: string | null;
   turns: readonly TurnViewModel[];
   queue: ConversationThreadQueue;
+  goal?: GoalSnapshot;
   isEmpty: boolean;
   notice?: string;
 }>;
@@ -345,6 +349,7 @@ export type ThreadStore = Readonly<{
   confirmThreadRename: () => Promise<void>;
   send: () => Promise<void>;
   stop: () => Promise<void>;
+  mutateGoal: (mutation: ConversationGoalMutation) => Promise<boolean>;
   beginQueueEdit: (message: ConversationQueuedMessage) => void;
   setQueueEditDraft: (value: string) => void;
   setQueueEditModel: (profileId: string) => void;

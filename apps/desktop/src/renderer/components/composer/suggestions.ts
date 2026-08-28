@@ -13,6 +13,14 @@ import type {
 
 const COMMANDS: readonly ComposerSuggestion[] = [
   {
+    id: 'command:goal',
+    kind: 'command',
+    label: '持续目标',
+    alias: '/goal',
+    description: '创建或管理可跨 Turn 自动继续的持久 Goal',
+    insertion: '/goal',
+  },
+  {
     id: 'command:plan',
     kind: 'command',
     label: '计划',

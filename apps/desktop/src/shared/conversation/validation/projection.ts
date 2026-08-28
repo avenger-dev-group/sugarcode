@@ -35,6 +35,7 @@ import {
 } from './activities.ts';
 import { isId, isRecord } from './primitives.ts';
 import { isModelRequestOptions } from '../../model-config.ts';
+import { isGoalSnapshot } from '../../goals.ts';
 
 const PHASES = new Set<ConversationPhase>([
   'idle',
@@ -218,6 +219,7 @@ const isTurn = (value: unknown): value is ConversationTurn => {
         new TextEncoder().encode(value.planProposal.content).byteLength >
           64 * 1024)) ||
     (Object.hasOwn(value, 'usage') && !isTokenUsage(value.usage))
+    || (Object.hasOwn(value, 'origin') && value.origin !== 'goal')
   ) {
     return false;
   }
@@ -469,7 +471,7 @@ export const isConversationThreadProjectionSnapshot = (
 ): value is ConversationThreadProjectionSnapshot =>
   isRecord(value) &&
   Object.keys(value).every((key) =>
-    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turns', 'queue'].includes(
+    ['revision', 'workspaceId', 'threadId', 'phase', 'activeTurnId', 'turns', 'queue', 'goal'].includes(
       key,
     ),
   ) &&
@@ -484,6 +486,7 @@ export const isConversationThreadProjectionSnapshot = (
   Array.isArray(value.turns) &&
   value.turns.every(isTurn) &&
   (value.queue === undefined || isThreadQueue(value.queue)) &&
+  (value.goal === undefined || isGoalSnapshot(value.goal)) &&
   hasValidActiveTurn(
     value.phase as ConversationPhase,
     value.activeTurnId,
@@ -530,6 +533,7 @@ export const isConversationStateSnapshot = (
     !Array.isArray(value.turns) ||
     !value.turns.every(isTurn) ||
     (value.queue !== undefined && !isThreadQueue(value.queue)) ||
+    (value.goal !== undefined && !isGoalSnapshot(value.goal)) ||
     !isThreadNavigator(value.navigator) ||
     (Object.hasOwn(value, 'threadId') && !isId(value.threadId)) ||
     (Object.hasOwn(value, 'activeTurnId') && !isId(value.activeTurnId)) ||

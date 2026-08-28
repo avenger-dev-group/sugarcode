@@ -7,6 +7,7 @@ import {
   Files,
   GitBranch,
   Globe2,
+  Target,
   Workflow,
   Plus,
   X,
@@ -119,9 +120,14 @@ const WorkspaceMenu = ({
 };
 
 export const ContextRail = ({
+  goalEditor,
   scopeKey,
   visible,
-}: Readonly<{ scopeKey: string | null; visible: boolean }>) => {
+}: Readonly<{
+  goalEditor?: ReactNode;
+  scopeKey: string | null;
+  visible: boolean;
+}>) => {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const {
     activeTab,
@@ -148,12 +154,16 @@ export const ContextRail = ({
     selectedPlan !== null ||
     selectedTask !== null;
   const resourceTitle = selectedResource
-    ? selectedResource.kind === 'skill'
+    ? selectedResource.kind === 'goal'
+      ? '编辑目标'
+      : selectedResource.kind === 'skill'
       ? `${selectedResource.name} Skill`
       : selectedResource.path
     : '';
   const resourceLabel = selectedResource
-    ? selectedResource.kind === 'skill'
+    ? selectedResource.kind === 'goal'
+      ? '编辑目标'
+      : selectedResource.kind === 'skill'
       ? `${selectedResource.name} Skill`
       : selectedResource.path.split('/').at(-1) ?? selectedResource.path
     : '';
@@ -216,7 +226,9 @@ export const ContextRail = ({
             <ContextTab
               active={activeTab === 'resource'}
               icon={
-                selectedResource.kind === 'skill' ? (
+                selectedResource.kind === 'goal' ? (
+                  <Target className="size-3.5" />
+                ) : selectedResource.kind === 'skill' ? (
                   <BookOpenText className="size-3.5" />
                 ) : selectedResource.kind === 'drawio' ? (
                   <Workflow className="size-3.5" />
@@ -293,7 +305,13 @@ export const ContextRail = ({
       })}
       {selectedResource ? (
         <div className={`${activeTab === 'resource' ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={activeTab !== 'resource'} title={resourceTitle}>
-          {selectedResource.kind === 'skill' ? (
+          {selectedResource.kind === 'goal' ? (
+            goalEditor ?? (
+              <div className="grid h-full place-items-center px-8 text-sm text-tertiary">
+                当前会话没有可编辑的目标。
+              </div>
+            )
+          ) : selectedResource.kind === 'skill' ? (
             <SkillDocument name={selectedResource.name} description={selectedResource.description} content={selectedResource.content} />
           ) : selectedResource.kind === 'drawio' ? (
             <Suspense fallback={<div className="grid h-full place-items-center text-xs text-tertiary">正在加载 Draw.io 画布…</div>}>

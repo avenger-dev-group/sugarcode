@@ -13,8 +13,10 @@ use sugarcode_state::validate_mcp_loopback_streamable_http_server;
 use sugarcode_state::validate_mcp_stdio_server;
 use uuid::Uuid;
 
+mod goals;
+
 const DATABASE_FILE: &str = "sugarcode-v3.sqlite3";
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 const MAX_QUEUED_MESSAGES: i64 = 10;
 
 pub(super) type Result<T> = std::result::Result<T, PersistenceError>;
@@ -1732,6 +1734,7 @@ impl Store {
             items,
             agent_tasks,
             queue: load_thread_queue(&self.connection, thread_id)?,
+            goal: goals::load_current_goal(&self.connection, thread_id)?,
         })?)
     }
 
@@ -4163,12 +4166,49 @@ fn migrate(connection: &mut Connection) -> Result<()> {
              PRAGMA user_version = 18;",
         )?;
         transaction.commit()?;
+        version = 18;
+    }
+    if version == 18 {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS goals (\
+               id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\
+               objective TEXT NOT NULL,\
+               status TEXT NOT NULL CHECK(status IN ('active','paused','completed','cancelled')),\
+               pause_reason TEXT CHECK(pause_reason IS NULL OR pause_reason IN \
+                 ('user','blocked','budget','failure','restart','modelUnavailable','queueBlocked','protocolViolation')),\
+               revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),\
+               model_profile_id TEXT NOT NULL, model_request_json TEXT NOT NULL,\
+               budget_json TEXT NOT NULL DEFAULT '{}', progress_json TEXT, active_turn_id TEXT,\
+               activation_started_at INTEGER, activation_turns INTEGER NOT NULL DEFAULT 0 CHECK(activation_turns >= 0),\
+               activation_duration_ms INTEGER NOT NULL DEFAULT 0 CHECK(activation_duration_ms >= 0),\
+               activation_tokens INTEGER NOT NULL DEFAULT 0 CHECK(activation_tokens >= 0),\
+               lifetime_turns INTEGER NOT NULL DEFAULT 0 CHECK(lifetime_turns >= 0),\
+               lifetime_duration_ms INTEGER NOT NULL DEFAULT 0 CHECK(lifetime_duration_ms >= 0),\
+               lifetime_tokens INTEGER NOT NULL DEFAULT 0 CHECK(lifetime_tokens >= 0),\
+               cleared_at INTEGER, created_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               updated_at INTEGER NOT NULL DEFAULT (unixepoch()),\
+               CHECK((status = 'paused' AND pause_reason IS NOT NULL) OR \
+                 (status != 'paused' AND pause_reason IS NULL))\
+             ) STRICT;\
+             CREATE UNIQUE INDEX IF NOT EXISTS goals_one_unfinished_per_thread ON goals(thread_id)\
+               WHERE cleared_at IS NULL AND status IN ('active','paused');\
+             CREATE INDEX IF NOT EXISTS goals_thread_created ON goals(thread_id, created_at DESC);\
+             PRAGMA user_version = 19;",
+        )?;
+        transaction.commit()?;
     }
     Ok(())
 }
 
 fn recover_interrupted_work(connection: &mut Connection) -> Result<()> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    transaction.execute(
+        "UPDATE goals SET status = 'paused', pause_reason = 'restart', active_turn_id = NULL, \
+         activation_started_at = NULL, revision = revision + 1, updated_at = unixepoch() \
+         WHERE status = 'active' AND cleared_at IS NULL",
+        [],
+    )?;
     transaction.execute(
         "UPDATE thread_queues SET paused = 1, updated_at = unixepoch()\
          WHERE EXISTS(SELECT 1 FROM queued_messages WHERE queued_messages.thread_id = thread_queues.thread_id)\
@@ -4232,6 +4272,8 @@ struct ThreadSnapshot {
     items: Vec<ItemRow>,
     agent_tasks: Vec<AgentTaskRow>,
     queue: ThreadQueueRow,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    goal: Option<goals::GoalRow>,
 }
 
 #[derive(Serialize)]

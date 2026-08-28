@@ -48,7 +48,10 @@ export class RuntimeSupervisor {
   >();
   private readonly activeTurns = new Map<
     string,
-    Extract<RuntimeCommand, { type: 'turn.start' | 'turn.startQueued' | 'turn.revise' }>
+    Extract<
+      RuntimeCommand,
+      { type: 'turn.start' | 'turn.startGoal' | 'turn.startQueued' | 'turn.revise' }
+    >
   >();
   private readonly activeTerminals = new Map<
     string,
@@ -334,6 +337,7 @@ export class RuntimeSupervisor {
   private post = (command: RuntimeCommand): void => {
     if (
       command.type === 'turn.start' ||
+      command.type === 'turn.startGoal' ||
       command.type === 'turn.startQueued' ||
       command.type === 'turn.revise'
     ) {

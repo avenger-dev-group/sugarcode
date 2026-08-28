@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { usePanelResize } from '@/renderer/hooks/use-panel-resize';
 import { initializeCommandEnvironmentPreference } from '@/renderer/services/command-environment';
+import { initializeExperimentalPreferences } from '@/renderer/services/experimental';
 import { onConnectionStateChanged } from '@/renderer/services/connection';
 
 import {
@@ -50,7 +51,10 @@ export const useStore = (
   useEffect(() => {
     let active = true;
     const applyPreference = (): void => {
-      void initializeCommandEnvironmentPreference().catch((): void => {
+      void Promise.all([
+        initializeCommandEnvironmentPreference(),
+        initializeExperimentalPreferences(),
+      ]).catch((): void => {
         // Runtime startup and restart races are retried on the next ready signal.
       });
     };

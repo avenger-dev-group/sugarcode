@@ -68,8 +68,14 @@ import {
   MAX_CONVERSATION_ATTACHMENT_BASE64_LENGTH,
   MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
 } from '../shared/conversation/limits.ts';
+import {
+  isGoalSnapshot,
+  type ConversationGoalMutation,
+  type GoalSnapshot,
+} from '../shared/goals.ts';
+import { isConversationGoalMutation } from '../shared/conversation/validation/requests.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 6 as const;
+export const RUNTIME_PROTOCOL_VERSION = 7 as const;
 
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
@@ -185,6 +191,7 @@ export type RuntimeThreadSnapshot = Readonly<{
   items: readonly RuntimeTurnItemRecord[];
   agentTasks: readonly RuntimeAgentTaskRecord[];
   queue: RuntimeThreadQueue;
+  goal?: GoalSnapshot;
 }>;
 
 export type RuntimeQueuedMessage = Readonly<{
@@ -405,6 +412,27 @@ export type RuntimeCommand =
       modelProfileId?: string;
       modelRequest?: ModelRequestOptions;
       generateTitle?: boolean;
+      content: readonly RuntimeContentPart[];
+    }>
+  | Readonly<{
+      type: 'goal.mutate';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      goalId: string;
+      mutation: ConversationGoalMutation;
+    }>
+  | Readonly<{
+      type: 'turn.startGoal';
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      goalId: string;
+      expectedRevision: number;
+      modelProfileId: string;
+      modelRequest: ModelRequestOptions;
+      reconciliation?: boolean;
       content: readonly RuntimeContentPart[];
     }>
   | Readonly<{
@@ -988,6 +1016,14 @@ export type RuntimeEvent =
         threadId: string;
         turnId: string;
         model: RuntimeModelSelection;
+        goalId?: string;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'goal.changed';
+        workspaceId: string;
+        threadId: string;
+        goal: GoalSnapshot | null;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1702,6 +1738,30 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.content.length > 0 &&
         value.content.every(isRuntimeContentPart)
       );
+    case 'goal.mutate':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.goalId === 'string' &&
+        value.goalId.length > 0 &&
+        isConversationGoalMutation(value.mutation)
+      );
+    case 'turn.startGoal':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        typeof value.turnId === 'string' &&
+        typeof value.goalId === 'string' &&
+        Number.isSafeInteger(value.expectedRevision) &&
+        Number(value.expectedRevision) >= 1 &&
+        typeof value.modelProfileId === 'string' &&
+        /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId) &&
+        isModelRequestOptions(value.modelRequest) &&
+        Array.isArray(value.content) &&
+        value.content.length > 0 &&
+        value.content.every(isRuntimeContentPart) &&
+        (value.reconciliation === undefined || value.reconciliation === true)
+      );
     case 'queue.messageCreate':
       return (
         typeof value.workspaceId === 'string' &&
@@ -2310,7 +2370,17 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
         value.content.every(isRuntimeContentPart)
       );
     case 'turn.started':
-      return hasTurnCoordinates(value) && isRecord(value.model);
+      return (
+        hasTurnCoordinates(value) &&
+        isRecord(value.model) &&
+        (value.goalId === undefined || typeof value.goalId === 'string')
+      );
+    case 'goal.changed':
+      return (
+        typeof value.workspaceId === 'string' &&
+        typeof value.threadId === 'string' &&
+        (value.goal === null || isGoalSnapshot(value.goal))
+      );
     case 'turn.userMessage':
       return (
         hasTurnCoordinates(value) &&
@@ -2667,6 +2737,7 @@ const isThreadSnapshot = (value: unknown): value is RuntimeThreadSnapshot =>
   isRecord(value) &&
   isThreadRecord(value.thread) &&
   isRuntimeThreadQueue(value.queue) &&
+  (value.goal === undefined || isGoalSnapshot(value.goal)) &&
   Array.isArray(value.turns) &&
   Array.isArray(value.items) &&
   value.turns.every(

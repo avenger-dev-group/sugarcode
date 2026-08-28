@@ -2,6 +2,7 @@ import { ipcMain } from 'electron';
 
 import {
   CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_GOAL_MUTATE_CHANNEL,
   CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
   CONVERSATION_REVISE_CHANNEL,
   CONVERSATION_QUEUE_UPDATE_CHANNEL,
@@ -47,6 +48,7 @@ type ConversationControllerBoundary = Readonly<{
     request: unknown,
   ) => Promise<ConversationAttachmentPreviewResult>;
   startTurn: (input: unknown) => Promise<ConversationActionResult>;
+  mutateGoal: (input: unknown) => Promise<ConversationActionResult>;
   reviseTurn: (input: unknown) => Promise<ConversationActionResult>;
   updateQueuedMessage: (input: unknown) => Promise<ConversationActionResult>;
   deleteQueuedMessage: (input: unknown) => Promise<ConversationActionResult>;
@@ -104,6 +106,15 @@ export const registerConversationIpc = (
     }
     return options.controller.startTurn(input);
   });
+  ipcMain.handle(
+    CONVERSATION_GOAL_MUTATE_CHANNEL,
+    async (event, input: unknown) => {
+      if (!isTrustedIpcSender(event, options)) {
+        throw new Error('Goal mutation came from an untrusted frame.');
+      }
+      return options.controller.mutateGoal(input);
+    },
+  );
 
   ipcMain.handle(
     CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
@@ -256,6 +267,7 @@ export const registerConversationIpc = (
     ipcMain.removeHandler(CONVERSATION_STATE_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_THREAD_PROJECTION_GET_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_SEND_CHANNEL);
+    ipcMain.removeHandler(CONVERSATION_GOAL_MUTATE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_REVISE_CHANNEL);
     ipcMain.removeHandler(CONVERSATION_QUEUE_UPDATE_CHANNEL);

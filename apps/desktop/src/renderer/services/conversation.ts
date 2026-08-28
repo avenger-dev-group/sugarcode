@@ -14,6 +14,7 @@ import type {
   ConversationThreadProjectionListener,
   ConversationThreadProjectionSnapshot,
   ConversationUserInputResponse,
+  ConversationGoalMutation,
 } from '@/shared/conversation';
 
 const desktopApi = (): Window['sugarcode'] => window.sugarcode;
@@ -51,6 +52,11 @@ export const sendConversationMessage = (
   request: ConversationSendRequest,
 ): Promise<ConversationActionResult> =>
   desktopApi().sendConversationMessage(request);
+
+export const mutateConversationGoal = (
+  request: ConversationGoalMutation,
+): Promise<ConversationActionResult> =>
+  desktopApi().mutateConversationGoal(request);
 
 export const reviseConversationTurn = (
   request: ConversationReviseTurnRequest,

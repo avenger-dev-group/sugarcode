@@ -11,6 +11,7 @@ import type { PreviewApi } from './preview';
 import type { TerminalApi } from './terminal';
 import type { UpdateApi } from './update';
 import type { CommandEnvironmentApi } from './command-environment';
+import type { ExperimentalApi } from './experimental';
 
 export type DesktopApi = Readonly<
   ConnectionApi &
@@ -25,5 +26,6 @@ export type DesktopApi = Readonly<
     PreviewApi &
     TerminalApi &
     CommandEnvironmentApi &
+    ExperimentalApi &
     UpdateApi
 >;

@@ -60,6 +60,17 @@ test('a trailing maintenance Turn prevents editing the previous user Turn', () =
   );
 });
 
+test('a Goal objective is visible but cannot be revised as an ordinary message', () => {
+  assert.equal(
+    latestEditableMessageTarget(
+      [{ ...turn('goal', 'completed'), origin: 'goal' }],
+      'ready',
+      false,
+    ),
+    null,
+  );
+});
+
 test('editing targets only the originating user message in the latest Turn', () => {
   const latest = turn('latest', 'failed');
   const secondUserMessage: TranscriptMessageViewModel = {

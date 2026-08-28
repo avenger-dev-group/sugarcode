@@ -4,7 +4,6 @@ import type { ConversationActionResult } from '../../shared/conversation.ts';
 import type {
   WorkspaceEntry,
   WorkspaceInspectDocument,
-  WorkspaceKind,
 } from '../../shared/workspace.ts';
 import type { WorkspaceRuntimeBoundary } from '../workspace/controller.ts';
 import type { ThreadRegistry } from '../navigation/thread-registry.ts';
@@ -71,11 +70,7 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
 
   getWorkspaceBindingId = (): string | null => this.workspaceId;
 
-  switchWorkspace = async (
-    workspacePath: string,
-    _kind: WorkspaceKind,
-    preferredThreadId?: string,
-  ): Promise<boolean> => {
+  switchWorkspace = async (workspacePath: string): Promise<boolean> => {
     const generation = ++this.switchGeneration;
     const previousWorkspaceId = this.workspaceId;
     const previousRoot = this.canonicalRoot;
@@ -108,12 +103,6 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       }
       if (generation !== this.switchGeneration) {
         return true;
-      }
-      if (preferredThreadId) {
-        const selected = await this.conversation.selectThread(preferredThreadId);
-        if (!selected.accepted) {
-          throw new Error('The requested Thread could not be restored.');
-        }
       }
       this.options.onWorkspaceOpened(workspaceId, workspacePath);
       return true;

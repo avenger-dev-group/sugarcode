@@ -8,6 +8,7 @@ import { McpApprovalSurface } from '@/renderer/components/mcp/approval-surface';
 import { useStore as useMcpStore } from '@/renderer/components/mcp/use-store';
 import { SettingsDialog } from '@/renderer/components/settings/settings-dialog';
 import { ThreadWorkbenchView } from '@/renderer/components/thread/thread-workbench';
+import { GoalEditor } from '@/renderer/components/thread/goal-editor';
 import { useStore as useThreadStore } from '@/renderer/components/thread/use-store';
 import { OrchestrationStoreProvider } from '@/renderer/components/orchestration/use-store';
 import { UpdateAction } from '@/renderer/components/update/update-action';
@@ -127,6 +128,13 @@ export const FoundationScreen = () => {
             }
             contextRail={
               <ContextRail
+                goalEditor={threadStore.thread.goal ? (
+                  <GoalEditor
+                    goal={threadStore.thread.goal}
+                    modelOptions={threadStore.modelOptions}
+                    onMutate={threadStore.mutateGoal}
+                  />
+                ) : undefined}
                 scopeKey={activeThreadId ?? null}
                 visible={foundation.contextRailOpen}
               />

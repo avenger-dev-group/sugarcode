@@ -5,6 +5,7 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   Pencil,
+  Target,
   Video,
 } from 'lucide-react';
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
@@ -304,6 +305,7 @@ type UserMessageProps = Readonly<{
   entry: Extract<TranscriptMessageViewModel, { role: 'user' }>;
   threadId?: string;
   turnId?: string;
+  goalObjective?: boolean;
   editable?: boolean;
   editor?: ThreadWorkbenchViewProps['store']['messageEditor'];
   onBeginEdit?: ThreadWorkbenchViewProps['store']['beginMessageEdit'];
@@ -316,6 +318,7 @@ export const UserMessage = ({
   entry,
   threadId,
   turnId,
+  goalObjective = false,
   editable = false,
   editor,
   onBeginEdit,
@@ -359,6 +362,12 @@ export const UserMessage = ({
             </div>
           ) : null}
           <div className="flex h-7 items-center justify-end gap-0.5">
+            {goalObjective ? (
+              <span className="mr-1 inline-flex items-center gap-1 text-xs text-tertiary">
+                <Target aria-hidden="true" className="size-3.5" />
+                设为目标
+              </span>
+            ) : null}
             {hasCopyableUserText(entry.message.text) ? (
               <MessageCopyButton
                 text={entry.message.text}

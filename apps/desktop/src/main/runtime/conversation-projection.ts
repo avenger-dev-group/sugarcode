@@ -394,22 +394,47 @@ const contextCompactionActivities = (
 
 export const projectThread = (
   snapshot: RuntimeThreadSnapshot,
-): readonly ConversationTurn[] =>
-  snapshot.turns.map((record) => {
+): readonly ConversationTurn[] => {
+  const currentGoalContextTurnIds = snapshot.goal
+    ? snapshot.items
+        .filter(
+          (item) =>
+            item.kind === 'turn.goalContext' &&
+            item.payload.goalId === snapshot.goal?.id,
+        )
+        .map((item) => item.turnId)
+    : [];
+  const legacyGoalObjectiveTurnId = currentGoalContextTurnIds.some((turnId) =>
+    snapshot.items.some(
+      (item) => item.turnId === turnId && item.kind === 'turn.goalObjective',
+    ),
+  )
+    ? undefined
+    : currentGoalContextTurnIds[0];
+
+  return snapshot.turns.map((record) => {
     const items = snapshot.items.filter((item) => item.turnId === record.id);
     const model = modelFromItems(
       items,
       fallbackModel(record.providerWireApi, record.model),
     );
     const userMessages = items
-      .filter((item) => item.kind === 'turn.userMessage')
+      .filter(
+        (item) =>
+          item.kind === 'turn.userMessage' ||
+          item.kind === 'turn.goalObjective',
+      )
       .sort((left, right) => left.sequence - right.sequence)
       .flatMap((item, index) => {
         const content = Array.isArray(item.payload.content)
           ? item.payload.content
           : [];
         const message = messageFromContent(
-          index === 0 ? `${record.id}:user` : item.id,
+          item.kind === 'turn.goalObjective'
+            ? item.id
+            : index === 0
+              ? `${record.id}:user`
+              : item.id,
           content,
         );
         return message ? [message] : [];
@@ -465,7 +490,17 @@ export const projectThread = (
       ...contextCompactionActivities(items),
       ...(restoredOrchestration ? [restoredOrchestration] : []),
     ];
+    const legacyGoalObjective =
+      record.id === legacyGoalObjectiveTurnId && snapshot.goal
+        ? {
+            id: `${record.id}:goal-objective`,
+            role: 'user' as const,
+            text: snapshot.goal.objective,
+            status: 'completed' as const,
+          }
+        : undefined;
     const messages = [
+      ...(legacyGoalObjective ? [legacyGoalObjective] : []),
       ...userMessages,
       ...(finalText
         ? [
@@ -495,8 +530,12 @@ export const projectThread = (
       status: record.status === 'running' ? 'interrupted' : record.status,
       model,
       messages,
+      ...(items.some((item) => item.kind === 'turn.goalContext')
+        ? { origin: 'goal' as const }
+        : {}),
       ...(planProposal ? { planProposal } : {}),
       ...(activities.length > 0 ? { activities } : {}),
       ...(error ? { error } : {}),
     };
   });
+};

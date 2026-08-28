@@ -7,6 +7,7 @@ import {
   isConversationThreadProjectionSnapshot,
   isConversationStateSnapshot,
   isConversationSendRequest,
+  isConversationGoalMutation,
   isConversationReviseTurnRequest,
   isConversationQueuedMessageMutationRequest,
   isConversationQueuedMessageUpdateRequest,
@@ -53,7 +54,9 @@ import {
   initialTurnContent,
   revisedTurnContent,
 } from './conversation-turn-content.ts';
+import { GoalCoordinator, type GoalQueueOutcome } from './goal-coordinator.ts';
 import { createUuidV7 } from './id.ts';
+import type { GoalPowerSaveController } from './goal-power-save-controller.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
 const accepted = (
@@ -179,6 +182,8 @@ const withoutNavigatorFields = (
 
 export class RuntimeConversationController {
   private readonly runtime: RuntimeSupervisor;
+  private readonly goals: GoalCoordinator;
+  private readonly powerSave?: GoalPowerSaveController;
   private readonly listeners = new Set<ConversationStateListener>();
   private readonly threadProjectionListeners =
     new Set<ConversationThreadProjectionListener>();
@@ -204,9 +209,11 @@ export class RuntimeConversationController {
         ConversationStateSnapshot['phase'],
         'starting' | 'inProgress' | 'stopping'
       >;
+      goalId?: string;
     }>
   >();
   private readonly pendingTurnStartWorkspaces = new Set<string>();
+  private readonly goalReconciliationThreads = new Set<string>();
   private readonly outputDeltaTimers = new Map<
     string,
     Readonly<{ timer: NodeJS.Timeout; turnId: string }>
@@ -220,8 +227,10 @@ export class RuntimeConversationController {
   private navigator = emptyNavigator();
   private notice: ConversationStateSnapshot['notice'];
 
-  constructor(runtime: RuntimeSupervisor) {
+  constructor(runtime: RuntimeSupervisor, powerSave?: GoalPowerSaveController) {
     this.runtime = runtime;
+    this.powerSave = powerSave;
+    this.goals = new GoalCoordinator(runtime, this.startGoalTurn);
     runtime.subscribe(this.handleRuntimeEvent);
   }
 
@@ -249,6 +258,9 @@ export class RuntimeConversationController {
               messages: [],
             },
           }
+        : {}),
+      ...(this.threadId && this.goals.get(this.threadId)
+        ? { goal: this.goals.get(this.threadId) }
         : {}),
       navigator: this.navigator,
       ...(this.notice ? { notice: this.notice } : {}),
@@ -370,6 +382,87 @@ export class RuntimeConversationController {
     }
   };
 
+  mutateGoal = async (input: unknown): Promise<ConversationActionResult> => {
+    if (!isConversationGoalMutation(input)) return rejected('invalidInput');
+    if (!this.workspaceId || !this.available) return rejected('unavailable');
+    const workspaceId = this.workspaceId;
+    try {
+      let threadId = input.action === 'create' ? this.threadId : input.threadId;
+      if (input.action === 'create') {
+        threadId = threadId ?? (await this.ensureSelectedThread(workspaceId));
+      }
+      if (!threadId || this.threadRecords.get(threadId)?.workspaceId !== workspaceId) {
+        return rejected('unknownThread');
+      }
+      const goalId = input.action === 'create' ? createUuidV7() : input.goalId;
+      const previousGoal = this.goals.get(threadId);
+      let goal = await this.goals.mutate(
+        workspaceId,
+        threadId,
+        goalId,
+        input,
+      );
+      if (
+        input.action === 'edit' &&
+        input.modelProfileId &&
+        previousGoal?.pauseReason === 'modelUnavailable' &&
+        goal?.status === 'paused'
+      ) {
+        goal = await this.goals.mutate(workspaceId, threadId, goal.id, {
+          action: 'resume',
+          threadId,
+          goalId: goal.id,
+          expectedRevision: goal.revision,
+        });
+      }
+      const activeGoalTurn = this.activeTurnsByThread.get(threadId);
+      if (
+        activeGoalTurn?.goalId === goalId &&
+        (input.action === 'pause' || input.action === 'clear')
+      ) {
+        this.runtime.send({
+          type: 'turn.cancel',
+          requestId: randomUUID(),
+          workspaceId,
+          threadId,
+          turnId: activeGoalTurn.turnId,
+          source: 'stopButton',
+        });
+      }
+      this.publishThreadProjection(threadId, true);
+      this.publish();
+      if (goal?.status === 'active') {
+        const queue = this.runtimeQueuesByThread.get(threadId);
+        if (queue?.paused && queue.messages.length > 0) {
+          await this.goals.pause(workspaceId, threadId, 'queueBlocked');
+        } else if (
+          queue?.messages.length &&
+          !this.activeTurnsByThread.has(threadId)
+        ) {
+          await this.dispatchQueuedMessage(threadId);
+        } else {
+          this.goals.schedule(
+            threadId,
+            'queueDrained',
+            this.activeTurnsByThread.has(threadId),
+          );
+        }
+      }
+      return accepted();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const reason of [
+        'goalConflict',
+        'goalRevisionMismatch',
+        'goalNotFound',
+        'modelUnavailable',
+      ] as const) {
+        if (message.includes(reason)) return rejected(reason);
+      }
+      return rejected('unavailable');
+    }
+  };
+
   startTurn = async (input: unknown): Promise<ConversationActionResult> => {
     if (!isConversationSendRequest(input)) {
       return rejected('invalidInput');
@@ -476,34 +569,8 @@ export class RuntimeConversationController {
         importingAttachment = false;
       }
       if (!threadId) {
-        const created = await this.runtime.request(
-          {
-            type: 'thread.create',
-            requestId: randomUUID(),
-            workspaceId,
-          },
-          'thread.mutated',
-        );
-        if (!created.snapshot) {
-          throw new Error('The local runtime did not return the new Thread.');
-        }
-        threadId = created.threadId;
+        threadId = await this.ensureSelectedThread(workspaceId);
         generateTitle = true;
-        this.threadRecords.set(created.threadId, created.snapshot.thread);
-        this.turnsByThread.set(created.threadId, []);
-        this.queuesByThread.set(
-          created.threadId,
-          projectThreadQueue(created.snapshot.queue),
-        );
-        this.runtimeQueuesByThread.set(
-          created.threadId,
-          created.snapshot.queue,
-        );
-        if (this.workspaceId === workspaceId && !this.threadId) {
-          this.threadSelectionGeneration += 1;
-          this.threadId = created.threadId;
-        }
-        this.refreshNavigator();
       }
       if (shouldQueue) {
         const queueItemId = createUuidV7();
@@ -942,6 +1009,7 @@ export class RuntimeConversationController {
       this.threadRecords.set(threadId, event.snapshot.thread);
       this.turnsByThread.set(threadId, turns);
       this.applyRuntimeQueue(threadId, event.snapshot.queue);
+      this.goals.apply(threadId, event.snapshot.goal);
       this.activeTurnsByThread.delete(threadId);
       this.refreshNavigator();
       if (this.threadId === threadId) {
@@ -972,6 +1040,17 @@ export class RuntimeConversationController {
       ...activeTurn,
       phase: 'stopping',
     });
+    if (activeTurn.goalId) {
+      try {
+        await this.goals.pause(
+          activeTurn.workspaceId,
+          threadId,
+          'user',
+        );
+      } catch {
+        return rejected('goalRevisionMismatch');
+      }
+    }
     this.runtime.send({
       type: 'turn.cancel',
       requestId: randomUUID(),
@@ -1179,6 +1258,7 @@ export class RuntimeConversationController {
       this.threadId = threadId;
       this.turnsByThread.set(threadId, [...projectThread(event.snapshot)]);
       this.applyRuntimeQueue(threadId, event.snapshot.queue);
+      this.goals.apply(threadId, event.snapshot.goal);
       this.unreadThreadStatuses.delete(threadId);
       this.refreshNavigator();
       this.navigator = withoutNavigatorFields(this.navigator, [
@@ -1340,6 +1420,7 @@ export class RuntimeConversationController {
       }
       this.threadRecords.delete(threadId);
       this.turnsByThread.delete(threadId);
+      this.goals.forget(threadId);
       this.queuesByThread.delete(threadId);
       this.runtimeQueuesByThread.delete(threadId);
       this.threadRevisions.delete(threadId);
@@ -1368,6 +1449,12 @@ export class RuntimeConversationController {
   };
 
   private handleRuntimeEvent = (event: RuntimeEvent): void => {
+    if (event.type === 'runtime.ready') {
+      for (const threadId of this.goalReconciliationThreads) {
+        void this.reconcileGoalAfterRuntimeRestart(threadId);
+      }
+      return;
+    }
     if (event.type === 'queue.changed') {
       const thread = this.threadRecords.get(event.threadId);
       if (thread?.workspaceId === event.workspaceId) {
@@ -1407,6 +1494,14 @@ export class RuntimeConversationController {
           this.publish();
         }
       }
+      return;
+    }
+    if (event.type === 'goal.changed') {
+      const thread = this.threadRecords.get(event.threadId);
+      if (thread?.workspaceId !== event.workspaceId) return;
+      this.goals.apply(event.threadId, event.goal);
+      this.publishThreadProjection(event.threadId, true);
+      if (this.workspaceId === event.workspaceId) this.publish();
       return;
     }
     if (
@@ -1487,6 +1582,7 @@ export class RuntimeConversationController {
     const turn = turns[index];
     switch (event.type) {
       case 'turn.started':
+        if (event.goalId) this.powerSave?.startTurn(event.turnId);
         turns[index] = { ...turn, model: event.model };
         if (
           this.activeTurnsByThread.get(event.threadId)?.turnId === event.turnId
@@ -1495,6 +1591,7 @@ export class RuntimeConversationController {
             workspaceId: event.workspaceId,
             turnId: event.turnId,
             phase: 'inProgress',
+            ...(event.goalId ? { goalId: event.goalId } : {}),
           });
           this.refreshNavigator();
         }
@@ -1960,6 +2057,17 @@ export class RuntimeConversationController {
         break;
       }
       case 'turn.completed': {
+        this.powerSave?.finishTurn(event.turnId);
+        const completingActiveTurn = this.activeTurnsByThread.get(
+          event.threadId,
+        );
+        if (
+          completingActiveTurn?.goalId &&
+          event.error?.kind === 'connection' &&
+          event.error.message.includes('runtime exited')
+        ) {
+          this.goalReconciliationThreads.add(event.threadId);
+        }
         const promotingItemId = this.promotingQueueItemsByThread.get(
           event.threadId,
         );
@@ -2103,6 +2211,7 @@ export class RuntimeConversationController {
         this.turnsByThread.delete(threadId);
         this.queuesByThread.delete(threadId);
         this.runtimeQueuesByThread.delete(threadId);
+        this.goals.forget(threadId);
         this.threadRevisions.delete(threadId);
       }
     }
@@ -2110,6 +2219,131 @@ export class RuntimeConversationController {
       this.threadRecords.set(thread.id, thread);
     }
     this.refreshNavigator();
+  };
+
+  private ensureSelectedThread = async (workspaceId: string): Promise<string> => {
+    if (this.threadId) return this.threadId;
+    const created = await this.runtime.request(
+      {
+        type: 'thread.create',
+        requestId: randomUUID(),
+        workspaceId,
+      },
+      'thread.mutated',
+    );
+    if (!created.snapshot) {
+      throw new Error('The local runtime did not return the new Thread.');
+    }
+    this.threadRecords.set(created.threadId, created.snapshot.thread);
+    this.turnsByThread.set(created.threadId, []);
+    this.applyRuntimeQueue(created.threadId, created.snapshot.queue);
+    this.goals.apply(created.threadId, created.snapshot.goal);
+    if (this.workspaceId === workspaceId && !this.threadId) {
+      this.threadSelectionGeneration += 1;
+      this.threadId = created.threadId;
+    }
+    this.refreshNavigator();
+    return created.threadId;
+  };
+
+  private reconcileGoalAfterRuntimeRestart = async (
+    threadId: string,
+  ): Promise<void> => {
+    const thread = this.threadRecords.get(threadId);
+    if (!thread || this.activeTurnsByThread.has(threadId)) return;
+    try {
+      const loaded = await this.runtime.request(
+        {
+          type: 'thread.load',
+          requestId: randomUUID(),
+          workspaceId: thread.workspaceId,
+          threadId,
+        },
+        'thread.loaded',
+      );
+      this.goals.apply(threadId, loaded.snapshot.goal);
+      this.turnsByThread.set(threadId, [...projectThread(loaded.snapshot)]);
+      this.applyRuntimeQueue(threadId, loaded.snapshot.queue);
+      let goal = loaded.snapshot.goal;
+      if (goal?.status === 'paused' && goal.pauseReason === 'restart') {
+        goal = await this.goals.mutate(
+          thread.workspaceId,
+          threadId,
+          goal.id,
+          {
+            action: 'resume',
+            threadId,
+            goalId: goal.id,
+            expectedRevision: goal.revision,
+            preserveActivation: true,
+          },
+        );
+      }
+      this.goalReconciliationThreads.delete(threadId);
+      this.publishThreadProjection(threadId, true);
+      this.publish();
+      if (goal?.status === 'active') {
+        this.goals.schedule(
+          threadId,
+          'queueDrained',
+          this.activeTurnsByThread.has(threadId),
+          true,
+        );
+      }
+    } catch {
+      // Keep the Goal paused; a later runtime-ready signal can retry safely.
+    }
+  };
+
+  private startGoalTurn = (
+    goal: NonNullable<ConversationStateSnapshot['goal']>,
+    reconciliation: boolean,
+  ): void => {
+    const thread = this.threadRecords.get(goal.threadId);
+    if (!thread || this.activeTurnsByThread.has(goal.threadId)) return;
+    const turnId = createUuidV7();
+    const firstGoalTurn = goal.lifetimeUsage.turns === 0;
+    this.turnsByThread.set(goal.threadId, [
+      ...(this.turnsByThread.get(goal.threadId) ?? []),
+      {
+        id: turnId,
+        status: 'inProgress',
+        messages: firstGoalTurn
+          ? [
+              {
+                id: `${turnId}:goal-objective`,
+                role: 'user',
+                text: goal.objective,
+                status: 'inProgress',
+              },
+            ]
+          : [],
+        origin: 'goal',
+      },
+    ]);
+    this.activeTurnsByThread.set(goal.threadId, {
+      workspaceId: thread.workspaceId,
+      turnId,
+      phase: 'starting',
+      goalId: goal.id,
+    });
+    this.unreadThreadStatuses.delete(goal.threadId);
+    this.runtime.send({
+      type: 'turn.startGoal',
+      requestId: randomUUID(),
+      workspaceId: thread.workspaceId,
+      threadId: goal.threadId,
+      turnId,
+      goalId: goal.id,
+      expectedRevision: goal.revision,
+      modelProfileId: goal.model.profileId,
+      modelRequest: goal.model.request,
+      ...(reconciliation ? { reconciliation: true } : {}),
+      content: [{ type: 'text', text: `Continue Goal ${goal.id}.` }],
+    });
+    this.refreshNavigator();
+    this.publishThreadProjection(goal.threadId, true);
+    this.publish();
   };
 
   private refreshNavigator = (
@@ -2170,6 +2404,7 @@ export class RuntimeConversationController {
         paused: false,
         messages: [],
       },
+      ...(this.goals.get(threadId) ? { goal: this.goals.get(threadId) } : {}),
     };
   };
 
@@ -2247,9 +2482,15 @@ export class RuntimeConversationController {
       );
       if (
         event.snapshot.thread.id === threadId &&
-        event.snapshot.thread.workspaceId === workspaceId &&
-        this.applyRuntimeQueue(threadId, event.snapshot.queue)
+        event.snapshot.thread.workspaceId === workspaceId
       ) {
+        const previousGoal = this.goals.get(threadId);
+        this.goals.apply(threadId, event.snapshot.goal);
+        const queueChanged = this.applyRuntimeQueue(
+          threadId,
+          event.snapshot.queue,
+        );
+        if (!queueChanged && previousGoal === event.snapshot.goal) return;
         this.publishThreadProjection(threadId, true);
         if (this.workspaceId === workspaceId) {
           this.publish();
@@ -2372,20 +2613,28 @@ export class RuntimeConversationController {
   private finishQueueAfterTurn = async (
     threadId: string,
     status: 'completed' | 'failed' | 'interrupted',
-  ): Promise<void> => {
+  ): Promise<GoalQueueOutcome> => {
     await Promise.resolve();
     this.promotingQueueItemsByThread.delete(threadId);
     const queue = this.runtimeQueuesByThread.get(threadId);
     if (!queue || queue.messages.length === 0) {
-      return;
+      this.goals.schedule(
+        threadId,
+        'queueDrained',
+        this.activeTurnsByThread.has(threadId),
+      );
+      return 'queueDrained';
     }
     if (status === 'completed' && !queue.paused) {
       await this.dispatchQueuedMessage(threadId);
-      return;
+      return 'queueDispatched';
     }
     const thread = this.threadRecords.get(threadId);
     if (!thread || queue.paused) {
-      return;
+      if (thread) {
+        await this.goals.pause(thread.workspaceId, threadId, 'queueBlocked');
+      }
+      return 'queueBlocked';
     }
     const releaseQueueOperation = await this.acquireQueueOperation(threadId);
     try {
@@ -2404,6 +2653,7 @@ export class RuntimeConversationController {
           this.publish();
         }
       }
+      await this.goals.pause(thread.workspaceId, threadId, 'queueBlocked');
     } catch {
       this.notice = {
         kind: 'warning',
@@ -2413,6 +2663,7 @@ export class RuntimeConversationController {
     } finally {
       releaseQueueOperation();
     }
+    return 'queueBlocked';
   };
 
   private publishThreadProjection = (

@@ -24,6 +24,46 @@ class FixtureChild extends EventEmitter {
   }
 }
 
+test('RuntimeSupervisor tracks Goal-owned Turns for crash reconciliation', () => {
+  const child = new FixtureChild();
+  const events: RuntimeEvent[] = [];
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => child as never,
+  });
+  supervisor.subscribe((event) => events.push(event));
+  supervisor.start();
+  child.emit('spawn');
+  child.emit('message', {
+    type: 'runtime.ready',
+    sequence: 1,
+    requestId: child.messages[0]?.requestId,
+    protocolVersion: 7,
+  });
+  supervisor.send({
+    type: 'turn.startGoal',
+    requestId: 'request-goal',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-goal',
+    goalId: 'goal-fixture',
+    expectedRevision: 1,
+    modelProfileId: 'default',
+    modelRequest: { reasoningEffort: 'high', serviceTier: 'auto' },
+    content: [{ type: 'text', text: 'hidden' }],
+  });
+  child.emit('exit', 17);
+  const completion = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completion?.turnId, 'turn-goal');
+  assert.equal(completion?.status, 'interrupted');
+  supervisor.shutdown();
+});
+
 test('RuntimeSupervisor queues until ready and interrupts active Turns on crash', async () => {
   const children: FixtureChild[] = [];
   const events: RuntimeEvent[] = [];
@@ -85,7 +125,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(first.messages[1]?.type, 'workspace.open');
@@ -124,7 +164,7 @@ test('RuntimeSupervisor queues until ready and interrupts active Turns on crash'
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   assert.equal(supervisor.getLifecycleSnapshot().status, 'ready');
   assert.equal(second?.messages[1]?.type, 'workspace.open');
@@ -147,7 +187,7 @@ test('RuntimeSupervisor correlates provider-neutral request responses', async ()
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   const response = supervisor.request(
     { type: 'model.inspect', requestId: 'request-model-inspect' },
@@ -183,7 +223,7 @@ test('RuntimeSupervisor rejects pending requests when an invalid event stops the
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   const response = supervisor.request(
     {
@@ -226,7 +266,7 @@ test('RuntimeSupervisor tracks a promoted queued Turn through a runtime crash', 
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   supervisor.send({
     type: 'turn.startQueued',
@@ -263,7 +303,7 @@ test('RuntimeSupervisor rejects an unconfirmed revision when its Turn ends', asy
     type: 'runtime.ready',
     sequence: 1,
     requestId: child.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   const response = supervisor.request(
     {
@@ -318,7 +358,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: first.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   supervisor.send({
     type: 'mcp.sessionSet',
@@ -361,7 +401,7 @@ test('RuntimeSupervisor restores MCP selection without inventing an approval den
     type: 'runtime.ready',
     sequence: 1,
     requestId: second.messages[0]?.requestId,
-    protocolVersion: 6,
+    protocolVersion: 7,
   });
   assert.equal(second.messages[1]?.type, 'mcp.sessionSet');
   assert.deepEqual(

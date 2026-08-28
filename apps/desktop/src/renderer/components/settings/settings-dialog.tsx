@@ -1,6 +1,7 @@
 import {
   CircleHelp,
   Cpu,
+  FlaskConical,
   Monitor,
   Moon,
   Settings,
@@ -26,6 +27,7 @@ import type {
 } from './types';
 import { AboutSettings } from './about-settings';
 import { CommandEnvironmentSettings } from './command-environment-settings';
+import { ExperimentalSettings } from './experimental-settings';
 import { useStore } from './use-store';
 
 const SETTINGS_SECTIONS: readonly Readonly<{
@@ -35,6 +37,7 @@ const SETTINGS_SECTIONS: readonly Readonly<{
 }>[] = [
   { id: 'general', label: '通用', icon: Monitor },
   { id: 'model', label: '模型', icon: Cpu },
+  { id: 'experimental', label: '实验性功能', icon: FlaskConical },
   { id: 'about', label: '关于', icon: CircleHelp },
 ];
 
@@ -184,7 +187,7 @@ export const SettingsDialog = ({
             className="border-b bg-surface/45 p-2 sm:border-r sm:border-b-0"
             aria-label="设置分类"
           >
-            <div className="grid grid-cols-3 gap-1 sm:block sm:space-y-1">
+            <div className="grid grid-cols-4 gap-1 sm:block sm:space-y-1">
               {SETTINGS_SECTIONS.map((section) => {
                 const Icon = section.icon;
                 const current = store.section === section.id;
@@ -223,6 +226,7 @@ export const SettingsDialog = ({
             {store.section === 'model' ? (
               <ModelConfigSettingsPanel active={actualOpen} />
             ) : null}
+            {store.section === 'experimental' ? <ExperimentalSettings /> : null}
             {store.section === 'about' ? <AboutSettings /> : null}
           </section>
         </div>

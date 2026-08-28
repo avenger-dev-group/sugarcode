@@ -1826,6 +1826,65 @@ impl NativeRuntime {
     }
 
     #[napi]
+    pub fn current_goal_json(&self, thread_id: String) -> Result<String> {
+        self.with_store(|store| store.current_goal_json(&thread_id))
+    }
+
+    #[napi]
+    pub fn mutate_goal_json(&self, thread_id: String, mutation_json: String) -> Result<String> {
+        self.with_store(|store| store.mutate_goal_json(&thread_id, &mutation_json))
+    }
+
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_goal_turn_json(
+        &self,
+        goal_id: String,
+        expected_revision: u32,
+        turn_id: String,
+        thread_id: String,
+        request_id: String,
+        provider_wire_api: String,
+        model: String,
+        context_json: String,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.claim_goal_turn_json(
+                &goal_id,
+                i64::from(expected_revision),
+                &turn_id,
+                &thread_id,
+                &request_id,
+                &provider_wire_api,
+                &model,
+                &context_json,
+            )
+        })
+    }
+
+    #[napi]
+    pub fn settle_goal_turn_json(
+        &self,
+        goal_id: String,
+        expected_revision: u32,
+        turn_id: String,
+        settlement_json: String,
+        tokens: u32,
+        duration_ms: u32,
+    ) -> Result<String> {
+        self.with_store(|store| {
+            store.settle_goal_turn_json(
+                &goal_id,
+                i64::from(expected_revision),
+                &turn_id,
+                &settlement_json,
+                i64::from(tokens),
+                i64::from(duration_ms),
+            )
+        })
+    }
+
+    #[napi]
     pub fn create_queued_message_json(
         &self,
         thread_id: String,

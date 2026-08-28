@@ -41,7 +41,6 @@ export type WorkspaceRuntimeBoundary = Readonly<{
   switchWorkspace: (
     workspacePath: string,
     kind: WorkspaceKind,
-    preferredThreadId?: string,
   ) => Promise<boolean>;
   getWorkspaceBindingId: () => string | null;
   deleteThread: (
@@ -364,7 +363,7 @@ export class WorkspaceController {
       this.activeProjectId === projectId &&
       this.snapshot.status === 'ready'
     ) {
-      return { accepted: true };
+      return this.selectActivatedThread(preferredThreadId);
     }
     const validated = await validateDirectory(project.path);
     if (!validated) {
@@ -460,6 +459,26 @@ export class WorkspaceController {
         : activated;
     }
     return { accepted: false, reason: 'invalid' };
+  };
+
+  private selectActivatedThread = async (
+    threadId?: string,
+  ): Promise<WorkspaceSelectResult> => {
+    if (
+      !threadId ||
+      this.options.supervisor.conversation.getSnapshot().threadId === threadId
+    ) {
+      return { accepted: true };
+    }
+    const selected = await this.options.supervisor.conversation.selectThread(
+      threadId,
+    );
+    return selected.accepted
+      ? { accepted: true }
+      : {
+          accepted: false,
+          reason: selected.reason === 'turnActive' ? 'busy' : 'failed',
+        };
   };
 
   private focusResult = (
@@ -743,7 +762,7 @@ export class WorkspaceController {
       this.activeChatThreadId === threadId &&
       this.snapshot.status === 'ready'
     ) {
-      return { accepted: true };
+      return this.selectActivatedThread(threadId);
     }
 
     const existingOwnerKey = threadId
@@ -754,7 +773,7 @@ export class WorkspaceController {
       : undefined;
     let directory = existingOwner?.directory ?? null;
     if (directory) {
-      directory = await this.validateChatDirectory(directory);
+      directory = await this.restoreManagedChatDirectory(directory);
     }
     try {
       directory ??= await this.createChatDirectory(threadId);
@@ -776,11 +795,7 @@ export class WorkspaceController {
     this.activeChatThreadId = threadId ?? null;
     this.publish('selecting');
     if (
-      !(await this.options.supervisor.switchWorkspace(
-        directory,
-        'chat',
-        threadId,
-      ))
+      !(await this.options.supervisor.switchWorkspace(directory, 'chat'))
     ) {
       this.workspacePath = previousPath;
       this.workspaceId = previousWorkspaceId;
@@ -812,6 +827,19 @@ export class WorkspaceController {
       ownerKey,
       'runtime',
     );
+    const selected = await this.selectActivatedThread(threadId);
+    if (!selected.accepted) {
+      if (existingOwnerKey !== ownerKey) {
+        this.chatOwners.delete(ownerKey);
+        this.options.threadRegistry.removeOwner(ownerKey);
+      }
+      this.workspacePath = previousPath;
+      this.workspaceId = previousWorkspaceId;
+      this.workspaceKind = previousKind;
+      this.activeChatThreadId = previousThreadId;
+      this.publish(previousPath ? 'ready' : 'failed');
+      return selected;
+    }
     if (existingOwnerKey && existingOwnerKey !== ownerKey) {
       this.chatOwners.delete(existingOwnerKey);
     }
@@ -826,7 +854,7 @@ export class WorkspaceController {
       return { accepted: false, reason: 'failed' };
     }
     this.publish('ready');
-    return { accepted: true };
+    return selected;
   };
 
   clear = (): Promise<WorkspaceSelectResult> =>
@@ -1028,11 +1056,7 @@ export class WorkspaceController {
     this.activeProjectId = projectId;
     this.publish('selecting');
     if (
-      !(await this.options.supervisor.switchWorkspace(
-        selected,
-        'project',
-        preferredThreadId,
-      ))
+      !(await this.options.supervisor.switchWorkspace(selected, 'project'))
     ) {
       this.workspacePath = previousPath;
       this.workspaceId = previousWorkspaceId;
@@ -1083,7 +1107,7 @@ export class WorkspaceController {
       return { accepted: false, reason: 'failed' };
     }
     this.publish('ready');
-    return { accepted: true };
+    return this.selectActivatedThread(preferredThreadId);
   };
 
   private refreshActiveProjectRecord = (): void => {
@@ -1164,6 +1188,62 @@ export class WorkspaceController {
       !path.isAbsolute(relative)
       ? directory
       : null;
+  };
+
+  /**
+   * Chat Threads are durably bound to the hash of their original directory.
+   * Recreate a missing managed directory in place instead of assigning the
+   * Thread a fresh path (and therefore a different Workspace identity).
+   */
+  private restoreManagedChatDirectory = async (
+    candidate: string,
+  ): Promise<string | null> => {
+    const existing = await this.validateChatDirectory(candidate);
+    if (existing) {
+      return existing;
+    }
+    try {
+      await mkdir(this.options.chatRootPath, {
+        recursive: true,
+        mode: 0o700,
+      });
+      const root = await validateDirectory(this.options.chatRootPath);
+      if (!root) {
+        return null;
+      }
+      const requested = path.resolve(candidate);
+      const relative = path.relative(root, requested);
+      const segments = relative.split(path.sep);
+      if (
+        path.isAbsolute(relative) ||
+        segments.length !== 2 ||
+        !/^\d{4}-\d{2}-\d{2}$/u.test(segments[0] ?? '') ||
+        !segments[1] ||
+        segments.some((segment) => segment === '..' || segment === '.')
+      ) {
+        return null;
+      }
+      const datePath = path.join(root, segments[0] as string);
+      await mkdir(datePath, { mode: 0o700 }).catch(
+        (error: NodeJS.ErrnoException): undefined => {
+          if (error.code !== 'EEXIST') throw error;
+          return undefined;
+        },
+      );
+      const validatedDate = await validateDirectory(datePath);
+      if (!validatedDate || path.dirname(validatedDate) !== root) {
+        return null;
+      }
+      await mkdir(requested, { mode: 0o700 }).catch(
+        (error: NodeJS.ErrnoException): undefined => {
+          if (error.code !== 'EEXIST') throw error;
+          return undefined;
+        },
+      );
+      return this.validateChatDirectory(requested);
+    } catch {
+      return null;
+    }
   };
 
   private deleteManagedChatDirectory = async (

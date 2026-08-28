@@ -11,6 +11,7 @@ import type {
   ConversationThreadProjectionSnapshot,
 } from './projection.ts';
 import type { ModelRequestOptions } from '../model-config.ts';
+import type { ConversationGoalMutation } from '../goals.ts';
 
 export type ConversationAttachmentFailure =
   | 'sourceUnavailable'
@@ -38,7 +39,10 @@ export type ConversationActionResult = Readonly<{
     | 'modelUnavailable'
     | 'attachmentUnavailable'
     | 'unavailable'
-    | 'noActiveTurn';
+    | 'noActiveTurn'
+    | 'goalConflict'
+    | 'goalRevisionMismatch'
+    | 'goalNotFound';
   disposition?: 'started' | 'queued';
   queueItemId?: string;
   attachmentFailure?: ConversationAttachmentFailure;
@@ -65,6 +69,9 @@ export type ConversationApi = Readonly<{
   ) => Promise<ConversationAttachmentPreviewResult>;
   sendConversationMessage: (
     request: ConversationSendRequest,
+  ) => Promise<ConversationActionResult>;
+  mutateConversationGoal: (
+    request: ConversationGoalMutation,
   ) => Promise<ConversationActionResult>;
   reviseConversationTurn: (
     request: ConversationReviseTurnRequest,

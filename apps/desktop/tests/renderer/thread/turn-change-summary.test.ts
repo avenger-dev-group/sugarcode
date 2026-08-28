@@ -59,3 +59,32 @@ test('Turn change summary keeps one latest review row per modified path', () => 
   assert.equal(files[0]?.reviews[0]?.deletions, 1);
   assert.equal(files[0]?.reviews[1]?.hunks[0]?.lines[1]?.text, 'three');
 });
+
+test('Turn change summary includes applied workspace file activities', () => {
+  const files = collectTurnChangeSummaryFiles([{
+    type: 'fileChange',
+    activity: {
+      id: 'file-change',
+      path: 'src/direct.ts',
+      state: 'applied',
+      change: {
+        id: 'direct-review',
+        path: 'src/direct.ts',
+        kind: 'create',
+        hunks: [],
+        additions: 4,
+        deletions: 0,
+        beforeSha256: 'a'.repeat(64),
+        afterSha256: 'b'.repeat(64),
+        beforeBytes: 0,
+        afterBytes: 32,
+        newlineStyle: 'lf',
+        finalNewline: true,
+      },
+    },
+  }]);
+
+  assert.equal(files.length, 1);
+  assert.equal(files[0]?.file.path, 'src/direct.ts');
+  assert.equal(files[0]?.reviews[0]?.additions, 4);
+});

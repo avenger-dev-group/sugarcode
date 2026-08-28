@@ -18,6 +18,7 @@ import type {
   ConversationWorkspaceSearchActivity,
 } from './activities.ts';
 import type { ModelRequestOptions } from '../model-config.ts';
+import type { GoalSnapshot } from '../goals.ts';
 
 export type ConversationQueuedMessage = Readonly<{
   id: string;
@@ -53,6 +54,7 @@ export type ConversationTurn = Readonly<{
   userInputRequest?: ConversationUserInputRequest;
   error?: ConversationTurnError;
   usage?: ConversationTokenUsage;
+  origin?: 'goal';
 }>;
 
 export type ConversationNotice = Readonly<{
@@ -95,6 +97,7 @@ export type ConversationStateSnapshot = Readonly<{
   activeTurnId?: string;
   turns: readonly ConversationTurn[];
   queue?: ConversationThreadQueue;
+  goal?: GoalSnapshot;
   navigator: ConversationThreadNavigatorSnapshot;
   notice?: ConversationNotice;
 }>;
@@ -107,6 +110,7 @@ export type ConversationThreadProjectionSnapshot = Readonly<{
   activeTurnId?: string;
   turns: readonly ConversationTurn[];
   queue?: ConversationThreadQueue;
+  goal?: GoalSnapshot;
 }>;
 
 export type ConversationThreadProjectionDelta = Readonly<{

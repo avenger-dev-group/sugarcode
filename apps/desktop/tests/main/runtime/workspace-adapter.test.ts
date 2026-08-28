@@ -192,7 +192,7 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
   });
 
   assert.equal(
-    await adapter.switchWorkspace('/fixture/project', 'project', THREAD_ID),
+    await adapter.switchWorkspace('/fixture/project'),
     true,
   );
   const workspaceId = adapter.getWorkspaceBindingId();
@@ -202,7 +202,7 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
     threadIds: [THREAD_ID],
     threadTitles: { [THREAD_ID]: 'Runtime task' },
   });
-  assert.deepEqual(conversation.selected, [THREAD_ID]);
+  assert.deepEqual(conversation.selected, []);
   assert.deepEqual(await adapter.listWorkspace(''), {
     path: '',
     entries: [{ name: 'src', path: 'src', kind: 'directory' }],

@@ -17,7 +17,8 @@ export const latestEditableMessageTarget = (
     phase !== 'ready' ||
     isSending ||
     latestTurn === undefined ||
-    latestTurn.status === 'inProgress'
+    latestTurn.status === 'inProgress' ||
+    latestTurn.origin === 'goal'
   ) {
     return null;
   }

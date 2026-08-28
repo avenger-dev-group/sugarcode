@@ -19,6 +19,7 @@ import {
   type ConnectionStateSnapshot,
 } from '@/shared/connection';
 import type { DesktopApi } from '@/shared/desktop-api';
+import { EXPERIMENTAL_GOAL_POWER_SAVE_SET_CHANNEL } from '@/shared/experimental';
 import {
   KNOWLEDGE_ADD_FILES_CHANNEL,
   KNOWLEDGE_ADD_FOLDER_CHANNEL,
@@ -101,6 +102,7 @@ import {
 } from '@/shared/git';
 import {
   CONVERSATION_SEND_CHANNEL,
+  CONVERSATION_GOAL_MUTATE_CHANNEL,
   CONVERSATION_ATTACHMENT_PREVIEW_CHANNEL,
   CONVERSATION_REVISE_CHANNEL,
   CONVERSATION_QUEUE_UPDATE_CHANNEL,
@@ -133,6 +135,7 @@ import {
   type ConversationSteerQueuedMessageRequest,
   type ConversationThreadProjectionSnapshot,
   type ConversationUserInputResponse,
+  type ConversationGoalMutation,
 } from '@/shared/conversation';
 import {
   isMcpApprovalActionResult,
@@ -304,6 +307,16 @@ export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
   getPathForFile?: (file: File) => string,
 ): DesktopApi => ({
+  setGoalPowerSaveEnabled: async (enabled): Promise<boolean> => {
+    const result = await ipcRenderer.invoke(
+      EXPERIMENTAL_GOAL_POWER_SAVE_SET_CHANNEL,
+      enabled,
+    );
+    if (typeof result !== 'boolean') {
+      throw new Error('Main returned an invalid experimental preference.');
+    }
+    return result;
+  },
   getLocalFilePath: (file: File): string => {
     const localPath = getPathForFile?.(file) ?? '';
     if (
@@ -1229,6 +1242,18 @@ export const createDesktopApi = (
     );
     if (!isConversationActionResult(result)) {
       throw new Error('Main returned an invalid conversation send result.');
+    }
+    return result;
+  },
+  mutateConversationGoal: async (
+    request: ConversationGoalMutation,
+  ): Promise<ConversationActionResult> => {
+    const result: unknown = await ipcRenderer.invoke(
+      CONVERSATION_GOAL_MUTATE_CHANNEL,
+      request,
+    );
+    if (!isConversationActionResult(result)) {
+      throw new Error('Main returned an invalid Goal mutation result.');
     }
     return result;
   },

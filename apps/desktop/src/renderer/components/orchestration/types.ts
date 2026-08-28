@@ -45,6 +45,9 @@ export type OrchestrationActivityViewModel = Readonly<{
 
 export type ContextRailResource =
   | Readonly<{
+      kind: 'goal';
+    }>
+  | Readonly<{
       kind: 'file';
       path: string;
     }>

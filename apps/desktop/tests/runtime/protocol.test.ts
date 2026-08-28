@@ -6,6 +6,42 @@ import {
   isRuntimeEvent,
 } from '../../src/runtime/protocol.ts';
 
+test('private runtime validates Goal mutation, execution, and projection events', () => {
+  const modelRequest = { reasoningEffort: 'high', serviceTier: 'auto' } as const;
+  assert.equal(
+    isRuntimeCommand({
+      type: 'turn.startGoal',
+      requestId: 'request-goal-turn',
+      workspaceId: 'workspace-1',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      goalId: 'goal-1',
+      expectedRevision: 3,
+      modelProfileId: 'default',
+      modelRequest,
+      content: [{ type: 'text', text: 'hidden' }],
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeCommand({
+      type: 'goal.mutate',
+      requestId: 'request-goal-edit',
+      workspaceId: 'workspace-1',
+      threadId: 'thread-1',
+      goalId: 'goal-1',
+      mutation: {
+        action: 'edit',
+        threadId: 'thread-1',
+        goalId: 'goal-1',
+        expectedRevision: 3,
+        modelProfileId: 'default',
+      },
+    }),
+    false,
+  );
+});
+
 test('private runtime validates per-turn reasoning and speed controls', () => {
   const base = {
     type: 'turn.start',

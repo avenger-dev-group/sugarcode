@@ -93,6 +93,7 @@ import { toTranscriptTurnBoundary } from './turn-boundary';
 import { useStore, useTranscriptFollow } from './use-store';
 import { UserMessage } from './user-message';
 import { AgentPreviewCard } from './agent-preview-card';
+import { GoalRunDock } from './goal-run-dock';
 import { AgentDrawioCard } from './agent-drawio-card';
 
 const currentOrchestrationActivity = (
@@ -116,6 +117,7 @@ type TranscriptMessageProps = Readonly<{
   entry: TranscriptMessageViewModel;
   threadId?: string;
   turnId?: string;
+  goalObjective?: boolean;
   editable?: boolean;
   editor?: ThreadWorkbenchViewProps['store']['messageEditor'];
   onBeginEdit?: ThreadWorkbenchViewProps['store']['beginMessageEdit'];
@@ -691,6 +693,7 @@ const TranscriptTurnView = ({
             entry={entry}
             threadId={threadId}
             turnId={turn.id}
+            goalObjective={turn.origin === 'goal'}
             editable={editableMessageId === entry.message.id}
             editor={
               messageEditor.turnId === turn.id &&
@@ -1164,6 +1167,20 @@ export const ThreadWorkbenchView = ({
             }`}
           >
             <div className="mx-auto max-w-3xl">
+              {store.thread.goal ? (
+                <GoalRunDock
+                  goal={store.thread.goal}
+                  busy={store.isSending}
+                  progress={
+                    store.thread.goal.activeTurnId ===
+                    store.activeTurnProgress?.turnId
+                      ? store.activeTurnProgress
+                      : undefined
+                  }
+                  onMutate={store.mutateGoal}
+                  onStop={store.stop}
+                />
+              ) : null}
               {agentTaskActivity ? (
                 <AgentTaskDock activity={agentTaskActivity} />
               ) : null}

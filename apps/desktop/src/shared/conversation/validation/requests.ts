@@ -25,6 +25,11 @@ import type {
 } from '../api.ts';
 import { hasBoundedText, isId, isRecord } from './primitives.ts';
 import { isModelRequestOptions } from '../../model-config.ts';
+import {
+  isGoalBudget,
+  isGoalObjective,
+  type ConversationGoalMutation,
+} from '../../goals.ts';
 
 const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'accepted',
@@ -42,6 +47,9 @@ const ACTION_REASONS = new Set<ConversationActionResult['reason']>([
   'attachmentUnavailable',
   'unavailable',
   'noActiveTurn',
+  'goalConflict',
+  'goalRevisionMismatch',
+  'goalNotFound',
 ]);
 const ATTACHMENT_FAILURES = new Set<
   NonNullable<ConversationActionResult['attachmentFailure']>
@@ -145,6 +153,96 @@ export const isConversationSendRequest = (
       /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
   (value.modelRequest === undefined ||
     isModelRequestOptions(value.modelRequest));
+
+const isGoalIdentity = (value: Record<string, unknown>): boolean =>
+  isId(value.threadId) &&
+  isId(value.goalId) &&
+  Number.isSafeInteger(value.expectedRevision) &&
+  Number(value.expectedRevision) >= 1;
+
+export const isConversationGoalMutation = (
+  value: unknown,
+): value is ConversationGoalMutation => {
+  if (!isRecord(value) || typeof value.action !== 'string') return false;
+  if (value.action === 'create') {
+    return (
+      Object.keys(value).every((key) =>
+        [
+          'action',
+          'objective',
+          'modelProfileId',
+          'modelRequest',
+          'budget',
+        ].includes(key),
+      ) &&
+      isGoalObjective(value.objective) &&
+      typeof value.modelProfileId === 'string' &&
+      /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId) &&
+      isModelRequestOptions(value.modelRequest) &&
+      (value.budget === undefined || isGoalBudget(value.budget))
+    );
+  }
+  if (value.action === 'edit') {
+    return (
+      Object.keys(value).every((key) =>
+        [
+          'action',
+          'threadId',
+          'goalId',
+          'expectedRevision',
+          'objective',
+          'modelProfileId',
+          'modelRequest',
+          'budget',
+        ].includes(key),
+      ) &&
+      isGoalIdentity(value) &&
+      (value.objective === undefined || isGoalObjective(value.objective)) &&
+      (value.modelProfileId === undefined ||
+        (typeof value.modelProfileId === 'string' &&
+          /^[A-Za-z0-9_-]{1,64}$/u.test(value.modelProfileId))) &&
+      (value.modelRequest === undefined ||
+        isModelRequestOptions(value.modelRequest)) &&
+      (value.modelProfileId === undefined) ===
+        (value.modelRequest === undefined) &&
+      (value.budget === undefined || isGoalBudget(value.budget)) &&
+      [
+        value.objective,
+        value.modelProfileId,
+        value.modelRequest,
+        value.budget,
+      ].some((part) => part !== undefined)
+    );
+  }
+  return (
+    ['pause', 'resume', 'clear'].includes(value.action) &&
+    Object.keys(value).every((key) =>
+      [
+        'action',
+        'threadId',
+        'goalId',
+        'expectedRevision',
+        'pauseReason',
+        'preserveActivation',
+      ].includes(key),
+    ) &&
+    (value.pauseReason === undefined ||
+      (value.action === 'pause' &&
+        [
+          'user',
+          'blocked',
+          'budget',
+          'failure',
+          'restart',
+          'modelUnavailable',
+          'queueBlocked',
+          'protocolViolation',
+        ].includes(String(value.pauseReason)))) &&
+    (value.preserveActivation === undefined ||
+      (value.action === 'resume' && value.preserveActivation === true)) &&
+    isGoalIdentity(value)
+  );
+};
 
 export const isConversationReviseTurnRequest = (
   value: unknown,
