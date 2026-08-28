@@ -5,7 +5,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "Avenir Next", "Segoe UI Variable Text", "SF Pro Text", sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --color-background: var(--background);
   --color-canvas: var(--canvas);
   --color-foreground: var(--foreground);
@@ -194,12 +194,9 @@
     overflow: hidden;
     font-family: var(--font-sans);
     font-size: 0.875rem;
-    font-weight: 400;
+    font-weight: 500;
     line-height: 1.5;
-    letter-spacing: -0.006em;
     background: var(--canvas);
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
   }
 
   #root {

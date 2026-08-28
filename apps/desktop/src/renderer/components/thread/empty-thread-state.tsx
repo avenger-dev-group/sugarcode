@@ -87,7 +87,7 @@ export const EmptyThreadState = ({
       <header className="empty-thread-hero empty-thread-intro relative z-[1] text-center">
         <h1
           id="empty-thread-title"
-          className="empty-thread-heading text-[2rem] font-semibold leading-tight tracking-[-0.045em] sm:text-[2.35rem]"
+          className="empty-thread-heading text-[2rem] font-medium leading-tight tracking-[-0.045em] sm:text-[2.35rem]"
         >
           今天想推进什么？
         </h1>
