@@ -229,7 +229,9 @@ export const AgentDetail = ({
       ),
       label:
         task.status === 'failed'
-          ? 'Task failed'
+          ? task.result.partial
+            ? 'Task failed · partial result saved'
+            : 'Task failed'
           : task.status === 'interrupted'
             ? 'Task interrupted'
             : task.status === 'cancelled'
@@ -237,7 +239,12 @@ export const AgentDetail = ({
               : task.role === 'auditor'
                 ? 'Audit recorded'
                 : 'Task completed',
-      meta: formatAgentTaskDuration(task.result.durationMs),
+      meta: [
+        formatAgentTaskDuration(task.result.durationMs),
+        task.result.attempts && task.result.attempts > 1
+          ? `${task.result.attempts} attempts`
+          : undefined,
+      ].filter(Boolean).join(' · '),
       tone: danger ? 'danger' : 'success',
       content: (
         <div className={danger ? 'text-destructive' : undefined}>

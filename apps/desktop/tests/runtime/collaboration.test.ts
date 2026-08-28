@@ -228,6 +228,57 @@ test('CollaborationCoordinator adds a runtime auditor and still rejects cycles',
   );
 });
 
+test('CollaborationCoordinator returns structured retry and partial-result metadata', async () => {
+  const coordinator = new CollaborationCoordinator();
+  const tools = coordinator.toolsForTurn(
+    { ...turn, turnId: 'turn-partial-result' },
+    {
+      createTasks: () => undefined,
+      updateTask: () => undefined,
+      publishTask: () => undefined,
+      executeTask: async () => ({
+        status: 'failed',
+        summaryMarkdown:
+          'The model timed out.\n\n## Recovered partial result\n\nUseful findings.',
+        durationMs: 600_000,
+        partial: true,
+        attempts: 2,
+        error: {
+          kind: 'timeout',
+          retryable: true,
+          message: 'The model stream exceeded the request deadline.',
+        },
+      }),
+    },
+    new AbortController().signal,
+  );
+  await callTool(tools, 'collaboration_dispatch', {
+    tasks: [{
+      clientTaskKey: 'partial',
+      title: 'Partial explorer',
+      role: 'explorer',
+      access: 'readOnly',
+      dependsOn: [],
+      taskMarkdown: 'Explore the project.',
+    }],
+  });
+  const result = await callTool(tools, 'collaboration_wait', {
+    clientTaskKeys: [],
+  }) as {
+    tasks: Array<{
+      partial?: boolean;
+      attempts?: number;
+      error?: { kind: string };
+      summaryMarkdown: string;
+    }>;
+  };
+
+  assert.equal(result.tasks[0]?.partial, true);
+  assert.equal(result.tasks[0]?.attempts, 2);
+  assert.equal(result.tasks[0]?.error?.kind, 'timeout');
+  assert.match(result.tasks[0]?.summaryMarkdown ?? '', /Useful findings/u);
+});
+
 test('CollaborationCoordinator runs independent read-only tasks concurrently', async () => {
   const coordinator = new CollaborationCoordinator(2);
   const releases: Array<() => void> = [];

@@ -952,6 +952,149 @@ test('OpenAI Chat maps malformed tool JSON to a bounded internal error tool', as
   });
 });
 
+test('OpenAI Chat blocks incomplete tool history before network transport', async (context) => {
+  let requestCount = 0;
+  const fixture = await serve(async (_request, response) => {
+    requestCount += 1;
+    response.end();
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.contents = [
+    { role: 'user', parts: [{ text: 'Read fixture.txt' }] },
+    {
+      role: 'model',
+      parts: [{
+        functionCall: {
+          id: 'call_incomplete',
+          name: 'workspace_read',
+          args: { path: 'fixture.txt' },
+        },
+      }],
+    },
+    { role: 'user', parts: [{ text: 'Continue' }] },
+  ];
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  await assert.rejects(
+    collect(model.generateContentAsync(request, true)),
+    (error: unknown) => {
+      assert.ok(error instanceof ProviderAdapterError);
+      assert.equal(error.details.kind, 'protocol');
+      assert.equal(
+        error.details.protocol?.eventType,
+        'history.chatCompletions',
+      );
+      return true;
+    },
+  );
+  assert.equal(requestCount, 0);
+});
+
+test('OpenAI Chat accepts complete parallel tool history', async (context) => {
+  let receivedBody: Record<string, unknown> | undefined;
+  const fixture = await serve(async (request, response) => {
+    receivedBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+    writeSse(response, [
+      {
+        data: {
+          id: 'chatcmpl_complete_tools',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{
+            index: 0,
+            delta: { content: 'Done' },
+            finish_reason: null,
+          }],
+        },
+      },
+      {
+        data: {
+          id: 'chatcmpl_complete_tools',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'fixture-model',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        },
+      },
+      { data: '[DONE]' },
+    ]);
+  });
+  context.after(fixture.close);
+  const request = llmRequest();
+  request.contents = [
+    { role: 'user', parts: [{ text: 'Read both files' }] },
+    {
+      role: 'model',
+      parts: [
+        {
+          functionCall: {
+            id: 'call_one',
+            name: 'workspace_read',
+            args: { path: 'one.txt' },
+          },
+        },
+        {
+          functionCall: {
+            id: 'call_two',
+            name: 'workspace_read',
+            args: { path: 'two.txt' },
+          },
+        },
+      ],
+    },
+    {
+      role: 'user',
+      parts: [
+        {
+          functionResponse: {
+            id: 'call_one',
+            name: 'workspace_read',
+            response: { content: 'one' },
+          },
+        },
+        {
+          functionResponse: {
+            id: 'call_two',
+            name: 'workspace_read',
+            response: { content: 'two' },
+          },
+        },
+      ],
+    },
+    { role: 'user', parts: [{ text: 'Continue' }] },
+  ];
+  const model = new OpenAiLlm({
+    wireApi: 'openaiChatCompletions',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  await collect(model.generateContentAsync(request, true));
+
+  const messages = receivedBody?.messages as Array<Record<string, unknown>>;
+  assert.deepEqual(messages.map((message) => message.role), [
+    'system',
+    'user',
+    'assistant',
+    'tool',
+    'tool',
+    'user',
+  ]);
+  assert.deepEqual(
+    messages.filter((message) => message.role === 'tool')
+      .map((message) => message.tool_call_id),
+    ['call_one', 'call_two'],
+  );
+});
+
 test('OpenAI repairs an unambiguous concatenated workspace_read batch', async (context) => {
   const fixture = await serve(async (_request, response) => {
     writeSse(response, [

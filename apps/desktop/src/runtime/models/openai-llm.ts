@@ -534,6 +534,77 @@ const chatMessages = (
   return messages;
 };
 
+const assertValidChatToolHistory = (
+  messages: readonly ChatCompletionMessageParam[],
+): void => {
+  let pending = new Set<string>();
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message) {
+      continue;
+    }
+    if (pending.size > 0) {
+      if (message.role !== 'tool' || !pending.delete(message.tool_call_id)) {
+        throw new ProviderAdapterError(protocolProviderError(
+          'SugarCode blocked an incomplete tool-call history before sending it to the model.',
+          {
+            stage: 'outputNormalization',
+            code: 'continuationOutputMismatch',
+            eventType: 'history.chatCompletions',
+            value: {
+              index,
+              role: message.role,
+              pendingCallIds: [...pending].sort(),
+              ...(message.role === 'tool'
+                ? { receivedCallId: message.tool_call_id }
+                : {}),
+            },
+          },
+        ));
+      }
+      continue;
+    }
+    if (message.role === 'tool') {
+      throw new ProviderAdapterError(protocolProviderError(
+        'SugarCode blocked an orphaned tool result before sending it to the model.',
+        {
+          stage: 'outputNormalization',
+          code: 'continuationOutputMismatch',
+          eventType: 'history.chatCompletions',
+          value: { index, receivedCallId: message.tool_call_id },
+        },
+      ));
+    }
+    if (message.role !== 'assistant' || !message.tool_calls?.length) {
+      continue;
+    }
+    const callIds = message.tool_calls.map((call) => call.id);
+    pending = new Set(callIds);
+    if (pending.size !== callIds.length || callIds.some((id) => !id)) {
+      throw new ProviderAdapterError(protocolProviderError(
+        'SugarCode blocked duplicate or empty tool-call identifiers before sending them to the model.',
+        {
+          stage: 'outputNormalization',
+          code: 'malformedToolCall',
+          eventType: 'history.chatCompletions',
+          value: { index, callIds },
+        },
+      ));
+    }
+  }
+  if (pending.size > 0) {
+    throw new ProviderAdapterError(protocolProviderError(
+      'SugarCode blocked an incomplete tool-call history before sending it to the model.',
+      {
+        stage: 'outputNormalization',
+        code: 'continuationOutputMismatch',
+        eventType: 'history.chatCompletions',
+        value: { pendingCallIds: [...pending].sort() },
+      },
+    ));
+  }
+};
+
 const openAiUsage = (usage: unknown): LlmResponse['usageMetadata'] => {
   if (!isRecord(usage)) {
     return undefined;
@@ -1231,6 +1302,8 @@ export class OpenAiLlm extends BaseLlm {
     let thought = '';
     let terminalReason: string | null | undefined;
     let usage: unknown;
+    const messages = chatMessages(request);
+    assertValidChatToolHistory(messages);
     const stream = streamWithPreOutputRetry({
       signal: abortSignal,
       maxRetries: this.maxRetries,
@@ -1240,7 +1313,7 @@ export class OpenAiLlm extends BaseLlm {
         this.client.chat.completions.create(
           {
             model: request.model,
-            messages: [...chatMessages(request)],
+            messages: [...messages],
             tools: [...chatTools(request.tools)],
             parallel_tool_calls: this.parallelTools,
             max_completion_tokens: maxOutputTokens(request),

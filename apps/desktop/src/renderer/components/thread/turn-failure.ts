@@ -37,6 +37,19 @@ const LOCALIZED_TOOL_FAILURE = {
   },
 } as const;
 
+const LOCALIZED_HISTORY_FAILURE = {
+  en: {
+    summary: 'SugarCode detected incomplete tool-call history',
+    guidance:
+      'SugarCode stopped before sending an invalid request. Restart after updating so legacy results can be restored; if recovery is impossible, continue in a new task.',
+  },
+  zh: {
+    summary: 'SugarCode 检测到工具调用历史不完整',
+    guidance:
+      'SugarCode 已在发送非法请求前停止。请更新后重启以自动恢复旧版工具结果；如果仍无法恢复，请在新任务中继续。',
+  },
+} as const;
+
 const PROTOCOL_SUMMARIES: Record<
   NonNullable<ConversationTurnError['protocol']>['code'],
   string
@@ -71,13 +84,17 @@ export const toTurnFailureViewModel = (
   language: ProcessLanguage = 'en',
 ): TurnFailureViewModel => ({
   kind: error.kind,
-  summary: error.protocol
+  summary: error.protocol?.eventType === 'history.chatCompletions'
+    ? LOCALIZED_HISTORY_FAILURE[language].summary
+    : error.protocol
     ? PROTOCOL_SUMMARIES[error.protocol.code]
     : error.kind === 'unsupportedToolArguments'
       ? LOCALIZED_TOOL_FAILURE[language].summary
       : FAILURE_SUMMARIES[error.kind],
   guidance:
-    error.protocol
+    error.protocol?.eventType === 'history.chatCompletions'
+      ? LOCALIZED_HISTORY_FAILURE[language].guidance
+      : error.protocol
       ? protocolGuidance(error.protocol)
       : error.kind === 'stateUnavailable'
       ? 'Restart SugarCode before continuing. Your earlier saved messages are unchanged.'

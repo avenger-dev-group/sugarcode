@@ -1123,6 +1123,28 @@ test('private Agent task events carry a complete provider-neutral DAG snapshot',
   assert.equal(
     isRuntimeEvent({
       ...event,
+      task: {
+        ...event.task,
+        status: 'failed',
+        result: {
+          id: 'result-fixture',
+          summaryMarkdown: 'Recovered partial result.',
+          durationMs: 600_000,
+          partial: true,
+          attempts: 2,
+          error: {
+            kind: 'timeout',
+            retryable: true,
+            message: 'The model stream exceeded the request deadline.',
+          },
+        },
+      },
+    }),
+    true,
+  );
+  assert.equal(
+    isRuntimeEvent({
+      ...event,
       task: { ...event.task, status: 'waiting' },
     }),
     false,

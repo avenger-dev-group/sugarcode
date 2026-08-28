@@ -244,6 +244,9 @@ export type RuntimeAgentTask = Readonly<{
     id: string;
     summaryMarkdown: string;
     durationMs: number;
+    partial?: boolean;
+    attempts?: number;
+    error?: RuntimeProviderError;
   }>;
 }>;
 
@@ -2210,6 +2213,33 @@ const AGENT_TASK_STATUSES: readonly RuntimeAgentTaskStatus[] = [
   'cancelled',
 ];
 
+const RUNTIME_PROVIDER_ERROR_KINDS: readonly RuntimeProviderError['kind'][] = [
+  'authentication',
+  'rateLimit',
+  'invalidRequest',
+  'contextWindowExceeded',
+  'timeout',
+  'connection',
+  'protocol',
+  'filtered',
+  'unsupportedToolArguments',
+  'outputTooLarge',
+  'server',
+  'cancelled',
+  'stateUnavailable',
+  'unknown',
+];
+
+const isRuntimeProviderError = (
+  value: unknown,
+): value is RuntimeProviderError =>
+  isRecord(value) &&
+  RUNTIME_PROVIDER_ERROR_KINDS.includes(
+    value.kind as RuntimeProviderError['kind'],
+  ) &&
+  typeof value.retryable === 'boolean' &&
+  typeof value.message === 'string';
+
 export const isRuntimeAgentTask = (value: unknown): value is RuntimeAgentTask =>
   isRecord(value) &&
   typeof value.orchestrationId === 'string' &&
@@ -2244,7 +2274,14 @@ export const isRuntimeAgentTask = (value: unknown): value is RuntimeAgentTask =>
       typeof value.result.id === 'string' &&
       typeof value.result.summaryMarkdown === 'string' &&
       Number.isSafeInteger(value.result.durationMs) &&
-      Number(value.result.durationMs) >= 0));
+      Number(value.result.durationMs) >= 0 &&
+      (value.result.partial === undefined ||
+        typeof value.result.partial === 'boolean') &&
+      (value.result.attempts === undefined ||
+        (Number.isSafeInteger(value.result.attempts) &&
+          Number(value.result.attempts) >= 1)) &&
+      (value.result.error === undefined ||
+        isRuntimeProviderError(value.result.error))));
 
 export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
   if (

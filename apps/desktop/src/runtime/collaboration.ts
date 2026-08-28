@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   RuntimeAgentTask,
   RuntimeAgentTaskStatus,
+  RuntimeProviderError,
 } from './protocol.ts';
 
 const MAX_TASKS = 12;
@@ -32,6 +33,9 @@ export type AgentTaskExecution = Readonly<{
   status: 'completed' | 'failed' | 'interrupted';
   summaryMarkdown: string;
   durationMs: number;
+  partial?: boolean;
+  attempts?: number;
+  error?: RuntimeProviderError;
 }>;
 
 export type AgentTaskExecutionContext = Readonly<{
@@ -592,6 +596,15 @@ export class CollaborationCoordinator {
         status: task.snapshot.status,
         summaryMarkdown: task.snapshot.result?.summaryMarkdown ?? '',
         durationMs: task.snapshot.result?.durationMs ?? 0,
+        ...(task.snapshot.result?.partial === undefined
+          ? {}
+          : { partial: task.snapshot.result.partial }),
+        ...(task.snapshot.result?.attempts === undefined
+          ? {}
+          : { attempts: task.snapshot.result.attempts }),
+        ...(task.snapshot.result?.error === undefined
+          ? {}
+          : { error: task.snapshot.result.error }),
       })),
     };
   };
@@ -702,6 +715,9 @@ export class CollaborationCoordinator {
           result.status,
           result.summaryMarkdown,
           result.durationMs,
+          result.partial,
+          result.attempts,
+          result.error,
         );
       }
     } catch (error) {
@@ -748,6 +764,9 @@ export class CollaborationCoordinator {
     >,
     summaryMarkdown: string,
     durationMs: number,
+    partial?: boolean,
+    attempts?: number,
+    error?: RuntimeProviderError,
   ): void => {
     task.snapshot = {
       ...task.snapshot,
@@ -756,6 +775,11 @@ export class CollaborationCoordinator {
         id: randomUUID(),
         summaryMarkdown: summaryMarkdown.slice(0, 16 * 1024),
         durationMs: Math.max(0, Math.trunc(durationMs)),
+        ...(partial === undefined ? {} : { partial }),
+        ...(attempts === undefined
+          ? {}
+          : { attempts: Math.max(1, Math.trunc(attempts)) }),
+        ...(error === undefined ? {} : { error }),
       },
     };
     this.persistAndPublish(orchestration, task);

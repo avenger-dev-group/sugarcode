@@ -132,8 +132,10 @@ class CommentaryOnlyLlm extends BaseLlm {
 
 class ProviderTimeoutLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
+  requestCount = 0;
 
   async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    this.requestCount += 1;
     yield { customMetadata: { fixture: 'before-provider-timeout' } };
     throw new ProviderAdapterError({
       kind: 'timeout',
@@ -1044,6 +1046,120 @@ class CollaborationLoopLlm extends BaseLlm {
       content: {
         role: 'model',
         parts: [{ text: 'Collaboration complete' }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class CollaborationRecoveryLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  private readonly state: {
+    childRequests: number;
+    failuresBeforeSuccess?: number;
+  };
+
+  constructor(
+    options: ConstructorParameters<typeof BaseLlm>[0],
+    state: { childRequests: number; failuresBeforeSuccess?: number },
+  ) {
+    super(options);
+    this.state = state;
+  }
+
+  async *generateContentAsync(request: LlmRequest): AsyncGenerator<LlmResponse, void> {
+    const parent = Object.hasOwn(request.toolsDict, 'collaboration_dispatch');
+    if (!parent) {
+      this.state.childRequests += 1;
+      if (
+        this.state.childRequests <=
+        (this.state.failuresBeforeSuccess ?? 1)
+      ) {
+        yield {
+          content: {
+            role: 'model',
+            parts: [{
+              text:
+                `Recovered evidence from the workspace, attempt ${this.state.childRequests}.`,
+            }],
+          },
+          partial: true,
+        };
+        throw new ProviderAdapterError({
+          kind: 'timeout',
+          retryable: true,
+          message: 'The model stream exceeded the request deadline.',
+        });
+      }
+      yield {
+        content: {
+          role: 'model',
+          parts: [{ text: 'Recovered child report.' }],
+        },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+
+    const responses = request.contents
+      .flatMap((content) => content.parts ?? [])
+      .flatMap((part) => part.functionResponse?.name
+        ? [part.functionResponse.name]
+        : []);
+    if (!responses.includes('collaboration_dispatch')) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-recovery-dispatch',
+              name: 'collaboration_dispatch',
+              args: {
+                tasks: [{
+                  clientTaskKey: 'recovering-explorer',
+                  title: 'Recover explorer stream',
+                  role: 'explorer',
+                  access: 'readOnly',
+                  dependsOn: [],
+                  taskMarkdown: 'Inspect the workspace and report.',
+                }],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    if (!responses.includes('collaboration_wait')) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-recovery-wait',
+              name: 'collaboration_wait',
+              args: { clientTaskKeys: [] },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: 'Recovered collaboration complete.' }],
       },
       partial: false,
       turnComplete: true,
@@ -2908,12 +3024,13 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
 
 test('RuntimeHost preserves typed provider failures caught by ADK', async () => {
   const events: RuntimeEvent[] = [];
+  const model = new ProviderTimeoutLlm({ model: 'fixture-model' });
   let resolveTerminal: (() => void) | undefined;
   const terminal = new Promise<void>((resolve) => {
     resolveTerminal = resolve;
   });
   const host = new RuntimeHost({
-    createModel: () => new ProviderTimeoutLlm({ model: 'fixture-model' }),
+    createModel: () => model,
     postEvent: (event) => {
       events.push(event);
       if (event.type === 'turn.completed') {
@@ -2955,6 +3072,14 @@ test('RuntimeHost preserves typed provider failures caught by ADK', async () => 
     retryable: true,
     message: 'The model stream exceeded the request deadline.',
   });
+  assert.equal(model.requestCount, 2);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === 'runtime.log' &&
+        event.message.includes('recovering automatically'),
+    ),
+  );
 });
 
 test('RuntimeHost publishes provider summaries but keeps internal reasoning private', async () => {
@@ -3715,9 +3840,168 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   assert.equal(events.at(-1)?.type, 'turn.completed');
 });
 
+test('RuntimeHost recovers a child Agent after a retryable stream timeout', async () => {
+  const events: RuntimeEvent[] = [];
+  const persistedTasks: RuntimeEvent[] = [];
+  const state = { childRequests: 0 };
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    ...turnNativeFixture(),
+    createAgentTasksJson: () => JSON.stringify({ inserted: 1 }),
+    updateAgentTask: () => true,
+    workspaceRead: async () => '{}',
+    workspaceList: async () => '{}',
+    workspaceSearch: async () => '{}',
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new CollaborationRecoveryLlm(
+      { model: 'fixture-model' },
+      state,
+    ),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'agent.task') {
+        persistedTasks.push(event);
+      }
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-collaboration-recovery',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-collaboration-recovery',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-collaboration-recovery',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-collaboration-recovery',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: 'Use a recovering explorer.' }],
+  });
+
+  await completed;
+
+  assert.equal(state.childRequests, 2);
+  const childEvents = persistedTasks.filter(
+    (event): event is Extract<RuntimeEvent, { type: 'agent.task' }> =>
+      event.type === 'agent.task' &&
+      event.task.clientTaskKey === 'recovering-explorer',
+  );
+  assert.ok(
+    childEvents.some(
+      (event) =>
+        event.task.progress?.summaryMarkdown.includes(
+          'SugarCode is recovering automatically',
+        ),
+    ),
+  );
+  const terminalTask = childEvents.findLast(
+    (event) => event.task.status === 'completed',
+  );
+  assert.equal(terminalTask?.task.result?.summaryMarkdown, 'Recovered child report.');
+  assert.equal(terminalTask?.task.result?.attempts, 2);
+  assert.equal(events.at(-1)?.type, 'turn.completed');
+  assert.equal(
+    (events.at(-1) as Extract<RuntimeEvent, { type: 'turn.completed' }>).status,
+    'completed',
+  );
+});
+
+test('RuntimeHost preserves a child Agent partial result after recovery is exhausted', async () => {
+  const events: RuntimeEvent[] = [];
+  const state = { childRequests: 0, failuresBeforeSuccess: 2 };
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    ...turnNativeFixture(),
+    createAgentTasksJson: () => JSON.stringify({ inserted: 1 }),
+    updateAgentTask: () => true,
+    workspaceRead: async () => '{}',
+    workspaceList: async () => '{}',
+    workspaceSearch: async () => '{}',
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => new CollaborationRecoveryLlm(
+      { model: 'fixture-model' },
+      state,
+    ),
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') {
+        resolveCompleted?.();
+      }
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-collaboration-partial',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-collaboration-partial',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-collaboration-partial',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-collaboration-partial',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: 'Use a recovering explorer.' }],
+  });
+
+  await completed;
+
+  assert.equal(state.childRequests, 2);
+  const terminalTask = events
+    .filter(
+      (event): event is Extract<RuntimeEvent, { type: 'agent.task' }> =>
+        event.type === 'agent.task' &&
+        event.task.clientTaskKey === 'recovering-explorer',
+    )
+    .findLast((event) => event.task.status === 'failed');
+  assert.equal(terminalTask?.task.result?.partial, true);
+  assert.equal(terminalTask?.task.result?.attempts, 2);
+  assert.equal(terminalTask?.task.result?.error?.kind, 'timeout');
+  assert.match(
+    terminalTask?.task.result?.summaryMarkdown ?? '',
+    /Recovered partial result[\s\S]*attempt 2/u,
+  );
+  assert.equal(events.at(-1)?.type, 'turn.completed');
+  assert.equal(
+    (events.at(-1) as Extract<RuntimeEvent, { type: 'turn.completed' }>).status,
+    'completed',
+  );
+});
+
 test('RuntimeHost executes ADK workspace tools through the native boundary', async () => {
   const events: RuntimeEvent[] = [];
   const persistedKinds: string[] = [];
+  const persistedModelHistories: string[] = [];
   let listPath = '';
   let readPath = '';
   let resolveCompleted: (() => void) | undefined;
@@ -3768,8 +4052,11 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     listThreadsJson: () => '[]',
     deleteThread: () => true,
     startTurn: () => undefined,
-    appendItem: (_itemId, _turnId, _sequence, kind) => {
+    appendItem: (_itemId, _turnId, _sequence, kind, payloadJson) => {
       persistedKinds.push(kind);
+      if (kind === 'turn.modelHistory') {
+        persistedModelHistories.push(payloadJson);
+      }
       return true;
     },
     finishTurn: () => true,
@@ -3927,6 +4214,13 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   );
   assert.ok(persistedKinds.includes('turn.toolCall'));
   assert.ok(persistedKinds.includes('turn.toolResult'));
+  assert.ok(persistedModelHistories.some((payload) => {
+    const parsed = JSON.parse(payload) as {
+      history?: { role?: string; parts?: Array<{ type?: string }> };
+    };
+    return parsed.history?.role === 'user' &&
+      parsed.history.parts?.some((part) => part.type === 'toolResult');
+  }));
   assert.equal(persistedKinds.includes('turn.textStarted'), false);
   assert.equal(persistedKinds.includes('turn.textDelta'), false);
   assert.equal(
@@ -4380,7 +4674,7 @@ test('RuntimeHost automatically authorizes a sandboxed command', async () => {
   assert.ok(events.some((event) => event.type === 'turn.toolResult'));
 });
 
-test('RuntimeHost rebuilds completed history and interrupted task intent into ADK', async () => {
+test('RuntimeHost rebuilds legacy tool results and interrupted task intent into ADK', async () => {
   const events: RuntimeEvent[] = [];
   const model = new CaptureLlm({ model: 'fixture-model' });
   const sha256 = 'a'.repeat(64);
@@ -4433,9 +4727,20 @@ test('RuntimeHost rebuilds completed history and interrupted task intent into AD
         payload: { content: [{ type: 'text', text: 'Earlier request' }] },
       },
       {
-        id: 'earlier-tool-call',
+        id: 'earlier-tool-call-activity',
         turnId: 'turn-earlier',
         sequence: 2,
+        kind: 'turn.toolCall',
+        payload: {
+          callId: 'call-earlier',
+          name: 'workspace_read',
+          arguments: { path: 'fixture.txt' },
+        },
+      },
+      {
+        id: 'earlier-tool-call-history',
+        turnId: 'turn-earlier',
+        sequence: 3,
         kind: 'turn.modelHistory',
         payload: {
           history: {
@@ -4452,24 +4757,17 @@ test('RuntimeHost rebuilds completed history and interrupted task intent into AD
       {
         id: 'earlier-tool-result',
         turnId: 'turn-earlier',
-        sequence: 3,
-        kind: 'turn.modelHistory',
+        sequence: 4,
+        kind: 'turn.toolResult',
         payload: {
-          history: {
-            role: 'user',
-            parts: [{
-              type: 'toolResult',
-              id: 'call-earlier',
-              name: 'workspace_read',
-              result: { content: 'fixture' },
-            }],
-          },
+          callId: 'call-earlier',
+          result: { content: 'fixture' },
         },
       },
       {
         id: 'earlier-model',
         turnId: 'turn-earlier',
-        sequence: 4,
+        sequence: 5,
         kind: 'turn.modelHistory',
         payload: {
           history: {

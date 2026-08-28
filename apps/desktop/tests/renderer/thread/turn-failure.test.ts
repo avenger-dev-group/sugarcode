@@ -79,6 +79,27 @@ test('protocol failures direct users to the selected wire compatibility', () => 
   assert.match(failure.guidance, /switch model profiles/);
 });
 
+test('incomplete local tool history is attributed to SugarCode', () => {
+  const failure = toTurnFailureViewModel(
+    {
+      kind: 'protocol',
+      retryable: false,
+      protocol: {
+        stage: 'outputNormalization',
+        code: 'continuationOutputMismatch',
+        eventType: 'history.chatCompletions',
+        shapeSha256: 'a'.repeat(64),
+      },
+    },
+    'openaiChatCompletions',
+    'zh',
+  );
+
+  assert.equal(failure.summary, 'SugarCode 检测到工具调用历史不完整');
+  assert.match(failure.guidance, /更新后重启/u);
+  assert.doesNotMatch(failure.summary, /模型/u);
+});
+
 test('invalid request guidance is derived from status and wire, not model name', () => {
   const responses = toTurnFailureViewModel(
     { kind: 'invalidRequest', retryable: false },

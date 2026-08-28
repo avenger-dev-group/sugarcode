@@ -154,7 +154,13 @@ const taskMeta = (
     )}`;
   }
   if (task.result) {
-    return formatAgentTaskDuration(task.result.durationMs);
+    return [
+      formatAgentTaskDuration(task.result.durationMs),
+      task.result.attempts && task.result.attempts > 1
+        ? `${task.result.attempts} attempts`
+        : undefined,
+      task.result.partial ? 'partial result saved' : undefined,
+    ].filter(Boolean).join(' · ');
   }
   return task.access === 'readOnly' ? 'Read only' : 'Workspace write';
 };

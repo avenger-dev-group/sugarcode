@@ -167,6 +167,31 @@ const DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_AGENT_MAX_OUTPUT_TOKENS;
 const DEFAULT_PROVIDER_TIMEOUT_MS = DEFAULT_MODEL_REQUEST_TIMEOUT_MS;
 const AGENT_APPROVAL_STATUS_DELAY_MS = 250;
 const MAX_MCP_ARGUMENT_BYTES = 32 * 1024;
+const MAX_TRANSIENT_PROVIDER_RECOVERIES = 1;
+const AGENT_PROGRESS_PERSIST_INTERVAL_MS = 1_000;
+
+const isTransientProviderFailure = (
+  error: RuntimeProviderError,
+): boolean =>
+  error.retryable &&
+  (error.kind === 'connection' || error.kind === 'timeout');
+
+const providerRecoveryMessage = (
+  error: RuntimeProviderError,
+  partialSummary = '',
+): Content => ({
+  role: 'user',
+  parts: [{
+    text:
+      '# Internal provider recovery\n\n' +
+      `The previous model stream ended with a retryable ${error.kind} error: ${error.message}\n\n` +
+      'Continue the same task from the existing session state. Do not repeat completed tool calls or workspace mutations. ' +
+      'Use any recovered draft below, finish only the missing work, and submit one concise final answer.\n\n' +
+      (partialSummary.trim().length > 0
+        ? `# Recovered partial draft\n\n${partialSummary.slice(0, 16 * 1024)}`
+        : '# Recovered partial draft\n\nNo visible draft was recovered.'),
+  }],
+});
 
 const reserveContextTokens = (
   selection: RuntimeModelSelection,
@@ -2619,6 +2644,33 @@ export class RuntimeHost {
         const items = snapshot.items
           .filter((item) => item.turnId === turn.id)
           .sort((left, right) => left.sequence - right.sequence);
+        const storedHistories = new Map<string, StoredModelHistoryV2>();
+        const storedToolResultIds = new Set<string>();
+        const toolNamesByCallId = new Map<string, string>();
+        if (turn.status === 'completed') {
+          for (const item of items) {
+            if (item.kind === 'turn.toolCall') {
+              const callId = item.payload.callId;
+              const name = item.payload.name;
+              if (typeof callId === 'string' && typeof name === 'string') {
+                toolNamesByCallId.set(callId, name);
+              }
+              continue;
+            }
+            if (item.kind !== 'turn.modelHistory') {
+              continue;
+            }
+            const history = this.parseStoredModelHistory(item.payload.history);
+            storedHistories.set(item.id, history);
+            for (const part of history.parts) {
+              if (part.type === 'toolCall') {
+                toolNamesByCallId.set(part.id, part.name);
+              } else if (part.type === 'toolResult') {
+                storedToolResultIds.add(part.id);
+              }
+            }
+          }
+        }
         for (const item of items) {
           if (
             item.kind === 'turn.userMessage' ||
@@ -2645,8 +2697,43 @@ export class RuntimeHost {
           if (
             turn.status !== 'completed' ||
             (item.kind !== 'turn.modelHistory' &&
-              item.kind !== 'turn.contextCheckpoint')
+              item.kind !== 'turn.contextCheckpoint' &&
+              item.kind !== 'turn.toolResult')
           ) {
+            continue;
+          }
+          if (item.kind === 'turn.toolResult') {
+            const callId = item.payload.callId;
+            const result = item.payload.result;
+            if (
+              typeof callId !== 'string' ||
+              !isRecord(result) ||
+              storedToolResultIds.has(callId)
+            ) {
+              continue;
+            }
+            const name = toolNamesByCallId.get(callId);
+            if (!name) {
+              continue;
+            }
+            await this.sessions.appendEvent({
+              session,
+              event: createEvent({
+                id: `legacy-history:${item.id}`,
+                invocationId: `restore:${turn.id}`,
+                author: 'sugarcode_agent',
+                content: this.contentFromHistory({
+                  version: 2,
+                  role: 'user',
+                  parts: [{
+                    type: 'toolResult',
+                    id: callId,
+                    name,
+                    result,
+                  }],
+                }),
+              }),
+            });
             continue;
           }
           const restored =
@@ -2663,7 +2750,8 @@ export class RuntimeHost {
                     },
                   ],
                 }
-              : this.parseStoredModelHistory(item.payload.history);
+              : storedHistories.get(item.id) ??
+                this.parseStoredModelHistory(item.payload.history);
           await this.sessions.appendEvent({
             session,
             event: createEvent({
@@ -3470,6 +3558,9 @@ export class RuntimeHost {
         abortSignal: options.signal,
       })) {
         options.onEvent(event, textItems);
+        if (event.partial !== true) {
+          options.onCompletedEvent?.(event);
+        }
         if (event.partial === false) {
           const nextOutcome =
             readModelStepOutcome(event.content?.parts ?? []) ??
@@ -3477,12 +3568,8 @@ export class RuntimeHost {
           if (nextOutcome) {
             outcome = nextOutcome;
           }
-          options.onCompletedEvent?.(event);
         }
         if (options.terminalToolResult?.(event)) {
-          if (event.partial !== false) {
-            options.onCompletedEvent?.(event);
-          }
           return;
         }
       }
@@ -4425,7 +4512,9 @@ export class RuntimeHost {
         plugins: [providerErrorCapture],
       });
       let driverMessage = currentUserContent;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      let contextRecoveryUsed = false;
+      let transientRecoveryCount = 0;
+      for (;;) {
         try {
           await this.runTurnDriver({
             runner,
@@ -4506,18 +4595,39 @@ export class RuntimeHost {
           break;
         } catch (error) {
           const details = providerError(error);
-          if (attempt > 0 || details.kind !== 'contextWindowExceeded') {
-            throw error;
+          if (
+            details.kind === 'contextWindowExceeded' &&
+            !contextRecoveryUsed
+          ) {
+            contextRecoveryUsed = true;
+            recoveryCompaction = true;
+            driverMessage = {
+              role: 'user',
+              parts: [
+                {
+                  text: '# Internal context recovery\n\nRetry the original request after SugarCode compacts prior context.',
+                },
+              ],
+            };
+            continue;
           }
-          recoveryCompaction = true;
-          driverMessage = {
-            role: 'user',
-            parts: [
-              {
-                text: '# Internal context recovery\n\nRetry the original request after SugarCode compacts prior context.',
-              },
-            ],
-          };
+          if (
+            isTransientProviderFailure(details) &&
+            transientRecoveryCount < MAX_TRANSIENT_PROVIDER_RECOVERIES
+          ) {
+            transientRecoveryCount += 1;
+            this.emit({
+              type: 'runtime.log',
+              requestId: command.requestId,
+              level: 'warn',
+              message:
+                `The main Agent model stream ended with ${details.kind}; ` +
+                `recovering automatically (${transientRecoveryCount}/${MAX_TRANSIENT_PROVIDER_RECOVERIES}).`,
+            });
+            driverMessage = providerRecoveryMessage(details);
+            continue;
+          }
+          throw error;
         }
       }
       if (goalSession && !controller.signal.aborted) {
@@ -4960,6 +5070,9 @@ export class RuntimeHost {
     status: 'completed' | 'failed' | 'interrupted';
     summaryMarkdown: string;
     durationMs: number;
+    partial?: boolean;
+    attempts?: number;
+    error?: RuntimeProviderError;
   }> => {
     const startedAt = Date.now();
     const sessionKey = {
@@ -4993,6 +5106,8 @@ export class RuntimeHost {
     }
     let streamedSummary = '';
     let completedSummary = '';
+    let bestPartialSummary = '';
+    let attempts = 0;
     let lastProgressAt = 0;
     let lastProgressStage:
       'waitingForModel' | 'streaming' | 'runningTool' | null = null;
@@ -5011,7 +5126,11 @@ export class RuntimeHost {
         ) {
           return;
         }
-        if (!force && stage === 'streaming' && now - lastProgressAt < 250) {
+        if (
+          !force &&
+          stage === 'streaming' &&
+          now - lastProgressAt < AGENT_PROGRESS_PERSIST_INTERVAL_MS
+        ) {
           return;
         }
         lastProgressAt = now;
@@ -5019,6 +5138,16 @@ export class RuntimeHost {
         lastProgressSummary = summaryMarkdown;
         context.publishProgress(stage, summaryMarkdown);
       };
+      const rememberPartialSummary = (summaryMarkdown: string): void => {
+        const candidate = summaryMarkdown.trim();
+        if (candidate.length >= bestPartialSummary.length) {
+          bestPartialSummary = candidate.slice(0, 16 * 1024);
+        }
+      };
+      const progressWithRecoveredWork = (message: string): string =>
+        bestPartialSummary.length > 0
+          ? `${message}\n\n${bestPartialSummary}`
+          : message;
       publishProgress(
         'waitingForModel',
         'Subagent started and is waiting for the model response.',
@@ -5154,9 +5283,11 @@ export class RuntimeHost {
           workspaceInstructions?.injectIntoRequest(request);
           publishProgress(
             'waitingForModel',
-            streamedSummary || completedSummary
-              ? 'The subagent is waiting for the model to continue after its latest work.'
-              : 'Subagent started and is waiting for the model response.',
+            progressWithRecoveredWork(
+              streamedSummary || completedSummary || bestPartialSummary
+                ? 'The subagent is waiting for the model to continue after its latest work.'
+                : 'Subagent started and is waiting for the model response.',
+            ),
             true,
           );
           const amendments = context.takeAmendments();
@@ -5182,72 +5313,112 @@ export class RuntimeHost {
         sessionService: this.sessions,
         plugins: [providerErrorCapture],
       });
-      await this.runTurnDriver({
-        runner,
-        userId: command.workspaceId,
-        sessionId: context.task.childThreadId,
-        initialMessage: { role: 'user', parts: [{ text: input }] },
-        signal: context.signal,
-        onEvent: (event) => {
-          this.observeToolProgress(invalidArgumentGuard, event);
-          const parts = event.content?.parts ?? [];
-          const text = parts
-            .filter((part) => !part.thought && typeof part.text === 'string')
-            .map((part) => part.text ?? '')
-            .join('');
-          if (event.partial && text.length > 0) {
-            streamedSummary += text;
-            publishProgress('streaming', streamedSummary.slice(-16 * 1024));
-          } else if (event.partial === false && text.length > 0) {
-            const outcome =
-              readModelStepOutcome(parts) ?? this.fallbackOutcome(event);
-            if (outcome?.kind === 'final') {
-              completedSummary = parts
-                .filter((part) => {
-                  const metadata = readModelItemMetadata(part);
-                  return (
-                    !part.thought &&
-                    metadata?.phase !== 'commentary' &&
-                    typeof part.text === 'string'
-                  );
-                })
+      let driverMessage: Content = {
+        role: 'user',
+        parts: [{ text: input }],
+      };
+      let transientRecoveryCount = 0;
+      for (;;) {
+        attempts += 1;
+        try {
+          await this.runTurnDriver({
+            runner,
+            userId: command.workspaceId,
+            sessionId: context.task.childThreadId,
+            initialMessage: driverMessage,
+            signal: context.signal,
+            onEvent: (event) => {
+              this.observeToolProgress(invalidArgumentGuard, event);
+              const parts = event.content?.parts ?? [];
+              const text = parts
+                .filter((part) => !part.thought && typeof part.text === 'string')
                 .map((part) => part.text ?? '')
                 .join('');
-            }
-            publishProgress(
-              'streaming',
-              (completedSummary || streamedSummary).slice(-16 * 1024),
-              true,
-            );
-          }
-          const calledTools = parts.flatMap((part) =>
-            part.functionCall?.name ? [part.functionCall.name] : [],
-          );
-          if (calledTools.length > 0) {
-            publishProgress(
-              'runningTool',
-              `Running tool: ${[...new Set(calledTools)].map((name) => `\`${name}\``).join(', ')}`,
-              true,
-            );
-          }
-          const completedTools = parts.flatMap((part) =>
-            part.functionResponse?.name ? [part.functionResponse.name] : [],
-          );
-          if (completedTools.length > 0) {
+              if (event.partial && text.length > 0) {
+                streamedSummary += text;
+                rememberPartialSummary(streamedSummary);
+                publishProgress('streaming', streamedSummary.slice(-16 * 1024));
+              } else if (event.partial === false && text.length > 0) {
+                const outcome =
+                  readModelStepOutcome(parts) ?? this.fallbackOutcome(event);
+                if (outcome?.kind === 'final') {
+                  completedSummary = parts
+                    .filter((part) => {
+                      const metadata = readModelItemMetadata(part);
+                      return (
+                        !part.thought &&
+                        metadata?.phase !== 'commentary' &&
+                        typeof part.text === 'string'
+                      );
+                    })
+                    .map((part) => part.text ?? '')
+                    .join('');
+                }
+                rememberPartialSummary(completedSummary || streamedSummary);
+                publishProgress(
+                  'streaming',
+                  (completedSummary || streamedSummary).slice(-16 * 1024),
+                  true,
+                );
+              }
+              const calledTools = parts.flatMap((part) =>
+                part.functionCall?.name ? [part.functionCall.name] : [],
+              );
+              if (calledTools.length > 0) {
+                publishProgress(
+                  'runningTool',
+                  `Running tool: ${[...new Set(calledTools)].map((name) => `\`${name}\``).join(', ')}`,
+                  true,
+                );
+              }
+              const completedTools = parts.flatMap((part) =>
+                part.functionResponse?.name ? [part.functionResponse.name] : [],
+              );
+              if (completedTools.length > 0) {
+                publishProgress(
+                  'waitingForModel',
+                  progressWithRecoveredWork(
+                    `Tool completed; waiting for the model: ${[...new Set(completedTools)].map((name) => `\`${name}\``).join(', ')}`,
+                  ),
+                  true,
+                );
+              }
+            },
+            completionGate: () => !context.signal.aborted,
+            retryFinalAfterToolFailure: () =>
+              this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
+            takeProviderError: providerErrorCapture.takeCapturedError,
+            validateInvocation: () =>
+              this.assertInvalidArgumentProgress(invalidArgumentGuard),
+          });
+          break;
+        } catch (error) {
+          const details = providerError(error);
+          rememberPartialSummary(completedSummary || streamedSummary);
+          if (
+            !context.signal.aborted &&
+            isTransientProviderFailure(details) &&
+            transientRecoveryCount < MAX_TRANSIENT_PROVIDER_RECOVERIES
+          ) {
+            transientRecoveryCount += 1;
             publishProgress(
               'waitingForModel',
-              `Tool completed; waiting for the model: ${[...new Set(completedTools)].map((name) => `\`${name}\``).join(', ')}`,
+              progressWithRecoveredWork(
+                `The model stream ended with ${details.kind}; SugarCode is recovering automatically (${transientRecoveryCount}/${MAX_TRANSIENT_PROVIDER_RECOVERIES}).`,
+              ),
               true,
             );
+            driverMessage = providerRecoveryMessage(
+              details,
+              bestPartialSummary,
+            );
+            streamedSummary = '';
+            completedSummary = '';
+            continue;
           }
-        },
-        completionGate: () => !context.signal.aborted,
-        retryFinalAfterToolFailure: () =>
-          this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
-        takeProviderError: providerErrorCapture.takeCapturedError,
-        validateInvocation: () =>
-          this.assertInvalidArgumentProgress(invalidArgumentGuard),
-      });
+          throw error;
+        }
+      }
       if (!completedSummary.trim()) {
         throw new ProviderAdapterError({
           kind: 'protocol',
@@ -5259,16 +5430,26 @@ export class RuntimeHost {
         status: context.signal.aborted ? 'interrupted' : 'completed',
         summaryMarkdown: completedSummary.slice(0, 16 * 1024),
         durationMs: Date.now() - startedAt,
+        attempts,
       };
     } catch (error) {
+      const details = providerError(error);
+      const partialSummary = bestPartialSummary.trim();
       return {
         status: context.signal.aborted ? 'interrupted' : 'failed',
         summaryMarkdown: context.signal.aborted
           ? 'Agent task interrupted.'
-          : error instanceof Error
-            ? error.message
-            : 'Agent task failed.',
+          : partialSummary.length > 0
+            ? `## Agent task failed\n\n${details.message}\n\n## Recovered partial result\n\n${partialSummary}`
+            : details.message,
         durationMs: Date.now() - startedAt,
+        attempts: Math.max(1, attempts),
+        ...(context.signal.aborted
+          ? {}
+          : {
+              partial: partialSummary.length > 0,
+              error: details,
+            }),
       };
     } finally {
       await this.sessions.deleteSession(sessionKey);

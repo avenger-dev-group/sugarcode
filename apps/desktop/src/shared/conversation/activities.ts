@@ -398,6 +398,13 @@ export type ConversationAgentTask = Readonly<{
     id: string;
     summaryMarkdown: string;
     durationMs: number;
+    partial?: boolean;
+    attempts?: number;
+    error?: Readonly<{
+      kind: string;
+      retryable: boolean;
+      message: string;
+    }>;
   }>;
 }>;
 
