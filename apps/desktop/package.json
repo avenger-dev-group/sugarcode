@@ -1,7 +1,7 @@
 {
   "name": "@sugarcode/desktop",
   "productName": "SugarCode",
-  "version": "3.9.1",
+  "version": "3.10.0",
   "description": "SugarCode",
   "main": ".vite/build/main.js",
   "private": true,
