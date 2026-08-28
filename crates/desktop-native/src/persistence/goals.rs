@@ -589,7 +589,7 @@ impl Store {
             )
             .optional()?
             .ok_or_else(|| PersistenceError::Conflict("goalRevisionMismatch".to_owned()))?;
-        let progress = match status {
+        let mut progress = match status {
             "in_progress" => json!({
                 "summary": settlement.get("summary").cloned().unwrap_or(Value::Null),
                 "nextStep": settlement.get("nextStep").cloned().unwrap_or(Value::Null),
@@ -604,6 +604,12 @@ impl Store {
             }),
             _ => json!({ "summary": "Goal Turn failed before a durable progress update." }),
         };
+        if matches!(status, "in_progress" | "blocked")
+            && let Some(evidence) = settlement.get("evidence")
+            && let Some(progress) = progress.as_object_mut()
+        {
+            progress.insert("evidence".to_owned(), evidence.clone());
+        }
         let (mut goal_status, mut pause_reason, turn_status) = match status {
             "blocked" => ("paused", Some("blocked"), "completed"),
             "complete" => ("completed", None, "completed"),

@@ -144,7 +144,12 @@ fn durable_goals_enforce_cas_budget_soft_clear_and_restart_recovery() {
                 &serde_json::json!({
                     "status":"in_progress",
                     "summary":"implemented storage",
-                    "nextStep":"wire runtime"
+                    "nextStep":"wire runtime",
+                    "evidence":[{
+                        "kind":"artifact",
+                        "label":"storage schema",
+                        "result":"persisted"
+                    }]
                 })
                 .to_string(),
                 12,
@@ -156,6 +161,7 @@ fn durable_goals_enforce_cas_budget_soft_clear_and_restart_recovery() {
     assert_eq!(settled["status"], "paused");
     assert_eq!(settled["pauseReason"], "budget");
     assert_eq!(settled["activationUsage"]["tokens"], 12);
+    assert_eq!(settled["progress"]["evidence"][0]["kind"], "artifact");
 
     let resumed: Value = serde_json::from_str(
         &store

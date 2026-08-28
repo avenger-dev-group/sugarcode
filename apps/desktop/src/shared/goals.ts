@@ -100,8 +100,18 @@ export type ConversationGoalMutation =
   | GoalStateMutation;
 
 export type GoalUpdate =
-  | Readonly<{ status: 'in_progress'; summary: string; nextStep: string }>
-  | Readonly<{ status: 'blocked'; summary: string; blocker: string }>
+  | Readonly<{
+      status: 'in_progress';
+      summary: string;
+      nextStep: string;
+      evidence?: readonly GoalEvidence[];
+    }>
+  | Readonly<{
+      status: 'blocked';
+      summary: string;
+      blocker: string;
+      evidence?: readonly GoalEvidence[];
+    }>
   | Readonly<{
       status: 'complete';
       summary: string;
@@ -147,20 +157,30 @@ export const isGoalEvidence = (value: unknown): value is GoalEvidence =>
   value.result.trim().length > 0 &&
   characterCount(value.result) <= 4_000;
 
+const isOptionalGoalEvidence = (value: unknown): boolean =>
+  value === undefined ||
+  (Array.isArray(value) &&
+    value.length <= MAX_GOAL_EVIDENCE_ITEMS &&
+    value.every(isGoalEvidence));
+
 export const isGoalUpdate = (value: unknown): value is GoalUpdate => {
   if (!isRecord(value) || !isBoundedProgressText(value.summary)) return false;
   if (value.status === 'in_progress') {
     return (
       Object.keys(value).every((key) =>
-        ['status', 'summary', 'nextStep'].includes(key),
-      ) && isBoundedProgressText(value.nextStep)
+        ['status', 'summary', 'nextStep', 'evidence'].includes(key),
+      ) &&
+      isBoundedProgressText(value.nextStep) &&
+      isOptionalGoalEvidence(value.evidence)
     );
   }
   if (value.status === 'blocked') {
     return (
       Object.keys(value).every((key) =>
-        ['status', 'summary', 'blocker'].includes(key),
-      ) && isBoundedProgressText(value.blocker)
+        ['status', 'summary', 'blocker', 'evidence'].includes(key),
+      ) &&
+      isBoundedProgressText(value.blocker) &&
+      isOptionalGoalEvidence(value.evidence)
     );
   }
   return (

@@ -13,10 +13,23 @@ const UPDATE_GOAL_SCHEMA = {
     status: {
       type: Type.STRING,
       enum: ['in_progress', 'blocked', 'complete'],
+      description:
+        'Use in_progress only for an already-authorized next step inside the objective, blocked when user input or new authority is required, and complete when the objective is fulfilled.',
     },
-    summary: { type: Type.STRING },
-    nextStep: { type: Type.STRING },
-    blocker: { type: Type.STRING },
+    summary: {
+      type: Type.STRING,
+      description: 'Concise durable progress made during this Turn.',
+    },
+    nextStep: {
+      type: Type.STRING,
+      description:
+        'Required for in_progress. The next concrete step must already be authorized by the original objective.',
+    },
+    blocker: {
+      type: Type.STRING,
+      description:
+        'Required for blocked. State the exact user decision, additional authority, or unavailable external condition.',
+    },
     evidence: {
       type: Type.ARRAY,
       items: {
@@ -95,6 +108,14 @@ export const goalTurnContent = (
           ? 'The runtime restarted during prior work. Inspect the actual workspace state before taking action and never replay an operation blindly.'
           : '',
         '',
+        '# Authorization boundary',
+        'The original Goal objective defines the full authorized scope. Continue autonomously only inside that scope.',
+        'For objectives that ask to answer, explain, review, diagnose, analyze, or plan, inspect the relevant materials and report the result. Do not implement changes unless the objective also asks for implementation.',
+        'For objectives that ask to change, build, implement, or fix, make the requested in-scope local changes and run relevant non-destructive validation without asking for confirmation at each ordinary step.',
+        'Require user input before external writes, destructive actions, purchases or material cost, a consequential missing choice, or a material expansion beyond the objective.',
+        'If the objective is fulfilled, call update_goal with complete even when adjacent optional work could still be useful.',
+        'Do not use in_progress merely to propose optional follow-up work or to wait for confirmation. Use blocked only when the objective cannot be completed without a specific user decision or additional authority.',
+        '',
         'Work through one coherent, independently verifiable checkpoint in this Turn. If the objective still has more stages, call update_goal with in_progress after the checkpoint instead of hiding all progress inside one very long Turn.',
         'Before finishing this Turn, call update_goal exactly as a structured status checkpoint. Use complete only with concrete verification evidence. Use blocked when further safe progress requires user input or unavailable external state.',
       ]
@@ -120,7 +141,7 @@ export const createUpdateGoalTool = (
   new FunctionTool({
     name: 'update_goal',
     description:
-      'Record the required durable Goal checkpoint for this Turn. Use in_progress with the next concrete step, blocked with the exact blocker, or complete with concrete verification evidence.',
+      'Record the required durable Goal checkpoint for this Turn. The objective is the authorization boundary: use in_progress only for an already-authorized next step, blocked for a specific user decision or new authority, and complete as soon as the objective is fulfilled. Optional adjacent work does not keep a Goal in progress.',
     parameters: UPDATE_GOAL_SCHEMA,
     execute: async (input) => {
       if (!isGoalUpdate(input)) {
@@ -129,7 +150,7 @@ export const createUpdateGoalTool = (
           error: {
             kind: 'invalidGoalUpdate',
             message:
-              'Provide a valid status-specific update. complete requires at least one command, artifact, or observation evidence item.',
+              'Use in_progress with summary and nextStep, blocked with summary and blocker, or complete with summary and at least one command, artifact, or observation evidence item. Evidence is optional for in_progress and blocked. Do not include unrelated fields.',
           },
         };
       }
