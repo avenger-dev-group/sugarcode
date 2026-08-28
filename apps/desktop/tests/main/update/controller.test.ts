@@ -464,8 +464,55 @@ test('checks for the latest release before allowing a restored update to install
       launchedPath,
       path.join(fixture.downloadsDirectory, fixture.installerName),
     );
+    await assert.rejects(readFile(restoredInstallerPath), { code: 'ENOENT' });
   } finally {
     releaseChecks?.();
+    controller.stop();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('removes the installer after the updated application starts', async () => {
+  const fixture = await createFixture();
+  const installerPath = path.join(
+    fixture.downloadsDirectory,
+    fixture.installerName,
+  );
+  await mkdir(fixture.downloadsDirectory, { recursive: true });
+  await mkdir(path.dirname(fixture.pendingStatePath), { recursive: true });
+  await writeFile(installerPath, fixture.installer);
+  await writeFile(
+    fixture.pendingStatePath,
+    JSON.stringify({
+      version: '3.1.0',
+      installerPath,
+      sha256: (await import('node:crypto'))
+        .createHash('sha256')
+        .update(fixture.installer)
+        .digest('hex'),
+      size: fixture.installer.byteLength,
+    }),
+  );
+
+  const controller = new UpdateController({
+    currentVersion: '3.1.0',
+    platform: 'darwin-arm64',
+    downloadsDirectory: fixture.downloadsDirectory,
+    pendingStatePath: fixture.pendingStatePath,
+    sources: UPDATE_SOURCES,
+    getInstallBlock: () => false,
+    launchInstaller: async () => true,
+    openDownloadPage: async () => true,
+    quitApplication: () => undefined,
+    fetch: fixture.fetch,
+    retryDelaysMs: [],
+  });
+  try {
+    await controller.start();
+    assert.equal(controller.getSnapshot().status, 'upToDate');
+    await assert.rejects(readFile(installerPath), { code: 'ENOENT' });
+    await assert.rejects(readFile(fixture.pendingStatePath), { code: 'ENOENT' });
+  } finally {
     controller.stop();
     await rm(fixture.root, { recursive: true, force: true });
   }

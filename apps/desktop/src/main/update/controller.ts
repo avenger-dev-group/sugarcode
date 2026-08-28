@@ -551,8 +551,17 @@ export class UpdateController {
       sha256: candidate.platformUpdate.sha256.toLowerCase(),
       size: candidate.platformUpdate.size,
     };
+    const supersededPending = this.pending;
     await this.writePending(pending);
     this.pending = pending;
+    if (
+      supersededPending &&
+      supersededPending.installerPath !== pending.installerPath
+    ) {
+      await removeIfPresent(supersededPending.installerPath).catch(
+        (): undefined => undefined,
+      );
+    }
     this.publish({ status: 'ready', version: pending.version });
   };
 
@@ -709,13 +718,22 @@ export class UpdateController {
   };
 
   private restorePending = async (): Promise<void> => {
+    let value: unknown;
     try {
-      const value: unknown = JSON.parse(
+      value = JSON.parse(
         await readFile(this.options.pendingStatePath, 'utf8'),
       );
-      if (!this.isPendingUpdate(value)) {
+      if (!this.isPendingUpdate(value) || !this.isPendingPathSafe(value)) {
         throw new Error('Invalid pending update.');
       }
+
+      if (
+        compareUpdateVersions(value.version, this.options.currentVersion) <= 0
+      ) {
+        await this.removeInstalledUpdate(value);
+        return;
+      }
+
       await this.validatePending(value);
       this.pending = value;
       this.publish({ status: 'ready', version: value.version });
@@ -738,17 +756,35 @@ export class UpdateController {
     Number(value.size) > 0 &&
     Number(value.size) <= MAX_INSTALLER_BYTES;
 
-  private validatePending = async (pending: PendingUpdate): Promise<void> => {
+  private isPendingPathSafe = (pending: PendingUpdate): boolean => {
     const platform = this.options.platform;
-    if (!platform || compareUpdateVersions(pending.version, this.options.currentVersion) <= 0) {
-      throw new Error('Pending update is not newer than this application.');
+    if (!platform) {
+      return false;
     }
     const installerName = path.basename(pending.installerPath);
-    if (
-      !isSafeInstallerName(installerName, platform) ||
-      path.join(this.options.downloadsDirectory, installerName) !==
+    return (
+      isSafeInstallerName(installerName, platform) &&
+      path.join(this.options.downloadsDirectory, installerName) ===
         pending.installerPath
-    ) {
+    );
+  };
+
+  private removeInstalledUpdate = async (
+    pending: PendingUpdate,
+  ): Promise<void> => {
+    try {
+      await removeIfPresent(pending.installerPath);
+      await removeIfPresent(this.options.pendingStatePath);
+    } catch {
+      // Keep the state file so cleanup is retried on the next application start.
+    }
+  };
+
+  private validatePending = async (pending: PendingUpdate): Promise<void> => {
+    if (compareUpdateVersions(pending.version, this.options.currentVersion) <= 0) {
+      throw new Error('Pending update is not newer than this application.');
+    }
+    if (!this.isPendingPathSafe(pending)) {
       throw new Error('Pending update path is invalid.');
     }
     const metadata = await lstat(pending.installerPath);
