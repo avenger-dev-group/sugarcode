@@ -488,7 +488,7 @@ export const ThreadNavigator = ({
             <img
               src={appIcon}
               alt=""
-              className="size-9 shrink-0 rounded-xl shadow-sm"
+              className="size-8 shrink-0 rounded-[10px] ring-1 ring-black/5 dark:ring-white/10"
               aria-hidden="true"
             />
             <p className="min-w-0 flex-1 truncate text-sm font-semibold tracking-[-0.02em]">
@@ -512,12 +512,12 @@ export const ThreadNavigator = ({
         <div className="px-2 pb-2">
           <button
             type="button"
-            className="window-no-drag flex h-9 w-full items-center gap-2 rounded-lg border border-border/80 bg-background/80 px-2.5 text-left text-sm text-tertiary shadow-sm transition-colors hover:border-input hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="window-no-drag flex h-9 w-full items-center gap-2 rounded-[10px] border border-border-strong bg-surface-raised px-2.5 text-left text-sm text-tertiary shadow-[var(--shadow-raised)] transition-[border-color,background-color,color,box-shadow] hover:border-input hover:bg-background hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/15"
             onClick={onOpenSearch}
           >
             <Search className="size-4" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">搜索或运行…</span>
-            <kbd className="rounded border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-tertiary">{searchShortcut}</kbd>
+            <kbd className="rounded-md border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[10px] text-tertiary">{searchShortcut}</kbd>
           </button>
           <div className="mt-1.5 space-y-0.5">
             <NavigatorSurfaceButton
@@ -721,7 +721,7 @@ export const ThreadNavigator = ({
           </p>
         ) : null}
         {footer ? (
-          <div className="shrink-0 border-t p-2">{footer}</div>
+          <div className="shrink-0 border-t border-border-subtle bg-surface/30 p-2">{footer}</div>
         ) : null}
       </nav>
 
@@ -884,7 +884,7 @@ const NavigatorSurfaceButton = ({
     aria-current={active ? 'page' : undefined}
     className={`flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
       active
-        ? 'bg-link/10 font-medium text-link'
+        ? 'bg-surface-raised font-medium text-foreground shadow-[var(--shadow-raised)] ring-1 ring-border/70 [&>svg]:text-link'
         : 'text-navigation hover:bg-surface hover:text-foreground'
     }`}
     onClick={onClick}
@@ -961,9 +961,9 @@ const ThreadButton = ({
       <ContextMenuTrigger asChild>
         <div
           data-thread-row
-          className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg ${
+          className={`group/session grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto_auto] items-stretch overflow-hidden rounded-lg transition-[color,background-color,box-shadow] ${
             current
-              ? 'bg-link/10 text-link'
+              ? 'bg-surface-raised text-foreground shadow-[var(--shadow-raised)] ring-1 ring-border/70'
               : 'text-navigation hover:bg-surface hover:text-foreground'
           }`}
         >

@@ -14,7 +14,7 @@ const SelectTrigger = ({
 }: React.ComponentProps<typeof SelectPrimitive.Trigger>) => (
   <SelectPrimitive.Trigger
     className={cn(
-      'flex h-9 w-full items-center justify-between gap-2 rounded-lg border bg-surface px-3 text-sm text-primary outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:truncate',
+      'flex h-9 w-full items-center justify-between gap-2 rounded-[10px] border border-border-strong bg-surface-raised px-3 text-sm text-primary shadow-[var(--shadow-raised)] outline-none transition-[border-color,box-shadow,background-color] hover:border-input focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/15 disabled:cursor-not-allowed disabled:opacity-50 [&>span]:truncate',
       className,
     )}
     {...props}
@@ -34,7 +34,7 @@ const SelectContent = ({
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       className={cn(
-        'z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border bg-background shadow-lg',
+        'z-50 max-h-72 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-border-strong bg-popover shadow-[var(--shadow-floating)]',
         className,
       )}
       position="popper"
@@ -55,7 +55,7 @@ const SelectItem = ({
 }: React.ComponentProps<typeof SelectPrimitive.Item>) => (
   <SelectPrimitive.Item
     className={cn(
-      'relative flex cursor-default select-none items-center rounded-md py-2 pr-8 pl-2 text-sm text-secondary outline-none data-[highlighted]:bg-accent data-[highlighted]:text-primary data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
+      'relative flex cursor-default select-none items-center rounded-lg py-2 pr-8 pl-2 text-sm text-secondary outline-none data-[highlighted]:bg-surface-hover data-[highlighted]:text-primary data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
     )}
     {...props}

@@ -5,8 +5,9 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-sans: "Avenir Next", "Segoe UI Variable Text", "SF Pro Text", sans-serif;
   --color-background: var(--background);
+  --color-canvas: var(--canvas);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
@@ -20,6 +21,7 @@
   --color-navigation-background: var(--navigation-background);
   --color-surface: var(--surface);
   --color-surface-hover: var(--surface-hover);
+  --color-surface-raised: var(--surface-raised);
   --color-user-message: var(--user-message);
   --color-user-message-foreground: var(--user-message-foreground);
   --color-muted: var(--muted);
@@ -31,13 +33,14 @@
   --color-warning: var(--warning);
   --color-border: var(--border);
   --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-link: var(--link);
   --color-link-hover: var(--link-hover);
   --color-link-muted: var(--link-muted);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
+  --radius-sm: calc(var(--radius) * 0.625);
+  --radius-md: calc(var(--radius) * 0.8125);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) * 1.4);
 }
@@ -63,19 +66,20 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: #ffffff;
-  --primary: #1a1c1f;
-  --brand: #0969da;
-  --brand-hover: #0550ae;
+  --radius: 0.75rem;
+  --background: #f9fafb;
+  --canvas: #f4f6f8;
+  --primary: #20242b;
+  --brand: #2869df;
+  --brand-hover: #1f57bd;
   --brand-foreground: #ffffff;
-  --navigation-background: #f9f9f9;
+  --navigation-background: #f1f3f5;
   --navigation: rgb(from var(--primary) r g b / 85%);
-  --navigation-heading: rgb(from var(--primary) r g b / 35%);
+  --navigation-heading: rgb(from var(--primary) r g b / 58%);
   --user-message-foreground: var(--primary);
-  --destructive: oklch(0.577 0.245 27.325);
-  --success: oklch(0.627 0.194 149.214);
-  --warning: #a66b00;
+  --destructive: #c83f49;
+  --success: #20865a;
+  --warning: #a8640a;
   --link: var(--brand);
   --link-hover: var(--brand-hover);
   --syntax-attribute: #116329;
@@ -90,12 +94,13 @@
 
 .dark {
   color-scheme: dark;
-  --background: #181818;
-  --primary: #ffffff;
-  --brand: #58a6ff;
-  --brand-hover: #79c0ff;
-  --brand-foreground: #0d1117;
-  --navigation-background: #202020;
+  --background: #15181d;
+  --canvas: #111419;
+  --primary: #f2f4f7;
+  --brand: #78a7ff;
+  --brand-hover: #94b9ff;
+  --brand-foreground: #10141b;
+  --navigation-background: #101318;
   --navigation: rgb(from var(--primary) r g b / 85%);
   --navigation-heading: rgb(from var(--primary) r g b / 50%);
   --user-message-foreground: var(--background);
@@ -118,26 +123,47 @@
 .dark {
   --foreground: var(--primary);
   --primary-foreground: var(--background);
-  --secondary: rgb(from var(--primary) r g b / 70%);
-  --process: rgb(from var(--primary) r g b / 60%);
-  --tertiary: rgb(from var(--primary) r g b / 50%);
-  --surface: rgb(from var(--primary) r g b / 6%);
-  --surface-hover: rgb(from var(--primary) r g b / 10%);
-  --user-message: #c7d7fd;
-  --card: var(--background);
+  --secondary: rgb(from var(--primary) r g b / 74%);
+  --process: rgb(from var(--primary) r g b / 66%);
+  --tertiary: rgb(from var(--primary) r g b / 63%);
+  --surface: rgb(from var(--primary) r g b / 4%);
+  --surface-hover: rgb(from var(--primary) r g b / 7%);
+  --surface-raised: #ffffff;
+  --user-message: #e8f0ff;
+  --card: var(--surface-raised);
   --card-foreground: var(--foreground);
-  --popover: var(--background);
+  --popover: var(--surface-raised);
   --popover-foreground: var(--foreground);
   --muted: var(--surface);
   --muted-foreground: var(--tertiary);
   --accent: var(--surface-hover);
   --accent-foreground: var(--foreground);
-  --border: rgb(from var(--primary) r g b / 12%);
-  --border-subtle: rgb(from var(--primary) r g b / 7%);
-  --input: rgb(from var(--primary) r g b / 16%);
+  --border: rgb(from var(--primary) r g b / 9%);
+  --border-subtle: rgb(from var(--primary) r g b / 5.5%);
+  --border-strong: rgb(from var(--primary) r g b / 15%);
+  --input: rgb(from var(--primary) r g b / 15%);
   --ring: var(--brand);
   --link-muted: rgb(from var(--link) r g b / 55%);
-  --shadow-soft: rgb(from var(--primary) r g b / 8%);
+  --shadow-soft: rgb(20 28 40 / 10%);
+  --shadow-raised: 0 1px 2px rgb(20 28 40 / 5%), 0 0 0 1px rgb(20 28 40 / 2%);
+  --shadow-floating: 0 16px 48px rgb(20 28 40 / 14%), 0 2px 8px rgb(20 28 40 / 8%);
+  --shadow-composer: 0 12px 36px rgb(20 28 40 / 9%), 0 2px 6px rgb(20 28 40 / 4%);
+  --shadow-dialog: 0 28px 80px rgb(9 14 24 / 24%), 0 8px 24px rgb(9 14 24 / 12%);
+  --shadow-button: 0 1px 2px rgb(20 28 40 / 10%), inset 0 1px rgb(255 255 255 / 18%);
+}
+
+.dark {
+  --surface-raised: #1b1f25;
+  --user-message: #243b63;
+  --border: rgb(255 255 255 / 9%);
+  --border-subtle: rgb(255 255 255 / 5.5%);
+  --border-strong: rgb(255 255 255 / 15%);
+  --shadow-soft: rgb(0 0 0 / 24%);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 22%), 0 0 0 1px rgb(255 255 255 / 2%);
+  --shadow-floating: 0 18px 54px rgb(0 0 0 / 36%), 0 2px 10px rgb(0 0 0 / 28%);
+  --shadow-composer: 0 14px 42px rgb(0 0 0 / 28%), 0 2px 8px rgb(0 0 0 / 22%);
+  --shadow-dialog: 0 32px 90px rgb(0 0 0 / 52%), 0 8px 28px rgb(0 0 0 / 34%);
+  --shadow-button: 0 1px 2px rgb(0 0 0 / 28%), inset 0 1px rgb(255 255 255 / 10%);
 }
 
 :root {
@@ -168,8 +194,12 @@
     overflow: hidden;
     font-family: var(--font-sans);
     font-size: 0.875rem;
-    font-weight: 500;
+    font-weight: 400;
     line-height: 1.5;
+    letter-spacing: -0.006em;
+    background: var(--canvas);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
   #root {
@@ -225,7 +255,7 @@
   width: 1px;
   flex: 0 0 1px;
   cursor: col-resize;
-  background: var(--border);
+  background: var(--border-subtle);
   opacity: 1;
   transition:
     width 180ms ease,
@@ -252,7 +282,7 @@
 .panel-resizer:hover,
 .panel-resizer:focus-visible,
 .panel-resizer--active {
-  background: rgb(from var(--primary) r g b / 42%);
+  background: rgb(from var(--brand) r g b / 48%);
   outline: none;
 }
 
@@ -342,9 +372,9 @@
   height: 18rem;
   pointer-events: none;
   background:
-    radial-gradient(circle at 38% 48%, rgb(from var(--link) r g b / 7%), transparent 42%),
-    radial-gradient(circle at 64% 52%, rgb(from var(--success) r g b / 5%), transparent 38%);
-  filter: blur(10px);
+    radial-gradient(circle at 36% 48%, rgb(from var(--link) r g b / 9%), transparent 40%),
+    radial-gradient(circle at 66% 52%, rgb(95 91 255 / 6%), transparent 38%);
+  filter: blur(14px);
   transform: translate(-50%, -50%);
 }
 

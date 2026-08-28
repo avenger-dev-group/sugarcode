@@ -14,6 +14,7 @@ import {
   useEffect,
   useRef,
 } from 'react';
+import { createPortal } from 'react-dom';
 
 import { Button } from '@/renderer/components/ui/button';
 import type { TerminalOutputChunk } from '@/shared/terminal';
@@ -87,6 +88,7 @@ export const TerminalWorkbench = ({
   const resizeActionRef = useRef(store.resize);
   const refreshActionRef = useRef(store.refresh);
   const openRef = useRef<boolean>(store.open);
+  const statusRef = useRef(store.state.status);
   const autoStartGenerationRef = useRef<number | null>(null);
   const state = store.state;
   const active = state.status !== 'closed';
@@ -96,6 +98,7 @@ export const TerminalWorkbench = ({
     state.status === 'paused';
   const workspaceReady = store.workspace.status === 'ready';
   openRef.current = store.open;
+  statusRef.current = state.status;
   inputActionRef.current = store.input;
   resizeActionRef.current = store.resize;
   refreshActionRef.current = store.refresh;
@@ -140,7 +143,7 @@ export const TerminalWorkbench = ({
         convertEol: false,
         cursorBlink: !reducedMotion,
         cursorStyle: 'bar',
-        disableStdin: true,
+        disableStdin: statusRef.current !== 'running',
         drawBoldTextInBrightColors: false,
         fontFamily:
           'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -389,20 +392,21 @@ export const TerminalWorkbench = ({
         ) : null}
       </Button>
 
-      <section
-        id="local-terminal-workbench"
-        style={panelStyle}
-        className={`fixed right-0 bottom-0 left-0 z-30 flex h-[min(46vh,32rem)] min-h-64 flex-col overflow-hidden border-t bg-background shadow-[0_-20px_60px_var(--shadow-soft)] transition-[transform,left] duration-200 ease-out md:left-[var(--terminal-panel-left)] motion-reduce:transition-none ${
-          store.open
-            ? 'translate-y-0'
-            : 'pointer-events-none translate-y-full'
-        }`}
-        role="dialog"
-        aria-modal="false"
-        aria-label="Local terminal workbench"
-        aria-hidden={!store.open}
-        inert={store.open ? undefined : true}
-      >
+      {createPortal(
+        <section
+          id="local-terminal-workbench"
+          style={panelStyle}
+          className={`fixed right-0 bottom-0 left-0 z-30 flex h-[min(46vh,32rem)] min-h-64 flex-col overflow-hidden border-t bg-background shadow-[0_-20px_60px_var(--shadow-soft)] transition-[transform,left] duration-200 ease-out md:left-[var(--terminal-panel-left)] motion-reduce:transition-none ${
+            store.open
+              ? 'translate-y-0'
+              : 'pointer-events-none translate-y-full'
+          }`}
+          role="dialog"
+          aria-modal="false"
+          aria-label="Local terminal workbench"
+          aria-hidden={!store.open}
+          inert={store.open ? undefined : true}
+        >
         <header className="flex h-11 min-w-0 shrink-0 items-center gap-2 border-b px-3">
           <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-surface text-secondary">
             <SquareTerminal className="size-3.5" aria-hidden="true" />
@@ -499,6 +503,11 @@ export const TerminalWorkbench = ({
                       ? '正在启动终端…'
                       : '终端尚未启动'}
                 </p>
+                {!workspaceReady ? (
+                  <p className="mt-1.5 text-xs leading-relaxed text-tertiary">
+                    请先在左侧选择一个项目或新建任务，终端会在对应工作目录中启动。
+                  </p>
+                ) : null}
                 {workspaceReady && !store.busy ? (
                   <Button
                     type="button"
@@ -536,7 +545,9 @@ export const TerminalWorkbench = ({
             </span>
           ) : null}
         </footer>
-      </section>
+        </section>,
+        document.body,
+      )}
     </>
   );
 };

@@ -51,7 +51,7 @@ const ContextTab = ({
   <div
     className={`group flex h-8 min-w-28 max-w-52 shrink-0 items-center rounded-lg transition-colors ${
       active
-        ? 'bg-background text-foreground shadow-[0_1px_3px_var(--shadow-soft)]'
+        ? 'bg-surface-raised text-foreground shadow-[var(--shadow-raised)] ring-1 ring-border/70'
         : 'text-secondary hover:bg-background/70 hover:text-foreground'
     }`}
   >
@@ -201,7 +201,7 @@ export const ContextRail = ({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="window-context-titlebar window-drag-region flex h-11 shrink-0 items-center border-b bg-surface/65 px-2">
+      <div className="window-context-titlebar window-drag-region flex h-11 shrink-0 items-center border-b border-border-subtle bg-canvas/80 px-2 backdrop-blur-xl">
         <div className="window-no-drag flex h-9 min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="右侧工作区标签">
           {filesTabOpen ? (
             <ContextTab

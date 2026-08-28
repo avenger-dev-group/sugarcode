@@ -23,7 +23,7 @@ const AlertDialogOverlay = ({
   <AlertDialogPrimitive.Overlay
     data-slot="alert-dialog-overlay"
     className={cn(
-      'fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
+      'fixed inset-0 z-50 bg-[#0d1420]/40 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
       className,
     )}
     {...props}
@@ -39,7 +39,7 @@ const AlertDialogContent = ({
     <AlertDialogPrimitive.Content
       data-slot="alert-dialog-content"
       className={cn(
-        'fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-[42rem] -translate-x-1/2 -translate-y-1/2 gap-0 overflow-hidden rounded-xl border bg-background shadow-2xl outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
+        'fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100vh-3rem)] w-[calc(100%-2rem)] max-w-[42rem] -translate-x-1/2 -translate-y-1/2 gap-0 overflow-hidden rounded-2xl border border-border-strong bg-surface-raised shadow-[var(--shadow-dialog)] outline-none data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
         className,
       )}
       {...props}

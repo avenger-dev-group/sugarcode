@@ -87,7 +87,7 @@ export const EmptyThreadState = ({
       <header className="empty-thread-hero empty-thread-intro relative z-[1] text-center">
         <h1
           id="empty-thread-title"
-          className="empty-thread-heading text-[2rem] font-medium leading-tight tracking-[-0.045em] sm:text-[2.35rem]"
+          className="empty-thread-heading text-[2rem] font-semibold leading-tight tracking-[-0.045em] sm:text-[2.35rem]"
         >
           今天想推进什么？
         </h1>
@@ -108,7 +108,7 @@ export const EmptyThreadState = ({
               <button
                 key={starter.title}
                 type="button"
-                className="empty-thread-action group flex min-h-[4.5rem] w-full items-center gap-3 rounded-2xl border bg-background/80 px-3.5 text-left shadow-sm backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] hover:-translate-y-px hover:border-input hover:bg-background hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/20"
+                className="empty-thread-action group flex min-h-[4.5rem] w-full items-center gap-3 rounded-2xl border border-border/80 bg-surface-raised/88 px-3.5 text-left shadow-[var(--shadow-raised)] backdrop-blur-sm transition-[border-color,background-color,box-shadow,transform] hover:-translate-y-px hover:border-border-strong hover:bg-surface-raised hover:shadow-[0_8px_24px_var(--shadow-soft)] focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/15"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onSelectPrompt(starter.prompt)}
                 aria-label={`${starter.title}：${starter.description}`}

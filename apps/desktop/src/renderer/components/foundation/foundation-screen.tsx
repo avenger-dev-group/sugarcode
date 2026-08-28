@@ -71,7 +71,7 @@ export const FoundationScreen = () => {
 
   return (
     <div
-      className={`flex h-screen min-h-0 flex-col overflow-hidden bg-background text-foreground ${
+      className={`flex h-screen min-h-0 flex-col overflow-hidden bg-canvas text-foreground ${
         foundation.isDark ? 'dark' : ''
       }`}
     >

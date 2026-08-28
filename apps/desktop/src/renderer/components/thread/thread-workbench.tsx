@@ -945,7 +945,7 @@ export const ThreadWorkbenchView = ({
           />
         ) : null}
         <section
-          className={`relative flex min-h-0 min-w-0 flex-1 flex-col ${
+          className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-background ${
             store.thread.isEmpty ? 'empty-thread-workbench' : ''
           }`}
         >
@@ -960,7 +960,7 @@ export const ThreadWorkbenchView = ({
           <header
             className={`${
               mainSurface ? 'window-no-drag' : 'window-drag-region'
-            } relative flex h-[52px] shrink-0 items-center transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
+            } relative flex h-[52px] shrink-0 items-center border-b border-border-subtle bg-background/88 backdrop-blur-xl transition-[padding] duration-[260ms] ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none ${
               navigatorOpen ? 'pl-5' : 'window-collapsed-header'
             } ${contextRailOpen ? 'pr-5' : 'window-titlebar-trailing-safe'}`}
           >
@@ -1162,7 +1162,7 @@ export const ThreadWorkbenchView = ({
 
           <div
             data-layout="conversation-composer"
-            className={`relative z-10 shrink-0 bg-background px-4 pb-4 pt-2 sm:px-8 ${
+            className={`relative z-10 shrink-0 border-t border-border-subtle bg-background/92 px-4 pb-4 pt-3 backdrop-blur-xl sm:px-8 ${
               store.thread.isEmpty ? 'empty-thread-composer' : ''
             }`}
           >
@@ -1205,7 +1205,7 @@ export const ThreadWorkbenchView = ({
                 />
               ) : (
                 <div
-                  className="relative rounded-2xl border bg-background shadow-[0_18px_60px_var(--shadow-soft)] transition-[border-color,box-shadow] focus-within:border-input focus-within:ring-2 focus-within:ring-ring/10"
+                  className="relative rounded-2xl border border-border-strong bg-surface-raised shadow-[var(--shadow-composer)] transition-[border-color,box-shadow] focus-within:border-ring/70 focus-within:shadow-[0_16px_44px_var(--shadow-soft)] focus-within:ring-3 focus-within:ring-ring/10"
                   onDragOver={(event) => {
                     if (event.dataTransfer.types.includes('Files')) {
                       event.preventDefault();
@@ -1239,7 +1239,7 @@ export const ThreadWorkbenchView = ({
                       {store.attachments.map((attachment) => (
                         <div
                           key={attachment.id}
-                          className="relative flex h-16 min-w-48 max-w-60 items-center gap-2.5 rounded-xl border bg-surface px-2.5 pr-8"
+                          className="relative flex h-16 min-w-48 max-w-60 items-center gap-2.5 rounded-xl border border-border-subtle bg-surface px-2.5 pr-8"
                         >
                           {attachment.previewUrl ? (
                             <img
@@ -1478,7 +1478,7 @@ export const ThreadWorkbenchView = ({
             ) : null}
             <aside
               id="workspace-tools"
-              className={`fixed inset-y-0 right-0 z-40 block min-h-0 shrink-0 overflow-hidden bg-background shadow-[-24px_0_64px_var(--shadow-soft)] [width:var(--context-rail-mobile-width)] min-[1100px]:static min-[1100px]:z-auto min-[1100px]:shadow-none min-[1100px]:[width:var(--context-rail-desktop-width)] ${contextRailTransition} ${
+              className={`fixed inset-y-0 right-0 z-40 block min-h-0 shrink-0 overflow-hidden border-l border-border-subtle bg-background shadow-[-24px_0_64px_var(--shadow-soft)] [width:var(--context-rail-mobile-width)] min-[1100px]:static min-[1100px]:z-auto min-[1100px]:shadow-none min-[1100px]:[width:var(--context-rail-desktop-width)] ${contextRailTransition} ${
                 contextRailOpen
                   ? 'opacity-100'
                   : 'pointer-events-none opacity-0'

@@ -106,7 +106,7 @@ const MessageReferences = ({
       {message.references.map((reference) => (
         <span
           key={`${reference.kind}:${reference.target}`}
-          className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border bg-background px-2.5 py-1 text-xs text-link shadow-sm"
+          className="inline-flex max-w-64 items-center gap-1.5 rounded-lg border border-border/80 bg-surface-raised px-2.5 py-1 text-xs text-link shadow-[var(--shadow-raised)]"
           title={reference.target}
         >
           <span className="text-tertiary">
@@ -350,7 +350,7 @@ export const UserMessage = ({
           />
           {entry.message.text ? (
             <article
-              className="rounded-2xl rounded-br-md bg-user-message px-4 py-3 text-user-message-foreground"
+              className="rounded-2xl rounded-br-md border border-link/10 bg-user-message px-4 py-3 text-user-message-foreground shadow-[0_1px_2px_rgb(from_var(--brand)_r_g_b_/_6%)]"
               aria-label="Your message"
             >
               <UserMessageContent message={entry.message} />
