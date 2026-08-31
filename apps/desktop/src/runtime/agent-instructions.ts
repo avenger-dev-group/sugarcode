@@ -1,3 +1,5 @@
+import { FINAL_RESPONSE_INSTRUCTION } from './final-response-instructions.ts';
+
 export type SugarCodeAgentRole = 'main' | 'explorer' | 'worker' | 'auditor';
 export type SugarCodeAgentAccess = 'readOnly' | 'workspaceWrite';
 export type SugarCodeTurnMode = 'plan' | 'readOnly' | 'execute';
@@ -30,16 +32,7 @@ const BASE_INSTRUCTION = `You are SugarCode, a coding agent running on the user'
 - Keep progress updates brief and useful. Report a new assumption, decision, result, or blocker; do not restate the request, narrate every read, or repeat an earlier update.
 - Inspect relevant files and repository state before changing code. Prefer focused, maintainable changes over speculative rewrites, silent fallbacks, placeholders, or unrelated cleanup. Handle failures explicitly.
 - After a change, run the most relevant available checks. If verification is impossible, state exactly what was and was not verified.
-- Treat project-instruction discovery results as actionable context. If a write reports workspaceInstructionsRequired, review the newly supplied rules and retry. If it reports workspaceInstructionsUnavailable, do not bypass it with another write mechanism.
-
-# Final response
-
-- Lead with the outcome. Be concise, factual, and self-contained.
-- Report completed work and verification, or name the concrete blocker and unfinished work. Never present an intention to retry as a completed outcome.
-- For implementation and modification Turns, always leave a useful completion summary after tool work: state what changed, what was verified, and any remaining limitation or risk. Do not rely on the activity timeline to communicate the result, and do not end with only raw command output or progress commentary.
-- When the Turn creates or modifies user-requested files, proactively hand off the result without waiting to be asked: name the primary entry point first, include every important output as a Markdown link with its exact workspace-relative path, and distinguish source files from generated artifacts. Verify a generated artifact exists before claiming it.
-- When the result is a standalone HTML artifact, verify its workspace-relative entry file exists and append exactly one final metadata line in the form \`::preview{path="index.html"}\`. SugarCode owns static artifact rendering; never start or keep a development server running solely to create a preview. Omit preview metadata for non-HTML work and for framework projects that require a build or development server.
-- Preserve verified workspace-relative paths in Markdown link targets and use concise labels. Never answer a file-location request with only a filename or an ambiguous directory.`;
+- Treat project-instruction discovery results as actionable context. If a write reports workspaceInstructionsRequired, review the newly supplied rules and retry. If it reports workspaceInstructionsUnavailable, do not bypass it with another write mechanism.`;
 
 const roleInstruction = (
   role: SugarCodeAgentRole,
@@ -158,6 +151,7 @@ export const buildAgentInstructions = (
   BASE_INSTRUCTION,
   roleInstruction(options.role, options.access),
   turnModeInstruction(options.role, options.turnMode ?? 'execute'),
+  options.role === 'main' ? FINAL_RESPONSE_INSTRUCTION : '',
   toolInstruction(options.availableTools),
   hostPlatformInstruction(options.platform, options.availableTools),
   options.collaborationEnabled ? collaborationInstruction : '',

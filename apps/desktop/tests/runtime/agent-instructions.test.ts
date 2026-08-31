@@ -5,6 +5,7 @@ import {
   buildAgentInstructions,
   hostPlatformInstruction,
 } from '../../src/runtime/agent-instructions.ts';
+import { FINAL_RESPONSE_INSTRUCTION } from '../../src/runtime/final-response-instructions.ts';
 
 const mainTools = [
   'request_user_input',
@@ -37,6 +38,11 @@ test('main Agent instructions are dynamically scoped to capabilities', () => {
   assert.match(prompt, /Skill fixture/u);
   assert.match(prompt, /\*\*\* Begin Patch/u);
   assert.match(prompt, /absolute executable and arguments are separate/u);
+  assert.match(prompt, /Adapt the response to the actual result/u);
+  assert.match(prompt, /implementation or modification/u);
+  assert.match(prompt, /diagnosis or review/u);
+  assert.match(prompt, /simple answer, lookup, or generated value/u);
+  assert.match(prompt, /renders process duration, activity history, and file-change statistics separately/u);
   assert.match(prompt, /proactively hand off the result without waiting to be asked/u);
   assert.match(prompt, /primary entry point first/u);
   assert.match(prompt, /exact workspace-relative path/u);
@@ -65,11 +71,22 @@ test('read-only role prompts expose a bounded mission without write or collabora
 
   assert.match(explorer, /read-only explorer subagent/u);
   assert.match(explorer, /Do not modify files/u);
+  assert.doesNotMatch(explorer, /# Final response/u);
   assert.doesNotMatch(explorer, /workspace_apply_patch/u);
   assert.doesNotMatch(explorer, /Multi-Agent coordination/u);
   assert.doesNotMatch(explorer, /Host platform/u);
   assert.match(auditor, /read-only reviewer subagent/u);
   assert.match(auditor, /high-confidence defects/u);
+});
+
+test('final response guidance is adaptive without requiring empty template sections', () => {
+  assert.match(FINAL_RESPONSE_INSTRUCTION, /Adapt the response to the actual result/u);
+  assert.match(FINAL_RESPONSE_INSTRUCTION, /Use headings only when they improve scanning/u);
+  assert.match(FINAL_RESPONSE_INSTRUCTION, /omit empty sections/u);
+  assert.match(FINAL_RESPONSE_INSTRUCTION, /Group related files by behavior/u);
+  assert.match(FINAL_RESPONSE_INSTRUCTION, /Mention limitations, risks, or unverified work only when they really exist/u);
+  assert.match(FINAL_RESPONSE_INSTRUCTION, /Do not add change, verification, or risk sections that do not apply/u);
+  assert.doesNotMatch(FINAL_RESPONSE_INSTRUCTION, /## (Changes|Verification|Risks)/u);
 });
 
 test('planning mode explicitly remains read-only after structured user input', () => {

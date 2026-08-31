@@ -638,11 +638,17 @@ const parseUserInputQuestions = (
     : undefined;
 };
 
-const isVisibleModelTextPart = (part: Part): boolean =>
-  typeof part.text === 'string' &&
-  part.text.trim().length > 0 &&
-  (!part.thought ||
-    readModelItemMetadata(part)?.reasoningVisibility === 'summary');
+// Provider reasoning summaries are untrusted and may contain private chain of
+// thought. Only ordinary model text crosses the visible Runtime boundary.
+const isVisibleModelTextPart = (part: Part): boolean => {
+  if (typeof part.text !== 'string' || part.text.trim().length === 0) {
+    return false;
+  }
+  return (
+    part.thought !== true &&
+    readModelItemMetadata(part)?.reasoningVisibility === undefined
+  );
+};
 
 const stableJsonValue = (value: unknown): unknown => {
   if (Array.isArray(value)) {

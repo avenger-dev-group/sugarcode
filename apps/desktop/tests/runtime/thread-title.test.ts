@@ -9,7 +9,9 @@ import {
 } from '@google/adk';
 import { FinishReason } from '@google/genai';
 
+import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
 import {
+  fallbackThreadTitleFromSource,
   generateThreadTitle,
   normalizeGeneratedTitle,
   titleSourceFromContent,
@@ -17,6 +19,7 @@ import {
 
 class TitleFixtureLlm extends BaseLlm {
   request: LlmRequest | null = null;
+  visibleText = '## “修复会话标题生成。”';
 
   async *generateContentAsync(
     request: LlmRequest,
@@ -27,7 +30,14 @@ class TitleFixtureLlm extends BaseLlm {
         role: 'model',
         parts: [
           { text: 'Internal title reasoning', thought: true },
-          { text: '## “修复会话标题生成。”' },
+          {
+            text: 'Misflagged title reasoning',
+            partMetadata: modelItemMetadata('title-reasoning-summary', {
+              phase: 'commentary',
+              reasoningVisibility: 'summary',
+            }),
+          },
+          { text: this.visibleText },
         ],
       },
       partial: false,
@@ -67,12 +77,28 @@ test('title source uses task-bearing text and attachment names', () => {
 });
 
 test('generated titles are cleaned, bounded, and reject generic metadata', () => {
-  assert.equal(normalizeGeneratedTitle('## “修复会话标题生成。”\nextra'), '修复会话标题生成');
-  assert.equal(normalizeGeneratedTitle('改'.repeat(60)), '改'.repeat(48));
+  assert.equal(normalizeGeneratedTitle('## “修复会话标题生成。”'), '修复会话标题生成');
+  assert.equal(normalizeGeneratedTitle('修复会话标题\nextra'), null);
+  assert.equal(normalizeGeneratedTitle('改'.repeat(60)), null);
   assert.equal(normalizeGeneratedTitle('新对话'), null);
   assert.equal(
     normalizeGeneratedTitle('00000000-0000-7000-8000-000000000001'),
     null,
+  );
+  assert.equal(
+    normalizeGeneratedTitle(
+      'The user\'s message is just "随机生成的高强度密码" which means',
+      '随机生成的高强度密码',
+    ),
+    null,
+  );
+  assert.equal(
+    normalizeGeneratedTitle('Generate strong passwords', '随机生成的高强度密码'),
+    null,
+  );
+  assert.equal(
+    fallbackThreadTitleFromSource('随机生成的高强度密码'),
+    '随机生成的高强度密码',
   );
 });
 
@@ -86,4 +112,15 @@ test('title generation is a bounded tool-free metadata request', async () => {
   assert.deepEqual(model.request?.toolsDict, {});
   const instruction = model.request?.config?.systemInstruction;
   assert.match(JSON.stringify(instruction), /untrusted material/u);
+});
+
+test('title generation falls back to user text when the model leaks analysis', async () => {
+  const model = new TitleFixtureLlm({ model: 'fixture-model' });
+  model.visibleText =
+    'The user\'s message is just "随机生成的高强度密码" which means random passwords.';
+
+  assert.equal(
+    await generateThreadTitle(model, '随机生成的高强度密码'),
+    '随机生成的高强度密码',
+  );
 });

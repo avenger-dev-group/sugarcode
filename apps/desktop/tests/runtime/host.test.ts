@@ -2814,14 +2814,14 @@ test('RuntimeHost generates and conditionally persists an untitled Thread title'
     ),
   ]);
 
-  assert.equal(generatedTitle, 'Fixture response');
+  assert.equal(generatedTitle, '修复会话标题');
   assert.equal(conditional, true);
   assert.ok(
     events.some(
       (event) =>
         event.type === 'thread.mutated' &&
         event.operation === 'generateTitle' &&
-        event.snapshot?.thread.title === 'Fixture response',
+        event.snapshot?.thread.title === '修复会话标题',
     ),
   );
 });
@@ -3082,7 +3082,7 @@ test('RuntimeHost preserves typed provider failures caught by ADK', async () => 
   );
 });
 
-test('RuntimeHost publishes provider summaries but keeps internal reasoning private', async () => {
+test('RuntimeHost keeps every provider reasoning channel private', async () => {
   const events: RuntimeEvent[] = [];
   let resolveTerminal: (() => void) | undefined;
   const terminal = new Promise<void>((resolve) => {
@@ -3130,13 +3130,10 @@ test('RuntimeHost publishes provider summaries but keeps internal reasoning priv
   );
   assert.equal(visibleText.some((text) => text.includes('Private chain')), false);
   assert.equal(
-    events.some(
-      (event) =>
-        event.type === 'turn.textCompleted' &&
-        event.phase === 'commentary' &&
-        event.text === 'I checked the relevant project files.',
+    visibleText.some((text) =>
+      text.includes('I checked the relevant project files.'),
     ),
-    true,
+    false,
   );
   assert.equal(
     events.some(
