@@ -593,7 +593,14 @@ export class OpenAiResponsesReconciler {
           )
         : this.streamSlot(outputIndex, 'text', item.id, eventType);
       if (existing?.type === 'text') {
-        if (existing.done && existing.text !== messageText(item)) {
+        const incomingText = messageText(item);
+        if (
+          existing.done &&
+          existing.text.length > 0 &&
+          incomingText.length > 0 &&
+          existing.text !== incomingText &&
+          !terminal
+        ) {
           throw this.protocolError(
             'OpenAI Responses returned conflicting completed message content.',
             'ambiguousOutputReconciliation',
@@ -603,13 +610,25 @@ export class OpenAiResponsesReconciler {
         }
         this.rememberAlias(existing, item.id);
         if (!existing.done) {
-          existing.text = messageText(item) || existing.text;
+          existing.text = incomingText || existing.text;
           existing.phase = phaseFromProvider(item.phase);
-        } else if (
-          existing.phase === 'provisional' &&
-          phaseFromProvider(item.phase) !== 'provisional'
-        ) {
-          existing.phase = phaseFromProvider(item.phase);
+        } else {
+          // Some Responses-compatible gateways omit message content from
+          // either output_item.done or response.completed, and some rewrite
+          // non-executable visible text in the terminal response. Preserve a
+          // non-empty done item when the terminal omits text; otherwise the
+          // terminal response is the provider's authoritative representation.
+          if (terminal && incomingText.length > 0) {
+            existing.text = incomingText;
+          } else {
+            existing.text ||= incomingText;
+          }
+          if (
+            existing.phase === 'provisional' &&
+            phaseFromProvider(item.phase) !== 'provisional'
+          ) {
+            existing.phase = phaseFromProvider(item.phase);
+          }
         }
         existing.refused ||= messageRefused(item);
         existing.done = true;

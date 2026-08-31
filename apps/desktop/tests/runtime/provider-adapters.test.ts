@@ -887,6 +887,89 @@ test('OpenAI Responses reconciles a streamed alias when gateway output indexes d
   assert.deepEqual(readModelStepOutcome(finalParts), { kind: 'final' });
 });
 
+test('OpenAI Responses uses rewritten terminal text from compatible gateways', async (context) => {
+  const fixture = await serve(async (_request, response) => {
+    writeSse(response, [
+      {
+        event: 'response.output_text.delta',
+        data: {
+          type: 'response.output_text.delta',
+          sequence_number: 1,
+          item_id: 'message_done_rewritten_fixture',
+          output_index: 0,
+          content_index: 0,
+          delta: 'Draft completed text',
+          logprobs: [],
+        },
+      },
+      {
+        event: 'response.output_item.done',
+        data: {
+          type: 'response.output_item.done',
+          sequence_number: 2,
+          output_index: 0,
+          item: {
+            id: 'message_done_rewritten_fixture',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            summary: [],
+            content: [{
+              type: 'output_text',
+              text: 'Draft completed text',
+              annotations: [],
+              logprobs: null,
+            }],
+          },
+        },
+      },
+      {
+        event: 'response.completed',
+        data: {
+          type: 'response.completed',
+          sequence_number: 3,
+          response: {
+            id: 'resp_terminal_rewritten_fixture',
+            status: 'completed',
+            output: [{
+              id: 'message_terminal_rewritten_fixture',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              phase: 'final_answer',
+              content: [{
+                type: 'output_text',
+                text: 'Authoritative terminal text',
+                annotations: [],
+              }],
+            }],
+            usage: { input_tokens: 4, output_tokens: 3, total_tokens: 7 },
+          },
+        },
+      },
+    ]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+  });
+
+  const events = await collect(model.generateContentAsync(llmRequest(), true));
+  const finalParts = events.at(-1)?.content?.parts ?? [];
+
+  assert.deepEqual(finalParts.map((part) => part.text), [
+    'Authoritative terminal text',
+  ]);
+  assert.equal(
+    readModelItemMetadata(finalParts[0] ?? {})?.itemId,
+    'message_done_rewritten_fixture',
+  );
+  assert.deepEqual(readModelStepOutcome(finalParts), { kind: 'final' });
+});
+
 test('OpenAI Chat maps malformed tool JSON to a bounded internal error tool', async (context) => {
   const fixture = await serve(async (_request, response) => {
     writeSse(response, [

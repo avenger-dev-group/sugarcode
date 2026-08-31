@@ -281,7 +281,7 @@ test('Responses reconciler blocks malformed tool calls before execution', () => 
   );
 });
 
-test('Responses reconciler rejects conflicts between done and completed', () => {
+test('Responses reconciler rejects conflicting duplicate done messages', () => {
   const reconciler = new OpenAiResponsesReconciler();
   reconciler.onOutputItemDone(0, {
     id: 'message_conflict',
@@ -292,17 +292,122 @@ test('Responses reconciler rejects conflicts between done and completed', () => 
   });
 
   assert.throws(
-    () => reconciler.finish(response('resp_conflict', [{
+    () => reconciler.onOutputItemDone(0, {
       id: 'message_conflict',
       type: 'message',
       role: 'assistant',
       status: 'completed',
       content: [{ type: 'output_text', text: 'Second', annotations: [] }],
-    }]), 'response.completed'),
+    }),
     (error: unknown) =>
       error instanceof RuntimeProtocolError &&
-      error.details.protocol?.code === 'ambiguousOutputReconciliation',
+      error.details.protocol?.code === 'ambiguousOutputReconciliation' &&
+      error.details.protocol.eventType === 'response.output_item.done',
   );
+});
+
+test('Responses reconciler accepts terminal text rewritten by a compatible gateway', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, {
+    id: 'message_done_rewritten',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    summary: [],
+    content: [{
+      type: 'output_text',
+      text: 'Draft completed text',
+      annotations: [],
+      logprobs: null,
+    }],
+  } as unknown as ResponseOutputItem);
+
+  const terminal = reconciler.finish(response('resp_terminal_rewritten', [{
+    id: 'message_terminal_rewritten',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    phase: 'final_answer',
+    content: [{
+      type: 'output_text',
+      text: 'Authoritative terminal text',
+      annotations: [],
+    }],
+  }]), 'response.completed');
+
+  assert.equal(terminal.blocks[0]?.type, 'text');
+  if (terminal.blocks[0]?.type === 'text') {
+    assert.equal(terminal.blocks[0].itemId, 'message_done_rewritten');
+    assert.equal(terminal.blocks[0].text, 'Authoritative terminal text');
+    assert.equal(terminal.blocks[0].phase, 'final');
+  }
+});
+
+test('Responses reconciler preserves done text when terminal content is omitted', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, {
+    id: 'message_omitted_terminal_content',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    phase: 'final_answer',
+    content: [{
+      type: 'output_text',
+      text: 'BANDWIDTH_WEBHOOK_USERNAME=random-user',
+      annotations: [],
+    }],
+  });
+
+  const terminal = reconciler.finish(response('resp_omitted_terminal_content', [{
+    id: 'message_omitted_terminal_content',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    phase: 'final_answer',
+    content: [],
+  }]), 'response.completed');
+
+  assert.equal(terminal.blocks[0]?.type, 'text');
+  if (terminal.blocks[0]?.type === 'text') {
+    assert.equal(
+      terminal.blocks[0].text,
+      'BANDWIDTH_WEBHOOK_USERNAME=random-user',
+    );
+    assert.equal(terminal.blocks[0].phase, 'final');
+  }
+});
+
+test('Responses reconciler backfills terminal text when done content is omitted', () => {
+  const reconciler = new OpenAiResponsesReconciler();
+  reconciler.onOutputItemDone(0, {
+    id: 'message_omitted_done_content',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [],
+  });
+
+  const terminal = reconciler.finish(response('resp_omitted_done_content', [{
+    id: 'message_omitted_done_content',
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    phase: 'final_answer',
+    content: [{
+      type: 'output_text',
+      text: 'BANDWIDTH_WEBHOOK_PASSWORD=random-password',
+      annotations: [],
+    }],
+  }]), 'response.completed');
+
+  assert.equal(terminal.blocks[0]?.type, 'text');
+  if (terminal.blocks[0]?.type === 'text') {
+    assert.equal(
+      terminal.blocks[0].text,
+      'BANDWIDTH_WEBHOOK_PASSWORD=random-password',
+    );
+    assert.equal(terminal.blocks[0].phase, 'final');
+  }
 });
 
 test('Responses reconciler ignores empty reasoning and rejects content-bearing unknown items', () => {
