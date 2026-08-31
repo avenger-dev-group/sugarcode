@@ -78,7 +78,7 @@ export const acceptConversationThreadProjection = (
 ): void => {
   const current = conversationProjectionStore.getState();
   const previous = current.snapshotsByThread.get(projection.threadId);
-  if (previous && projection.revision < previous.revision) {
+  if (previous && projection.revision <= previous.revision) {
     return;
   }
   const snapshotsByThread = new Map(current.snapshotsByThread);

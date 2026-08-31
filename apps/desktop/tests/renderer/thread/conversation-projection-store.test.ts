@@ -113,6 +113,28 @@ test('thread projection store isolates background deltas and detects gaps', () =
   );
 });
 
+test('thread projection store ignores duplicate full projection revisions', () => {
+  conversationProjectionStore.setState({
+    snapshot: snapshot(1, 'thread-a'),
+    snapshotsByThread: new Map(),
+    sourceRevision: 1,
+    loadError: null,
+    selectionGeneration: 0,
+  });
+  const notifications: number[] = [];
+  const unsubscribe = conversationProjectionStore.subscribe((state) => {
+    notifications.push(state.snapshotsByThread.get('thread-a')?.revision ?? -1);
+  });
+
+  acceptConversationThreadProjection(projection('thread-a', 1));
+  const acceptedState = conversationProjectionStore.getState();
+  acceptConversationThreadProjection(projection('thread-a', 1));
+  unsubscribe();
+
+  assert.equal(conversationProjectionStore.getState(), acceptedState);
+  assert.deepEqual(notifications, [1]);
+});
+
 test('conversation selection overlay never exposes the previous transcript', () => {
   acceptConversationSnapshot(snapshot(2, 'thread-a'));
   beginConversationSelection('thread-b');

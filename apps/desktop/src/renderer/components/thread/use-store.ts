@@ -100,8 +100,10 @@ import type {
   TurnViewModel,
 } from './types';
 import {
-  latestDurableModelProfileId,
+  latestDurableModelSelection,
+  modelRequestOptionsEqual,
   resolveModelProfileId,
+  resolveModelRequestOptions,
 } from './model-selection';
 import {
   attachmentImportFailureMessage,
@@ -1418,6 +1420,14 @@ export const useStore = (): ThreadStore => {
   const modelRequestSelections = useRef(new Map<string, ModelRequestOptions>());
   const sendInFlight = useRef(false);
   const previousThread = useRef<ThreadViewModel | undefined>(undefined);
+  const durableModelSelection = useMemo(
+    () => latestDurableModelSelection(snapshot.turns),
+    [snapshot.turns],
+  );
+  const durableModelProfileId = durableModelSelection?.profileId;
+  const durableReasoningEffort = durableModelSelection?.reasoningEffort;
+  const durableServiceTier = durableModelSelection?.serviceTier;
+  const modelCatalog = modelInspection?.config;
   const thread = useMemo<ThreadViewModel>(() => {
     const next = toThreadViewModel(snapshot, previousThread.current);
     previousThread.current = next;
@@ -1490,41 +1500,46 @@ export const useStore = (): ThreadStore => {
   }, [snapshot.threadId]);
 
   useEffect(() => {
-    const catalog = modelInspection?.config;
-    if (!catalog) {
-      setSelectedModelProfileId('');
+    if (!modelCatalog) {
+      setSelectedModelProfileId((current) => (current === '' ? current : ''));
       return;
     }
     const key = snapshot.threadId ?? 'new';
-    setSelectedModelProfileId(
-      resolveModelProfileId(
-        modelSelections.current.get(key),
-        latestDurableModelProfileId(snapshot.turns),
-        catalog.defaultProfileId,
-      ),
+    const next = resolveModelProfileId(
+      modelSelections.current.get(key),
+      durableModelProfileId,
+      modelCatalog.defaultProfileId,
     );
-  }, [modelInspection, snapshot.threadId, snapshot.turns]);
+    setSelectedModelProfileId((current) => current === next ? current : next);
+  }, [durableModelProfileId, modelCatalog, snapshot.threadId]);
 
   useEffect(() => {
-    const catalog = modelInspection?.config;
-    if (!catalog || !selectedModelProfileId) {
+    if (!modelCatalog || !selectedModelProfileId) {
       return;
     }
     const key = snapshot.threadId ?? 'new';
     const explicit = modelRequestSelections.current.get(key);
-    const latestModel = snapshot.turns.findLast((turn) => turn.model)?.model;
-    const profile = catalog.profiles.find(
+    const profile = modelCatalog.profiles.find(
       (candidate) => candidate.id === selectedModelProfileId,
     );
-    setSelectedModelRequest(
-      explicit ?? {
-        reasoningEffort:
-          latestModel?.reasoningEffort ?? profile?.reasoningEffort ?? 'auto',
-        serviceTier:
-          latestModel?.serviceTier ?? profile?.serviceTier ?? 'auto',
+    const next = resolveModelRequestOptions(
+      explicit,
+      {
+        reasoningEffort: durableReasoningEffort,
+        serviceTier: durableServiceTier,
       },
+      profile,
     );
-  }, [modelInspection, selectedModelProfileId, snapshot.threadId, snapshot.turns]);
+    setSelectedModelRequest((current) =>
+      modelRequestOptionsEqual(current, next) ? current : next,
+    );
+  }, [
+    durableReasoningEffort,
+    durableServiceTier,
+    modelCatalog,
+    selectedModelProfileId,
+    snapshot.threadId,
+  ]);
 
   const selectModelRequest = (next: ModelRequestOptions): void => {
     modelRequestSelections.current.set(snapshot.threadId ?? 'new', next);
