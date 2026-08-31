@@ -138,6 +138,11 @@ const toolInstruction = (availableTools: readonly string[]): string => {
       'Use submit_plan only after all blocking decisions are resolved. Put the complete actionable plan in its content field; after it succeeds, finish without repeating the plan or asking whether to proceed.',
     );
   }
+  if (names.includes('submit_final_response')) {
+    guidance.push(
+      'For every non-planning Turn, finish exactly once with submit_final_response. Put the entire self-contained user-facing answer in its content field. Ordinary assistant text is private working text and will not be displayed, so never rely on it as part of the answer and do not repeat the answer after the tool succeeds.',
+    );
+  }
   return `# Tool use\n\n${guidance.map((line) => `- ${line}`).join('\n')}`;
 };
 

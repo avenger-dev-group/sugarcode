@@ -5,7 +5,7 @@ import type {
   ConversationUserInputQuestion,
   ConversationUserInputSubmission,
 } from '../../shared/conversation.ts';
-import { userInputBoundaryCommentary } from '../../shared/conversation/user-input-boundary.ts';
+import { isTrustedCommentaryId } from '../../shared/conversation/trusted-commentary.ts';
 import type {
   RuntimeTurnItemRecord,
   RuntimeUserInputQuestion,
@@ -63,34 +63,6 @@ const userInputQuestions = (
       : [];
   });
   return questions.length === value.length ? questions : undefined;
-};
-
-const followingUserInputQuestions = (
-  items: readonly RuntimeTurnItemRecord[],
-  startIndex: number,
-): readonly ConversationUserInputQuestion[] | undefined => {
-  for (let index = startIndex + 1; index < items.length; index += 1) {
-    const candidate = items[index];
-    if (!candidate) {
-      return undefined;
-    }
-    if (
-      candidate.kind === 'turn.usage' ||
-      (candidate.kind === 'turn.textCompleted' &&
-        candidate.payload.phase === 'commentary')
-    ) {
-      continue;
-    }
-    if (
-      candidate.kind === 'turn.toolCall' &&
-      candidate.payload.name === 'request_user_input' &&
-      isRecord(candidate.payload.arguments)
-    ) {
-      return userInputQuestions(candidate.payload.arguments.questions);
-    }
-    return undefined;
-  }
-  return undefined;
 };
 
 const userInputDecision = (
@@ -629,56 +601,15 @@ export const projectTurnActivities = (
   const orderedItems = [...items].sort(
     (left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id),
   );
-  const hasCompletedCommentary = orderedItems.some(
-    (item) =>
-      item.kind === 'turn.textCompleted' &&
-      item.payload.phase === 'commentary',
-  );
-  const fallbackCommentary = new Map<
-    string,
-    { firstSequence: number; text: string }
-  >();
-  if (!hasCompletedCommentary) {
-    for (const item of orderedItems) {
-      if (
-        item.kind !== 'turn.textDelta' ||
-        item.payload.phase !== 'commentary' ||
-        typeof item.payload.delta !== 'string'
-      ) {
-        continue;
-      }
-      const id = nonEmptyString(item.payload.itemId) ?? `${item.turnId}:commentary`;
-      const current = fallbackCommentary.get(id);
-      fallbackCommentary.set(id, {
-        firstSequence: current?.firstSequence ?? item.sequence,
-        text: `${current?.text ?? ''}${item.payload.delta}`,
-      });
-    }
-  }
-
-  for (const [itemIndex, item] of orderedItems.entries()) {
-    for (const [id, commentary] of fallbackCommentary) {
-      if (
-        commentary.firstSequence === item.sequence &&
-        !activities.some(
-          (activity) =>
-            activity.type === 'commentary' && activity.activity.id === id,
-        )
-      ) {
-        activities.push({
-          type: 'commentary',
-          activity: { id, text: commentary.text, status: 'completed' },
-        });
-      }
-    }
+  for (const item of orderedItems) {
     if (
       item.kind === 'turn.textCompleted' &&
       item.payload.phase === 'commentary'
     ) {
       const id = nonEmptyString(item.payload.itemId) ?? item.id;
       const text = String(item.payload.text ?? '');
-      const questions = followingUserInputQuestions(orderedItems, itemIndex);
       if (
+        isTrustedCommentaryId(item.turnId, id) &&
         !activities.some(
           (activity) =>
             activity.type === 'commentary' && activity.activity.id === id,
@@ -688,13 +619,7 @@ export const projectTurnActivities = (
           type: 'commentary',
           activity: {
             id,
-            text: questions
-              ? userInputBoundaryCommentary(
-                  text,
-                  text,
-                  questions.map((question) => question.question),
-                )
-              : text,
+            text,
             status: 'completed',
           },
         });

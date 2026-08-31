@@ -6,6 +6,45 @@ import {
   projectTurnActivities,
 } from '../../../src/main/runtime/conversation-tool-activities.ts';
 import type { RuntimeTurnItemRecord } from '../../../src/runtime/protocol.ts';
+import { toolProgressCommentaryId } from '../../../src/shared/conversation/trusted-commentary.ts';
+
+test('commentary projection keeps Runtime progress and drops provider-authored prose', () => {
+  const turnId = 'turn-fixture';
+  const trustedId = toolProgressCommentaryId(turnId, 'call-read');
+  const items: readonly RuntimeTurnItemRecord[] = [
+    {
+      id: 'provider-commentary',
+      turnId,
+      sequence: 1,
+      kind: 'turn.textCompleted',
+      payload: {
+        itemId: 'provider-commentary',
+        phase: 'commentary',
+        text: 'The user asked for a review. Let me inspect the project.',
+      },
+    },
+    {
+      id: trustedId,
+      turnId,
+      sequence: 2,
+      kind: 'turn.textCompleted',
+      payload: {
+        itemId: trustedId,
+        phase: 'commentary',
+        text: '正在读取 README.md。',
+      },
+    },
+  ];
+
+  assert.deepEqual(projectTurnActivities(items), [{
+    type: 'commentary',
+    activity: {
+      id: trustedId,
+      text: '正在读取 README.md。',
+      status: 'completed',
+    },
+  }]);
+});
 
 test('workspace_read projection preserves every requested path', () => {
   const paths = Array.from({ length: 10 }, (_, index) => `file-${index}.txt`);
@@ -311,7 +350,7 @@ test('user-input projection pairs durable requests and structured decisions', ()
   }]);
 });
 
-test('user-input projection collapses a persisted plan draft emitted before a question', () => {
+test('user-input projection drops a persisted plan draft emitted before a question', () => {
   const questions = [{
     id: 'scope',
     header: '实现范围',
@@ -356,14 +395,6 @@ test('user-input projection collapses a persisted plan draft emitted before a qu
 
   const activities = projectTurnActivities(items);
 
-  assert.deepEqual(activities[0], {
-    type: 'commentary',
-    activity: {
-      id: 'pre-question-plan',
-      text: '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
-      status: 'completed',
-    },
-  });
   assert.equal(
     activities.some(
       (activity) =>
@@ -372,7 +403,7 @@ test('user-input projection collapses a persisted plan draft emitted before a qu
     ),
     false,
   );
-  assert.equal(activities[1]?.type, 'userInput');
+  assert.equal(activities[0]?.type, 'userInput');
 });
 
 test('user-input projection restores legacy answers and interrupts orphaned requests', () => {

@@ -1557,11 +1557,7 @@ test('runtime conversation controller preserves the Renderer snapshot contract',
   const commentary = snapshot.turns[0]?.activities?.filter(
     (activity) => activity.type === 'commentary',
   );
-  assert.equal(commentary?.length, 1);
-  assert.equal(
-    commentary?.[0]?.activity.text,
-    'The user wants a project review.',
-  );
+  assert.equal(commentary?.length, 0);
   const reads = snapshot.turns[0]?.activities?.filter(
     (activity) => activity.type === 'workspaceRead',
   );
@@ -1881,9 +1877,9 @@ test('runtime conversation controller restores interleaved tool activity from du
   const restored = controller.getSnapshot().turns[0];
   assert.deepEqual(
     restored?.activities?.map((activity) => activity.type),
-    ['commentary', 'workspaceRead'],
+    ['workspaceRead'],
   );
-  const read = restored?.activities?.[1];
+  const read = restored?.activities?.[0];
   assert.equal(read?.type, 'workspaceRead');
   if (read?.type === 'workspaceRead') {
     assert.equal(read.activity.path, 'README.md');

@@ -12,6 +12,10 @@ import { Type, type Content, type Part, type Schema } from '@google/genai';
 import { createHash, randomUUID } from 'node:crypto';
 
 import { userInputBoundaryCommentary } from '../shared/conversation/user-input-boundary.ts';
+import {
+  isTrustedCommentaryId,
+  toolProgressCommentaryId,
+} from '../shared/conversation/trusted-commentary.ts';
 import { parseComposerSubmission } from '../shared/composer.ts';
 import {
   ContextManager,
@@ -25,6 +29,13 @@ import {
 } from './model-history-codec.ts';
 import { RuntimeProtocolError } from './protocol-error.ts';
 import { buildAgentInstructions } from './agent-instructions.ts';
+import { finalResponseCandidateIssue } from './final-response-quality.ts';
+import {
+  createSubmitFinalResponseTool,
+  extractDelimitedFinalResponse,
+  SUBMIT_FINAL_RESPONSE_TOOL_NAME,
+  type FinalResponseSubmissionGuard,
+} from './final-response-submission.ts';
 import {
   composerIntentInstruction,
   composerModelText,
@@ -412,11 +423,19 @@ type TurnDriverOptions = Readonly<{
   consumePendingSteers?: () => readonly Content[];
   completionGate?: () => boolean;
   retryFinalAfterToolFailure?: () => boolean;
-  terminalToolResult?: (event: Event) => boolean;
+  terminalToolResult?: (
+    event: Event,
+    textItems: Map<string, TextItemState>,
+  ) => boolean;
   validateFinalCandidate?: (candidateText: string) => string | undefined;
+  recoverFinalCandidate?: (candidateText: string) => string | undefined;
+  validateRecoveredFinalCandidate?: (
+    candidateText: string,
+  ) => string | undefined;
   settleFinalCandidate?: (
     accepted: boolean,
     textItems: Map<string, TextItemState>,
+    recoveredText?: string,
   ) => void;
   takeProviderError?: () => RuntimeProviderError | undefined;
   validateInvocation?: () => void;
@@ -3432,6 +3451,9 @@ export class RuntimeHost {
   ): void => {
     for (const part of event.content?.parts ?? []) {
       if (part.functionCall?.name) {
+        if (part.functionCall.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
+          continue;
+        }
         const callId = part.functionCall.id ?? part.functionCall.name;
         guard.calls.set(
           callId,
@@ -3442,6 +3464,9 @@ export class RuntimeHost {
         );
       }
       if (!part.functionResponse?.name) {
+        continue;
+      }
+      if (part.functionResponse.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
         continue;
       }
       const result = part.functionResponse.response ?? {};
@@ -3552,7 +3577,7 @@ export class RuntimeHost {
     let commentaryOnlyCount = 0;
     let truncationCount = 0;
     let futureActionFinalCount = 0;
-    let userInputFinalRecoveryCount = 0;
+    let finalCandidateRecoveryCount = 0;
     const textItems = new Map<string, TextItemState>();
     while (!options.signal.aborted) {
       invocation += 1;
@@ -3575,7 +3600,7 @@ export class RuntimeHost {
             outcome = nextOutcome;
           }
         }
-        if (options.terminalToolResult?.(event)) {
+        if (options.terminalToolResult?.(event, textItems)) {
           return;
         }
       }
@@ -3662,21 +3687,25 @@ export class RuntimeHost {
           truncationCount = 0;
           continue;
         }
-        const candidateText = [...textItems.values()]
+        const rawCandidateText = [...textItems.values()]
           .filter((state) => state.pendingFinal)
           .map((state) => state.text)
           .join('\n\n');
-        const userInputCandidateIssue =
-          options.validateFinalCandidate?.(candidateText);
-        if (userInputCandidateIssue) {
+        const recoveredText =
+          options.recoverFinalCandidate?.(rawCandidateText);
+        const candidateText = recoveredText ?? rawCandidateText;
+        const candidateIssue = recoveredText
+          ? options.validateRecoveredFinalCandidate?.(candidateText)
+          : options.validateFinalCandidate?.(candidateText);
+        if (candidateIssue) {
           options.settleFinalCandidate?.(false, textItems);
-          userInputFinalRecoveryCount += 1;
-          if (userInputFinalRecoveryCount >= 2) {
+          finalCandidateRecoveryCount += 1;
+          if (finalCandidateRecoveryCount >= 2) {
             throw new ProviderAdapterError({
               kind: 'protocol',
               retryable: false,
               message:
-                'The model repeatedly continued a pre-question draft instead of submitting a complete final answer.',
+                'The model repeatedly submitted a final answer that exposed internal work or violated the response boundary.',
             });
           }
           message = {
@@ -3684,12 +3713,14 @@ export class RuntimeHost {
             parts: [
               {
                 text:
-                  '# Internal continuation after incomplete post-question final\n\n' +
-                  `${userInputCandidateIssue} ` +
-                  'Follow the required structured protocol before finishing; if the issue names a tool, call that tool instead of rewriting the same ordinary final answer. ' +
-                  'Otherwise rewrite the final answer as one complete, self-contained response from the beginning. ' +
+                  '# Internal continuation after invalid final response\n\n' +
+                  `${candidateIssue} ` +
+                  'If the issue requires submit_final_response, call that tool with the rewritten answer instead of returning ordinary text again. ' +
+                  'If that tool cannot be called, return exactly one <final_response>...</final_response> envelope containing only the user-facing answer. ' +
+                  'Discard the candidate and rewrite the final answer as one complete, self-contained response from the beginning. ' +
                   'Include every necessary section instead of continuing prior numbering. ' +
-                  'Do not repeat the structured question prompts; incorporate only the resulting decisions where relevant. ' +
+                  'Output only user-facing results: do not include analysis, private reasoning, self-instructions, drafting notes, or tool narration. ' +
+                  'If a structured question was resolved, incorporate only the resulting decisions and do not repeat its prompts. ' +
                   'Keep all visible text in the language of the original user request.',
               },
             ],
@@ -3734,7 +3765,7 @@ export class RuntimeHost {
               'The model submitted a final answer while Turn work remained pending.',
           });
         }
-        options.settleFinalCandidate?.(true, textItems);
+        options.settleFinalCandidate?.(true, textItems, recoveredText);
         return;
       }
       if (outcome.kind === 'toolCalls') {
@@ -4142,6 +4173,7 @@ export class RuntimeHost {
         instructionDeliveredFor: 0,
       };
       const planSubmissionGuard: PlanSubmissionGuard = {};
+      const finalResponseSubmissionGuard: FinalResponseSubmissionGuard = {};
       const nativeWorkspaceId = this.nativeRuntime
         ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
         : command.workspaceId;
@@ -4330,7 +4362,58 @@ export class RuntimeHost {
         ),
         ...(turnMode === 'plan'
           ? [this.submitPlanTool(command, planSubmissionGuard)]
-          : []),
+          : [
+              createSubmitFinalResponseTool({
+                guard: finalResponseSubmissionGuard,
+                validate: async (content) => {
+                  const goalIssue = goalSession?.finalIssue();
+                  if (goalIssue) return goalIssue;
+                  const responseIssue = finalResponseCandidateIssue(content);
+                  if (responseIssue) return responseIssue;
+                  if (isFutureActionOnlyFinal(content)) {
+                    return 'The submitted response only announces future work. Complete the work first, or report the concrete blocker and remaining work.';
+                  }
+                  const userInputIssue =
+                    userInputFinalGuard.resolvedRequests > 0
+                      ? userInputFinalCandidateIssue(
+                          content,
+                          userInputFinalGuard.questions,
+                        )
+                      : undefined;
+                  if (userInputIssue) return userInputIssue;
+                  if (
+                    (this.pendingSteersByTurn.get(command.turnId)?.length ??
+                      0) > 0
+                  ) {
+                    return 'The user added a new direction while the response was being prepared. Apply it before submitting the final response again.';
+                  }
+                  const pendingResults =
+                    await this.collaboration.consumePendingResults(
+                      command.turnId,
+                      controller.signal,
+                    );
+                  if (pendingResults) {
+                    return (
+                      'Child Agent results completed before submission. Incorporate the following results and submit a new complete response:\n\n' +
+                      pendingResults
+                    );
+                  }
+                  if (
+                    controller.signal.aborted ||
+                    [...this.pendingUserInputs.values()].some(
+                      (pending) => pending.turnId === command.turnId,
+                    ) ||
+                    [...this.pendingApprovals.values()].some(
+                      (approval) => approval.turnId === command.turnId,
+                    ) ||
+                    this.activeOperations.get(command.turnId)?.size
+                  ) {
+                    return 'Turn work is still pending. Wait for it to finish before submitting the final response.';
+                  }
+                  return undefined;
+                },
+              }),
+            ]),
         ...imageAnalysisTools,
         ...videoAnalysisTools,
         ...(this.nativeRuntime
@@ -4537,7 +4620,7 @@ export class RuntimeHost {
                 resolved.selection,
                 event,
                 textItems,
-                turnMode === 'plan',
+                true,
               );
             },
             onCompletedEvent: (event) =>
@@ -4559,17 +4642,52 @@ export class RuntimeHost {
               !this.activeOperations.get(command.turnId)?.size,
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
-            terminalToolResult: (event) =>
-              turnMode === 'plan' &&
-              (event.content?.parts ?? []).some(
-                (part) =>
-                  part.functionResponse?.name === 'submit_plan' &&
-                  isRecord(part.functionResponse.response) &&
-                  part.functionResponse.response.ok === true,
-              ),
+            terminalToolResult: (event, textItems) => {
+              const parts = event.content?.parts ?? [];
+              if (
+                turnMode === 'plan' &&
+                parts.some(
+                  (part) =>
+                    part.functionResponse?.name === 'submit_plan' &&
+                    isRecord(part.functionResponse.response) &&
+                    part.functionResponse.response.ok === true,
+                )
+              ) {
+                return true;
+              }
+              const submitted = finalResponseSubmissionGuard.content;
+              if (
+                turnMode === 'plan' ||
+                !submitted ||
+                !parts.some(
+                  (part) =>
+                    part.functionResponse?.name ===
+                      SUBMIT_FINAL_RESPONSE_TOOL_NAME &&
+                    isRecord(part.functionResponse.response) &&
+                    part.functionResponse.response.ok === true,
+                )
+              ) {
+                return false;
+              }
+              if (
+                (this.pendingSteersByTurn.get(command.turnId)?.length ?? 0) >
+                0
+              ) {
+                finalResponseSubmissionGuard.content = undefined;
+                return false;
+              }
+              this.settleFinalCandidate(command, textItems, false);
+              this.publishStructuredFinalResponse(command, submitted);
+              return true;
+            },
             validateFinalCandidate: (candidateText) => {
+              if (turnMode !== 'plan') {
+                return 'This Turn must finish by calling submit_final_response with the complete user-facing answer. Ordinary assistant text is private working text and cannot complete the Turn.';
+              }
               const goalIssue = goalSession?.finalIssue();
               if (goalIssue) return goalIssue;
+              const responseIssue = finalResponseCandidateIssue(candidateText);
+              if (responseIssue) return responseIssue;
               if (turnMode === 'plan' && !planSubmissionGuard.proposal) {
                 return 'Planning mode requires the completed plan to be submitted with submit_plan before the Turn can finish.';
               }
@@ -4587,13 +4705,33 @@ export class RuntimeHost {
                   )
                 : undefined;
             },
-            settleFinalCandidate: (accepted, textItems) =>
+            recoverFinalCandidate:
+              turnMode === 'plan'
+                ? undefined
+                : extractDelimitedFinalResponse,
+            validateRecoveredFinalCandidate: (candidateText) => {
+              const goalIssue = goalSession?.finalIssue();
+              if (goalIssue) return goalIssue;
+              const responseIssue = finalResponseCandidateIssue(candidateText);
+              if (responseIssue) return responseIssue;
+              return userInputFinalGuard.resolvedRequests > 0
+                ? userInputFinalCandidateIssue(
+                    candidateText,
+                    userInputFinalGuard.questions,
+                  )
+                : undefined;
+            },
+            settleFinalCandidate: (accepted, textItems, recoveredText) => {
               this.settleFinalCandidate(
                 command,
                 textItems,
-                accepted,
+                accepted && !recoveredText,
                 turnMode === 'plan' && Boolean(planSubmissionGuard.proposal),
-              ),
+              );
+              if (accepted && recoveredText) {
+                this.publishStructuredFinalResponse(command, recoveredText);
+              }
+            },
             takeProviderError: providerErrorCapture.takeCapturedError,
             validateInvocation: () =>
               this.assertInvalidArgumentProgress(invalidArgumentGuard),
@@ -5467,11 +5605,10 @@ export class RuntimeHost {
     selection: RuntimeModelSelection,
     event: Event,
     textItems: Map<string, TextItemState>,
-    bufferProvisional = false,
+    bufferModelText = false,
   ): void => {
     const parts = event.content?.parts ?? [];
     this.publishNativeCompaction(command, selection, event, parts);
-    const hasVisibleModelText = parts.some(isVisibleModelTextPart);
     const hasUserInputCall = parts.some(
       (part) => part.functionCall?.name === 'request_user_input',
     );
@@ -5487,8 +5624,9 @@ export class RuntimeHost {
       .map((part) => part.text)
       .join('\n');
     const publishToolStatus = (itemId: string, status: string): void => {
-      const duplicate = [...textItems.values()].some(
-        (item) =>
+      const duplicate = [...textItems.entries()].some(
+        ([id, item]) =>
+          isTrustedCommentaryId(command.turnId, id) &&
           item.completed &&
           item.phase === 'commentary' &&
           item.text === status,
@@ -5548,7 +5686,8 @@ export class RuntimeHost {
         if (event.partial === false) {
           const outcome =
             metadata?.outcome ??
-            readModelStepOutcome(event.content?.parts ?? []);
+            readModelStepOutcome(event.content?.parts ?? []) ??
+            this.fallbackOutcome(event);
           const completedPhase =
             hasUserInputCall ||
             hasPlanSubmissionCall ||
@@ -5579,20 +5718,10 @@ export class RuntimeHost {
             state.pendingFinal = true;
           } else {
             state.completed = true;
-            this.emit({
-              type: 'turn.textCompleted',
-              requestId: command.requestId,
-              workspaceId: command.workspaceId,
-              threadId: command.threadId,
-              turnId: command.turnId,
-              itemId,
-              phase: completedPhase,
-              text: completedText,
-            });
           }
         } else {
           state.text += part.text;
-          if (!(bufferProvisional && initialPhase === 'provisional')) {
+          if (!bufferModelText) {
             this.emitTransient({
               type: 'turn.textDelta',
               requestId: command.requestId,
@@ -5608,9 +5737,12 @@ export class RuntimeHost {
         textItems.set(itemId, state);
       }
       if (part.functionCall?.name) {
+        if (part.functionCall.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
+          continue;
+        }
         const metadata = readModelItemMetadata(part);
         const callId = part.functionCall.id ?? `${event.id}:${index}`;
-        if (event.partial === false && !hasVisibleModelText) {
+        if (event.partial === false) {
           const progress = toolProgressSummary(
             userText,
             part.functionCall.name,
@@ -5618,7 +5750,7 @@ export class RuntimeHost {
           );
           if (progress) {
             publishToolStatus(
-              `${command.turnId}:progress:${callId}`,
+              toolProgressCommentaryId(command.turnId, callId),
               progress,
             );
           }
@@ -5637,10 +5769,12 @@ export class RuntimeHost {
         });
       }
       if (part.functionResponse?.name) {
+        if (part.functionResponse.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
+          continue;
+        }
         const metadata = readModelItemMetadata(part);
         if (
           event.partial !== true &&
-          !hasVisibleModelText &&
           isRecord(part.functionResponse.response)
         ) {
           const summary = toolResultSummary(
@@ -5650,7 +5784,10 @@ export class RuntimeHost {
           );
           if (summary) {
             publishToolStatus(
-              `${command.turnId}:result-progress:${part.functionResponse.id ?? event.id}:${index}`,
+              toolProgressCommentaryId(
+                command.turnId,
+                `result:${part.functionResponse.id ?? event.id}:${index}`,
+              ),
               summary,
             );
           }
@@ -5779,6 +5916,9 @@ export class RuntimeHost {
       state.phase = accepted && !suppressFinal ? 'final' : 'commentary';
       state.pendingFinal = false;
       state.completed = true;
+      if (!accepted || suppressFinal) {
+        continue;
+      }
       this.emit({
         type: 'turn.textCompleted',
         requestId: command.requestId,
@@ -5790,6 +5930,22 @@ export class RuntimeHost {
         text: state.text,
       });
     }
+  };
+
+  private publishStructuredFinalResponse = (
+    command: TurnExecutionCommand,
+    text: string,
+  ): void => {
+    this.emit({
+      type: 'turn.textCompleted',
+      requestId: command.requestId,
+      workspaceId: command.workspaceId,
+      threadId: command.threadId,
+      turnId: command.turnId,
+      itemId: `${command.turnId}:final-response`,
+      phase: 'final',
+      text,
+    });
   };
 
   private runPrivilegedTool = async (

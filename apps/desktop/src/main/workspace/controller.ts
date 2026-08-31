@@ -290,6 +290,32 @@ export class WorkspaceController {
         },
       ]);
     }
+    if (
+      stored.active.kind === 'chat' &&
+      stored.active.threadId &&
+      !this.options.threadRegistry.getOwnerKey(stored.active.threadId)
+    ) {
+      const directory = await this.validateChatDirectory(
+        stored.active.directory,
+      );
+      if (directory) {
+        const ownerKey = chatOwnerKey(directory);
+        const workspaceId = createHash('sha256').update(directory).digest('hex');
+        this.chatOwners.set(ownerKey, { ownerKey, directory });
+        this.options.threadRegistry.registerWorkspaceOwner(
+          workspaceId,
+          ownerKey,
+          'sessionCache',
+        );
+        this.options.threadRegistry.hydrateSessionCache([
+          {
+            threadId: stored.active.threadId,
+            ownerKey,
+            workspaceId,
+          },
+        ]);
+      }
+    }
     this.publish('unselected');
   };
 
@@ -550,6 +576,38 @@ export class WorkspaceController {
       return { accepted: false, reason: 'failed' };
     }
 
+    // Snapshot ownership before Runtime deletion. The conversation projection
+    // removes the Thread from ThreadRegistry as soon as deletion is confirmed,
+    // so deriving "last chat Thread" after that mutation loses the owner edge.
+    const chatThreadIds = ownerKey
+      ? this.options.threadRegistry.getOwnerView(ownerKey).threadIds
+      : [];
+    const removesChatOwner = Boolean(
+      chatOwned &&
+      chatThreadIds.length === 1 &&
+      chatThreadIds[0] === threadId,
+    );
+    const removesChatDirectory = Boolean(
+      removesChatOwner &&
+      chatOwner?.directory,
+    );
+    const persistedActiveChatDirectory =
+      removesChatDirectory && this.persistedActive?.kind === 'chat'
+        ? await this.validateChatDirectory(this.persistedActive.directory)
+        : null;
+    const persistedActiveReferencesDeletedChat = Boolean(
+      this.persistedActive?.kind === 'chat' &&
+      (this.persistedActive.threadId === threadId ||
+        (chatOwner?.directory &&
+          persistedActiveChatDirectory === chatOwner.directory)),
+    );
+    const deletingActiveChatOwner = Boolean(
+      removesChatOwner &&
+      this.workspaceKind === 'chat' &&
+      (this.activeChatThreadId === threadId ||
+        (boundWorkspaceId && boundWorkspaceId === this.workspaceId)),
+    );
+
     let deletionFailed = false;
     let deleted = false;
     for (const workspaceId of candidates) {
@@ -571,41 +629,17 @@ export class WorkspaceController {
       return { accepted: false, reason: 'failed' };
     }
 
-    const chatThreadIds = ownerKey
-      ? this.options.threadRegistry.getOwnerView(ownerKey).threadIds
-      : [];
-    const removesChatDirectory = Boolean(
-      chatOwner?.directory &&
-      chatThreadIds.length === 1 &&
-      chatThreadIds[0] === threadId,
-    );
-    const persistedActiveChatDirectory =
-      removesChatDirectory && this.persistedActive?.kind === 'chat'
-        ? await this.validateChatDirectory(this.persistedActive.directory)
-        : null;
-    const persistedActiveReferencesDeletedChat = Boolean(
-      this.persistedActive?.kind === 'chat' &&
-      (this.persistedActive.threadId === threadId ||
-        (chatOwner?.directory &&
-          persistedActiveChatDirectory === chatOwner.directory)),
-    );
-    const deletingActiveDirectory = Boolean(
-      removesChatDirectory &&
-      chatOwner?.directory &&
-      this.workspaceKind === 'chat' &&
-      this.workspacePath === chatOwner.directory,
-    );
-    if (removesChatDirectory && chatOwner?.directory) {
-      if (deletingActiveDirectory) {
-        const replacement = await this.activateChat({});
-        if (!replacement.accepted) {
-          this.publish(
-            this.workspacePath ? 'failed' : 'unselected',
-            'The conversation was deleted, but SugarCode could not leave its chat folder before removing local files.',
-          );
-          return { accepted: false, reason: 'failed' };
-        }
+    if (deletingActiveChatOwner) {
+      const replacement = await this.activateChat({});
+      if (!replacement.accepted) {
+        this.publish(
+          this.workspacePath ? 'failed' : 'unselected',
+          'The conversation was deleted, but SugarCode could not leave its chat workspace safely.',
+        );
+        return { accepted: false, reason: 'failed' };
       }
+    }
+    if (removesChatDirectory && chatOwner?.directory) {
       if (!(await this.deleteManagedChatDirectory(chatOwner.directory))) {
         this.publish(
           this.workspacePath ? 'failed' : 'unselected',
@@ -637,9 +671,10 @@ export class WorkspaceController {
       this.options.threadRegistry.getOwnerView(ownerKey).threadIds.length === 0
     ) {
       this.chatOwners.delete(ownerKey);
+      this.options.threadRegistry.removeOwner(ownerKey);
       if (
         removesChatDirectory &&
-        !deletingActiveDirectory &&
+        !deletingActiveChatOwner &&
         persistedActiveReferencesDeletedChat
       ) {
         this.persistedActive = this.getFallbackPersistedActive();
@@ -842,6 +877,7 @@ export class WorkspaceController {
     }
     if (existingOwnerKey && existingOwnerKey !== ownerKey) {
       this.chatOwners.delete(existingOwnerKey);
+      this.options.threadRegistry.removeOwner(existingOwnerKey);
     }
     this.generation += 1;
     try {

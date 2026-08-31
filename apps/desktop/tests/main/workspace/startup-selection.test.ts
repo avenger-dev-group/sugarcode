@@ -606,6 +606,62 @@ test('opening history recreates a missing managed chat directory without changin
   assert.equal(focused.commit?.selection.threadId, CHAT_THREAD_ID);
 });
 
+test('restore repairs an active chat whose owner index was lost during deletion', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-chat-owner-repair-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const chatRootPath = path.join(root, 'Documents', 'SugarCode');
+  const chatDirectory = path.join(
+    chatRootPath,
+    '2026-08-07',
+    'chat-091011-orphan',
+  );
+  const sessionPath = path.join(root, 'workspace-session.json');
+  await mkdir(chatDirectory, { recursive: true });
+  const canonicalDirectory = await realpath(chatDirectory);
+  const workspaceId = createHash('sha256')
+    .update(canonicalDirectory)
+    .digest('hex');
+  await writeFile(
+    sessionPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      projects: [],
+      active: {
+        kind: 'chat',
+        directory: canonicalDirectory,
+        threadId: CHAT_THREAD_ID,
+      },
+      chats: [],
+    })}\n`,
+    'utf8',
+  );
+  const threadRegistry = new ThreadRegistry();
+  const controller = new WorkspaceController({
+    threadRegistry,
+    supervisor: {
+      subscribe: (): (() => void) => () => undefined,
+      getWorkspaceSwitchBlock: (): null => null,
+      getWorkspaceBindingId: (): null => null,
+    } as unknown as WorkspaceRuntimeBoundary,
+    dialog: {
+      showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
+      showMessageBox: async () => ({ response: 0, checkboxChecked: false }),
+    },
+    getMainWindow: () => ({}) as BrowserWindow,
+    sessionPath,
+    chatRootPath,
+  });
+
+  await controller.restore();
+
+  assert.deepEqual(controller.getSnapshot().chatThreadIds, [CHAT_THREAD_ID]);
+  assert.equal(
+    threadRegistry.getWorkspaceIdForOwner(`chat:${canonicalDirectory}`),
+    workspaceId,
+  );
+  assert.equal(threadRegistry.getWorkspaceId(CHAT_THREAD_ID), workspaceId);
+});
+
 test('deleting the active chat switches away before removing its folder', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-active-chat-delete-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -625,6 +681,7 @@ test('deleting the active chat switches away before removing its folder', async 
   const storedWorkspaceId = createHash('sha256')
     .update(await realpath(chatDirectory))
     .digest('hex');
+  const deletedOwnerKey = `chat:${await realpath(chatDirectory)}`;
   await writeFile(
     sessionPath,
     `${JSON.stringify({
@@ -651,6 +708,7 @@ test('deleting the active chat switches away before removing its folder', async 
   let currentThreadId: string | null = null;
   let switchCount = 0;
   let beforeSwitchCount = 0;
+  const threadRegistry = new ThreadRegistry();
   const supervisor = {
     subscribe: (): (() => void) => () => undefined,
     getWorkspaceSwitchBlock: (): null => null,
@@ -668,6 +726,9 @@ test('deleting the active chat switches away before removing its folder', async 
     getWorkspaceBindingId: (): string | null => bindingId,
     deleteThread: async (): Promise<'deleted'> => {
       currentThreadId = null;
+      if (bindingId) {
+        threadRegistry.replaceRuntimeWorkspaceIndex(bindingId, []);
+      }
       return 'deleted';
     },
     conversation: {
@@ -699,7 +760,7 @@ test('deleting the active chat switches away before removing its folder', async 
     },
   } as unknown as WorkspaceRuntimeBoundary;
   const controller = new WorkspaceController({
-    threadRegistry: new ThreadRegistry(),
+    threadRegistry,
     supervisor,
     dialog: {
       showOpenDialog: async () => ({ canceled: true, filePaths: [] }),
@@ -736,6 +797,19 @@ test('deleting the active chat switches away before removing its folder', async 
     name: '聊天文件',
     threadId: null,
   });
+  assert.equal(threadRegistry.getWorkspaceIdForOwner(deletedOwnerKey), null);
+  const replacementThreadId = '019fd4ee-6482-7e10-943a-1ef2ea409cdd';
+  threadRegistry.replaceRuntimeWorkspaceIndex(
+    controller.getLaunchContext()?.workspaceId ?? '',
+    [{
+      id: replacementThreadId,
+      workspaceId: controller.getLaunchContext()?.workspaceId ?? '',
+      title: 'Directly submitted chat',
+    }],
+  );
+  assert.deepEqual(controller.getSnapshot().chatThreadIds, [
+    replacementThreadId,
+  ]);
   assert.equal(switchCount, 2);
   assert.equal(beforeSwitchCount, 2);
 });

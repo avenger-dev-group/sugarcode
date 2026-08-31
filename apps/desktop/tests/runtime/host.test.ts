@@ -8,7 +8,7 @@ import {
   type LlmRequest,
   type LlmResponse,
 } from '@google/adk';
-import { FinishReason } from '@google/genai';
+import { FinishReason, type Part } from '@google/genai';
 
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../../src/shared/model-request-limits.ts';
 import {
@@ -20,6 +20,7 @@ import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
+import { SUBMIT_FINAL_RESPONSE_TOOL_NAME } from '../../src/runtime/final-response-submission.ts';
 import { VideoAnalyzer } from '../../src/runtime/video-analysis.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
@@ -67,15 +68,29 @@ const turnNativeFixture = (options: Readonly<{
   finishTurn: options.finishTurn ?? (() => true),
 } as unknown as NativeRuntimeBinding);
 
+const finalResponseParts = (
+  request: LlmRequest,
+  content: string,
+  id: string,
+): Part[] =>
+  Object.hasOwn(request.toolsDict, SUBMIT_FINAL_RESPONSE_TOOL_NAME)
+    ? [{
+        functionCall: {
+          id,
+          name: SUBMIT_FINAL_RESPONSE_TOOL_NAME,
+          args: { content },
+        },
+      }]
+    : [{ text: content }];
+
 class FixtureLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
   async *generateContentAsync(
-    _request: LlmRequest,
+    request: LlmRequest,
     _stream = false,
     _abortSignal?: AbortSignal,
   ): AsyncGenerator<LlmResponse, void> {
-    void _request;
     void _stream;
     void _abortSignal;
     yield {
@@ -83,7 +98,14 @@ class FixtureLlm extends BaseLlm {
       partial: true,
     };
     yield {
-      content: { role: 'model', parts: [{ text: 'Fixture response' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          'Fixture response',
+          'call-submit-fixture-response',
+        ),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -153,7 +175,9 @@ class ProviderTimeoutLlm extends BaseLlm {
 class ReasoningBoundaryLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
 
-  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
     const internal = {
       text: 'Private chain of thought.',
       thought: true,
@@ -178,14 +202,92 @@ class ReasoningBoundaryLlm extends BaseLlm {
         parts: [
           internal,
           summary,
-          {
-            text: 'Review complete.',
-            partMetadata: modelItemMetadata('final-answer', {
-              phase: 'final',
-              outcome: { kind: 'final' },
-            }),
-          },
+          ...finalResponseParts(
+            request,
+            'Review complete.',
+            'call-submit-reasoning-boundary',
+          ),
         ],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class LeakyFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    const text = this.requests.length === 1
+      ? 'Generated successfully. Now produce the final answer in Chinese.\n\n已生成结果。'
+      : '已生成结果。';
+    yield {
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          text,
+          `call-submit-leaky-${this.requests.length}`,
+        ),
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class MissingFinalSubmissionLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  requestCount = 0;
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    this.requestCount += 1;
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: `Private draft ${this.requestCount}` }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class DelimitedFinalFallbackLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    yield {
+      content: {
+        role: 'model',
+        parts: [{
+          text:
+            'The user asked for a key. Let me return it now.</think>' +
+            '已生成安全密钥：`fixture-key`。',
+        }],
       },
       partial: false,
       turnComplete: true,
@@ -250,7 +352,13 @@ class ToolLoopLlm extends BaseLlm {
               text: 'I should read the requested file before answering.',
               thought: true,
             },
-            { text: '\n\n' },
+            {
+              text: 'The user asked for this file. Let me inspect it before I provide the final answer.',
+              partMetadata: modelItemMetadata('provider-commentary', {
+                phase: 'commentary',
+                outcome: { kind: 'toolCalls' },
+              }),
+            },
             {
               functionCall: {
                 id: 'call-read',
@@ -271,7 +379,11 @@ class ToolLoopLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{ text: 'Tool loop complete' }],
+        parts: finalResponseParts(
+          request,
+          'Tool loop complete',
+          'call-submit-tool-loop',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -329,7 +441,14 @@ class ImageRoutingFixtureLlm extends BaseLlm {
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: 'The screenshot is a login form.' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          'The screenshot is a login form.',
+          'call-submit-image-result',
+        ),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -389,7 +508,11 @@ class VideoRoutingFixtureLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{ text: 'The clip shows a login workflow.' }],
+        parts: finalResponseParts(
+          request,
+          'The clip shows a login workflow.',
+          'call-submit-video-result',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -449,7 +572,14 @@ class UserInputLlm extends BaseLlm {
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: '已按完整链路继续。' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          '已按完整链路继续。',
+          'call-submit-user-input-result',
+        ),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -617,13 +747,11 @@ class MultiRoundUserInputLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{
-          text: '两轮决策均已处理。',
-          partMetadata: modelItemMetadata('multi-round-final', {
-            phase: 'final',
-            outcome: { kind: 'final' },
-          }),
-        }],
+        parts: finalResponseParts(
+          request,
+          '两轮决策均已处理。',
+          'call-submit-multi-round-result',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -728,7 +856,14 @@ class RepeatingToolErrorLlm extends BaseLlm {
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: 'Should not be reached' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          '无法读取该文件，已确认它不存在。',
+          'call-submit-repeated-read-blocker',
+        ),
+      },
       partial: false,
       turnComplete: true,
       finishReason: FinishReason.STOP,
@@ -876,13 +1011,11 @@ class RecoverAfterPrematureFinalLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{
-          text: '项目文件读取完成。',
-          partMetadata: modelItemMetadata('recovered-final', {
-            phase: 'final',
-            outcome: { kind: 'final' },
-          }),
-        }],
+        parts: finalResponseParts(
+          request,
+          '项目文件读取完成。',
+          'call-submit-recovered-read',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -930,13 +1063,11 @@ class FinalAfterInformativeMissingReadLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{
-          text: '分析完成：项目缺少 `.dockerignore`。',
-          partMetadata: modelItemMetadata('informative-miss-final', {
-            phase: 'final',
-            outcome: { kind: 'final' },
-          }),
-        }],
+        parts: finalResponseParts(
+          request,
+          '分析完成：项目缺少 `.dockerignore`。',
+          'call-submit-informative-miss',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -1039,7 +1170,14 @@ class CollaborationLoopLlm extends BaseLlm {
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: 'Collaboration complete' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          'Collaboration complete',
+          'call-submit-collaboration',
+        ),
+      },
       partial: true,
     };
     yield {
@@ -1159,7 +1297,11 @@ class CollaborationRecoveryLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{ text: 'Recovered collaboration complete.' }],
+        parts: finalResponseParts(
+          request,
+          'Recovered collaboration complete.',
+          'call-submit-recovered-collaboration',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -1199,7 +1341,14 @@ class PatchLoopLlm extends BaseLlm {
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: 'Patch complete' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          'Patch complete',
+          'call-submit-patch-loop',
+        ),
+      },
       partial: true,
     };
     yield {
@@ -1247,7 +1396,14 @@ class CommandLoopLlm extends BaseLlm {
       return;
     }
     yield {
-      content: { role: 'model', parts: [{ text: 'Command complete' }] },
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          'Command complete',
+          'call-submit-command-loop',
+        ),
+      },
       partial: true,
     };
     yield {
@@ -1280,7 +1436,11 @@ class CaptureLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{ text: 'Current answer' }],
+        parts: finalResponseParts(
+          request,
+          'Current answer',
+          'call-submit-current-answer',
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -1308,13 +1468,11 @@ class FutureActionFinalLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{
+        parts: finalResponseParts(
+          request,
           text,
-          partMetadata: modelItemMetadata(
-            `future-final-${this.requests.length}`,
-            { phase: 'final', outcome: { kind: 'final' } },
-          ),
-        }],
+          `call-submit-future-${this.requests.length}`,
+        ),
       },
       partial: false,
       turnComplete: true,
@@ -1333,9 +1491,8 @@ class StickyWriteFailureLlm extends BaseLlm {
   requestCount = 0;
 
   async *generateContentAsync(
-    _request: LlmRequest,
+    request: LlmRequest,
   ): AsyncGenerator<LlmResponse, void> {
-    void _request;
     this.requestCount += 1;
     const parts = this.requestCount === 1
       ? [{
@@ -1358,7 +1515,11 @@ class StickyWriteFailureLlm extends BaseLlm {
         }]
         : this.requestCount === 3
           ? [{ text: '项目检查结束。' }]
-          : [{ text: '无法继续：写入参数无效，文件仍未修改。' }];
+          : finalResponseParts(
+              request,
+              '无法继续：写入参数无效，文件仍未修改。',
+              'call-submit-write-blocker',
+            );
     yield {
       content: { role: 'model', parts },
       partial: false,
@@ -1545,18 +1706,22 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
       'turn.started',
       'turn.userMessage',
       'turn.textStarted',
-      'turn.textDelta',
-      'turn.textCompleted',
       'turn.usage',
+      'turn.textCompleted',
       'turn.completed',
     ],
   );
   assert.deepEqual(
     events.map((event) => event.sequence),
-    [1, 2, 3, 4, 5, 6, 7, 8],
+    [1, 2, 3, 4, 5, 6, 7],
   );
-  const text = events.find((event) => event.type === 'turn.textDelta');
-  assert.equal(text?.delta, 'Fixture response');
+  const text = events.find(
+    (event) => event.type === 'turn.textCompleted' && event.phase === 'final',
+  );
+  assert.equal(
+    text?.type === 'turn.textCompleted' ? text.text : undefined,
+    'Fixture response',
+  );
   const usage = events.find((event) => event.type === 'turn.usage');
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
@@ -2122,10 +2287,8 @@ test('RuntimeHost retries a future-action-only final and uses the global output 
   assert.equal(model.requests.length, 2);
   assert.equal(model.requests[0]?.config?.maxOutputTokens, 32_768);
   assert.equal(
-    model.requests[1]?.contents.some((content) =>
-      content.parts?.some((part) =>
-        part.text?.includes('Internal continuation after premature final')
-      )
+    JSON.stringify(model.requests[1]?.contents).includes(
+      'only announces future work',
     ),
     true,
   );
@@ -2430,7 +2593,7 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
   );
   assert.match(
     JSON.stringify(model.requests[2]?.contents),
-    /Internal continuation after incomplete post-question final/u,
+    /Internal continuation after invalid final response/u,
   );
   const preQuestionCommentary = events.find(
     (event) =>
@@ -2438,13 +2601,7 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
       event.phase === 'commentary' &&
       event.itemId === 'pre-question-plan',
   );
-  assert.equal(preQuestionCommentary?.type, 'turn.textCompleted');
-  assert.equal(
-    preQuestionCommentary?.type === 'turn.textCompleted'
-      ? preQuestionCommentary.text
-      : undefined,
-    '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
-  );
+  assert.equal(preQuestionCommentary, undefined);
   assert.equal(
     events.some(
       (event) =>
@@ -2567,18 +2724,18 @@ test('RuntimeHost supports two sequential user-input requests in one Turn', asyn
     ],
   );
   assert.equal(model.requests.length, 3);
-  assert.ok(events.some(
+  assert.equal(events.some(
     (event) =>
       event.type === 'turn.textCompleted' &&
       event.itemId === 'pre-scope-summary' &&
       event.text === '第一阶段分析完成，需要先确认实现范围。',
-  ));
-  assert.ok(events.some(
+  ), false);
+  assert.equal(events.some(
     (event) =>
       event.type === 'turn.textCompleted' &&
       event.itemId === 'pre-rollout-draft' &&
       event.text === '已完成当前阶段的分析，发现 1 个需要确认的决策点。',
-  ));
+  ), false);
   assert.equal(
     events.filter(
       (event) =>
@@ -2897,7 +3054,9 @@ test('RuntimeHost scopes durable Item IDs to each Turn across worker restarts', 
     true,
   );
   assert.equal(
-    [...persisted.keys()].filter((itemId) => itemId.startsWith('turn.usage:')).length,
+    [...persisted.keys()].filter((itemId) =>
+      itemId.startsWith('turn.textCompleted:')
+    ).length,
     2,
   );
 });
@@ -2911,7 +3070,7 @@ test('RuntimeHost classifies durable Item write failures as local state failures
   });
   const native = turnNativeFixture({
     appendItem: (_itemId, _turnId, _sequence, kind) => {
-      if (kind === 'turn.usage') {
+      if (kind === 'turn.textCompleted') {
         throw new Error('fixture durable Item conflict');
       }
       return true;
@@ -3144,6 +3303,180 @@ test('RuntimeHost keeps every provider reasoning channel private', async () => {
     ),
     true,
   );
+});
+
+test('RuntimeHost rejects a final containing model-facing work and publishes only the rewrite', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new LeakyFinalLlm({ model: 'fixture-model' });
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-leaky-final',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-leaky-final-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-leaky-final',
+    workspaceId: 'workspace-leaky-final',
+    threadId: 'thread-leaky-final',
+    turnId: 'turn-leaky-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '生成结果。' }],
+  });
+
+  await terminal;
+
+  assert.equal(model.requests.length, 2);
+  assert.match(
+    JSON.stringify(model.requests[1]?.contents),
+    /candidate contains a model-facing instruction/u,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        (event.type === 'turn.toolCall' &&
+          event.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) ||
+        event.type === 'turn.toolResult',
+    ),
+    false,
+  );
+  assert.equal(
+    events.some((event) =>
+      (event.type === 'turn.textDelta' || event.type === 'turn.textCompleted') &&
+      ('delta' in event ? event.delta : event.text).includes('Now produce')
+    ),
+    false,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '已生成结果。',
+    ),
+    true,
+  );
+});
+
+test('RuntimeHost fails closed when the model omits structured final submission twice', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new MissingFinalSubmissionLlm({ model: 'fixture-model' });
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-missing-final-submission',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-missing-final-submission-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-missing-final-submission',
+    workspaceId: 'workspace-missing-final-submission',
+    threadId: 'thread-missing-final-submission',
+    turnId: 'turn-missing-final-submission',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '请完成任务。' }],
+  });
+
+  await terminal;
+
+  assert.equal(model.requestCount, 2);
+  assert.equal(
+    events.some(
+      (event) =>
+        (event.type === 'turn.textCompleted' ||
+          event.type === 'turn.textDelta') &&
+        ('text' in event ? event.text : event.delta).includes('Private draft'),
+    ),
+    false,
+  );
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completed?.status, 'failed');
+  assert.equal(completed?.error?.kind, 'protocol');
+});
+
+test('RuntimeHost accepts only the suffix after an explicit reasoning boundary', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new DelimitedFinalFallbackLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-delimited-final',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-delimited-final-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-delimited-final',
+    workspaceId: 'workspace-delimited-final',
+    threadId: 'thread-delimited-final',
+    turnId: 'turn-delimited-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '生成密钥。' }],
+  });
+
+  await terminal;
+
+  const visibleText = events.flatMap((event) =>
+    event.type === 'turn.textCompleted' ? [event.text] : []
+  );
+  assert.deepEqual(visibleText, ['已生成安全密钥：`fixture-key`。']);
+  const completed = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(completed?.status, 'completed');
 });
 
 test('RuntimeHost fails after two output truncations without publishing success', async () => {
@@ -4203,11 +4536,24 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     ),
     false,
   );
-  assert.ok(
+  assert.equal(events.some((event) => event.type === 'turn.textDelta'), false);
+  assert.equal(
     events.some(
       (event) =>
-        event.type === 'turn.textDelta' && event.delta === 'Tool loop complete',
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'commentary' &&
+        event.text.includes('The user asked'),
     ),
+    false,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === 'Tool loop complete',
+    ),
+    true,
   );
   assert.ok(persistedKinds.includes('turn.toolCall'));
   assert.ok(persistedKinds.includes('turn.toolResult'));

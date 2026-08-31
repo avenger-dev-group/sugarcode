@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { parseComposerSubmission } from '../../shared/composer.ts';
+import { isTrustedCommentaryId } from '../../shared/conversation/trusted-commentary.ts';
 
 import {
   isConversationThreadProjectionDelta,
@@ -1655,6 +1656,9 @@ export class RuntimeConversationController {
         break;
       case 'turn.textDelta': {
         if (event.phase !== 'final') {
+          if (!isTrustedCommentaryId(event.turnId, event.itemId)) {
+            break;
+          }
           const activities = [...(turn.activities ?? [])];
           const activityIndex = activities.findIndex(
             (activity) =>
@@ -1707,6 +1711,21 @@ export class RuntimeConversationController {
       }
       case 'turn.textCompleted': {
         if (event.phase === 'commentary') {
+          if (!isTrustedCommentaryId(event.turnId, event.itemId)) {
+            turns[index] = {
+              ...turn,
+              messages: turn.messages.filter(
+                (message) =>
+                  message.role !== 'agent' || message.id !== event.itemId,
+              ),
+              activities: turn.activities?.filter(
+                (activity) =>
+                  activity.type !== 'commentary' ||
+                  activity.activity.id !== event.itemId,
+              ),
+            };
+            break;
+          }
           const messages = turn.messages.filter(
             (message) =>
               message.role !== 'agent' || message.id !== event.itemId,
