@@ -140,7 +140,7 @@ const toolInstruction = (availableTools: readonly string[]): string => {
   }
   if (names.includes('submit_final_response')) {
     guidance.push(
-      'For every non-planning Turn, finish exactly once with submit_final_response. Put the entire self-contained user-facing answer in its content field. Ordinary assistant text is private working text and will not be displayed, so never rely on it as part of the answer and do not repeat the answer after the tool succeeds.',
+      'For every non-planning Turn, finish exactly once. Prefer one exact <final_response>...</final_response> envelope so the user-facing answer can stream; put no private work inside it and emit nothing after its closing tag. If an envelope cannot be produced reliably, call submit_final_response with the entire self-contained user-facing answer in content. Ordinary assistant text outside the envelope is private working text and will not be displayed; do not repeat the answer after either form succeeds.',
     );
   }
   return `# Tool use\n\n${guidance.map((line) => `- ${line}`).join('\n')}`;

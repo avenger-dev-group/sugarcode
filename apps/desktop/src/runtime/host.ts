@@ -33,6 +33,7 @@ import { finalResponseCandidateIssue } from './final-response-quality.ts';
 import {
   createSubmitFinalResponseTool,
   extractDelimitedFinalResponse,
+  streamableDelimitedFinalResponse,
   SUBMIT_FINAL_RESPONSE_TOOL_NAME,
   type FinalResponseSubmissionGuard,
 } from './final-response-submission.ts';
@@ -409,6 +410,7 @@ type TextItemState = {
   started: boolean;
   completed: boolean;
   pendingFinal: boolean;
+  streamedFinalText?: string;
 };
 
 type TurnDriverOptions = Readonly<{
@@ -4722,15 +4724,16 @@ export class RuntimeHost {
                 : undefined;
             },
             settleFinalCandidate: (accepted, textItems, recoveredText) => {
+              if (accepted && recoveredText) {
+                this.publishStructuredFinalResponse(command, recoveredText);
+                return;
+              }
               this.settleFinalCandidate(
                 command,
                 textItems,
-                accepted && !recoveredText,
+                accepted,
                 turnMode === 'plan' && Boolean(planSubmissionGuard.proposal),
               );
-              if (accepted && recoveredText) {
-                this.publishStructuredFinalResponse(command, recoveredText);
-              }
             },
             takeProviderError: providerErrorCapture.takeCapturedError,
             validateInvocation: () =>
@@ -5721,7 +5724,9 @@ export class RuntimeHost {
           }
         } else {
           state.text += part.text;
-          if (!bufferModelText) {
+          if (bufferModelText) {
+            this.publishDelimitedFinalDelta(command, state);
+          } else {
             this.emitTransient({
               type: 'turn.textDelta',
               requestId: command.requestId,
@@ -5917,6 +5922,19 @@ export class RuntimeHost {
       state.pendingFinal = false;
       state.completed = true;
       if (!accepted || suppressFinal) {
+        if (state.streamedFinalText !== undefined) {
+          state.streamedFinalText = undefined;
+          this.emit({
+            type: 'turn.textCompleted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            itemId: `${command.turnId}:final-response`,
+            phase: 'commentary',
+            text: '',
+          });
+        }
         continue;
       }
       this.emit({
@@ -5930,6 +5948,41 @@ export class RuntimeHost {
         text: state.text,
       });
     }
+  };
+
+  private publishDelimitedFinalDelta = (
+    command: TurnExecutionCommand,
+    state: TextItemState,
+  ): void => {
+    const visible = streamableDelimitedFinalResponse(state.text)?.trimStart();
+    if (visible === undefined) return;
+    const previous = state.streamedFinalText ?? '';
+    if (!visible.startsWith(previous)) return;
+    const delta = visible.slice(previous.length);
+    if (delta.length === 0) return;
+    const itemId = `${command.turnId}:final-response`;
+    if (previous.length === 0) {
+      this.emitTransient({
+        type: 'turn.textStarted',
+        requestId: command.requestId,
+        workspaceId: command.workspaceId,
+        threadId: command.threadId,
+        turnId: command.turnId,
+        itemId,
+        phase: 'final',
+      });
+    }
+    this.emitTransient({
+      type: 'turn.textDelta',
+      requestId: command.requestId,
+      workspaceId: command.workspaceId,
+      threadId: command.threadId,
+      turnId: command.turnId,
+      itemId,
+      phase: 'final',
+      delta,
+    });
+    state.streamedFinalText = visible;
   };
 
   private publishStructuredFinalResponse = (

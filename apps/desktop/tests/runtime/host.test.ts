@@ -301,6 +301,39 @@ class DelimitedFinalFallbackLlm extends BaseLlm {
   }
 }
 
+class StreamingDelimitedFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    const chunks = [
+      'Private reasoning that must remain hidden.',
+      '</thi',
+      'nk>流式',
+      '最终答复。',
+    ];
+    for (const text of chunks) {
+      yield {
+        content: { role: 'model', parts: [{ text }] },
+        partial: true,
+      };
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: chunks.join('') }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class OutputTruncatedLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
   private requestCount = 0;
@@ -3477,6 +3510,64 @@ test('RuntimeHost accepts only the suffix after an explicit reasoning boundary',
       event.type === 'turn.completed',
   );
   assert.equal(completed?.status, 'completed');
+});
+
+test('RuntimeHost streams only text after the explicit final boundary', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new StreamingDelimitedFinalLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-streaming-final',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-streaming-final-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-streaming-final',
+    workspaceId: 'workspace-streaming-final',
+    threadId: 'thread-streaming-final',
+    turnId: 'turn-streaming-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '请回答。' }],
+  });
+
+  await terminal;
+
+  const deltas = events.flatMap((event) =>
+    event.type === 'turn.textDelta' && event.phase === 'final'
+      ? [event.delta]
+      : []
+  );
+  assert.equal(deltas.length > 1, true);
+  assert.equal(deltas.join(''), '流式最终答复。');
+  assert.equal(
+    events.some((event) =>
+      (event.type === 'turn.textDelta' || event.type === 'turn.textCompleted') &&
+      ('delta' in event ? event.delta : event.text).includes('Private reasoning')
+    ),
+    false,
+  );
+  const final = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.textCompleted' }> =>
+      event.type === 'turn.textCompleted' && event.phase === 'final',
+  );
+  assert.equal(final?.text, '流式最终答复。');
 });
 
 test('RuntimeHost fails after two output truncations without publishing success', async () => {

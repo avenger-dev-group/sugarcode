@@ -5,6 +5,7 @@ import {
   createSubmitFinalResponseTool,
   extractDelimitedFinalResponse,
   MAX_FINAL_RESPONSE_BYTES,
+  streamableDelimitedFinalResponse,
   type FinalResponseSubmissionGuard,
 } from '../../src/runtime/final-response-submission.ts';
 
@@ -30,6 +31,29 @@ test('extracts only explicitly delimited final content without language heuristi
       '<final_response>Answer</final_response>unexpected tail',
     ),
     undefined,
+  );
+});
+
+test('exposes only stream-safe content after a complete final boundary', () => {
+  assert.equal(
+    streamableDelimitedFinalResponse('Private reasoning.</thi'),
+    undefined,
+  );
+  assert.equal(
+    streamableDelimitedFinalResponse('Private reasoning.</think>答复'),
+    '答复',
+  );
+  assert.equal(
+    streamableDelimitedFinalResponse(
+      'Draft<final_response>Answer</final_res',
+    ),
+    'Answer',
+  );
+  assert.equal(
+    streamableDelimitedFinalResponse(
+      'Draft<final_response>Answer</final_response>',
+    ),
+    'Answer',
   );
 });
 
