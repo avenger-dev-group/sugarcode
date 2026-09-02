@@ -6,6 +6,7 @@ import {
   extractDelimitedFinalResponse,
   MAX_FINAL_RESPONSE_BYTES,
   streamableDelimitedFinalResponse,
+  streamableFinalResponseToolContent,
   type FinalResponseSubmissionGuard,
 } from '../../src/runtime/final-response-submission.ts';
 
@@ -54,6 +55,35 @@ test('exposes only stream-safe content after a complete final boundary', () => {
       'Draft<final_response>Answer</final_response>',
     ),
     'Answer',
+  );
+});
+
+test('decodes stream-safe final content from partial tool arguments', () => {
+  assert.equal(
+    streamableFinalResponseToolContent('{"content":"第一行\\n第二'),
+    '第一行\n第二',
+  );
+  assert.equal(
+    streamableFinalResponseToolContent('{"content":"emoji: \\uD83D'),
+    'emoji: ',
+  );
+  assert.equal(
+    streamableFinalResponseToolContent(
+      '{"content":"emoji: \\uD83D\\uDE00"}',
+    ),
+    'emoji: 😀',
+  );
+  assert.equal(
+    streamableFinalResponseToolContent('{"content":"quote: \\'),
+    'quote: ',
+  );
+  assert.equal(
+    streamableFinalResponseToolContent('{"content":"done"}'),
+    'done',
+  );
+  assert.equal(
+    streamableFinalResponseToolContent('{"unrelated":"private"}'),
+    undefined,
   );
 });
 

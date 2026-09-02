@@ -572,6 +572,46 @@ export class OpenAiResponsesReconciler {
     this.slots.set(slot.outputIndex, slot);
   };
 
+  onFunctionCallArgumentsDelta = (event: Readonly<{
+    outputIndex: number;
+    itemId: string;
+    delta: string;
+  }>): Readonly<{
+    itemId: string;
+    callId: string;
+    name: string;
+    arguments: string;
+  }> => {
+    this.ensureOpen('response.function_call_arguments.delta', event);
+    const existing = this.streamSlot(
+      event.outputIndex,
+      'toolCall',
+      event.itemId,
+      'response.function_call_arguments.delta',
+    );
+    const slot: ToolCallSlot = existing?.type === 'toolCall'
+      ? existing
+      : {
+          type: 'toolCall',
+          outputIndex: event.outputIndex,
+          itemId: event.itemId,
+          aliases: new Set(),
+          done: false,
+          callId: '',
+          name: '',
+          arguments: '',
+        };
+    this.rememberAlias(slot, event.itemId);
+    slot.arguments += event.delta;
+    this.slots.set(slot.outputIndex, slot);
+    return {
+      itemId: slot.itemId,
+      callId: slot.callId,
+      name: slot.name,
+      arguments: slot.arguments,
+    };
+  };
+
   private reconcileDoneItem = (
     outputIndex: number,
     item: ResponseOutputItem,

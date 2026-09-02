@@ -34,6 +34,7 @@ import {
   createSubmitFinalResponseTool,
   extractDelimitedFinalResponse,
   streamableDelimitedFinalResponse,
+  streamableFinalResponseToolContent,
   SUBMIT_FINAL_RESPONSE_TOOL_NAME,
   type FinalResponseSubmissionGuard,
 } from './final-response-submission.ts';
@@ -62,6 +63,7 @@ import {
 } from '../shared/model-metadata.ts';
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../shared/model-request-limits.ts';
 import {
+  readModelFunctionCallArgumentsMetadata,
   readModelItemMetadata,
   readModelStepOutcome,
 } from './models/step-outcome.ts';
@@ -411,7 +413,14 @@ type TextItemState = {
   completed: boolean;
   pendingFinal: boolean;
   streamedFinalText?: string;
+  structuredFinalCallId?: string;
+  structuredFinalTargetText?: string;
+  structuredFinalDisplayedText?: string;
+  structuredFinalAnimation?: Promise<void>;
 };
+
+const FINAL_RESPONSE_PRESENTATION_FRAMES = 24;
+const FINAL_RESPONSE_PRESENTATION_INTERVAL_MS = 20;
 
 type TurnDriverOptions = Readonly<{
   runner: Runner;
@@ -428,7 +437,7 @@ type TurnDriverOptions = Readonly<{
   terminalToolResult?: (
     event: Event,
     textItems: Map<string, TextItemState>,
-  ) => boolean;
+  ) => boolean | Promise<boolean>;
   validateFinalCandidate?: (candidateText: string) => string | undefined;
   recoverFinalCandidate?: (candidateText: string) => string | undefined;
   validateRecoveredFinalCandidate?: (
@@ -438,7 +447,7 @@ type TurnDriverOptions = Readonly<{
     accepted: boolean,
     textItems: Map<string, TextItemState>,
     recoveredText?: string,
-  ) => void;
+  ) => void | Promise<void>;
   takeProviderError?: () => RuntimeProviderError | undefined;
   validateInvocation?: () => void;
 }>;
@@ -3602,7 +3611,7 @@ export class RuntimeHost {
             outcome = nextOutcome;
           }
         }
-        if (options.terminalToolResult?.(event, textItems)) {
+        if (await options.terminalToolResult?.(event, textItems)) {
           return;
         }
       }
@@ -3631,7 +3640,7 @@ export class RuntimeHost {
       if (outcome.kind === 'final') {
         const pendingSteers = options.consumePendingSteers?.() ?? [];
         if (pendingSteers.length > 0) {
-          options.settleFinalCandidate?.(false, textItems);
+          await options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
             parts: pendingSteers.flatMap((content, index) => [
@@ -3652,7 +3661,7 @@ export class RuntimeHost {
         const pendingResults =
           (await options.consumePendingResults?.()) ?? null;
         if (pendingResults) {
-          options.settleFinalCandidate?.(false, textItems);
+          await options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
             parts: [
@@ -3671,7 +3680,7 @@ export class RuntimeHost {
           continue;
         }
         if (options.retryFinalAfterToolFailure?.()) {
-          options.settleFinalCandidate?.(false, textItems);
+          await options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
             parts: [
@@ -3700,7 +3709,7 @@ export class RuntimeHost {
           ? options.validateRecoveredFinalCandidate?.(candidateText)
           : options.validateFinalCandidate?.(candidateText);
         if (candidateIssue) {
-          options.settleFinalCandidate?.(false, textItems);
+          await options.settleFinalCandidate?.(false, textItems);
           finalCandidateRecoveryCount += 1;
           if (finalCandidateRecoveryCount >= 2) {
             throw new ProviderAdapterError({
@@ -3732,7 +3741,7 @@ export class RuntimeHost {
           continue;
         }
         if (isFutureActionOnlyFinal(candidateText)) {
-          options.settleFinalCandidate?.(false, textItems);
+          await options.settleFinalCandidate?.(false, textItems);
           futureActionFinalCount += 1;
           if (futureActionFinalCount >= 2) {
             throw new ProviderAdapterError({
@@ -3767,7 +3776,7 @@ export class RuntimeHost {
               'The model submitted a final answer while Turn work remained pending.',
           });
         }
-        options.settleFinalCandidate?.(true, textItems, recoveredText);
+        await options.settleFinalCandidate?.(true, textItems, recoveredText);
         return;
       }
       if (outcome.kind === 'toolCalls') {
@@ -4644,7 +4653,7 @@ export class RuntimeHost {
               !this.activeOperations.get(command.turnId)?.size,
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
-            terminalToolResult: (event, textItems) => {
+            terminalToolResult: async (event, textItems) => {
               const parts = event.content?.parts ?? [];
               if (
                 turnMode === 'plan' &&
@@ -4678,8 +4687,18 @@ export class RuntimeHost {
                 finalResponseSubmissionGuard.content = undefined;
                 return false;
               }
-              this.settleFinalCandidate(command, textItems, false);
-              this.publishStructuredFinalResponse(command, submitted);
+              this.settleFinalCandidate(
+                command,
+                textItems,
+                false,
+                false,
+                true,
+              );
+              await this.finishStructuredFinalResponse(
+                command,
+                textItems,
+                submitted,
+              );
               return true;
             },
             validateFinalCandidate: (candidateText) => {
@@ -4723,9 +4742,13 @@ export class RuntimeHost {
                   )
                 : undefined;
             },
-            settleFinalCandidate: (accepted, textItems, recoveredText) => {
+            settleFinalCandidate: async (accepted, textItems, recoveredText) => {
               if (accepted && recoveredText) {
-                this.publishStructuredFinalResponse(command, recoveredText);
+                await this.finishStructuredFinalResponse(
+                  command,
+                  textItems,
+                  recoveredText,
+                );
                 return;
               }
               this.settleFinalCandidate(
@@ -5610,6 +5633,7 @@ export class RuntimeHost {
     textItems: Map<string, TextItemState>,
     bufferModelText = false,
   ): void => {
+    this.publishStructuredFinalResponseDelta(command, event, textItems);
     const parts = event.content?.parts ?? [];
     this.publishNativeCompaction(command, selection, event, parts);
     const hasUserInputCall = parts.some(
@@ -5725,7 +5749,7 @@ export class RuntimeHost {
         } else {
           state.text += part.text;
           if (bufferModelText) {
-            this.publishDelimitedFinalDelta(command, state);
+            this.publishDelimitedFinalDelta(command, textItems, state);
           } else {
             this.emitTransient({
               type: 'turn.textDelta',
@@ -5775,6 +5799,13 @@ export class RuntimeHost {
       }
       if (part.functionResponse?.name) {
         if (part.functionResponse.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
+          if (
+            event.partial === false &&
+            (!isRecord(part.functionResponse.response) ||
+              part.functionResponse.response.ok !== true)
+          ) {
+            this.discardStructuredFinalResponseDraft(command, textItems);
+          }
           continue;
         }
         const metadata = readModelItemMetadata(part);
@@ -5913,7 +5944,11 @@ export class RuntimeHost {
     textItems: Map<string, TextItemState>,
     accepted: boolean,
     suppressFinal = false,
+    preserveFinalResponseDraft = false,
   ): void => {
+    if ((!accepted || suppressFinal) && !preserveFinalResponseDraft) {
+      this.discardStructuredFinalResponseDraft(command, textItems);
+    }
     for (const [itemId, state] of textItems) {
       if (!state.pendingFinal) {
         continue;
@@ -5922,19 +5957,7 @@ export class RuntimeHost {
       state.pendingFinal = false;
       state.completed = true;
       if (!accepted || suppressFinal) {
-        if (state.streamedFinalText !== undefined) {
-          state.streamedFinalText = undefined;
-          this.emit({
-            type: 'turn.textCompleted',
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            itemId: `${command.turnId}:final-response`,
-            phase: 'commentary',
-            text: '',
-          });
-        }
+        state.streamedFinalText = undefined;
         continue;
       }
       this.emit({
@@ -5952,37 +5975,188 @@ export class RuntimeHost {
 
   private publishDelimitedFinalDelta = (
     command: TurnExecutionCommand,
+    textItems: Map<string, TextItemState>,
     state: TextItemState,
   ): void => {
     const visible = streamableDelimitedFinalResponse(state.text)?.trimStart();
     if (visible === undefined) return;
     const previous = state.streamedFinalText ?? '';
     if (!visible.startsWith(previous)) return;
-    const delta = visible.slice(previous.length);
-    if (delta.length === 0) return;
+    if (visible === previous) return;
+    state.streamedFinalText = visible;
+    this.queueFinalResponseDisplay(command, textItems, visible);
+  };
+
+  private queueFinalResponseDisplay = (
+    command: TurnExecutionCommand,
+    textItems: Map<string, TextItemState>,
+    visible: string,
+    callId?: string,
+  ): void => {
     const itemId = `${command.turnId}:final-response`;
-    if (previous.length === 0) {
-      this.emitTransient({
-        type: 'turn.textStarted',
-        requestId: command.requestId,
-        workspaceId: command.workspaceId,
-        threadId: command.threadId,
-        turnId: command.turnId,
-        itemId,
-        phase: 'final',
-      });
+    let state = textItems.get(itemId);
+    if (
+      callId !== undefined &&
+      state?.structuredFinalCallId !== undefined &&
+      state.structuredFinalCallId !== callId
+    ) {
+      this.discardStructuredFinalResponseDraft(command, textItems);
+      state = undefined;
     }
-    this.emitTransient({
-      type: 'turn.textDelta',
+    const previous = state?.structuredFinalTargetText ?? '';
+    if (!visible.startsWith(previous)) {
+      this.discardStructuredFinalResponseDraft(command, textItems);
+      state = undefined;
+    }
+    state ??= {
+      phase: 'final',
+      text: '',
+      started: false,
+      completed: false,
+      pendingFinal: false,
+      structuredFinalDisplayedText: '',
+    };
+    if (callId !== undefined) {
+      state.structuredFinalCallId = callId;
+    }
+    state.structuredFinalTargetText = visible;
+    textItems.set(itemId, state);
+    this.animateStructuredFinalResponse(command, textItems, state);
+  };
+
+  private publishStructuredFinalResponseDelta = (
+    command: TurnExecutionCommand,
+    event: Event,
+    textItems: Map<string, TextItemState>,
+  ): void => {
+    const streamedCall =
+      readModelFunctionCallArgumentsMetadata(event.customMetadata) ??
+      (event.content?.parts ?? []).map((part) =>
+        readModelFunctionCallArgumentsMetadata(part.partMetadata)
+      ).find((metadata) => metadata !== undefined);
+    if (streamedCall?.name !== SUBMIT_FINAL_RESPONSE_TOOL_NAME) return;
+    const visible = streamableFinalResponseToolContent(
+      streamedCall.arguments,
+    )?.trimStart();
+    if (visible === undefined) return;
+
+    this.queueFinalResponseDisplay(
+      command,
+      textItems,
+      visible,
+      streamedCall.callId,
+    );
+  };
+
+  private animateStructuredFinalResponse = (
+    command: TurnExecutionCommand,
+    textItems: Map<string, TextItemState>,
+    state: TextItemState,
+  ): void => {
+    if (state.structuredFinalAnimation) return;
+    const itemId = `${command.turnId}:final-response`;
+    const animation = (async (): Promise<void> => {
+      while (textItems.get(itemId) === state) {
+        const target = state.structuredFinalTargetText ?? '';
+        const displayed = state.structuredFinalDisplayedText ?? '';
+        if (target === displayed || !target.startsWith(displayed)) return;
+        if (!state.started) {
+          state.started = true;
+          this.emitTransient({
+            type: 'turn.textStarted',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            itemId,
+            phase: 'final',
+          });
+        }
+        const targetCharacters = Array.from(target);
+        const remainingCharacters = Array.from(
+          target.slice(displayed.length),
+        );
+        const chunkSize = Math.max(
+          1,
+          Math.ceil(
+            targetCharacters.length / FINAL_RESPONSE_PRESENTATION_FRAMES,
+          ),
+        );
+        const delta = remainingCharacters.slice(0, chunkSize).join('');
+        state.structuredFinalDisplayedText = displayed + delta;
+        state.text = state.structuredFinalDisplayedText;
+        this.emitTransient({
+          type: 'turn.textDelta',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          itemId,
+          phase: 'final',
+          delta,
+        });
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, FINAL_RESPONSE_PRESENTATION_INTERVAL_MS)
+        );
+      }
+    })();
+    state.structuredFinalAnimation = animation;
+    void animation.finally(() => {
+      if (state.structuredFinalAnimation === animation) {
+        state.structuredFinalAnimation = undefined;
+      }
+    });
+  };
+
+  private discardStructuredFinalResponseDraft = (
+    command: TurnExecutionCommand,
+    textItems: Map<string, TextItemState>,
+  ): void => {
+    const itemId = `${command.turnId}:final-response`;
+    const state = textItems.get(itemId);
+    if (!state) return;
+    textItems.delete(itemId);
+    if (!state.started) return;
+    this.emit({
+      type: 'turn.textCompleted',
       requestId: command.requestId,
       workspaceId: command.workspaceId,
       threadId: command.threadId,
       turnId: command.turnId,
       itemId,
-      phase: 'final',
-      delta,
+      phase: 'commentary',
+      text: '',
     });
-    state.streamedFinalText = visible;
+  };
+
+  private finishStructuredFinalResponse = async (
+    command: TurnExecutionCommand,
+    textItems: Map<string, TextItemState>,
+    text: string,
+  ): Promise<void> => {
+    const itemId = `${command.turnId}:final-response`;
+    let state = textItems.get(itemId);
+    const displayed = state?.structuredFinalDisplayedText ?? '';
+    if (state && !text.startsWith(displayed)) {
+      this.discardStructuredFinalResponseDraft(command, textItems);
+      state = undefined;
+    }
+    state ??= {
+      phase: 'final',
+      text: '',
+      started: false,
+      completed: false,
+      pendingFinal: false,
+      structuredFinalCallId: 'completed',
+      structuredFinalDisplayedText: '',
+    };
+    state.structuredFinalTargetText = text;
+    textItems.set(itemId, state);
+    while (state.structuredFinalDisplayedText !== text) {
+      this.animateStructuredFinalResponse(command, textItems, state);
+      await state.structuredFinalAnimation;
+    }
+    this.publishStructuredFinalResponse(command, text);
   };
 
   private publishStructuredFinalResponse = (

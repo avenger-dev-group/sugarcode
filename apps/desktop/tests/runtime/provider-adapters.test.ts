@@ -16,6 +16,7 @@ import {
 } from '../../src/runtime/model-history-codec.ts';
 import {
   modelItemMetadata,
+  readModelFunctionCallArgumentsMetadata,
   readModelItemMetadata,
   readModelStepOutcome,
 } from '../../src/runtime/models/step-outcome.ts';
@@ -317,10 +318,20 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
         },
       },
       {
+        event: 'response.function_call_arguments.delta',
+        data: {
+          type: 'response.function_call_arguments.delta',
+          sequence_number: 2,
+          output_index: 0,
+          item_id: 'item_fixture',
+          delta: '{"path":"README.md"}',
+        },
+      },
+      {
         event: 'response.function_call_arguments.done',
         data: {
           type: 'response.function_call_arguments.done',
-          sequence_number: 2,
+          sequence_number: 3,
           output_index: 0,
           item_id: 'item_fixture',
           name: 'workspace_read',
@@ -331,7 +342,7 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
         event: 'response.completed',
         data: {
           type: 'response.completed',
-          sequence_number: 3,
+          sequence_number: 4,
           response: {
             id: 'resp_fixture',
             object: 'response',
@@ -393,10 +404,22 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
   const functionCall = events
     .flatMap((event) => event.content?.parts ?? [])
     .find((part) => part.functionCall)?.functionCall;
+  const streamedCall = events
+    .flatMap((event) => event.content?.parts ?? [])
+    .map((part) =>
+      readModelFunctionCallArgumentsMetadata(part.partMetadata)
+    )
+    .find((metadata) => metadata !== undefined);
 
   assert.equal(functionCall?.id, 'call_fixture');
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
+  assert.deepEqual(streamedCall, {
+    itemId: 'item_fixture',
+    callId: 'call_fixture',
+    name: 'workspace/read',
+    arguments: '{"path":"README.md"}',
+  });
   assert.equal(receivedBody?.max_output_tokens, 32_768);
   assert.deepEqual(receivedBody?.reasoning, { effort: 'max' });
   assert.equal(receivedBody?.service_tier, 'priority');
@@ -1027,12 +1050,20 @@ test('OpenAI Chat maps malformed tool JSON to a bounded internal error tool', as
   const call = events.at(-1)?.content?.parts?.find(
     (part) => part.functionCall,
   )?.functionCall;
+  const streamedCall = events
+    .flatMap((event) => event.content?.parts ?? [])
+    .map((part) =>
+      readModelFunctionCallArgumentsMetadata(part.partMetadata)
+    )
+    .find((metadata) => metadata !== undefined);
 
   assert.equal(call?.name, INVALID_TOOL_ARGUMENTS_TOOL_NAME);
   assert.deepEqual(call?.args, {
     toolName: 'workspace_read',
     argumentsText: '{',
   });
+  assert.equal(streamedCall?.name, 'workspace_read');
+  assert.equal(streamedCall?.arguments, '{');
 });
 
 test('OpenAI Chat blocks incomplete tool history before network transport', async (context) => {
@@ -1544,6 +1575,11 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   const listCall = parts.find(
     (part) => part.functionCall?.name === 'workspace_list',
   )?.functionCall;
+  const streamedCall = parts
+    .map((part) =>
+      readModelFunctionCallArgumentsMetadata(part.partMetadata)
+    )
+    .find((metadata) => metadata?.name === 'workspace/read');
 
   const thinking = parts.find((part) => part.thought && part.text === 'Check.');
   assert.equal(thinking?.text, 'Check.');
@@ -1560,6 +1596,7 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   });
   assert.match(receivedBeta, /fast-mode-2026-02-01/u);
   assert.deepEqual(functionCall?.args, { path: 'README.md' });
+  assert.equal(streamedCall?.arguments, '{"path":"README.md"}');
   assert.deepEqual(listCall?.args, { paths: ['app', 'routes'] });
   assert.equal(events.at(-1)?.usageMetadata?.totalTokenCount, 8);
   assert.equal(events.at(-1)?.turnComplete, true);

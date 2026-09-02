@@ -7,9 +7,47 @@ import type {
 } from './types.ts';
 
 const METADATA_KEY = 'sugarcodeModelItem';
+const FUNCTION_CALL_ARGUMENTS_METADATA_KEY =
+  'sugarcodeFunctionCallArguments';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export type ModelFunctionCallArgumentsMetadata = Readonly<{
+  itemId: string;
+  callId: string;
+  name: string;
+  arguments: string;
+}>;
+
+export const modelFunctionCallArgumentsMetadata = (
+  value: ModelFunctionCallArgumentsMetadata,
+): Readonly<Record<string, unknown>> => ({
+  [FUNCTION_CALL_ARGUMENTS_METADATA_KEY]: value,
+});
+
+export const readModelFunctionCallArgumentsMetadata = (
+  value: unknown,
+): ModelFunctionCallArgumentsMetadata | undefined => {
+  const metadata = isRecord(value)
+    ? value[FUNCTION_CALL_ARGUMENTS_METADATA_KEY]
+    : undefined;
+  if (
+    !isRecord(metadata) ||
+    typeof metadata.itemId !== 'string' ||
+    typeof metadata.callId !== 'string' ||
+    typeof metadata.name !== 'string' ||
+    typeof metadata.arguments !== 'string'
+  ) {
+    return undefined;
+  }
+  return {
+    itemId: metadata.itemId,
+    callId: metadata.callId,
+    name: metadata.name,
+    arguments: metadata.arguments,
+  };
+};
 
 export const modelItemMetadata = (
   itemId: string,

@@ -18,7 +18,10 @@ import {
 } from '../../src/runtime/host.ts';
 import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-input-boundary.ts';
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
-import { modelItemMetadata } from '../../src/runtime/models/step-outcome.ts';
+import {
+  modelFunctionCallArgumentsMetadata,
+  modelItemMetadata,
+} from '../../src/runtime/models/step-outcome.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
 import { SUBMIT_FINAL_RESPONSE_TOOL_NAME } from '../../src/runtime/final-response-submission.ts';
 import { VideoAnalyzer } from '../../src/runtime/video-analysis.ts';
@@ -114,6 +117,53 @@ class FixtureLlm extends BaseLlm {
         candidatesTokenCount: 2,
         totalTokenCount: 5,
       },
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class StreamingStructuredFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    const content = '工具参数也会流式显示。';
+    const argumentsJson = JSON.stringify({ content });
+    for (const end of [16, 22, argumentsJson.length]) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            text: '',
+            thought: true,
+            partMetadata: modelFunctionCallArgumentsMetadata({
+              itemId: 'submit-stream-item',
+              callId: 'submit-stream-call',
+              name: SUBMIT_FINAL_RESPONSE_TOOL_NAME,
+              arguments: argumentsJson.slice(0, end),
+            }),
+          }],
+        },
+        partial: true,
+      };
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          content,
+          'submit-stream-call',
+        ),
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
     };
   }
 
@@ -1732,21 +1782,31 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
     ),
   ]);
 
+  const eventTypes = events.map((event) => event.type);
   assert.deepEqual(
-    events.map((event) => event.type),
+    eventTypes.slice(0, 5),
     [
       'runtime.ready',
       'turn.started',
       'turn.userMessage',
       'turn.textStarted',
       'turn.usage',
-      'turn.textCompleted',
-      'turn.completed',
     ],
   );
+  assert.deepEqual(eventTypes.slice(-2), [
+    'turn.textCompleted',
+    'turn.completed',
+  ]);
+  const streamedText = events.flatMap((event) =>
+    event.type === 'turn.textDelta' && event.phase === 'final'
+      ? [event.delta]
+      : [],
+  );
+  assert.equal(streamedText.length > 1, true);
+  assert.equal(streamedText.join(''), 'Fixture response');
   assert.deepEqual(
     events.map((event) => event.sequence),
-    [1, 2, 3, 4, 5, 6, 7],
+    events.map((_event, index) => index + 1),
   );
   const text = events.find(
     (event) => event.type === 'turn.textCompleted' && event.phase === 'final',
@@ -3505,6 +3565,13 @@ test('RuntimeHost accepts only the suffix after an explicit reasoning boundary',
     event.type === 'turn.textCompleted' ? [event.text] : []
   );
   assert.deepEqual(visibleText, ['已生成安全密钥：`fixture-key`。']);
+  const deltas = events.flatMap((event) =>
+    event.type === 'turn.textDelta' && event.phase === 'final'
+      ? [event.delta]
+      : [],
+  );
+  assert.equal(deltas.length > 1, true);
+  assert.equal(deltas.join(''), '已生成安全密钥：`fixture-key`。');
   const completed = events.find(
     (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
       event.type === 'turn.completed',
@@ -3568,6 +3635,61 @@ test('RuntimeHost streams only text after the explicit final boundary', async ()
       event.type === 'turn.textCompleted' && event.phase === 'final',
   );
   assert.equal(final?.text, '流式最终答复。');
+});
+
+test('RuntimeHost streams submit_final_response tool content before completion', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new StreamingStructuredFinalLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-streaming-structured-final',
+    protocolVersion: 7,
+    dataDirectory: '/tmp/sugarcode-v3-streaming-structured-final-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-streaming-structured-final',
+    workspaceId: 'workspace-streaming-structured-final',
+    threadId: 'thread-streaming-structured-final',
+    turnId: 'turn-streaming-structured-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '请回答。' }],
+  });
+
+  await terminal;
+
+  const deltas = events.flatMap((event) =>
+    event.type === 'turn.textDelta' && event.phase === 'final'
+      ? [event.delta]
+      : [],
+  );
+  assert.equal(deltas.length > 1, true);
+  assert.equal(deltas.join(''), '工具参数也会流式显示。');
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '工具参数也会流式显示。',
+    ),
+    true,
+  );
 });
 
 test('RuntimeHost fails after two output truncations without publishing success', async () => {
@@ -4627,7 +4749,13 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     ),
     false,
   );
-  assert.equal(events.some((event) => event.type === 'turn.textDelta'), false);
+  const finalDeltas = events.flatMap((event) =>
+    event.type === 'turn.textDelta' && event.phase === 'final'
+      ? [event.delta]
+      : [],
+  );
+  assert.equal(finalDeltas.length > 1, true);
+  assert.equal(finalDeltas.join(''), 'Tool loop complete');
   assert.equal(
     events.some(
       (event) =>

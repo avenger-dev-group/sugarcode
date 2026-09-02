@@ -8,6 +8,17 @@ const FINAL_RESPONSE_OPEN_TAG = '<final_response>';
 const FINAL_RESPONSE_CLOSE_TAG = '</final_response>';
 const REASONING_CLOSE_TAG = '</think>';
 
+const JSON_STRING_ESCAPES: Readonly<Record<string, string>> = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+};
+
 const withoutPartialClosingTag = (value: string, tag: string): string => {
   const maximum = Math.min(value.length, tag.length - 1);
   for (let length = maximum; length > 0; length -= 1) {
@@ -101,6 +112,64 @@ export const streamableDelimitedFinalResponse = (
   return reasoningEnd < 0
     ? undefined
     : value.slice(reasoningEnd + REASONING_CLOSE_TAG.length);
+};
+
+/**
+ * Decodes the complete prefix of the `content` JSON string while tool-call
+ * arguments are still arriving. An unfinished escape sequence is withheld
+ * until the next chunk so the renderer never receives broken JSON syntax.
+ */
+export const streamableFinalResponseToolContent = (
+  value: string,
+): string | undefined => {
+  const match = /"content"\s*:\s*"/u.exec(value);
+  if (!match || match.index === undefined) return undefined;
+  let cursor = match.index + match[0].length;
+  let result = '';
+  while (cursor < value.length) {
+    const character = value[cursor];
+    if (character === '"') {
+      return result;
+    }
+    if (character !== '\\') {
+      if (character.charCodeAt(0) <= 0x1f) return undefined;
+      result += character;
+      cursor += 1;
+      continue;
+    }
+    const escape = value[cursor + 1];
+    if (escape === undefined) break;
+    if (escape === 'u') {
+      const hex = value.slice(cursor + 2, cursor + 6);
+      if (hex.length < 4) break;
+      if (!/^[0-9a-f]{4}$/iu.test(hex)) return undefined;
+      const codeUnit = Number.parseInt(hex, 16);
+      if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+        const lowEscape = value.slice(cursor + 6, cursor + 12);
+        if (lowEscape.length < 6) break;
+        if (/^\\u[0-9a-f]{4}$/iu.test(lowEscape)) {
+          const lowCodeUnit = Number.parseInt(lowEscape.slice(2), 16);
+          if (lowCodeUnit >= 0xdc00 && lowCodeUnit <= 0xdfff) {
+            result += String.fromCodePoint(
+              0x10000 +
+                ((codeUnit - 0xd800) << 10) +
+                (lowCodeUnit - 0xdc00),
+            );
+            cursor += 12;
+            continue;
+          }
+        }
+      }
+      result += String.fromCharCode(codeUnit);
+      cursor += 6;
+      continue;
+    }
+    const decoded = JSON_STRING_ESCAPES[escape];
+    if (decoded === undefined) return undefined;
+    result += decoded;
+    cursor += 2;
+  }
+  return result;
 };
 
 export const createSubmitFinalResponseTool = (

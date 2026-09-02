@@ -31,7 +31,10 @@ import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
-import { modelItemMetadata } from './step-outcome.ts';
+import {
+  modelFunctionCallArgumentsMetadata,
+  modelItemMetadata,
+} from './step-outcome.ts';
 import { classifyTransportError } from './transport-error.ts';
 import { normalizeToolArguments } from './tool-arguments.ts';
 import type {
@@ -664,6 +667,24 @@ export class AnthropicLlm extends BaseLlm {
               block?.type === 'tool'
             ) {
               block.arguments += event.delta.partial_json;
+              const name =
+                request.toolNameByProviderName.get(block.name) ?? block.name;
+              yield {
+                content: {
+                  role: 'model',
+                  parts: [{
+                    text: '',
+                    thought: true,
+                    partMetadata: modelFunctionCallArgumentsMetadata({
+                      itemId: block.id,
+                      callId: block.id,
+                      name,
+                      arguments: block.arguments,
+                    }),
+                  }],
+                },
+                partial: true,
+              };
             } else if (
               event.delta.type === 'compaction_delta' &&
               block?.type === 'compaction'

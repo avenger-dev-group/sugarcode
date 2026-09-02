@@ -50,7 +50,10 @@ import {
 } from './openai-responses-replay.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
-import { modelItemMetadata } from './step-outcome.ts';
+import {
+  modelFunctionCallArgumentsMetadata,
+  modelItemMetadata,
+} from './step-outcome.ts';
 import { normalizeToolArguments } from './tool-arguments.ts';
 import { classifyTransportError } from './transport-error.ts';
 import type {
@@ -1042,6 +1045,33 @@ export class OpenAiLlm extends BaseLlm {
         case 'response.output_item.added':
           reconciler.onOutputItemAdded(event.output_index, event.item);
           break;
+        case 'response.function_call_arguments.delta': {
+          const streamedCall = reconciler.onFunctionCallArgumentsDelta({
+            outputIndex: event.output_index,
+            itemId: event.item_id,
+            delta: event.delta,
+          });
+          const name =
+            request.toolNameByProviderName.get(streamedCall.name) ??
+            streamedCall.name;
+          if (name) {
+            yield {
+              content: {
+                role: 'model',
+                parts: [{
+                  text: '',
+                  thought: true,
+                  partMetadata: modelFunctionCallArgumentsMetadata({
+                    ...streamedCall,
+                    name,
+                  }),
+                }],
+              },
+              partial: true,
+            };
+          }
+          break;
+        }
         case 'response.function_call_arguments.done': {
           reconciler.onFunctionCallArgumentsDone({
             outputIndex: event.output_index,
@@ -1377,6 +1407,26 @@ export class OpenAiLlm extends BaseLlm {
           current.name += delta.function?.name ?? '';
           current.arguments += delta.function?.arguments ?? '';
           calls.set(delta.index, current);
+          const name =
+            request.toolNameByProviderName.get(current.name) ?? current.name;
+          if (name) {
+            yield {
+              content: {
+                role: 'model',
+                parts: [{
+                  text: '',
+                  thought: true,
+                  partMetadata: modelFunctionCallArgumentsMetadata({
+                    itemId: current.itemId,
+                    callId: current.id,
+                    name,
+                    arguments: current.arguments,
+                  }),
+                }],
+              },
+              partial: true,
+            };
+          }
         }
       }
     }
