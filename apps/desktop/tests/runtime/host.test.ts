@@ -1569,6 +1569,88 @@ class FutureActionFinalLlm extends BaseLlm {
   }
 }
 
+test('RuntimeHost applies the general workspace profile without loading project instructions', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new CaptureLlm({ model: 'fixture-model' });
+  let instructionReads = 0;
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    ...turnNativeFixture(),
+    ensureWorkspace: (): void => undefined,
+    workspaceInstructionsJson: () => {
+      instructionReads += 1;
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: [],
+        chains: [{ scope: '.', paths: [] }],
+        errors: [],
+      });
+    },
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-workspace-profile',
+    protocolVersion: 8,
+    dataDirectory: '/tmp/sugarcode-workspace-profile-fixture',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'workspace.open',
+    requestId: 'request-open-workspace-profile',
+    workspaceId: 'workspace-profile-fixture',
+    canonicalRoot: '/fixture/managed-task',
+    kind: 'workspace',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-workspace-profile',
+    workspaceId: 'workspace-profile-fixture',
+    threadId: 'thread-workspace-profile',
+    turnId: 'turn-workspace-profile',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '解释一下复利。' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for workspace Turn.')), 2_000),
+    ),
+  ]);
+
+  assert.equal(instructionReads, 0);
+  assert.equal(model.requests.length, 1);
+  const request = model.requests[0];
+  assert.match(
+    JSON.stringify(request?.config?.systemInstruction),
+    /General workspace profile/u,
+  );
+  assert.equal(Object.hasOwn(request?.toolsDict ?? {}, 'workspace_apply_patch'), true);
+  assert.equal(Object.hasOwn(request?.toolsDict ?? {}, 'project_action'), false);
+  assert.equal(
+    events.find((event) => event.type === 'workspace.opened')?.kind,
+    'workspace',
+  );
+});
+
 class StickyWriteFailureLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
   requestCount = 0;
@@ -1756,7 +1838,7 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-fixture',
   });
   host.handle({
@@ -1869,7 +1951,7 @@ test('RuntimeHost applies the selected connection request deadline', async () =>
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-long-wait',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-long-wait-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -1992,7 +2074,7 @@ test('RuntimeHost delegates image understanding to the configured analysis model
   host.handle({
     type: 'initialize',
     requestId: 'request-image-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-image-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2146,7 +2228,7 @@ test('RuntimeHost delegates video understanding without changing the configured 
   host.handle({
     type: 'initialize',
     requestId: 'request-video-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-video-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2225,7 +2307,7 @@ test('RuntimeHost makes /plan immutable read-only at the tool boundary', async (
   host.handle({
     type: 'initialize',
     requestId: 'request-plan-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-plan-boundary-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2302,7 +2384,7 @@ test('RuntimeHost durably seeds a revised user message without appending it twic
   host.handle({
     type: 'initialize',
     requestId: 'request-revise-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-revise-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2355,7 +2437,7 @@ test('RuntimeHost retries a future-action-only final and uses the global output 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-future-final',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-future-final-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2424,7 +2506,7 @@ test('RuntimeHost keeps a failed write unresolved across a successful read', asy
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-sticky-write',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-sticky-write-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2488,7 +2570,7 @@ test('RuntimeHost accepts a complete plan after workspace tools recover a failed
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-inspection-fallback',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v4-inspection-fallback-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -2572,7 +2654,7 @@ test('RuntimeHost pauses for structured user input and resumes the same Turn', a
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-input',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-user-input-fixture',
   });
   host.handle({
@@ -2647,7 +2729,7 @@ test('RuntimeHost replaces a post-question plan continuation with a complete fin
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-split-plan',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v4-split-plan-fixture',
   });
   host.handle({
@@ -2764,7 +2846,7 @@ test('RuntimeHost supports two sequential user-input requests in one Turn', asyn
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-multi-input',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v4-multi-input-fixture',
   });
   host.handle({
@@ -2875,7 +2957,7 @@ test('RuntimeHost returns partial decisions when the user cancels a request', as
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-cancel-input',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v4-cancel-input-fixture',
   });
   host.handle({
@@ -2945,7 +3027,7 @@ test('RuntimeHost resolves a pending user-input request when the Turn stops', as
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-stop-input',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v4-stop-input-fixture',
   });
   host.handle({
@@ -3033,7 +3115,7 @@ test('RuntimeHost generates and conditionally persists an untitled Thread title'
   host.handle({
     type: 'initialize',
     requestId: 'request-title-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-title-fixture',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -3106,7 +3188,7 @@ test('RuntimeHost scopes durable Item IDs to each Turn across worker restarts', 
     host.handle({
       type: 'initialize',
       requestId: `request-initialize-${suffix}`,
-    protocolVersion: 7,
+    protocolVersion: 8,
       dataDirectory: `/tmp/sugarcode-v3-restart-${suffix}`,
       nativeModulePath: '/fixture/sugarcode-desktop-native.node',
     });
@@ -3186,7 +3268,7 @@ test('RuntimeHost classifies durable Item write failures as local state failures
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-state-failure',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-state-failure',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -3236,7 +3318,7 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-commentary',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-commentary-fixture',
   });
   host.handle({
@@ -3293,7 +3375,7 @@ test('RuntimeHost preserves typed provider failures caught by ADK', async () => 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-provider-timeout',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-provider-timeout-fixture',
   });
   host.handle({
@@ -3352,7 +3434,7 @@ test('RuntimeHost keeps every provider reasoning channel private', async () => {
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-reasoning-boundary',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-reasoning-boundary-fixture',
   });
   host.handle({
@@ -3415,7 +3497,7 @@ test('RuntimeHost rejects a final containing model-facing work and publishes onl
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-leaky-final',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-leaky-final-fixture',
   });
   host.handle({
@@ -3485,7 +3567,7 @@ test('RuntimeHost fails closed when the model omits structured final submission 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-missing-final-submission',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-missing-final-submission-fixture',
   });
   host.handle({
@@ -3540,7 +3622,7 @@ test('RuntimeHost accepts only the suffix after an explicit reasoning boundary',
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-delimited-final',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-delimited-final-fixture',
   });
   host.handle({
@@ -3595,7 +3677,7 @@ test('RuntimeHost streams only text after the explicit final boundary', async ()
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-streaming-final',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-streaming-final-fixture',
   });
   host.handle({
@@ -3653,7 +3735,7 @@ test('RuntimeHost streams submit_final_response tool content before completion',
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-streaming-structured-final',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-streaming-structured-final-fixture',
   });
   host.handle({
@@ -3710,7 +3792,7 @@ test('RuntimeHost fails after two output truncations without publishing success'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-truncated',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-truncated-fixture',
   });
   host.handle({
@@ -3784,7 +3866,7 @@ test('RuntimeHost gives repeated execution failures one guided recovery attempt'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-tool-error',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-tool-error-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -3857,7 +3939,7 @@ test('RuntimeHost stops a third identical execution failure without progress', a
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-persistent-tool-error',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-persistent-tool-error-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -3933,7 +4015,7 @@ test('RuntimeHost stops repeated writes when project instructions are unavailabl
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-unavailable-instructions',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-unavailable-instructions-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4011,7 +4093,7 @@ test('RuntimeHost retries one premature final after a failed tool result', async
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-final-recovery',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-final-recovery-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4108,7 +4190,7 @@ test('RuntimeHost keeps a summary final after workspace_read confirms a missing 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-informative-read-miss',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-informative-read-miss-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4211,7 +4293,7 @@ test('RuntimeHost streams and controls native PTY sessions without a CLI bridge'
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-fixture',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4327,7 +4409,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-collaboration',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-collaboration',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4418,7 +4500,7 @@ test('RuntimeHost recovers a child Agent after a retryable stream timeout', asyn
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-collaboration-recovery',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-collaboration-recovery',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4497,7 +4579,7 @@ test('RuntimeHost preserves a child Agent partial result after recovery is exhau
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize-collaboration-partial',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/tmp/sugarcode-v3-collaboration-partial',
     nativeModulePath: '/fixture/native.node',
   });
@@ -4658,7 +4740,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -4667,6 +4749,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
     requestId: 'request-workspace',
     workspaceId: 'workspace-fixture',
     canonicalRoot: '/fixture/workspace',
+    kind: 'project',
   });
   host.handle({
     type: 'workspace.list',
@@ -4858,7 +4941,7 @@ test('RuntimeHost automatically resumes a recovered workspace patch', async () =
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -4928,7 +5011,7 @@ test('RuntimeHost publishes concurrent approvals and resolves either one indepen
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -5067,7 +5150,7 @@ test('RuntimeHost automatically authorizes a workspace patch', async () => {
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -5207,7 +5290,7 @@ test('RuntimeHost automatically authorizes a sandboxed command', async () => {
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });
@@ -5454,7 +5537,7 @@ test('RuntimeHost rebuilds legacy tool results and interrupted task intent into 
   host.handle({
     type: 'initialize',
     requestId: 'request-initialize',
-    protocolVersion: 7,
+    protocolVersion: 8,
     dataDirectory: '/fixture/.sugarcode/v3',
     nativeModulePath: '/fixture/sugarcode-desktop-native.node',
   });

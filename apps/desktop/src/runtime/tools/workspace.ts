@@ -3,6 +3,7 @@ import { Type, type Schema } from '@google/genai';
 import { basename, isAbsolute } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../native.ts';
+import type { SugarCodeExperience } from '../agent-instructions.ts';
 import {
   drawioAddPatch,
   isDrawioPath,
@@ -788,6 +789,7 @@ export const createWorkspaceTools = (
   instructionContext?: WorkspaceInstructionContext,
   threadId: string = workspaceId,
   nativeWorkspaceId: string = workspaceId,
+  experience: SugarCodeExperience = 'project',
 ): readonly FunctionTool<Schema>[] => {
   const tools: readonly FunctionTool<Schema>[] = [
   new FunctionTool({
@@ -1113,7 +1115,7 @@ export const createWorkspaceTools = (
   new FunctionTool({
     name: 'shell_exec',
     description:
-      'Run a bounded command in the workspace. Prefer workspace_list, workspace_read, and workspace_search for file inspection. Sandboxed mode accepts a single verified absolute executable plus a separate arguments array; do not guess executable paths, and pass an explicit search root such as "." as the first argument to find. It is filesystem-read-only, network-denied, and executes automatically. Full Access uses the selected Shell with a lazily captured, task-bound exported environment; check the result environment metadata before concluding that a command is not installed. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval unless the current conversation or project is trusted.',
+      `Run a bounded command in the ${experience === 'project' ? 'project workspace' : 'managed task workspace'}. Prefer workspace_list, workspace_read, and workspace_search for file inspection. Sandboxed mode accepts a single verified absolute executable plus a separate arguments array; do not guess executable paths, and pass an explicit search root such as "." as the first argument to find. It is filesystem-read-only, network-denied, and executes automatically. Full Access uses the selected Shell with a lazily captured, task-bound exported environment; check the result environment metadata before concluding that a command is not installed. Use fullAccess only when shell syntax, writes, network, or access outside the workspace is required; Full Access requires approval${experience === 'project' ? ' unless the current conversation or project is trusted' : ''}.`,
     parameters: commandSchema,
     execute: async (input) => {
       if (
@@ -1163,9 +1165,14 @@ export const createWorkspaceTools = (
           return instructionCheck;
         }
       }
-      const operationInspection = parseNativeResult(
-        await nativeRuntime.inspectProjectEnvironmentJson(workspaceId, threadId),
-      );
+      const operationInspection = experience === 'project'
+        ? parseNativeResult(
+            await nativeRuntime.inspectProjectEnvironmentJson(
+              workspaceId,
+              threadId,
+            ),
+          )
+        : { state: 'absent' };
       const projectConfigHash =
         isRecord(operationInspection) &&
         operationInspection.state === 'trustRequired' &&
@@ -1214,5 +1221,10 @@ export const createWorkspaceTools = (
     },
   }),
   ];
-  return access === 'readOnly' ? tools.slice(0, 3) : tools;
+  if (access === 'readOnly') {
+    return tools.slice(0, 3);
+  }
+  return experience === 'workspace'
+    ? tools.filter((tool) => tool.name !== 'project_action')
+    : tools;
 };

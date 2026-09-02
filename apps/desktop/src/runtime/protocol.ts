@@ -76,7 +76,9 @@ import {
 } from '../shared/goals.ts';
 import { isConversationGoalMutation } from '../shared/conversation/validation/requests.ts';
 
-export const RUNTIME_PROTOCOL_VERSION = 7 as const;
+export const RUNTIME_PROTOCOL_VERSION = 8 as const;
+
+export type RuntimeWorkspaceKind = 'project' | 'workspace';
 
 export const MAX_RUNTIME_USER_INPUT_QUESTIONS = 3;
 export const MAX_RUNTIME_USER_INPUT_OPTIONS = 3;
@@ -337,6 +339,7 @@ export type RuntimeCommand =
       requestId: string;
       workspaceId: string;
       canonicalRoot: string;
+      kind: RuntimeWorkspaceKind;
     }>
   | Readonly<{
       type: 'workspace.list';
@@ -935,6 +938,7 @@ export type RuntimeEvent =
         type: 'workspace.opened';
         workspaceId: string;
         canonicalRoot: string;
+        kind: RuntimeWorkspaceKind;
       }>)
   | (RuntimeEventBase &
       Readonly<{
@@ -1645,7 +1649,8 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
       return (
         typeof value.workspaceId === 'string' &&
         typeof value.canonicalRoot === 'string' &&
-        value.canonicalRoot.length > 0
+        value.canonicalRoot.length > 0 &&
+        (value.kind === 'project' || value.kind === 'workspace')
       );
     case 'workspace.list':
       return (
@@ -2303,7 +2308,8 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
       return (
         typeof value.workspaceId === 'string' &&
         typeof value.canonicalRoot === 'string' &&
-        value.canonicalRoot.length > 0
+        value.canonicalRoot.length > 0 &&
+        (value.kind === 'project' || value.kind === 'workspace')
       );
     case 'workspace.listResult':
       return (

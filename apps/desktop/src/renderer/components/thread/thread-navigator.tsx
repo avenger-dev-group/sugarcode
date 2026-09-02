@@ -455,7 +455,7 @@ export const ThreadNavigator = ({
         ) : null}
         {threadIds.length === 0 ? (
           <p className="px-2 py-1 text-sm font-normal leading-normal text-tertiary">
-            {nested ? '还没有任务' : '还没有聊天'}
+            {nested ? '还没有任务' : '还没有工作台任务'}
           </p>
         ) : null}
       </div>
@@ -685,8 +685,8 @@ export const ThreadNavigator = ({
             >
               <SectionHeading
                 id="chat-section-title"
-                label="聊天"
-                actionLabel="新建聊天"
+                label="工作台"
+                actionLabel="新建任务"
                 disabled={
                   workspace.busy || (chatActive && navigationDisabled)
                 }
@@ -819,7 +819,7 @@ export const ThreadNavigator = ({
               {deleteRequest?.kind === 'project'
                 ? `只会从项目列表移除“${deleteRequest.name}”，不会删除本地文件或历史会话。重新打开该文件夹即可恢复。`
                 : deleteRequest?.workspaceKind === 'chat'
-                  ? `删除“${deleteRequest.title}”后无法恢复，对应的本地聊天文件夹及其中所有文件也会被永久删除。`
+                  ? `删除“${deleteRequest.title}”后无法恢复，对应的本地工作台文件夹及其中所有文件也会被永久删除。`
                 : `删除“${deleteRequest?.title ?? '新对话'}”后无法恢复，确定要继续吗？`}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -1013,7 +1013,7 @@ const ThreadButton = ({
           disabled={renameDisabled}
           onSelect={() => onRequestRename(threadId)}
         >
-          重命名聊天
+          重命名任务
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

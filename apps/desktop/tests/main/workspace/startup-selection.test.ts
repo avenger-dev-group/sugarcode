@@ -794,7 +794,7 @@ test('deleting the active chat switches away before removing its folder', async 
       .update(replacementDirectory)
       .digest('hex'),
     path: replacementDirectory,
-    name: '聊天文件',
+    name: '工作台',
     threadId: null,
   });
   assert.equal(threadRegistry.getWorkspaceIdForOwner(deletedOwnerKey), null);
@@ -889,7 +889,7 @@ test('chat activation creates a dated managed directory and one atomic launch bi
     generation: 1,
     workspaceId,
     path: expectedPath,
-    name: '聊天文件',
+    name: '工作台',
     threadId: null,
   });
 });

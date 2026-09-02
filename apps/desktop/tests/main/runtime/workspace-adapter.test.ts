@@ -54,6 +54,7 @@ class FixtureRuntime {
           requestId: command.requestId,
           workspaceId: command.workspaceId,
           canonicalRoot: command.canonicalRoot,
+          kind: command.kind,
         }
       : command.type === 'workspace.list'
         ? {
@@ -192,7 +193,7 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
   });
 
   assert.equal(
-    await adapter.switchWorkspace('/fixture/project'),
+    await adapter.switchWorkspace('/fixture/project', 'project'),
     true,
   );
   const workspaceId = adapter.getWorkspaceBindingId();
@@ -240,6 +241,7 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
     requestId: 'restart-replay',
     workspaceId,
     canonicalRoot: '/fixture/project',
+    kind: 'project',
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(conversation.switched.length, 2);
@@ -247,4 +249,29 @@ test('RuntimeWorkspaceAdapter binds, browses, restores, and routes inactive dele
     [workspaceId, '/fixture/project'],
     [workspaceId, '/fixture/project'],
   ]);
+});
+
+test('RuntimeWorkspaceAdapter maps managed Chat directories to the general workspace profile', async () => {
+  const runtime = new FixtureRuntime();
+  const conversation = new FixtureConversation();
+  const adapter = new RuntimeWorkspaceAdapter({
+    runtime: runtime as unknown as RuntimeSupervisor,
+    connection: {
+      subscribe: (): (() => void) => () => undefined,
+    } as unknown as RuntimeConnectionController,
+    conversation: conversation as unknown as RuntimeConversationController,
+    threadRegistry: new ThreadRegistry(),
+    getWorkspaceSwitchBlock: () => null,
+    onWorkspaceOpened: () => undefined,
+  });
+
+  assert.equal(
+    await adapter.switchWorkspace('/fixture/managed-task', 'chat'),
+    true,
+  );
+  const opened = runtime.commands.find(
+    (command) => command.type === 'workspace.open',
+  );
+  assert.equal(opened?.type, 'workspace.open');
+  assert.equal(opened?.type === 'workspace.open' ? opened.kind : undefined, 'workspace');
 });

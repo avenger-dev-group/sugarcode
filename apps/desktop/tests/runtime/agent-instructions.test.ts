@@ -79,6 +79,26 @@ test('read-only role prompts expose a bounded mission without write or collabora
   assert.match(auditor, /high-confidence defects/u);
 });
 
+test('general workspace instructions treat the directory as an artifact area without losing creation tools', () => {
+  const prompt = buildAgentInstructions({
+    role: 'main',
+    access: 'workspaceWrite',
+    experience: 'workspace',
+    platform: 'darwin',
+    availableTools: mainTools,
+    collaborationEnabled: true,
+  });
+
+  assert.match(prompt, /General workspace profile/u);
+  assert.match(prompt, /directory contents are not implicit context/u);
+  assert.match(prompt, /Answer ordinary questions directly without listing, searching, or reading/u);
+  assert.match(prompt, /web pages, scripts, spreadsheets, documents, PDFs/u);
+  assert.match(prompt, /task files and text-based artifacts/u);
+  assert.match(prompt, /artifact implementation subagent|Multi-Agent coordination/u);
+  assert.doesNotMatch(prompt, /Project development profile/u);
+  assert.doesNotMatch(prompt, /workspaceInstructionsRequired/u);
+});
+
 test('final response guidance is adaptive without requiring empty template sections', () => {
   assert.match(FINAL_RESPONSE_INSTRUCTION, /Adapt the response to the actual result/u);
   assert.match(FINAL_RESPONSE_INSTRUCTION, /Use headings only when they improve scanning/u);

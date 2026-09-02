@@ -491,7 +491,7 @@ const CreateKnowledgeDialog = ({
               <ChoiceButton
                 active={!projectScoped}
                 title="全局可见"
-                description="项目任务和普通聊天均可 @"
+                description="项目任务和工作台任务均可 @"
                 onClick={() => setProjectScoped(false)}
               />
               <ChoiceButton
@@ -1872,7 +1872,7 @@ const SettingsPanel = ({
               <ChoiceButton
                 active={!projectScoped}
                 title="全局可见"
-                description="所有项目和普通聊天均可 @"
+                description="所有项目和工作台任务均可 @"
                 onClick={() => setProjectScoped(false)}
               />
               <ChoiceButton

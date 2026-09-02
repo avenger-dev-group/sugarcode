@@ -100,6 +100,30 @@ test('workspace_list accepts a bounded batch and preserves each path', async () 
   });
 });
 
+test('general workspaces keep artifact tools without exposing project actions', () => {
+  const tools = createWorkspaceTools(
+    {} as NativeRuntimeBinding,
+    'workspace-fixture',
+    undefined,
+    undefined,
+    'workspaceWrite',
+    undefined,
+    'thread-fixture',
+    'workspace-fixture',
+    'workspace',
+  );
+  const names = tools.map((tool) => tool.name);
+
+  assert.equal(names.includes('workspace_apply_patch'), true);
+  assert.equal(names.includes('drawio_generate'), true);
+  assert.equal(names.includes('shell_exec'), true);
+  assert.equal(names.includes('project_action'), false);
+  assert.match(
+    tools.find((tool) => tool.name === 'shell_exec')?.description ?? '',
+    /managed task workspace/u,
+  );
+});
+
 test('drawio_generate validates native XML and saves it through the workspace boundary', async () => {
   let operationTool = '';
   let approvedPatch = '';

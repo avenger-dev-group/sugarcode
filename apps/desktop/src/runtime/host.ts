@@ -119,6 +119,7 @@ import {
   type RuntimeUserInputSubmission,
   type RuntimeWorkspaceDocument,
   type RuntimeWorkspaceEntry,
+  type RuntimeWorkspaceKind,
 } from './protocol.ts';
 import {
   createWorkspaceTools,
@@ -820,6 +821,7 @@ export class RuntimeHost {
   private readonly pendingUserInputs = new Map<string, PendingUserInput>();
   private readonly activeOperations = new Map<string, Set<string>>();
   private readonly terminals = new Map<string, ActiveTerminal>();
+  private readonly workspaceKinds = new Map<string, RuntimeWorkspaceKind>();
   private readonly mcp = new RuntimeMcpManager();
   private readonly collaboration = new CollaborationCoordinator();
   private readonly contextManager = new ContextManager();
@@ -867,6 +869,7 @@ export class RuntimeHost {
         break;
       case 'workspace.open':
         this.requireReady(command.requestId);
+        this.workspaceKinds.set(command.workspaceId, command.kind);
         this.requireNative().ensureWorkspace(
           command.workspaceId,
           command.canonicalRoot,
@@ -876,6 +879,7 @@ export class RuntimeHost {
           requestId: command.requestId,
           workspaceId: command.workspaceId,
           canonicalRoot: command.canonicalRoot,
+          kind: command.kind,
         });
         break;
       case 'workspace.list':
@@ -4260,7 +4264,10 @@ export class RuntimeHost {
             .filter(Boolean)
             .join('\n\n')
         : '';
-      const workspaceInstructions = this.nativeRuntime
+      const experience =
+        this.workspaceKinds.get(command.workspaceId) ?? 'project';
+      const workspaceInstructions =
+        experience === 'project' && this.nativeRuntime
         ? new WorkspaceInstructionContext(this.nativeRuntime, nativeWorkspaceId)
         : undefined;
       workspaceInstructions?.preloadRoot();
@@ -4455,6 +4462,7 @@ export class RuntimeHost {
                 workspaceInstructions,
                 command.threadId,
                 nativeWorkspaceId,
+                experience,
               ),
               ...(turnMode === 'execute'
                 ? this.mcp.toolsForTurn((request) =>
@@ -4469,10 +4477,13 @@ export class RuntimeHost {
       ];
       const agent = new LlmAgent({
         name: 'sugarcode_agent',
-        description: 'SugarCode local coding agent',
+        description: experience === 'project'
+          ? 'SugarCode local project development agent'
+          : 'SugarCode general workspace agent',
         instruction: buildAgentInstructions({
           role: 'main',
           access: turnAccess,
+          experience,
           turnMode,
           platform: process.platform,
           availableTools: mainTools.map((tool) => tool.name),
@@ -5344,7 +5355,10 @@ export class RuntimeHost {
       const nativeWorkspaceId = this.nativeRuntime
         ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
         : command.workspaceId;
-      const workspaceInstructions = this.nativeRuntime
+      const experience =
+        this.workspaceKinds.get(command.workspaceId) ?? 'project';
+      const workspaceInstructions =
+        experience === 'project' && this.nativeRuntime
         ? new WorkspaceInstructionContext(this.nativeRuntime, nativeWorkspaceId)
         : undefined;
       workspaceInstructions?.preloadRoot();
@@ -5378,6 +5392,7 @@ export class RuntimeHost {
               workspaceInstructions,
               command.threadId,
               nativeWorkspaceId,
+              experience,
             ),
             ...(context.task.role === 'worker'
               ? this.mcp.toolsForTurn((request) =>
@@ -5427,6 +5442,7 @@ export class RuntimeHost {
         instruction: buildAgentInstructions({
           role: context.task.role,
           access: context.task.access,
+          experience,
           platform: process.platform,
           availableTools: agentTools.map((tool) => tool.name),
           collaborationEnabled: false,

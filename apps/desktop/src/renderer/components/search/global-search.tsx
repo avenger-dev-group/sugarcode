@@ -49,7 +49,7 @@ type GlobalSearchProps = Readonly<{
   onOpenSettings: () => void;
 }>;
 
-type SearchGroup = '快捷操作' | '项目' | '聊天' | '知识库' | 'Skills';
+type SearchGroup = '快捷操作' | '项目' | '工作台' | '知识库' | 'Skills';
 
 type SearchItem = Readonly<{
   id: string;
@@ -63,7 +63,7 @@ type SearchItem = Readonly<{
 }>;
 
 const RECENT_STORAGE_KEY = 'sugarcode.desktop.global-search-recent.v1';
-const GROUPS: readonly SearchGroup[] = ['快捷操作', '项目', '聊天', '知识库', 'Skills'];
+const GROUPS: readonly SearchGroup[] = ['快捷操作', '项目', '工作台', '知识库', 'Skills'];
 
 const loadRecent = (): RecentGlobalSearchItems => {
   try {
@@ -143,8 +143,8 @@ export const GlobalSearch = ({
         activate: closeAnd(onOpenSettings),
       },
       {
-        id: 'action:new-chat', group: '快捷操作', label: '新建聊天',
-        description: '开始一个不绑定项目的聊天', keywords: ['conversation'], icon: Plus,
+        id: 'action:new-chat', group: '快捷操作', label: '新建工作台任务',
+        description: '开始一个不绑定项目的通用任务', keywords: ['conversation', 'workspace'], icon: Plus,
         activate: closeAnd(async () => { await activateWorkspaceChat(); onOpenWorkbench(); }),
       },
       {
@@ -176,7 +176,7 @@ export const GlobalSearch = ({
     }));
     const projectThreads = (workspace?.projects ?? []).flatMap((project) =>
       project.threadIds.map((threadId) => ({
-        id: `thread:${threadId}`, group: '聊天' as const,
+        id: `thread:${threadId}`, group: '项目' as const,
         label: project.threadTitles[threadId] ?? '未命名任务', description: project.name,
         keywords: ['task'], intrinsicRecencyMs: project.lastOpenedAtMs, icon: MessageSquare,
         activate: closeAnd(async () => {
@@ -186,9 +186,9 @@ export const GlobalSearch = ({
       })),
     );
     const chats: SearchItem[] = (workspace?.chatThreadIds ?? []).map((threadId) => ({
-      id: `chat:${threadId}`, group: '聊天',
-      label: workspace?.chatTitles?.[threadId] ?? '未命名聊天', description: '普通聊天',
-      keywords: ['conversation'], icon: MessageSquare,
+      id: `chat:${threadId}`, group: '工作台',
+      label: workspace?.chatTitles?.[threadId] ?? '未命名任务', description: '通用工作台任务',
+      keywords: ['conversation', 'workspace'], icon: MessageSquare,
       activate: closeAnd(async () => { await activateWorkspaceChat(threadId); onOpenWorkbench(); }),
     }));
     const knowledgeItems: SearchItem[] = knowledge.map((base) => ({
@@ -238,7 +238,7 @@ export const GlobalSearch = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="top-[12vh] max-w-2xl translate-y-0 gap-0 overflow-hidden p-0">
         <DialogTitle className="sr-only">搜索或运行</DialogTitle>
-        <DialogDescription className="sr-only">搜索 SugarCode 页面、项目、聊天、知识库和 Skills</DialogDescription>
+        <DialogDescription className="sr-only">搜索 SugarCode 页面、项目、工作台、知识库和 Skills</DialogDescription>
         <div className="relative border-b">
           <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-tertiary" aria-hidden="true" />
           <Input
@@ -263,7 +263,7 @@ export const GlobalSearch = ({
             aria-controls="global-search-results"
             aria-activedescendant={activeItemId}
             aria-autocomplete="list"
-            placeholder="搜索项目、聊天、知识库、Skills 或命令…"
+            placeholder="搜索项目、工作台、知识库、Skills 或命令…"
             className="h-14 rounded-none border-0 bg-transparent pl-11 pr-16 text-sm shadow-none focus-visible:ring-0"
           />
           <kbd className="absolute right-4 top-1/2 -translate-y-1/2 rounded border bg-surface px-1.5 py-0.5 font-mono text-[10px] text-tertiary">ESC</kbd>

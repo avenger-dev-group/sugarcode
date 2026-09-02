@@ -213,7 +213,7 @@ export class WorkspaceController {
           path: this.workspacePath,
           name:
             this.workspaceKind === 'chat'
-              ? '聊天文件'
+              ? '工作台'
               : path.basename(this.workspacePath),
           threadId:
             this.options.supervisor.conversation.getSnapshot().threadId ?? null,
@@ -1358,7 +1358,7 @@ export class WorkspaceController {
         ? {
             name:
               this.workspaceKind === 'chat'
-                ? '聊天文件'
+                ? '工作台'
                 : path.basename(this.workspacePath),
           }
         : {}),

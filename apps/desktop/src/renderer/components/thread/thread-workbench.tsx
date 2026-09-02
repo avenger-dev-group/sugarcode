@@ -1013,8 +1013,8 @@ export const ThreadWorkbenchView = ({
                       className="-ml-1 shrink-0 text-tertiary opacity-0 transition-[color,background-color,opacity] hover:text-foreground focus-visible:opacity-100 group-hover/project:opacity-100 group-focus-within/project:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={workspace.busy}
                       onClick={() => void workspace.activateChat()}
-                      aria-label={`移除项目 ${composerProjectName} 并切换到聊天模式`}
-                      title="移除项目并切换到聊天模式"
+                      aria-label={`移除项目 ${composerProjectName} 并切换到工作台`}
+                      title="移除项目并切换到工作台"
                     >
                       <X className="size-3" aria-hidden="true" />
                     </Button>

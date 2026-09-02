@@ -4,6 +4,7 @@ import type { ConversationActionResult } from '../../shared/conversation.ts';
 import type {
   WorkspaceEntry,
   WorkspaceInspectDocument,
+  WorkspaceKind,
 } from '../../shared/workspace.ts';
 import type { WorkspaceRuntimeBoundary } from '../workspace/controller.ts';
 import type { ThreadRegistry } from '../navigation/thread-registry.ts';
@@ -25,6 +26,7 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
   private readonly options: RuntimeWorkspaceAdapterOptions;
   private workspaceId: string | null = null;
   private canonicalRoot: string | null = null;
+  private workspaceKind: WorkspaceKind | null = null;
   private switchingRequestId: string | null = null;
   private recovering = false;
   private switchGeneration = 0;
@@ -52,6 +54,7 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       if (
         event.type !== 'workspace.opened' ||
         event.workspaceId !== this.workspaceId ||
+        event.kind !== (this.workspaceKind === 'chat' ? 'workspace' : this.workspaceKind) ||
         event.requestId === this.switchingRequestId ||
         !this.canonicalRoot
       ) {
@@ -70,14 +73,19 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
 
   getWorkspaceBindingId = (): string | null => this.workspaceId;
 
-  switchWorkspace = async (workspacePath: string): Promise<boolean> => {
+  switchWorkspace = async (
+    workspacePath: string,
+    kind: WorkspaceKind,
+  ): Promise<boolean> => {
     const generation = ++this.switchGeneration;
     const previousWorkspaceId = this.workspaceId;
     const previousRoot = this.canonicalRoot;
+    const previousKind = this.workspaceKind;
     const workspaceId = createHash('sha256').update(workspacePath).digest('hex');
     const requestId = randomUUID();
     this.workspaceId = workspaceId;
     this.canonicalRoot = workspacePath;
+    this.workspaceKind = kind;
     this.switchingRequestId = requestId;
     try {
       const opened = await this.options.runtime.request(
@@ -86,6 +94,7 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
           requestId,
           workspaceId,
           canonicalRoot: workspacePath,
+          kind: kind === 'chat' ? 'workspace' : 'project',
         },
         'workspace.opened',
       );
@@ -94,7 +103,8 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       }
       if (
         opened.workspaceId !== workspaceId ||
-        opened.canonicalRoot !== workspacePath
+        opened.canonicalRoot !== workspacePath ||
+        opened.kind !== (kind === 'chat' ? 'workspace' : 'project')
       ) {
         throw new Error('The runtime returned a mismatched Workspace binding.');
       }
@@ -110,6 +120,7 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
       if (generation === this.switchGeneration) {
         this.workspaceId = previousWorkspaceId;
         this.canonicalRoot = previousRoot;
+        this.workspaceKind = previousKind;
       }
       return false;
     } finally {
@@ -294,17 +305,24 @@ export class RuntimeWorkspaceAdapter implements WorkspaceRuntimeBoundary {
   };
 
   private restoreAfterRestart = async (): Promise<void> => {
-    if (this.recovering || !this.workspaceId || !this.canonicalRoot) {
+    if (
+      this.recovering ||
+      !this.workspaceId ||
+      !this.canonicalRoot ||
+      !this.workspaceKind
+    ) {
       return;
     }
     this.recovering = true;
     const workspaceId = this.workspaceId;
     const canonicalRoot = this.canonicalRoot;
+    const workspaceKind = this.workspaceKind;
     try {
       await this.conversation.switchWorkspace(workspaceId);
       if (
         this.workspaceId === workspaceId &&
-        this.canonicalRoot === canonicalRoot
+        this.canonicalRoot === canonicalRoot &&
+        this.workspaceKind === workspaceKind
       ) {
         this.options.onWorkspaceOpened(workspaceId, canonicalRoot);
       }

@@ -79,6 +79,33 @@ test('private runtime validates per-turn reasoning and speed controls', () => {
   }), false);
 });
 
+test('private runtime requires the workspace experience on open commands and events', () => {
+  const command = {
+    type: 'workspace.open',
+    requestId: 'request-workspace',
+    workspaceId: 'workspace-1',
+    canonicalRoot: '/fixture/workspace',
+    kind: 'workspace',
+  } as const;
+  assert.equal(isRuntimeCommand(command), true);
+  assert.equal(isRuntimeCommand({ ...command, kind: 'chat' }), false);
+  assert.equal(isRuntimeCommand({
+    ...command,
+    kind: undefined,
+  }), false);
+
+  const event = {
+    type: 'workspace.opened',
+    requestId: 'request-workspace',
+    sequence: 1,
+    workspaceId: 'workspace-1',
+    canonicalRoot: '/fixture/workspace',
+    kind: 'project',
+  } as const;
+  assert.equal(isRuntimeEvent(event), true);
+  assert.equal(isRuntimeEvent({ ...event, kind: 'chat' }), false);
+});
+
 test('private runtime accepts provider wait deadlines up to sixty minutes', () => {
   const command = {
     type: 'turn.start',
