@@ -179,7 +179,7 @@ const isSessionId = (value: unknown): value is string =>
 
 const isPreviewId = isSessionId;
 
-const isHtmlArtifactPath = (value: unknown): value is string => {
+const isPreviewArtifactPath = (value: unknown): value is string => {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
@@ -194,7 +194,7 @@ const isHtmlArtifactPath = (value: unknown): value is string => {
   return (
     parts.length <= 64 &&
     parts.every((part) => part.length > 0 && part !== '.' && part !== '..') &&
-    /\.html?$/iu.test(parts.at(-1) ?? '') &&
+    /\.(?:html?|mp4|webm|mov)$/iu.test(parts.at(-1) ?? '') &&
     ![...value].some((character) => {
       const code = character.charCodeAt(0);
       return code <= 0x1f || code === 0x7f;
@@ -229,7 +229,7 @@ export const isPreviewArtifactOpenRequest = (
   hasOnlyKeys(value, ['previewId', 'generation', 'path']) &&
   isPreviewId(value.previewId) &&
   isGeneration(value.generation) &&
-  isHtmlArtifactPath(value.path);
+  isPreviewArtifactPath(value.path);
 
 export const isPreviewArtifactRequest = (
   value: unknown,
@@ -237,7 +237,7 @@ export const isPreviewArtifactRequest = (
   isRecord(value) &&
   hasOnlyKeys(value, ['generation', 'path']) &&
   isGeneration(value.generation) &&
-  isHtmlArtifactPath(value.path);
+  isPreviewArtifactPath(value.path);
 
 export const isPreviewSessionRequest = (
   value: unknown,

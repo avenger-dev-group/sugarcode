@@ -29,7 +29,10 @@ import {
 } from './model-history-codec.ts';
 import { RuntimeProtocolError } from './protocol-error.ts';
 import { buildAgentInstructions } from './agent-instructions.ts';
-import { finalResponseCandidateIssue } from './final-response-quality.ts';
+import {
+  finalResponseCandidateIssue,
+  normalizeFinalResponseCandidate,
+} from './final-response-quality.ts';
 import {
   createSubmitFinalResponseTool,
   extractDelimitedFinalResponse,
@@ -409,6 +412,7 @@ type TurnContextCommand =
 
 type TextItemState = {
   phase: ModelTextPhase;
+  sourcePhase?: ModelTextPhase;
   text: string;
   started: boolean;
   completed: boolean;
@@ -3702,12 +3706,30 @@ export class RuntimeHost {
           truncationCount = 0;
           continue;
         }
-        const rawCandidateText = [...textItems.values()]
-          .filter((state) => state.pendingFinal)
+        const pendingFinalStates = [...textItems.values()].filter(
+          (state) => state.pendingFinal,
+        );
+        const providerFinalState = pendingFinalStates.filter(
+          (state) => state.sourcePhase === 'final',
+        ).at(-1);
+        const providerProvisionalState = pendingFinalStates.filter(
+          (state) => state.sourcePhase === 'provisional',
+        ).at(-1);
+        const selectedFinalStates = providerFinalState
+          ? [providerFinalState]
+          : providerProvisionalState
+            ? [providerProvisionalState]
+            : pendingFinalStates;
+        const selectedProviderFinal =
+          selectedFinalStates.length !== pendingFinalStates.length;
+        const rawCandidateText = selectedFinalStates
           .map((state) => state.text)
           .join('\n\n');
-        const recoveredText =
+        const normalizedCandidate =
           options.recoverFinalCandidate?.(rawCandidateText);
+        const recoveredText =
+          normalizedCandidate ??
+          (selectedProviderFinal ? rawCandidateText : undefined);
         const candidateText = recoveredText ?? rawCandidateText;
         const candidateIssue = recoveredText
           ? options.validateRecoveredFinalCandidate?.(candidateText)
@@ -3720,7 +3742,7 @@ export class RuntimeHost {
               kind: 'protocol',
               retryable: false,
               message:
-                'The model repeatedly submitted a final answer that exposed internal work or violated the response boundary.',
+                'The model repeatedly produced a final answer that did not satisfy the Turn completion requirements.',
             });
           }
           message = {
@@ -3730,9 +3752,8 @@ export class RuntimeHost {
                 text:
                   '# Internal continuation after invalid final response\n\n' +
                   `${candidateIssue} ` +
-                  'If the issue requires submit_final_response, call that tool with the rewritten answer instead of returning ordinary text again. ' +
-                  'If that tool cannot be called, return exactly one <final_response>...</final_response> envelope containing only the user-facing answer. ' +
-                  'Discard the candidate and rewrite the final answer as one complete, self-contained response from the beginning. ' +
+                  'Discard the candidate and return one complete, self-contained user-facing answer from the beginning. ' +
+                  'Ordinary assistant text is valid; an exact <final_response>...</final_response> envelope or submit_final_response call is optional when an explicit response boundary helps. ' +
                   'Include every necessary section instead of continuing prior numbering. ' +
                   'Output only user-facing results: do not include analysis, private reasoning, self-instructions, drafting notes, or tool narration. ' +
                   'If a structured question was resolved, incorporate only the resulting decisions and do not repeat its prompts. ' +
@@ -4386,8 +4407,9 @@ export class RuntimeHost {
                 validate: async (content) => {
                   const goalIssue = goalSession?.finalIssue();
                   if (goalIssue) return goalIssue;
-                  const responseIssue = finalResponseCandidateIssue(content);
-                  if (responseIssue) return responseIssue;
+                  if (content.trim().length === 0) {
+                    return 'The submitted response is empty.';
+                  }
                   if (isFutureActionOnlyFinal(content)) {
                     return 'The submitted response only announces future work. Complete the work first, or report the concrete blocker and remaining work.';
                   }
@@ -4708,18 +4730,20 @@ export class RuntimeHost {
               await this.finishStructuredFinalResponse(
                 command,
                 textItems,
-                submitted,
+                this.normalizeUserFacingFinalResponse(command, submitted),
               );
               return true;
             },
             validateFinalCandidate: (candidateText) => {
-              if (turnMode !== 'plan') {
-                return 'This Turn must finish by calling submit_final_response with the complete user-facing answer. Ordinary assistant text is private working text and cannot complete the Turn.';
-              }
               const goalIssue = goalSession?.finalIssue();
               if (goalIssue) return goalIssue;
-              const responseIssue = finalResponseCandidateIssue(candidateText);
-              if (responseIssue) return responseIssue;
+              if (candidateText.trim().length === 0) {
+                return 'The candidate final answer is empty.';
+              }
+              if (turnMode === 'plan') {
+                const responseIssue = finalResponseCandidateIssue(candidateText);
+                if (responseIssue) return responseIssue;
+              }
               if (turnMode === 'plan' && !planSubmissionGuard.proposal) {
                 return 'Planning mode requires the completed plan to be submitted with submit_plan before the Turn can finish.';
               }
@@ -4740,12 +4764,24 @@ export class RuntimeHost {
             recoverFinalCandidate:
               turnMode === 'plan'
                 ? undefined
-                : extractDelimitedFinalResponse,
+                : (candidateText) => {
+                    const extracted = extractDelimitedFinalResponse(candidateText);
+                    const source = extracted ?? candidateText;
+                    const normalized = this.normalizeUserFacingFinalResponse(
+                      command,
+                      source,
+                    );
+                    return extracted !== undefined ||
+                      normalized !== candidateText.trim()
+                      ? normalized
+                      : undefined;
+                  },
             validateRecoveredFinalCandidate: (candidateText) => {
               const goalIssue = goalSession?.finalIssue();
               if (goalIssue) return goalIssue;
-              const responseIssue = finalResponseCandidateIssue(candidateText);
-              if (responseIssue) return responseIssue;
+              if (candidateText.trim().length === 0) {
+                return 'The candidate final answer is empty.';
+              }
               return userInputFinalGuard.resolvedRequests > 0
                 ? userInputFinalCandidateIssue(
                     candidateText,
@@ -4755,6 +4791,13 @@ export class RuntimeHost {
             },
             settleFinalCandidate: async (accepted, textItems, recoveredText) => {
               if (accepted && recoveredText) {
+                this.settleFinalCandidate(
+                  command,
+                  textItems,
+                  false,
+                  false,
+                  true,
+                );
                 await this.finishStructuredFinalResponse(
                   command,
                   textItems,
@@ -5709,6 +5752,7 @@ export class RuntimeHost {
           `${command.turnId}:text:${textItems.size}`;
         const state = textItems.get(itemId) ?? {
           phase: initialPhase,
+          sourcePhase: metadata?.phase,
           text: '',
           started: false,
           completed: false,
@@ -6133,7 +6177,10 @@ export class RuntimeHost {
     if (!state) return;
     textItems.delete(itemId);
     if (!state.started) return;
-    this.emit({
+    // This only retracts a streamed draft from the renderer. Persisting it would
+    // consume the stable final-response Item id and make a corrected final
+    // response conflict with different content on the next model invocation.
+    this.emitTransient({
       type: 'turn.textCompleted',
       requestId: command.requestId,
       workspaceId: command.workspaceId,
@@ -6173,6 +6220,23 @@ export class RuntimeHost {
       await state.structuredFinalAnimation;
     }
     this.publishStructuredFinalResponse(command, text);
+  };
+
+  private normalizeUserFacingFinalResponse = (
+    command: TurnExecutionCommand,
+    text: string,
+  ): string => {
+    const normalized = normalizeFinalResponseCandidate(text);
+    if (normalized.removedPrefix) {
+      this.emit({
+        type: 'runtime.log',
+        requestId: command.requestId,
+        level: 'warn',
+        message:
+          'Removed a likely model-facing preamble from the final response.',
+      });
+    }
+    return normalized.text;
   };
 
   private publishStructuredFinalResponse = (

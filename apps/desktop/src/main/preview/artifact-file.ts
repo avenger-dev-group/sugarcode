@@ -35,7 +35,10 @@ export const resolvePreviewArtifact = async (
     return null;
   }
   const metadata = await stat(absolutePath).catch((): null => null);
-  if (!metadata?.isFile() || !/\.html?$/iu.test(path.extname(absolutePath))) {
+  if (
+    !metadata?.isFile() ||
+    !/\.(?:html?|mp4|webm|mov)$/iu.test(path.extname(absolutePath))
+  ) {
     return null;
   }
   return {

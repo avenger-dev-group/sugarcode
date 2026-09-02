@@ -59,8 +59,9 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
             .expect("inspect Skills"),
     );
     assert_eq!(inspection["workspaceAvailable"], true);
-    assert_eq!(inspection["skills"].as_array().map(Vec::len), Some(6));
+    assert_eq!(inspection["skills"].as_array().map(Vec::len), Some(7));
     for name in [
+        "video-production",
         "figma",
         "figma-code-connect",
         "figma-design-to-code",
@@ -69,7 +70,7 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
         let bundled = inspection["skills"]
             .as_array()
             .and_then(|skills| skills.iter().find(|skill| skill["name"] == name))
-            .expect("bundled Figma Skill");
+            .expect("bundled Skill");
         assert_eq!(bundled["source"], "bundled");
         assert_eq!(bundled["enabled"], true);
     }
@@ -105,7 +106,7 @@ fn native_skills_inventory_shadows_toggles_imports_and_exports() {
             .skills_context_json("workspace-1".to_owned())
             .expect("Skills context"),
     );
-    assert_eq!(context["skills"].as_array().map(Vec::len), Some(5));
+    assert_eq!(context["skills"].as_array().map(Vec::len), Some(6));
     assert!(
         context["skills"]
             .as_array()
@@ -213,6 +214,47 @@ fn native_bundled_figma_skill_can_be_disabled_and_exported() {
     let exported = fs::read_to_string(destination.path().join("figma-design-to-code/SKILL.md"))
         .expect("read exported bundled Skill");
     assert!(exported.contains("name: figma-design-to-code"));
+}
+
+#[test]
+fn native_bundled_video_skill_requires_stable_remotion_rendering() {
+    let data = tempfile::tempdir().expect("data directory");
+    let runtime =
+        NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
+    let inspection = json(
+        runtime
+            .inspect_skills_json(None)
+            .expect("inspect bundled Skills"),
+    );
+    let skill = inspection["skills"]
+        .as_array()
+        .and_then(|skills| {
+            skills
+                .iter()
+                .find(|skill| skill["name"] == "video-production")
+        })
+        .expect("bundled video Skill");
+    let skill_id = skill["id"].as_str().expect("bundled Skill id").to_owned();
+    let skill_sha = skill["sha256"]
+        .as_str()
+        .expect("bundled Skill hash")
+        .to_owned();
+
+    let content = json(
+        runtime
+            .read_skill_content_json(None, skill_id, skill_sha)
+            .expect("read bundled video Skill"),
+    );
+    let instructions = content["content"]
+        .as_str()
+        .expect("video Skill instructions");
+    assert!(instructions.contains("--concurrency=1"));
+    assert!(instructions.contains("scan the encoded video"));
+    assert!(instructions.contains("system-installed Chrome or Chromium"));
+    assert!(instructions.contains("at most one tool call"));
+    assert!(instructions.contains("standalone JSON object"));
+    assert!(instructions.contains("quick playback card"));
+    assert!(instructions.contains("::preview{path=\"renders/final.mp4\"}"));
 }
 
 #[cfg(unix)]

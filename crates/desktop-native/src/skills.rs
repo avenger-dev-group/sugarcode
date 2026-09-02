@@ -36,6 +36,10 @@ struct SkillEntry {
 }
 
 const BUNDLED_SKILLS: &[(&str, &str)] = &[
+    (
+        "video-production",
+        include_str!("../bundled-skills/video-production/SKILL.md"),
+    ),
     ("figma", include_str!("../bundled-skills/figma/SKILL.md")),
     (
         "figma-code-connect",

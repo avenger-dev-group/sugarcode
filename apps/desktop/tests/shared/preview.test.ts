@@ -10,7 +10,7 @@ import {
   isPreviewStateSnapshot,
 } from '../../src/shared/preview.ts';
 
-test('artifact preview requests accept only relative HTML entry files', () => {
+test('artifact preview requests accept relative HTML and video files', () => {
   const previewId = '5f53ba9a-f8ea-4b8f-b0db-f1abde48a86d';
   assert.equal(
     isPreviewArtifactOpenRequest({
@@ -25,6 +25,14 @@ test('artifact preview requests accept only relative HTML entry files', () => {
     true,
   );
   assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: 'renders/final.mp4' }),
+    true,
+  );
+  assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: 'renders/final.webm' }),
+    true,
+  );
+  assert.equal(
     isPreviewArtifactRequest({ generation: 2, path: '../index.html' }),
     false,
   );
@@ -34,6 +42,10 @@ test('artifact preview requests accept only relative HTML entry files', () => {
   );
   assert.equal(
     isPreviewArtifactRequest({ generation: 2, path: 'src/main.tsx' }),
+    false,
+  );
+  assert.equal(
+    isPreviewArtifactRequest({ generation: 2, path: 'renders/final.mkv' }),
     false,
   );
 });

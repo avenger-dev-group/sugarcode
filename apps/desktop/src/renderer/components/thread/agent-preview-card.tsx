@@ -1,5 +1,6 @@
 import {
   ExternalLink,
+  Film,
   FolderOpen,
   Globe2,
   LoaderCircle,
@@ -61,6 +62,8 @@ export const AgentPreviewCard = ({
   >(null);
   const [error, setError] = useState<string | null>(null);
   const ready = workspace.status === 'ready';
+  const videoArtifact =
+    intent.kind === 'artifact' && /\.(?:mp4|webm|mov)$/iu.test(intent.path);
 
   const run = async (
     target: 'embedded' | 'external' | 'reveal',
@@ -117,20 +120,32 @@ export const AgentPreviewCard = ({
   return (
     <section
       className="agent-result-card overflow-hidden rounded-xl border border-border-subtle bg-[linear-gradient(115deg,var(--surface),var(--background)_68%)]"
-      aria-label={language === 'zh' ? '网页预览选项' : 'Web preview options'}
+      aria-label={
+        language === 'zh'
+          ? videoArtifact ? '视频预览选项' : '网页预览选项'
+          : videoArtifact ? 'Video preview options' : 'Web preview options'
+      }
     >
       <div className="agent-result-card__body">
         <span className="agent-result-card__icon grid size-10 place-items-center rounded-xl border border-border bg-background text-link shadow-sm">
-          <Globe2 className="size-[18px]" aria-hidden="true" />
+          {videoArtifact ? (
+            <Film className="size-[18px]" aria-hidden="true" />
+          ) : (
+            <Globe2 className="size-[18px]" aria-hidden="true" />
+          )}
         </span>
         <span className="agent-result-card__summary">
           <span className="agent-result-card__title block text-sm font-medium text-foreground">
             {language === 'zh'
-              ? intent.kind === 'artifact'
-                ? '预览 HTML 成果'
+              ? videoArtifact
+                ? '播放视频成果'
+                : intent.kind === 'artifact'
+                  ? '预览 HTML 成果'
                 : '查看网页效果'
-              : intent.kind === 'artifact'
-                ? 'Preview HTML result'
+              : videoArtifact
+                ? 'Play video result'
+                : intent.kind === 'artifact'
+                  ? 'Preview HTML result'
                 : 'View the web result'}
           </span>
           <code
@@ -153,7 +168,9 @@ export const AgentPreviewCard = ({
             ) : (
               <MonitorUp className="size-3.5" aria-hidden="true" />
             )}
-            {language === 'zh' ? '右侧预览' : 'Preview here'}
+            {language === 'zh'
+              ? videoArtifact ? '右侧播放' : '右侧预览'
+              : videoArtifact ? 'Play here' : 'Preview here'}
           </Button>
           <Button
             type="button"
@@ -168,7 +185,9 @@ export const AgentPreviewCard = ({
             ) : (
               <ExternalLink className="size-3.5" aria-hidden="true" />
             )}
-            {language === 'zh' ? '浏览器打开' : 'Open in browser'}
+            {language === 'zh'
+              ? videoArtifact ? '默认播放器' : '浏览器打开'
+              : videoArtifact ? 'Open in player' : 'Open in browser'}
           </Button>
           {intent.kind === 'artifact' ? (
             <Button

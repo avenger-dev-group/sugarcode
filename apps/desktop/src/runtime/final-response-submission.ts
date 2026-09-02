@@ -178,7 +178,7 @@ export const createSubmitFinalResponseTool = (
   new FunctionTool({
     name: SUBMIT_FINAL_RESPONSE_TOOL_NAME,
     description:
-      'Submit the one complete response that the user may see. Ordinary assistant text is private working text and is not displayed. Call this exactly once after all work, tool calls, user-input requests, and child-agent results are complete. Put only the self-contained user-facing answer in content, with no analysis, drafting notes, model instructions, or tool narration. Do not repeat the answer after this call succeeds.',
+      'Optionally submit one complete user-facing response when an explicit boundary from private work is useful. Ordinary assistant text can also complete the Turn. If you call this tool, do so exactly once after all work, tool calls, user-input requests, and child-agent results are complete. Put only the self-contained answer in content and do not repeat it after this call succeeds.',
     parameters: SUBMIT_FINAL_RESPONSE_SCHEMA,
     execute: async (input) => {
       const content = responseContent(input);

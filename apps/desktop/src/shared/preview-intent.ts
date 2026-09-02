@@ -24,6 +24,7 @@ const DRAW_DIRECTIVE_PREFIX = '::draw{';
 const URL_DIRECTIVE_PATTERN = /^::preview\{url="([^"\r\n]+)"\}$/u;
 const PATH_DIRECTIVE_PATTERN = /^::preview\{path="([^"\r\n]+)"\}$/u;
 const DRAW_PATH_DIRECTIVE_PATTERN = /^::draw\{path="([^"\r\n]+)"\}$/u;
+const MARKDOWN_LINK_PATTERN = /\]\(\s*(?:<([^>\r\n]+)>|([^\s)\r\n]+))(?:\s+["'][^)\r\n]*["'])?\s*\)/gu;
 
 const hasForbiddenCodePoint = (value: string): boolean =>
   [...value].some((character) => {
@@ -60,7 +61,7 @@ const isLocalPreviewUrl = (value: string): string | null => {
   }
 };
 
-const isHtmlArtifactPath = (value: string): string | null => {
+const isPreviewArtifactPath = (value: string): string | null => {
   if (
     value.length === 0 ||
     new TextEncoder().encode(value).byteLength > 1_024 ||
@@ -75,7 +76,7 @@ const isHtmlArtifactPath = (value: string): string | null => {
   if (
     parts.length > 64 ||
     parts.some((part) => part.length === 0 || part === '.' || part === '..') ||
-    !/\.html?$/iu.test(parts.at(-1) ?? '')
+    !/\.(?:html?|mp4|webm|mov)$/iu.test(parts.at(-1) ?? '')
   ) {
     return null;
   }
@@ -104,6 +105,20 @@ const isDrawioArtifactPath = (value: string): string | null => {
   return parts.join('/');
 };
 
+const linkedVideoIntent = (source: string): AgentPreviewIntent | null => {
+  for (const match of source.matchAll(MARKDOWN_LINK_PATTERN)) {
+    const candidate = match[1] ?? match[2];
+    if (!candidate || !/\.(?:mp4|webm|mov)$/iu.test(candidate)) {
+      continue;
+    }
+    const path = isPreviewArtifactPath(candidate);
+    if (path) {
+      return { kind: 'artifact', path };
+    }
+  }
+  return null;
+};
+
 export const parseAgentPreviewResponse = (
   source: string,
 ): ParsedAgentPreviewResponse => {
@@ -114,7 +129,7 @@ export const parseAgentPreviewResponse = (
     !candidate.startsWith(PREVIEW_DIRECTIVE_PREFIX) &&
     !candidate.startsWith(DRAW_DIRECTIVE_PREFIX)
   ) {
-    return { text: source, intent: null };
+    return { text: source, intent: linkedVideoIntent(source) };
   }
   const text = trimmed.slice(0, lineStart).trimEnd();
   const drawPathMatch = DRAW_PATH_DIRECTIVE_PATTERN.exec(candidate);
@@ -123,7 +138,7 @@ export const parseAgentPreviewResponse = (
     : null;
   const pathMatch = PATH_DIRECTIVE_PATTERN.exec(candidate);
   const artifactPath = pathMatch?.[1]
-    ? isHtmlArtifactPath(pathMatch[1])
+    ? isPreviewArtifactPath(pathMatch[1])
     : null;
   const urlMatch = URL_DIRECTIVE_PATTERN.exec(candidate);
   const url = urlMatch?.[1] ? isLocalPreviewUrl(urlMatch[1]) : null;

@@ -146,7 +146,7 @@ const toolInstruction = (
     return '';
   }
   const guidance: string[] = [
-    'Tool availability is request-scoped. Follow every offered tool\'s schema and returned guidance exactly.',
+    'Tools are request-scoped. Follow each offered schema and its returned guidance.',
   ];
   if (names.some((name) => ['workspace_list', 'workspace_read', 'workspace_search'].includes(name))) {
     guidance.push(
@@ -167,7 +167,7 @@ const toolInstruction = (
   }
   if (names.includes('shell_exec')) {
     guidance.push(
-      'For sandboxed shell_exec, command is one verified absolute executable and arguments are separate strings. For shell syntax or pipelines use fullAccess with the complete command; never put a command plus arguments into the executable field. Commands must finish within the requested timeout; do not use &, nohup, disown, or another detachment mechanism to leave a persistent process behind.',
+      'For sandboxed shell_exec, use one verified absolute executable and arguments are separate strings. Use fullAccess for shell syntax or pipelines. Commands must finish within timeout; do not use &, nohup, disown, or another detachment mechanism.',
     );
   }
   if (names.includes('request_user_input')) {
@@ -182,7 +182,7 @@ const toolInstruction = (
   }
   if (names.includes('submit_final_response')) {
     guidance.push(
-      'For every non-planning Turn, finish exactly once. Prefer one exact <final_response>...</final_response> envelope so the user-facing answer can stream; put no private work inside it and emit nothing after its closing tag. If an envelope cannot be produced reliably, call submit_final_response with the entire self-contained user-facing answer in content. Ordinary assistant text outside the envelope is private working text and will not be displayed; do not repeat the answer after either form succeeds.',
+      'Ordinary assistant text may complete the Turn after all work finishes. Use one <final_response>...</final_response> envelope or one submit_final_response call only when an explicit private/public boundary helps. Include the complete answer once; keep reasoning in private provider channels.',
     );
   }
   return `# Tool use\n\n${guidance.map((line) => `- ${line}`).join('\n')}`;
@@ -190,7 +190,7 @@ const toolInstruction = (
 
 const collaborationInstruction = `# Multi-Agent coordination
 
-Use collaboration only when independent exploration, implementation, or review materially helps. Give each task a concrete bounded responsibility and acceptance criteria, collect results before answering, and interrupt work that is no longer useful. The runtime derives access from each role and automatically adds a reviewer after workspace-writing tasks when needed. Subagents cannot create subagents.`;
+Use collaboration only when independent work materially helps. Assign concrete bounded tasks, collect results before answering, and interrupt obsolete work. The runtime derives access by role and adds a reviewer after workspace writes when needed. Subagents cannot create subagents.`;
 
 export const buildAgentInstructions = (
   options: AgentInstructionOptions,

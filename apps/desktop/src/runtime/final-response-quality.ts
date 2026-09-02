@@ -50,3 +50,42 @@ export const finalResponseCandidateIssue = (
     ? 'The candidate contains internal work narration instead of only the user-facing answer.'
     : undefined;
 };
+
+export type NormalizedFinalResponseCandidate = Readonly<{
+  text: string;
+  removedPrefix: boolean;
+  diagnostic?: string;
+}>;
+
+/**
+ * Best-effort cleanup for providers that append the actual answer after a
+ * model-facing preamble. Detection is intentionally advisory: when there is
+ * no unambiguous paragraph boundary, preserve the model output instead of
+ * rejecting an otherwise usable Turn.
+ */
+export const normalizeFinalResponseCandidate = (
+  value: string,
+): NormalizedFinalResponseCandidate => {
+  const text = value.trim();
+  const diagnostic = finalResponseCandidateIssue(text);
+  if (!diagnostic || text.length === 0) {
+    return { text, removedPrefix: false, diagnostic };
+  }
+
+  const paragraphBoundary = /\r?\n[\t ]*\r?\n/gu;
+  for (const match of text.matchAll(paragraphBoundary)) {
+    const boundaryEnd = (match.index ?? 0) + match[0].length;
+    const prefix = text.slice(0, match.index).trim();
+    const suffix = text.slice(boundaryEnd).trim();
+    if (
+      prefix.length > 0 &&
+      suffix.length > 0 &&
+      finalResponseCandidateIssue(prefix) !== undefined &&
+      finalResponseCandidateIssue(suffix) === undefined
+    ) {
+      return { text: suffix, removedPrefix: true, diagnostic };
+    }
+  }
+
+  return { text, removedPrefix: false, diagnostic };
+};

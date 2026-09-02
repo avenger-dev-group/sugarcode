@@ -15,6 +15,39 @@ test('terminal artifact metadata becomes a validated Agent preview intent', () =
   );
 });
 
+test('terminal video metadata becomes a validated Agent preview intent', () => {
+  assert.deepEqual(
+    parseAgentPreviewResponse(
+      '视频已经完成。\n\n::preview{path="renders/final.mp4"}',
+    ),
+    {
+      text: '视频已经完成。',
+      intent: { kind: 'artifact', path: 'renders/final.mp4' },
+    },
+  );
+});
+
+test('a delivered video link becomes a fallback preview intent when metadata is omitted', () => {
+  const source =
+    '视频已经完成：[成片](renders/bug-fixed.mp4)，可以直接播放。';
+  assert.deepEqual(parseAgentPreviewResponse(source), {
+    text: source,
+    intent: { kind: 'artifact', path: 'renders/bug-fixed.mp4' },
+  });
+});
+
+test('video link fallback rejects external and escaping paths', () => {
+  for (const source of [
+    '[外部视频](https://example.com/final.mp4)',
+    '[越界视频](../renders/final.mp4)',
+  ]) {
+    assert.deepEqual(parseAgentPreviewResponse(source), {
+      text: source,
+      intent: null,
+    });
+  }
+});
+
 test('legacy local URL metadata remains readable for existing conversations', () => {
   assert.deepEqual(
     parseAgentPreviewResponse(

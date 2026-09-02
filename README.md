@@ -35,6 +35,21 @@ pnpm check
 SugarCode can connect to Figma Desktop's local MCP server without browser
 authorization or OAuth. See the [Figma Desktop MCP setup guide](docs/figma-desktop-mcp.md).
 
+## Video capability
+
+SugarCode exposes video production as a bundled `video-production` Skill rather
+than coupling the Agent runtime to one renderer. The Skill selects an existing
+project engine or an explicitly requested adapter and uses the normal workspace
+and command tools to author, preview, render, and verify the result. New
+code-driven projects default to a project-local Remotion setup, while direct
+FFmpeg remains appropriate for simple media edits.
+
+Local authoring and rendering do not require a hosted media API. Optional MCP
+servers or provider tools can supply generated footage, images, voices, music,
+or cloud rendering without changing the core video workflow. Final MP4, WebM,
+and MOV files can be handed back with a `::preview{path="..."}` directive and
+played in the Preview panel or opened in the system player.
+
 ## Trusted project environments
 
 Repositories can declare task setup, exported environment variables, and named

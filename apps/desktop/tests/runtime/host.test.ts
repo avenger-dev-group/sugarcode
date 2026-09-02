@@ -303,6 +303,50 @@ class LeakyFinalLlm extends BaseLlm {
   }
 }
 
+class RejectedDelimitedThenStructuredFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  requestCount = 0;
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requestCount += 1;
+    if (this.requestCount === 1) {
+      const content =
+        '<final_response>Generated successfully. Now produce the final answer in Chinese.\n\n已生成结果。</final_response>';
+      yield {
+        content: { role: 'model', parts: [{ text: content }] },
+        partial: true,
+      };
+      yield {
+        content: { role: 'model', parts: [{ text: content }] },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          '已生成结果。',
+          'call-submit-recovered-final',
+        ),
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 class MissingFinalSubmissionLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
   requestCount = 0;
@@ -312,7 +356,48 @@ class MissingFinalSubmissionLlm extends BaseLlm {
     yield {
       content: {
         role: 'model',
-        parts: [{ text: `Private draft ${this.requestCount}` }],
+        parts: [{ text: `普通最终答复 ${this.requestCount}` }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class PhasedFinalCandidateLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
+    yield {
+      content: {
+        role: 'model',
+        parts: [
+          {
+            text: 'Internal draft that must not become the final response.',
+            partMetadata: modelItemMetadata('provisional-candidate', {
+              phase: 'provisional',
+            }),
+          },
+          {
+            text: 'Earlier typed final.',
+            partMetadata: modelItemMetadata('earlier-final-candidate', {
+              phase: 'final',
+            }),
+          },
+          {
+            text: 'Typed final answer.',
+            partMetadata: modelItemMetadata('provider-final-candidate', {
+              phase: 'final',
+              outcome: { kind: 'final' },
+            }),
+          },
+        ],
       },
       partial: false,
       turnComplete: true,
@@ -1821,12 +1906,16 @@ test('formal plan validation rejects approval prompts and accepts plan-only cont
 
 test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events', async () => {
   const events: RuntimeEvent[] = [];
+  const createdParallelTools: Array<boolean | undefined> = [];
   let resolveCompleted: (() => void) | undefined;
   const completed = new Promise<void>((resolve) => {
     resolveCompleted = resolve;
   });
   const host = new RuntimeHost({
-    createModel: () => new FixtureLlm({ model: 'fixture-model' }),
+    createModel: (provider) => {
+      createdParallelTools.push(provider.parallelTools);
+      return new FixtureLlm({ model: 'fixture-model' });
+    },
     postEvent: (event) => {
       events.push(event);
       if (event.type === 'turn.completed') {
@@ -1852,7 +1941,7 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
       model: 'fixture-model',
       baseUrl: 'http://127.0.0.1:1/v1',
       timeoutMs: 5_000,
-      parallelTools: false,
+      parallelTools: true,
     },
     content: [{ type: 'text', text: 'Hello' }],
   });
@@ -1901,6 +1990,9 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(usage?.usage.totalTokens, 5);
   const terminal = events.find((event) => event.type === 'turn.completed');
   assert.equal(terminal?.status, 'completed');
+  assert.equal(createdParallelTools[0], true);
+  const started = events.find((event) => event.type === 'turn.started');
+  assert.equal(started?.model.effectiveCapabilities.parallelTools, true);
 });
 
 test('RuntimeHost applies the selected connection request deadline', async () => {
@@ -3480,7 +3572,7 @@ test('RuntimeHost keeps every provider reasoning channel private', async () => {
   );
 });
 
-test('RuntimeHost rejects a final containing model-facing work and publishes only the rewrite', async () => {
+test('RuntimeHost cleans a model-facing preamble without requesting a rewrite', async () => {
   const events: RuntimeEvent[] = [];
   const model = new LeakyFinalLlm({ model: 'fixture-model' });
   let resolveTerminal: (() => void) | undefined;
@@ -3518,11 +3610,7 @@ test('RuntimeHost rejects a final containing model-facing work and publishes onl
 
   await terminal;
 
-  assert.equal(model.requests.length, 2);
-  assert.match(
-    JSON.stringify(model.requests[1]?.contents),
-    /candidate contains a model-facing instruction/u,
-  );
+  assert.equal(model.requests.length, 1);
   assert.equal(
     events.some(
       (event) =>
@@ -3550,7 +3638,87 @@ test('RuntimeHost rejects a final containing model-facing work and publishes onl
   );
 });
 
-test('RuntimeHost fails closed when the model omits structured final submission twice', async () => {
+test('RuntimeHost can persist a cleaned final after retracting a streamed draft', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new RejectedDelimitedThenStructuredFinalLlm({
+    model: 'fixture-model',
+  });
+  const persisted = new Map<string, string>();
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => turnNativeFixture({
+      appendItem: (itemId, turnId, sequence, kind, payloadJson) => {
+        const content = JSON.stringify({ turnId, sequence, kind, payloadJson });
+        const existing = persisted.get(itemId);
+        if (existing !== undefined && existing !== content) {
+          throw new Error(`item ${itemId} was reused with different content`);
+        }
+        persisted.set(itemId, content);
+        return existing === undefined;
+      },
+    }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-corrected-final',
+    protocolVersion: 8,
+    dataDirectory: '/tmp/sugarcode-v3-corrected-final-fixture',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-corrected-final',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-corrected-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '生成结果。' }],
+  });
+
+  await terminal;
+
+  assert.equal(model.requestCount, 1);
+  assert.equal(
+    events.find(
+      (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+        event.type === 'turn.completed',
+    )?.status,
+    'completed',
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '已生成结果。',
+    ),
+    true,
+  );
+  assert.equal(
+    [...persisted.keys()].filter((itemId) =>
+      itemId.endsWith(
+        ':turn-corrected-final:turn-corrected-final:final-response',
+      )
+    ).length,
+    1,
+  );
+});
+
+test('RuntimeHost accepts ordinary assistant text as the final response', async () => {
   const events: RuntimeEvent[] = [];
   const model = new MissingFinalSubmissionLlm({ model: 'fixture-model' });
   let resolveTerminal: (() => void) | undefined;
@@ -3588,22 +3756,87 @@ test('RuntimeHost fails closed when the model omits structured final submission 
 
   await terminal;
 
-  assert.equal(model.requestCount, 2);
+  assert.equal(model.requestCount, 1);
   assert.equal(
     events.some(
       (event) =>
-        (event.type === 'turn.textCompleted' ||
-          event.type === 'turn.textDelta') &&
-        ('text' in event ? event.text : event.delta).includes('Private draft'),
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '普通最终答复 1',
     ),
-    false,
+    true,
   );
   const completed = events.find(
     (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
       event.type === 'turn.completed',
   );
-  assert.equal(completed?.status, 'failed');
-  assert.equal(completed?.error?.kind, 'protocol');
+  assert.equal(completed?.status, 'completed');
+});
+
+test('RuntimeHost prefers a provider-native final phase over provisional text', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveTerminal: (() => void) | undefined;
+  const terminal = new Promise<void>((resolve) => {
+    resolveTerminal = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new PhasedFinalCandidateLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveTerminal?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-phased-final',
+    protocolVersion: 8,
+    dataDirectory: '/tmp/sugarcode-v3-phased-final-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-phased-final',
+    workspaceId: 'workspace-phased-final',
+    threadId: 'thread-phased-final',
+    turnId: 'turn-phased-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: 'Return the result.' }],
+  });
+
+  await terminal;
+
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === 'Typed final answer.',
+    ),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        (event.type === 'turn.textCompleted' ||
+          event.type === 'turn.textDelta') &&
+        /Internal draft|Earlier typed final/u.test(
+          'text' in event ? event.text : event.delta,
+        ),
+    ),
+    false,
+  );
+  assert.equal(
+    events.find(
+      (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+        event.type === 'turn.completed',
+    )?.status,
+    'completed',
+  );
 });
 
 test('RuntimeHost accepts only the suffix after an explicit reasoning boundary', async () => {

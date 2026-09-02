@@ -8,7 +8,7 @@ import test from 'node:test';
 import { resolvePreviewArtifact } from '../../../src/main/preview/artifact-file.ts';
 import type { WorkspaceLaunchContext } from '../../../src/main/workspace/controller.ts';
 
-test('HTML artifacts resolve directly to their local file URL', async () => {
+test('HTML and video artifacts resolve directly to their local file URL', async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'sugarcode-artifact-'));
   const entry = path.join(workspace, 'index.html');
   await writeFile(entry, '<h1>SugarCode</h1>');
@@ -31,12 +31,25 @@ test('HTML artifacts resolve directly to their local file URL', async () => {
       url: pathToFileURL(realEntry).toString(),
     });
     assert.equal(new URL(artifact.url).protocol, 'file:');
+    const videoEntry = path.join(workspace, 'final.mp4');
+    await writeFile(videoEntry, 'video');
+    const videoArtifact = await resolvePreviewArtifact(
+      {
+        generation: 7,
+        workspaceId: 'workspace',
+        path: workspace,
+        name: 'fixture',
+        threadId: null,
+      },
+      'final.mp4',
+    );
+    assert.equal(videoArtifact?.absolutePath, await realpath(videoEntry));
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
 
-test('HTML artifact resolution rejects non-HTML files and escaping symlinks', async () => {
+test('preview artifact resolution rejects unsupported files and escaping symlinks', async () => {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'sugarcode-artifact-'));
   const outsideDirectory = await mkdtemp(path.join(os.tmpdir(), 'sugarcode-outside-'));
   const outside = path.join(outsideDirectory, 'outside.html');
