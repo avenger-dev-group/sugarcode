@@ -431,6 +431,10 @@ export type ConversationContextCompactionActivity = Readonly<{
 
 export type ConversationActivity =
   | Readonly<{
+      type: 'reasoning';
+      activity: ConversationCommentaryActivity;
+    }>
+  | Readonly<{
       type: 'commentary';
       activity: ConversationCommentaryActivity;
     }>

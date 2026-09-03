@@ -16,6 +16,7 @@ import {
   isTrustedCommentaryId,
   modelProgressCommentaryId,
   reasoningSummaryCommentaryId,
+  modelReasoningCommentaryId,
   toolProgressCommentaryId,
 } from '../shared/conversation/trusted-commentary.ts';
 import { parseComposerSubmission } from '../shared/composer.ts';
@@ -698,14 +699,14 @@ const parseUserInputQuestions = (
     : undefined;
 };
 
-// Provider-authored summaries are explicitly designed for presentation. Raw
-// reasoning remains private and never crosses the visible Runtime boundary.
+// Only explicitly classified provider text is presentable. Internal/opaque
+// replay parts and unclassified thoughts never cross the visible boundary.
 const isVisibleModelTextPart = (part: Part): boolean => {
   if (typeof part.text !== 'string' || part.text.trim().length === 0) {
     return false;
   }
   const visibility = readModelItemMetadata(part)?.reasoningVisibility;
-  return visibility === 'summary' ||
+  return visibility === 'summary' || visibility === 'provider' ||
     (part.thought !== true && visibility === undefined);
 };
 
@@ -5772,10 +5773,13 @@ export class RuntimeHost {
     for (const [index, part] of parts.entries()) {
       if (isVisibleModelTextPart(part)) {
         const metadata = readModelItemMetadata(part);
-        const initialPhase: ModelTextPhase =
-          metadata?.phase ?? (part.thought ? 'commentary' : 'provisional');
-        const streamsAsPublicProgress = initialPhase === 'commentary';
         const reasoningSummary = metadata?.reasoningVisibility === 'summary';
+        const providerReasoning = metadata?.reasoningVisibility === 'provider';
+        const initialPhase: ModelTextPhase =
+          reasoningSummary || providerReasoning
+            ? 'commentary'
+            : metadata?.phase ?? (part.thought ? 'commentary' : 'provisional');
+        const streamsAsPublicProgress = initialPhase === 'commentary';
         const existingItem = metadata?.itemId
           ? undefined
           : [...textItems.entries()].find(
@@ -5783,13 +5787,14 @@ export class RuntimeHost {
             );
         const sourceItemId =
           metadata?.itemId ?? `${command.turnId}:text:${textItems.size}`;
+        const progressItemId = providerReasoning
+          ? modelReasoningCommentaryId(command.turnId, sourceItemId)
+          : reasoningSummary
+            ? reasoningSummaryCommentaryId(command.turnId, sourceItemId)
+            : modelProgressCommentaryId(command.turnId, sourceItemId);
         const itemId =
           existingItem?.[0] ??
-          (streamsAsPublicProgress
-            ? reasoningSummary
-              ? reasoningSummaryCommentaryId(command.turnId, sourceItemId)
-              : modelProgressCommentaryId(command.turnId, sourceItemId)
-            : sourceItemId);
+          (streamsAsPublicProgress ? progressItemId : sourceItemId);
         const state = textItems.get(itemId) ?? {
           phase: initialPhase,
           sourcePhase: metadata?.phase,
@@ -5855,21 +5860,19 @@ export class RuntimeHost {
               !hasUserInputCall &&
               !hasPlanSubmissionCall
             ) {
-              const progressItemId = isTrustedCommentaryId(
+              const completedItemId = isTrustedCommentaryId(
                 command.turnId,
                 itemId,
               )
                 ? itemId
-                : reasoningSummary
-                  ? reasoningSummaryCommentaryId(command.turnId, sourceItemId)
-                  : modelProgressCommentaryId(command.turnId, sourceItemId);
+                : progressItemId;
               this.emit({
                 type: 'turn.textCompleted',
                 requestId: command.requestId,
                 workspaceId: command.workspaceId,
                 threadId: command.threadId,
                 turnId: command.turnId,
-                itemId: progressItemId,
+                itemId: completedItemId,
                 phase: 'commentary',
                 text: completedText,
               });

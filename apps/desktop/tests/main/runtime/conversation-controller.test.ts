@@ -621,6 +621,15 @@ test('Stop records the user control as the cancellation source', async () => {
     (await controller.startTurn({ input: 'Long task' })).accepted,
     true,
   );
+  const started = fixture.sent.find(
+    (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> => command.type === 'turn.start',
+  );
+  assert.ok(started);
+  fixture.emit({
+    type: 'turn.textDelta', sequence: 1, requestId: started.requestId,
+    workspaceId: WORKSPACE_ID, threadId: THREAD_ID, turnId: started.turnId,
+    itemId: `${started.turnId}:model-reasoning:item-1`, phase: 'commentary', delta: 'Checking.',
+  });
 
   assert.equal((await controller.stopTurn(THREAD_ID)).accepted, true);
   const cancel = fixture.sent.find(
@@ -635,7 +644,7 @@ test('Stop records the user control as the cancellation source', async () => {
   }
   fixture.emit({
     type: 'turn.completed',
-    sequence: 1,
+    sequence: 2,
     requestId: cancel.requestId,
     workspaceId: WORKSPACE_ID,
     threadId: THREAD_ID,
@@ -651,6 +660,10 @@ test('Stop records the user control as the cancellation source', async () => {
   const interrupted = controller.getSnapshot().turns.at(-1);
   assert.equal(interrupted?.status, 'interrupted');
   assert.equal(interrupted?.error, undefined);
+  assert.deepEqual(interrupted?.activities, [{
+    type: 'reasoning',
+    activity: { id: `${started.turnId}:model-reasoning:item-1`, text: 'Checking.', status: 'completed' },
+  }]);
 });
 
 test('running sends enqueue in FIFO order and completion starts the queue head', async () => {

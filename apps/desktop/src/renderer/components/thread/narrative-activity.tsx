@@ -12,16 +12,16 @@ export const NarrativeActivity = ({
   language,
 }: Readonly<{
   activity: AgentCommentaryViewModel;
-  kind: 'commentary' | 'reasoningSummary';
+  kind: 'commentary' | 'reasoning' | 'reasoningSummary';
   language: ProcessLanguage;
 }>) => {
   const running = activity.state === 'running';
-  const store = useActivityDisclosureStore(activity.id, running);
-  const reasoning = kind === 'reasoningSummary';
+  const reasoning = kind !== 'commentary';
+  const store = useActivityDisclosureStore(activity.id, !reasoning && running);
   const label = reasoning
     ? language === 'zh'
-      ? '思考过程'
-      : 'Reasoning'
+      ? kind === 'reasoningSummary' ? '思考摘要' : '思考过程'
+      : kind === 'reasoningSummary' ? 'Reasoning summary' : 'Reasoning'
     : language === 'zh'
       ? '进度说明'
       : 'Progress update';

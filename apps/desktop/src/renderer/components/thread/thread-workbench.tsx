@@ -555,11 +555,12 @@ const TurnActivity = ({
           language={language}
         />
       );
+    case 'reasoning':
     case 'reasoningSummary':
       return (
         <NarrativeActivity
           activity={entry.activity}
-          kind="reasoningSummary"
+          kind={entry.type}
           language={language}
         />
       );
@@ -622,7 +623,7 @@ const TurnActivityTimeline = ({
   );
   const toolCount = activities.filter(isCompactToolActivity).length;
   const narrativeCount = activities.filter(
-    (entry) => entry.type === 'commentary' || entry.type === 'reasoningSummary',
+    (entry) => entry.type === 'commentary' || entry.type === 'reasoning' || entry.type === 'reasoningSummary',
   ).length;
   const activitySummary = [
     ...(toolCount > 0

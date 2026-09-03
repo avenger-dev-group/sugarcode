@@ -233,9 +233,9 @@ export class ConversationEvents {
           status: 'completed' as const,
         }));
         const activities = turn.activities?.map((activity) => {
-          if (activity.type === 'commentary') {
+          if (activity.type === 'commentary' || activity.type === 'reasoning' || activity.type === 'reasoningSummary') {
             return {
-              type: 'commentary' as const,
+              type: activity.type,
               activity: { ...activity.activity, status: 'completed' as const },
             };
           }

@@ -5,7 +5,7 @@ import type {
   ConversationTurn,
 } from '../../../../shared/conversation.ts';
 import {
-  isReasoningSummaryCommentaryId,
+  commentaryActivityType,
   isTrustedCommentaryId,
 } from '../../../../shared/conversation/trusted-commentary.ts';
 import {
@@ -143,12 +143,7 @@ export const reduceConversationTurn = (
           break;
         }
         const activities = [...(turn.activities ?? [])];
-        const activityType = isReasoningSummaryCommentaryId(
-          event.turnId,
-          event.itemId,
-        )
-          ? 'reasoningSummary'
-          : 'commentary';
+        const activityType = commentaryActivityType(event.turnId, event.itemId);
         const activityIndex = activities.findIndex(
           (activity) =>
             activity.type === activityType &&
@@ -210,6 +205,7 @@ export const reduceConversationTurn = (
             activities: turn.activities?.filter(
               (activity) =>
                 (activity.type !== 'commentary' &&
+                  activity.type !== 'reasoning' &&
                   activity.type !== 'reasoningSummary') ||
                 activity.activity.id !== event.itemId,
             ),
@@ -221,12 +217,7 @@ export const reduceConversationTurn = (
             message.role !== 'agent' || message.id !== event.itemId,
         );
         const activities = [...(turn.activities ?? [])];
-        const activityType = isReasoningSummaryCommentaryId(
-          event.turnId,
-          event.itemId,
-        )
-          ? 'reasoningSummary'
-          : 'commentary';
+        const activityType = commentaryActivityType(event.turnId, event.itemId);
         const activityIndex = activities.findIndex(
           (activity) =>
             activity.type === activityType &&
@@ -259,6 +250,7 @@ export const reduceConversationTurn = (
         const activities = turn.activities?.filter(
           (activity) =>
             (activity.type !== 'commentary' &&
+              activity.type !== 'reasoning' &&
               activity.type !== 'reasoningSummary') ||
             activity.activity.id !== event.itemId,
         );

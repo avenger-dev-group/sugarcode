@@ -1421,7 +1421,7 @@ test('OpenAI Responses adapter never infers a tool call from reasoning text', as
   );
   assert.equal(
     readModelItemMetadata(internal ?? {})?.reasoningVisibility,
-    'internal',
+    'provider',
   );
 });
 
@@ -1636,7 +1636,7 @@ test('Anthropic SDK streams thinking, text, tool calls, and usage into ADK respo
   assert.equal(thinking?.text, 'Check.');
   assert.equal(
     readModelItemMetadata(thinking ?? {})?.reasoningVisibility,
-    'internal',
+    'provider',
   );
   assert.equal(functionCall?.name, 'workspace/read');
   assert.deepEqual(receivedBody?.output_config, { effort: 'high' });

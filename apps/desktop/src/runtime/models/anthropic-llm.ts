@@ -28,6 +28,7 @@ import {
   MODEL_REQUEST_ATTEMPT_TIMEOUT_MS,
 } from '../../shared/model-request-limits.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
+import { isMetisModel, metisAnthropicThinking, resolveReasoningEffort } from './compatibility/metis.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
 import { streamWithPreOutputRetry } from './retry.ts';
@@ -382,6 +383,7 @@ export class AnthropicLlm extends BaseLlm {
   private readonly compactThresholdTokens?: number;
   private readonly compatibilityKey: string;
   private readonly reasoningEffort?: 'low' | 'medium' | 'high' | 'max';
+  private readonly thinking?: { type: 'adaptive' } | { type: 'disabled' };
   private readonly fastMode: boolean;
 
   constructor(options: ProviderAdapterOptions) {
@@ -394,7 +396,9 @@ export class AnthropicLlm extends BaseLlm {
     this.compatibilityKey = `anthropicMessages:${validateBaseUrl(options.baseUrl)}`;
     if (
       options.reasoningEffort !== undefined &&
-      !['auto', 'low', 'medium', 'high', 'max'].includes(
+      !(isMetisModel(options.model)
+        ? ['auto', 'none', 'low', 'medium', 'high', 'max']
+        : ['auto', 'low', 'medium', 'high', 'max']).includes(
         options.reasoningEffort,
       )
     ) {
@@ -404,9 +408,9 @@ export class AnthropicLlm extends BaseLlm {
         message: `Anthropic does not support reasoning effort "${options.reasoningEffort}". Choose Auto, Low, Medium, High, or Max.`,
       });
     }
-    this.reasoningEffort = options.reasoningEffort === 'auto'
-      ? undefined
-      : options.reasoningEffort as typeof this.reasoningEffort;
+    const effort = resolveReasoningEffort(options.model, options.reasoningEffort);
+    this.reasoningEffort = effort === 'none' ? undefined : effort as typeof this.reasoningEffort;
+    this.thinking = metisAnthropicThinking(options.model, options.reasoningEffort);
     this.fastMode = options.serviceTier === 'fast';
     this.client = new Anthropic({
       apiKey: options.apiKey || 'sugarcode-no-key',
@@ -496,6 +500,7 @@ export class AnthropicLlm extends BaseLlm {
                 ...(this.reasoningEffort
                   ? { output_config: { effort: this.reasoningEffort } }
                   : {}),
+                ...(this.thinking ? { thinking: this.thinking } : {}),
                 stream: true,
               },
               { signal: deadline.signal },
@@ -528,6 +533,7 @@ export class AnthropicLlm extends BaseLlm {
               ...(this.reasoningEffort
                 ? { output_config: { effort: this.reasoningEffort } }
                 : {}),
+              ...(this.thinking ? { thinking: this.thinking } : {}),
               ...(this.fastMode ? { speed: 'fast' as const } : {}),
               ...(this.nativeCompaction
                 ? {
@@ -593,7 +599,7 @@ export class AnthropicLlm extends BaseLlm {
                         thought: true,
                         partMetadata: modelItemMetadata(thinkingItemId, {
                           phase: 'commentary',
-                          reasoningVisibility: 'internal',
+                          reasoningVisibility: 'provider',
                         }),
                       },
                     ],
@@ -651,7 +657,7 @@ export class AnthropicLlm extends BaseLlm {
                     thought: true,
                     partMetadata: modelItemMetadata(thinkingItemId, {
                       phase: 'commentary',
-                      reasoningVisibility: 'internal',
+                      reasoningVisibility: 'provider',
                     }),
                   }],
                 },
@@ -758,7 +764,7 @@ export class AnthropicLlm extends BaseLlm {
                 partMetadata: {
                   ...modelItemMetadata(thinkingItemId, {
                     phase: 'commentary',
-                    reasoningVisibility: 'internal',
+                    reasoningVisibility: fullThinking ? 'provider' : 'internal',
                   }),
                   ...(thinkingSignature
                     ? { anthropicSignature: thinkingSignature }

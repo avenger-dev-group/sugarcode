@@ -85,7 +85,7 @@ export const readModelItemMetadata = (
       ? { phase }
       : {}),
     ...(isModelStepOutcome(outcome) ? { outcome } : {}),
-    ...(reasoningVisibility === 'internal' || reasoningVisibility === 'summary'
+    ...(reasoningVisibility === 'internal' || reasoningVisibility === 'summary' || reasoningVisibility === 'provider'
       ? { reasoningVisibility }
       : {}),
   };

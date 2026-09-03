@@ -6,7 +6,7 @@ import type {
   ConversationUserInputSubmission,
 } from '../../../../shared/conversation.ts';
 import {
-  isReasoningSummaryCommentaryId,
+  commentaryActivityType,
   isTrustedCommentaryId,
 } from '../../../../shared/conversation/trusted-commentary.ts';
 import type {
@@ -616,14 +616,13 @@ export const projectTurnActivities = (
         !activities.some(
           (activity) =>
             (activity.type === 'commentary' ||
+              activity.type === 'reasoning' ||
               activity.type === 'reasoningSummary') &&
             activity.activity.id === id,
         )
       ) {
         activities.push({
-          type: isReasoningSummaryCommentaryId(item.turnId, id)
-            ? 'reasoningSummary'
-            : 'commentary',
+          type: commentaryActivityType(item.turnId, id),
           activity: {
             id,
             text,

@@ -782,6 +782,7 @@ export const toThreadViewModel = (
     const nextActivities = turn.activities?.map((entry) => {
       switch (entry.type) {
         case 'commentary':
+        case 'reasoning':
         case 'reasoningSummary':
           return {
             type: entry.type,

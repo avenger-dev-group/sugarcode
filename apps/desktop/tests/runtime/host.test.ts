@@ -189,13 +189,25 @@ class ReasoningBoundaryLlm extends BaseLlm {
         reasoningVisibility: 'summary',
       }),
     };
+    const provider = {
+      text: 'Provider reasoning with an explicit wire boundary.',
+      thought: true,
+      // A provider may publish both content and summary on the same item.
+      partMetadata: modelItemMetadata('reasoning-summary', {
+        // Visibility must take precedence over an inconsistent text phase.
+        phase: 'final',
+        reasoningVisibility: 'provider',
+      }),
+    };
     yield { content: { role: 'model', parts: [internal] }, partial: true };
+    yield { content: { role: 'model', parts: [provider] }, partial: true };
     yield { content: { role: 'model', parts: [summary] }, partial: true };
     yield {
       content: {
         role: 'model',
         parts: [
           internal,
+          provider,
           summary,
           ...finalResponseParts(
             request,
@@ -3663,7 +3675,7 @@ test('RuntimeHost preserves typed provider failures caught by ADK', async () => 
   );
 });
 
-test('RuntimeHost exposes provider reasoning summaries but keeps raw reasoning private', async () => {
+test('RuntimeHost separates provider reasoning and summaries while keeping internal data private', async () => {
   const events: RuntimeEvent[] = [];
   let resolveTerminal: (() => void) | undefined;
   const terminal = new Promise<void>((resolve) => {
@@ -3710,6 +3722,18 @@ test('RuntimeHost exposes provider reasoning summaries but keeps raw reasoning p
         : [],
   );
   assert.equal(visibleText.some((text) => text.includes('Private chain')), false);
+  assert.ok(events.some((event) =>
+    event.type === 'turn.textDelta' &&
+    event.itemId.includes(':model-reasoning:') &&
+    event.phase === 'commentary' &&
+    event.delta === 'Provider reasoning with an explicit wire boundary.',
+  ));
+  assert.equal(events.filter((event) =>
+    event.type === 'turn.textCompleted' && event.itemId.includes(':model-reasoning:'),
+  ).length, 1);
+  assert.ok(!events.some((event) =>
+    event.type === 'turn.textCompleted' && event.phase === 'final' && event.text.includes('Provider reasoning'),
+  ));
   assert.equal(
     visibleText.some((text) =>
       text.includes('I checked the relevant project files.'),

@@ -159,6 +159,10 @@ export type ContextCompactionActivityViewModel = Readonly<{
 
 export type TurnActivityViewModel =
   | Readonly<{
+      type: 'reasoning';
+      activity: AgentCommentaryViewModel;
+    }>
+  | Readonly<{
       type: 'commentary';
       activity: AgentCommentaryViewModel;
     }>

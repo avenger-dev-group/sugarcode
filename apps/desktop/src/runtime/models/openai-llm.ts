@@ -38,6 +38,7 @@ import {
   protocolShapeSha256,
 } from '../contracts/protocol-error.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
+import { isMetisModel, metisChatThinking, resolveReasoningEffort } from './compatibility/metis.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import {
   OpenAiResponsesReconciler,
@@ -53,6 +54,7 @@ import { streamWithPreOutputRetry } from './retry.ts';
 import {
   modelFunctionCallArgumentsMetadata,
   modelItemMetadata,
+  readModelItemMetadata,
 } from './step-outcome.ts';
 import { normalizeToolArguments } from './tool-arguments.ts';
 import { classifyTransportError } from './transport-error.ts';
@@ -505,10 +507,21 @@ const chatMessages = (
             ]
           : [],
       );
+      const reasoning = isMetisModel(request.model)
+        ? message.parts.flatMap((part) =>
+            part.type === 'text' && part.thought &&
+            readModelItemMetadata({ partMetadata: part.metadata })?.reasoningVisibility === 'provider'
+              ? [part.text]
+              : [],
+          ).join('')
+        : '';
       if (text || toolCalls.length > 0) {
         messages.push({
           role: 'assistant',
           content: text || null,
+          ...(isMetisModel(request.model) && (reasoning || toolCalls.length > 0)
+            ? { reasoning_content: reasoning }
+            : {}),
           ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         });
       }
@@ -768,7 +781,7 @@ const responseReasoningParts = (
         partMetadata: {
           ...modelItemMetadata(block.item.id, {
             phase: 'commentary',
-            reasoningVisibility: 'internal',
+            reasoningVisibility: 'provider',
           }),
           ...replay,
         },
@@ -836,9 +849,7 @@ export class OpenAiLlm extends BaseLlm {
     this.compatibilityKey = options.wireApi === 'openaiResponses'
       ? openAiResponsesCompatibilityKey(baseUrl, options.model)
       : `${options.wireApi}:${baseUrl}:${options.model}`;
-    this.reasoningEffort = options.reasoningEffort === 'auto'
-      ? undefined
-      : options.reasoningEffort;
+    this.reasoningEffort = resolveReasoningEffort(options.model, options.reasoningEffort);
     this.serviceTier = options.serviceTier === 'fast'
       ? 'priority'
       : options.serviceTier === 'standard'
@@ -1060,7 +1071,7 @@ export class OpenAiLlm extends BaseLlm {
                 thought: true,
                 partMetadata: modelItemMetadata(event.item_id, {
                   phase: 'commentary',
-                  reasoningVisibility: 'internal',
+                  reasoningVisibility: 'provider',
                 }),
               }],
             },
@@ -1359,6 +1370,7 @@ export class OpenAiLlm extends BaseLlm {
     let terminalReason: string | null | undefined;
     let usage: unknown;
     const messages = chatMessages(request);
+    const thinking = metisChatThinking(request.model, this.reasoningEffort);
     assertValidChatToolHistory(messages);
     const stream = streamWithPreOutputRetry({
       signal: abortSignal,
@@ -1370,12 +1382,14 @@ export class OpenAiLlm extends BaseLlm {
           {
             model: request.model,
             messages: [...messages],
-            tools: [...chatTools(request.tools)],
-            parallel_tool_calls: this.parallelTools,
+            ...(request.tools.length > 0
+              ? { tools: [...chatTools(request.tools)], parallel_tool_calls: this.parallelTools }
+              : {}),
             max_completion_tokens: maxOutputTokens(request),
             ...(this.reasoningEffort
               ? { reasoning_effort: this.reasoningEffort }
               : {}),
+            ...(thinking ? { thinking } : {}),
             ...(this.serviceTier
               ? { service_tier: this.serviceTier }
               : {}),
@@ -1400,7 +1414,7 @@ export class OpenAiLlm extends BaseLlm {
                 thought: true,
                 partMetadata: modelItemMetadata(reasoningItemId, {
                   phase: 'commentary',
-                  reasoningVisibility: 'internal',
+                  reasoningVisibility: 'provider',
                 }),
               }],
             },
@@ -1491,7 +1505,7 @@ export class OpenAiLlm extends BaseLlm {
         thought: true,
         partMetadata: modelItemMetadata(reasoningItemId, {
           phase: 'commentary',
-          reasoningVisibility: 'internal',
+          reasoningVisibility: 'provider',
         }),
       });
     }
