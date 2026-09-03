@@ -386,7 +386,7 @@ class StreamingDelimitedFinalLlm extends BaseLlm {
 
   async *generateContentAsync(): AsyncGenerator<LlmResponse, void> {
     const chunks = [
-      'Private reasoning that must remain hidden.',
+      '<think>Private reasoning that must remain hidden.',
       '</thi',
       'nk>流式',
       '最终答复。',
@@ -3735,7 +3735,7 @@ test('RuntimeHost exposes provider reasoning summaries but keeps raw reasoning p
   );
 });
 
-test('RuntimeHost cleans a model-facing preamble without requesting a rewrite', async () => {
+test('RuntimeHost preserves model-facing prose returned as final content', async () => {
   const events: RuntimeEvent[] = [];
   const model = new LeakyFinalLlm({ model: 'fixture-model' });
   let resolveTerminal: (() => void) | undefined;
@@ -3790,7 +3790,7 @@ test('RuntimeHost cleans a model-facing preamble without requesting a rewrite', 
         event.phase === 'final' &&
         event.text.includes('Now produce'),
     ),
-    false,
+    true,
   );
   assert.equal(
     events.some(
@@ -3800,20 +3800,21 @@ test('RuntimeHost cleans a model-facing preamble without requesting a rewrite', 
         event.itemId.includes(':reasoning-summary:') &&
         event.text.includes('Now produce'),
     ),
-    true,
+    false,
   );
   assert.equal(
     events.some(
       (event) =>
         event.type === 'turn.textCompleted' &&
         event.phase === 'final' &&
-        event.text === '已生成结果。',
+        event.text ===
+          'Generated successfully. Now produce the final answer in Chinese.\n\n已生成结果。',
     ),
     true,
   );
 });
 
-test('RuntimeHost can persist a cleaned final after retracting a streamed draft', async () => {
+test('RuntimeHost persists explicit final content without heuristic rewriting', async () => {
   const events: RuntimeEvent[] = [];
   const model = new RejectedDelimitedThenStructuredFinalLlm({
     model: 'fixture-model',
@@ -3879,7 +3880,8 @@ test('RuntimeHost can persist a cleaned final after retracting a streamed draft'
       (event) =>
         event.type === 'turn.textCompleted' &&
         event.phase === 'final' &&
-        event.text === '已生成结果。',
+        event.text ===
+          'Generated successfully. Now produce the final answer in Chinese.\n\n已生成结果。',
     ),
     true,
   );

@@ -424,6 +424,7 @@ export type ProcessActivityGroupProps = Readonly<{
   activeLabel?: string;
   animateActive?: boolean;
   durationLabel?: string;
+  activitySummary?: string;
   children: ReactNode;
 }>;
 

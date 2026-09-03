@@ -52,6 +52,7 @@ test('durable thread recovery preserves structured knowledge references', () => 
     knowledgeBaseId,
     name: '产品规范',
   }]);
+  assert.equal(projectThread(snapshot)[0]?.durationMs, 1_000);
 });
 
 test('durable Goal objectives project as visible user messages without exposing hidden context', () => {

@@ -529,6 +529,14 @@ export const projectThread = (
     return {
       id: record.id,
       status: record.status === 'running' ? 'interrupted' : record.status,
+      ...(record.completedAt === null
+        ? {}
+        : {
+            durationMs: Math.max(
+              0,
+              (record.completedAt - record.startedAt) * 1_000,
+            ),
+          }),
       model,
       messages,
       ...(items.some((item) => item.kind === 'turn.goalContext')

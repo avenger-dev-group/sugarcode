@@ -60,7 +60,7 @@ import {
   revisedTurnContent,
 } from './conversation-turn-content.ts';
 import { GoalCoordinator, type GoalQueueOutcome } from './goal-coordinator.ts';
-import { createUuidV7 } from './id.ts';
+import { createUuidV7, uuidV7TimestampMs } from './id.ts';
 import type { GoalPowerSaveController } from './goal-power-save-controller.ts';
 import type { RuntimeSupervisor } from './supervisor.ts';
 
@@ -2163,9 +2163,15 @@ export class RuntimeConversationController {
           return activity;
         });
         const completedTurn = withoutUserInputRequest(turn);
+        const startedAtMs = uuidV7TimestampMs(event.turnId);
+        const durationMs =
+          startedAtMs === undefined
+            ? undefined
+            : Math.max(0, Date.now() - startedAtMs);
         turns[index] = {
           ...completedTurn,
           status: event.status,
+          ...(durationMs === undefined ? {} : { durationMs }),
           messages,
           ...(activities ? { activities } : {}),
           ...(event.error

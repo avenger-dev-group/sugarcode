@@ -480,7 +480,15 @@ export const ToolActivityGroup = ({
   activities: readonly CompactToolActivity[];
   language: ProcessLanguage;
 }>) => {
-  const store = useActivityDisclosureStore(activities[0]?.activity.id ?? '');
+  const hasActiveActivity = activities.some((entry) =>
+    ['running', 'stopping', 'awaiting', 'approved', 'attempted'].includes(
+      String(entry.activity.state),
+    )
+  );
+  const store = useActivityDisclosureStore(
+    activities[0]?.activity.id ?? '',
+    hasActiveActivity,
+  );
   const readPathLabels = useMemo(
     () => createShortestUniquePathLabels(
       activities.flatMap((entry) =>

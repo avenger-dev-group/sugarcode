@@ -32,11 +32,6 @@ import {
 import { RuntimeProtocolError } from './protocol-error.ts';
 import { buildAgentInstructions } from './agent-instructions.ts';
 import {
-  finalResponseCandidateIssue,
-  hasLikelyModelFacingPreamble,
-  normalizeFinalResponseCandidate,
-} from './final-response-quality.ts';
-import {
   extractDelimitedFinalResponse,
   streamableDelimitedFinalResponse,
 } from './final-response-submission.ts';
@@ -4748,10 +4743,6 @@ export class RuntimeHost {
               if (candidateText.trim().length === 0) {
                 return 'The candidate final answer is empty.';
               }
-              if (turnMode === 'plan') {
-                const responseIssue = finalResponseCandidateIssue(candidateText);
-                if (responseIssue) return responseIssue;
-              }
               if (turnMode === 'plan' && !planSubmissionGuard.proposal) {
                 return 'Planning mode requires the completed plan to be submitted with submit_plan before the Turn can finish.';
               }
@@ -4772,18 +4763,8 @@ export class RuntimeHost {
             recoverFinalCandidate:
               turnMode === 'plan'
                 ? undefined
-                : (candidateText) => {
-                    const extracted = extractDelimitedFinalResponse(candidateText);
-                    const source = extracted ?? candidateText;
-                    const normalized = this.normalizeUserFacingFinalResponse(
-                      command,
-                      source,
-                    );
-                    return extracted !== undefined ||
-                      normalized !== candidateText.trim()
-                      ? normalized
-                      : undefined;
-                  },
+                : (candidateText) =>
+                    extractDelimitedFinalResponse(candidateText),
             validateRecoveredFinalCandidate: (candidateText) => {
               const goalIssue = goalSession?.finalIssue();
               if (goalIssue) return goalIssue;
@@ -6071,18 +6052,13 @@ export class RuntimeHost {
     state: TextItemState,
   ): void => {
     const delimited = streamableDelimitedFinalResponse(state.text)?.trimStart();
-    const normalized = normalizeFinalResponseCandidate(state.text);
     const trimmed = state.text.trimStart();
     const waitsForExplicitBoundary =
       trimmed.startsWith('<think>') ||
       trimmed.startsWith('<final_response>') ||
       '<final_response>'.startsWith(trimmed);
-    const visible = delimited ??
-      (normalized.removedPrefix
-        ? normalized.text
-        : waitsForExplicitBoundary || hasLikelyModelFacingPreamble(state.text)
-          ? undefined
-          : state.text);
+    const visible =
+      delimited ?? (waitsForExplicitBoundary ? undefined : state.text);
     if (visible === undefined) return;
     const previous = state.streamedFinalText ?? '';
     if (!visible.startsWith(previous)) return;
@@ -6227,38 +6203,6 @@ export class RuntimeHost {
       await state.structuredFinalAnimation;
     }
     this.publishStructuredFinalResponse(command, text);
-  };
-
-  private normalizeUserFacingFinalResponse = (
-    command: TurnExecutionCommand,
-    text: string,
-  ): string => {
-    const normalized = normalizeFinalResponseCandidate(text);
-    if (normalized.removedPrefix) {
-      this.emit({
-        type: 'runtime.log',
-        requestId: command.requestId,
-        level: 'warn',
-        message:
-          'Removed a likely model-facing preamble from the final response.',
-      });
-      if (normalized.removedPrefixText) {
-        this.emit({
-          type: 'turn.textCompleted',
-          requestId: command.requestId,
-          workspaceId: command.workspaceId,
-          threadId: command.threadId,
-          turnId: command.turnId,
-          itemId: reasoningSummaryCommentaryId(
-            command.turnId,
-            'recovered-final-prefix',
-          ),
-          phase: 'commentary',
-          text: normalized.removedPrefixText,
-        });
-      }
-    }
-    return normalized.text;
   };
 
   private publishStructuredFinalResponse = (

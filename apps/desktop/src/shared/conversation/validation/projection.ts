@@ -132,6 +132,9 @@ const isTurn = (value: unknown): value is ConversationTurn => {
     !isId(value.id) ||
     typeof value.status !== 'string' ||
     !TURN_STATUSES.has(value.status as ConversationTurnStatus) ||
+    (Object.hasOwn(value, 'durationMs') &&
+      (!Number.isSafeInteger(value.durationMs) ||
+        (value.durationMs as number) < 0)) ||
     !Array.isArray(value.messages) ||
     !value.messages.every(isMessage) ||
     (Object.hasOwn(value, 'model') &&

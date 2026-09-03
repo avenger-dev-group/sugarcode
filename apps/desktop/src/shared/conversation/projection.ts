@@ -40,6 +40,7 @@ export type ConversationThreadQueue = Readonly<{
 export type ConversationTurn = Readonly<{
   id: string;
   status: ConversationTurnStatus;
+  durationMs?: number;
   model?: ConversationModelSelection;
   messages: readonly ConversationMessage[];
   planProposal?: ConversationPlanProposal;

@@ -127,6 +127,7 @@ import {
 } from './transcript-follow';
 import {
   completedProcessDurationLabel,
+  formatProcessDuration,
   processLanguageFromText,
 } from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
@@ -1083,11 +1084,14 @@ export const toThreadViewModel = (
       turn.status === 'completed'
         ? turn.messages.findLast((message) => message.role === 'agent')?.id
         : undefined;
-    const durationLabel = completedProcessDurationLabel(
-      turn.id,
-      completedAgentMessageId,
-      processLanguage,
-    );
+    const durationLabel =
+      turn.status === 'completed' && turn.durationMs !== undefined
+        ? formatProcessDuration(turn.durationMs, processLanguage)
+        : completedProcessDurationLabel(
+            turn.id,
+            completedAgentMessageId,
+            processLanguage,
+          );
     const isError = turn.status === 'failed';
     if (
       previousTurn?.status === turn.status &&

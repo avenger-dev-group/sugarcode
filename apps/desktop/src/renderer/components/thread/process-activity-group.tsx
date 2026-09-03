@@ -15,6 +15,7 @@ export const ProcessActivityGroup = ({
   activeLabel,
   animateActive = true,
   durationLabel,
+  activitySummary,
   children,
 }: ProcessActivityGroupProps) => {
   const store = useActivityDisclosureStore(
@@ -59,14 +60,26 @@ export const ProcessActivityGroup = ({
             {label}
           </span>
           {visibleDuration ? (
-            <span className="tabular-nums text-tertiary">{visibleDuration}</span>
+            <span className="tabular-nums text-tertiary">
+              · {visibleDuration}
+            </span>
+          ) : null}
+          {activitySummary ? (
+            <span className="min-w-0 truncate text-xs text-tertiary">
+              · {activitySummary}
+            </span>
           ) : null}
           <ChevronDown
             className="size-3.5 shrink-0 text-tertiary transition-transform motion-reduce:transition-none group-open/process-analysis:rotate-180"
             aria-hidden="true"
           />
         </summary>
-        <div className="mt-1.5 w-full min-w-0 space-y-2.5">
+        <div
+          className="mt-1.5 max-h-[min(55vh,36rem)] w-full min-w-0 space-y-1.5 overflow-y-auto overscroll-y-auto border-b border-border/60 pb-2.5 pr-2 [scrollbar-gutter:stable]"
+          tabIndex={0}
+          role="region"
+          aria-label={language === 'zh' ? '处理过程' : 'Process activity'}
+        >
           {children}
         </div>
       </details>
