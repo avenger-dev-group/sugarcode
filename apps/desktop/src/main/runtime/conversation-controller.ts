@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { parseComposerSubmission } from '../../shared/composer.ts';
-import { isTrustedCommentaryId } from '../../shared/conversation/trusted-commentary.ts';
+import {
+  isReasoningSummaryCommentaryId,
+  isTrustedCommentaryId,
+} from '../../shared/conversation/trusted-commentary.ts';
 
 import {
   isConversationThreadProjectionDelta,
@@ -17,6 +20,7 @@ import {
   isValidConversationTitle,
   isValidThreadSearchInput,
   type ConversationActionResult,
+  type ConversationActivity,
   type ConversationAttachment,
   type ConversationAttachmentPreviewResult,
   type ConversationStateListener,
@@ -1660,15 +1664,21 @@ export class RuntimeConversationController {
             break;
           }
           const activities = [...(turn.activities ?? [])];
+          const activityType = isReasoningSummaryCommentaryId(
+            event.turnId,
+            event.itemId,
+          )
+            ? 'reasoningSummary'
+            : 'commentary';
           const activityIndex = activities.findIndex(
             (activity) =>
-              activity.type === 'commentary' &&
+              activity.type === activityType &&
               activity.activity.id === event.itemId,
           );
           const current = activities[activityIndex];
-          if (activityIndex >= 0 && current?.type === 'commentary') {
+          if (activityIndex >= 0 && current?.type === activityType) {
             activities[activityIndex] = {
-              type: 'commentary',
+              type: activityType,
               activity: {
                 ...current.activity,
                 text: current.activity.text + event.delta,
@@ -1676,7 +1686,7 @@ export class RuntimeConversationController {
             };
           } else {
             activities.push({
-              type: 'commentary',
+              type: activityType,
               activity: {
                 id: event.itemId,
                 text: event.delta,
@@ -1720,7 +1730,8 @@ export class RuntimeConversationController {
               ),
               activities: turn.activities?.filter(
                 (activity) =>
-                  activity.type !== 'commentary' ||
+                  (activity.type !== 'commentary' &&
+                    activity.type !== 'reasoningSummary') ||
                   activity.activity.id !== event.itemId,
               ),
             };
@@ -1731,13 +1742,19 @@ export class RuntimeConversationController {
               message.role !== 'agent' || message.id !== event.itemId,
           );
           const activities = [...(turn.activities ?? [])];
+          const activityType = isReasoningSummaryCommentaryId(
+            event.turnId,
+            event.itemId,
+          )
+            ? 'reasoningSummary'
+            : 'commentary';
           const activityIndex = activities.findIndex(
             (activity) =>
-              activity.type === 'commentary' &&
+              activity.type === activityType &&
               activity.activity.id === event.itemId,
           );
-          const completed = {
-            type: 'commentary' as const,
+          const completed: ConversationActivity = {
+            type: activityType,
             activity: {
               id: event.itemId,
               text: event.text,
@@ -1762,7 +1779,8 @@ export class RuntimeConversationController {
           ];
           const activities = turn.activities?.filter(
             (activity) =>
-              activity.type !== 'commentary' ||
+              (activity.type !== 'commentary' &&
+                activity.type !== 'reasoningSummary') ||
               activity.activity.id !== event.itemId,
           );
           turns[index] = {

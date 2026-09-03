@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   finalResponseCandidateIssue,
+  hasLikelyModelFacingPreamble,
   normalizeFinalResponseCandidate,
 } from '../../src/runtime/final-response-quality.ts';
 
@@ -24,6 +25,25 @@ test('strips accumulated internal work narration from the user answer', () => {
   assert.equal(normalized.text, '项目审查完成。');
   assert.equal(normalized.removedPrefix, true);
   assert.match(normalized.diagnostic ?? '', /internal work narration/u);
+});
+
+test('separates a leaked model-planning prefix from a user-facing answer', () => {
+  const prefix =
+    'Host platform: macOS. Knowledge base: none selected currently.\n\n' +
+    'I should present this in a friendly, organized way in Chinese. No need for tool calls.\n\n' +
+    "I shouldn't make it too long. Let me structure it:\n\n" +
+    '- 文件与代码工作\n- 命令执行\n- 限制\n\n' +
+    'Keep it scannable with headings/bullets. Lead with a one-line summary.';
+  const normalized = normalizeFinalResponseCandidate(
+    `${prefix}我是 SugarCode 工作区代理，当前能力如下：\n\n## 文件与代码`,
+  );
+
+  assert.equal(
+    normalized.text,
+    '我是 SugarCode 工作区代理，当前能力如下：\n\n## 文件与代码',
+  );
+  assert.equal(normalized.removedPrefixText, prefix);
+  assert.equal(normalized.removedPrefix, true);
 });
 
 test('preserves suspicious output when no clean suffix can be isolated', () => {
@@ -62,6 +82,19 @@ test('accepts normal English prose that uses isolated planning vocabulary', () =
       'I need to highlight one limitation: English summaries can be long, but they remain valid user-facing responses.',
     ),
     undefined,
+  );
+});
+
+test('holds likely model-facing prefixes before streaming them as final text', () => {
+  assert.equal(
+    hasLikelyModelFacingPreamble(
+      'Host platform: macOS. Knowledge base: none selected.',
+    ),
+    true,
+  );
+  assert.equal(
+    hasLikelyModelFacingPreamble('项目分析完成，目前包含三个主要模块。'),
+    false,
   );
 });
 

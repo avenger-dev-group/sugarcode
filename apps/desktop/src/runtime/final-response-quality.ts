@@ -24,6 +24,61 @@ const INTERNAL_NARRATION_SIGNATURES = [
   },
 ] as const;
 
+const MODEL_SELF_DIRECTION_PATTERNS = [
+  /^\s*host platform:\s*.+$/imu,
+  /^\s*knowledge base:\s*.+$/imu,
+  /\bI (?:should|shouldn't|need|needn't|must|will|won't|am going to)\b/iu,
+  /\bLet me (?:structure|organize|present|answer|respond|think|check)\b/iu,
+  /\b(?:No need for tool calls|This is a simple answer|Keep it scannable|Lead with a one-line summary)\b/iu,
+] as const;
+
+const modelSelfDirectionScore = (value: string): number =>
+  MODEL_SELF_DIRECTION_PATTERNS.reduce(
+    (score, pattern) => score + (pattern.test(value) ? 1 : 0),
+    0,
+  );
+
+export const hasLikelyModelFacingPreamble = (value: string): boolean => {
+  const text = value.trimStart();
+  return (
+    /^(?:host platform|knowledge base):/iu.test(text) ||
+    /^(?:(?:private|internal) reasoning|private chain of thought)\b/iu.test(text) ||
+    /^(?:I (?:should|shouldn't|need|must|will)|Let me (?:structure|organize|present|answer|respond|think|check))\b/iu.test(
+      text,
+    ) ||
+    modelSelfDirectionScore(text) >= 2
+  );
+};
+
+const inlineUserFacingBoundary = (value: string): number | undefined => {
+  const transition = /\b(?:Keep it scannable[^\r\n]*?|Lead with a one-line summary[^\r\n]*?)[.!?]\s*(?=\p{Script=Han})/iu.exec(
+    value,
+  );
+  return transition?.index === undefined
+    ? undefined
+    : transition.index + transition[0].length;
+};
+
+const modelFacingPrefixBoundary = (value: string): number | undefined => {
+  if (modelSelfDirectionScore(value) < 2) return undefined;
+  const candidates = [inlineUserFacingBoundary(value)];
+  for (const match of value.matchAll(/\r?\n[\t ]*\r?\n/gu)) {
+    candidates.push((match.index ?? 0) + match[0].length);
+  }
+  return candidates
+    .filter((candidate): candidate is number => candidate !== undefined)
+    .find((candidate) => {
+      const prefix = value.slice(0, candidate).trim();
+      const suffix = value.slice(candidate).trim();
+      return (
+        prefix.length > 0 &&
+        suffix.length > 0 &&
+        modelSelfDirectionScore(prefix) >= 2 &&
+        modelSelfDirectionScore(suffix) === 0
+      );
+    });
+};
+
 const proseOnly = (value: string): string =>
   value
     .replace(/```[\s\S]*?```/gu, '')
@@ -40,6 +95,9 @@ export const finalResponseCandidateIssue = (
   if (MODEL_FACING_FINAL_DIRECTIVES.some((pattern) => pattern.test(text))) {
     return 'The candidate contains a model-facing instruction for producing the final answer.';
   }
+  if (modelFacingPrefixBoundary(text) !== undefined) {
+    return 'The candidate begins with internal work narration before the user-facing answer.';
+  }
   const containsInternalNarration = INTERNAL_NARRATION_SIGNATURES.some(
     ({ requestRecap, planningTransition, deliveryPlanning }) =>
       requestRecap.test(text) &&
@@ -54,6 +112,7 @@ export const finalResponseCandidateIssue = (
 export type NormalizedFinalResponseCandidate = Readonly<{
   text: string;
   removedPrefix: boolean;
+  removedPrefixText?: string;
   diagnostic?: string;
 }>;
 
@@ -72,6 +131,16 @@ export const normalizeFinalResponseCandidate = (
     return { text, removedPrefix: false, diagnostic };
   }
 
+  const detectedBoundary = modelFacingPrefixBoundary(text);
+  if (detectedBoundary !== undefined) {
+    return {
+      text: text.slice(detectedBoundary).trim(),
+      removedPrefix: true,
+      removedPrefixText: text.slice(0, detectedBoundary).trim(),
+      diagnostic,
+    };
+  }
+
   const paragraphBoundary = /\r?\n[\t ]*\r?\n/gu;
   for (const match of text.matchAll(paragraphBoundary)) {
     const boundaryEnd = (match.index ?? 0) + match[0].length;
@@ -83,7 +152,12 @@ export const normalizeFinalResponseCandidate = (
       finalResponseCandidateIssue(prefix) !== undefined &&
       finalResponseCandidateIssue(suffix) === undefined
     ) {
-      return { text: suffix, removedPrefix: true, diagnostic };
+      return {
+        text: suffix,
+        removedPrefix: true,
+        removedPrefixText: prefix,
+        diagnostic,
+      };
     }
   }
 

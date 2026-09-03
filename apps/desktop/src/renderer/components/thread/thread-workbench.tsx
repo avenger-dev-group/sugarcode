@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   ArrowUp,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   FileText,
@@ -550,6 +551,24 @@ const TurnActivity = ({
   switch (entry.type) {
     case 'commentary':
       return <AgentCommentary commentary={entry.activity} />;
+    case 'reasoningSummary':
+      return (
+        <details
+          open={entry.activity.state === 'running' ? true : undefined}
+          className="group/reasoning-summary"
+        >
+          <summary className="flex cursor-pointer list-none items-center gap-1.5 text-sm text-secondary outline-none hover:text-primary focus-visible:ring-2 focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+            <span>{language === 'zh' ? '分析过程' : 'Analysis'}</span>
+            <ChevronDown
+              className="size-3.5 text-tertiary transition-transform group-open/reasoning-summary:rotate-180"
+              aria-hidden="true"
+            />
+          </summary>
+          <div className="mt-1.5 border-l border-border pl-3 text-tertiary">
+            <AgentCommentary commentary={entry.activity} />
+          </div>
+        </details>
+      );
     case 'workspaceRead':
       return <WorkspaceReadActivity activity={entry.activity} />;
     case 'workspaceList':

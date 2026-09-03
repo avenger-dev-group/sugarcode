@@ -19,11 +19,9 @@ import {
 import { userInputBoundaryCommentary } from '../../src/shared/conversation/user-input-boundary.ts';
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
 import {
-  modelFunctionCallArgumentsMetadata,
   modelItemMetadata,
 } from '../../src/runtime/models/step-outcome.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
-import { SUBMIT_FINAL_RESPONSE_TOOL_NAME } from '../../src/runtime/final-response-submission.ts';
 import { VideoAnalyzer } from '../../src/runtime/video-analysis.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
 import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
@@ -72,19 +70,13 @@ const turnNativeFixture = (options: Readonly<{
 } as unknown as NativeRuntimeBinding);
 
 const finalResponseParts = (
-  request: LlmRequest,
+  _request: LlmRequest,
   content: string,
-  id: string,
-): Part[] =>
-  Object.hasOwn(request.toolsDict, SUBMIT_FINAL_RESPONSE_TOOL_NAME)
-    ? [{
-        functionCall: {
-          id,
-          name: SUBMIT_FINAL_RESPONSE_TOOL_NAME,
-          args: { content },
-        },
-      }]
-    : [{ text: content }];
+  _id: string,
+): Part[] => {
+  void _id;
+  return [{ text: content }];
+};
 
 class FixtureLlm extends BaseLlm {
   static readonly supportedModels = [/^fixture/u];
@@ -117,53 +109,6 @@ class FixtureLlm extends BaseLlm {
         candidatesTokenCount: 2,
         totalTokenCount: 5,
       },
-    };
-  }
-
-  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
-    void _request;
-    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
-  }
-}
-
-class StreamingStructuredFinalLlm extends BaseLlm {
-  static readonly supportedModels = [/^fixture/u];
-
-  async *generateContentAsync(
-    request: LlmRequest,
-  ): AsyncGenerator<LlmResponse, void> {
-    const content = '工具参数也会流式显示。';
-    const argumentsJson = JSON.stringify({ content });
-    for (const end of [16, 22, argumentsJson.length]) {
-      yield {
-        content: {
-          role: 'model',
-          parts: [{
-            text: '',
-            thought: true,
-            partMetadata: modelFunctionCallArgumentsMetadata({
-              itemId: 'submit-stream-item',
-              callId: 'submit-stream-call',
-              name: SUBMIT_FINAL_RESPONSE_TOOL_NAME,
-              arguments: argumentsJson.slice(0, end),
-            }),
-          }],
-        },
-        partial: true,
-      };
-    }
-    yield {
-      content: {
-        role: 'model',
-        parts: finalResponseParts(
-          request,
-          content,
-          'submit-stream-call',
-        ),
-      },
-      partial: false,
-      turnComplete: true,
-      finishReason: FinishReason.STOP,
     };
   }
 
@@ -523,7 +468,7 @@ class ToolLoopLlm extends BaseLlm {
             {
               text: 'The user asked for this file. Let me inspect it before I provide the final answer.',
               partMetadata: modelItemMetadata('provider-commentary', {
-                phase: 'commentary',
+                phase: 'provisional',
                 outcome: { kind: 'toolCalls' },
               }),
             },
@@ -552,6 +497,50 @@ class ToolLoopLlm extends BaseLlm {
           'Tool loop complete',
           'call-submit-tool-loop',
         ),
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class BrowserToolLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    const hasBrowserResult = request.contents.some((content) =>
+      (content.parts ?? []).some(
+        (part) => part.functionResponse?.name === 'browser',
+      ),
+    );
+    if (!hasBrowserResult) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-browser-open',
+              name: 'browser',
+              args: { action: 'open', url: 'http://127.0.0.1:5173' },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: finalResponseParts(request, 'Browser check complete.', 'browser-final'),
       },
       partial: false,
       turnComplete: true,
@@ -1654,6 +1643,31 @@ class FutureActionFinalLlm extends BaseLlm {
   }
 }
 
+class RepeatedFutureActionFinalLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly requests: LlmRequest[] = [];
+
+  async *generateContentAsync(
+    request: LlmRequest,
+  ): AsyncGenerator<LlmResponse, void> {
+    this.requests.push(request);
+    yield {
+      content: {
+        role: 'model',
+        parts: [{ text: '好的，现在我开始生成完整的演示文稿。' }],
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
 test('RuntimeHost applies the general workspace profile without loading project instructions', async () => {
   const events: RuntimeEvent[] = [];
   const model = new CaptureLlm({ model: 'fixture-model' });
@@ -1955,13 +1969,12 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
 
   const eventTypes = events.map((event) => event.type);
   assert.deepEqual(
-    eventTypes.slice(0, 5),
+    eventTypes.slice(0, 4),
     [
       'runtime.ready',
       'turn.started',
       'turn.userMessage',
       'turn.textStarted',
-      'turn.usage',
     ],
   );
   assert.deepEqual(eventTypes.slice(-2), [
@@ -1993,6 +2006,89 @@ test('RuntimeHost runs an ADK Turn and publishes ordered provider-neutral events
   assert.equal(createdParallelTools[0], true);
   const started = events.find((event) => event.type === 'turn.started');
   assert.equal(started?.model.effectiveCapabilities.parallelTools, true);
+});
+
+test('RuntimeHost bridges the bounded browser tool through the desktop protocol', async () => {
+  const events: RuntimeEvent[] = [];
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => new BrowserToolLlm({ model: 'fixture-model' }),
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'browser.requested') {
+        queueMicrotask(() => host.handle({
+          type: 'browser.result',
+          requestId: event.requestId,
+          operationId: event.operationId,
+          result: {
+            ok: true,
+            snapshot: {
+              sessionId: '9cf78522-8ca0-4f7d-a861-87a0fb61d612',
+              url: 'http://127.0.0.1:5173/',
+              title: 'Fixture',
+              text: 'Ready',
+              elements: [],
+            },
+          },
+        }));
+      }
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-browser-initialize',
+    protocolVersion: 8,
+    dataDirectory: '/tmp/sugarcode-v3-browser-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-browser-turn',
+    workspaceId: 'workspace-browser',
+    threadId: 'thread-browser',
+    turnId: 'turn-browser',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: false,
+    },
+    content: [{ type: 'text', text: '检查本地页面。' }],
+  });
+
+  await Promise.race([
+    completed,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Timed out waiting for browser Turn.')), 2_000),
+    ),
+  ]);
+
+  assert.equal(
+    events.some((event) => event.type === 'browser.requested'),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'commentary' &&
+        event.text === '正在打开本地预览页面。',
+    ),
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === 'Browser check complete.',
+    ),
+    true,
+  );
 });
 
 test('RuntimeHost applies the selected connection request deadline', async () => {
@@ -2435,6 +2531,7 @@ test('RuntimeHost makes /plan immutable read-only at the tool boundary', async (
   assert.equal(toolNames.includes('workspace_apply_patch'), false);
   assert.equal(toolNames.includes('shell_exec'), false);
   assert.equal(toolNames.includes('collaboration_dispatch'), false);
+  assert.equal(toolNames.includes('browser'), false);
 });
 
 test('RuntimeHost durably seeds a revised user message without appending it twice', async () => {
@@ -2555,7 +2652,7 @@ test('RuntimeHost retries a future-action-only final and uses the global output 
   assert.equal(model.requests[0]?.config?.maxOutputTokens, 32_768);
   assert.equal(
     JSON.stringify(model.requests[1]?.contents).includes(
-      'only announces future work',
+      'only announced future work',
     ),
     true,
   );
@@ -2572,6 +2669,63 @@ test('RuntimeHost retries a future-action-only final and uses the global output 
     events.find((event) => event.type === 'turn.completed')?.status,
     'completed',
   );
+});
+
+test('RuntimeHost preserves a repeated incomplete answer while reporting an incomplete Turn', async () => {
+  const events: RuntimeEvent[] = [];
+  const model = new RepeatedFutureActionFinalLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const host = new RuntimeHost({
+    createModel: () => model,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-repeated-future-final',
+    protocolVersion: 8,
+    dataDirectory: '/tmp/sugarcode-v3-repeated-future-final-fixture',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-turn-repeated-future-final',
+    workspaceId: 'workspace-repeated-future-final',
+    threadId: 'thread-repeated-future-final',
+    turnId: 'turn-repeated-future-final',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: '完成任务。' }],
+  });
+
+  await completed;
+
+  assert.equal(model.requests.length, 2);
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text === '好的，现在我开始生成完整的演示文稿。',
+    ),
+    true,
+  );
+  const terminal = events.find(
+    (event): event is Extract<RuntimeEvent, { type: 'turn.completed' }> =>
+      event.type === 'turn.completed',
+  );
+  assert.equal(terminal?.status, 'failed');
+  assert.equal(terminal?.error?.kind, 'incomplete');
+  assert.equal(terminal?.error?.retryable, true);
 });
 
 test('RuntimeHost keeps a failed write unresolved across a successful read', async () => {
@@ -3436,7 +3590,8 @@ test('RuntimeHost never completes a commentary-only model response', async () =>
       event.type === 'turn.completed',
   );
   assert.equal(completed?.status, 'failed');
-  assert.equal(completed?.error?.kind, 'protocol');
+  assert.equal(completed?.error?.kind, 'incomplete');
+  assert.equal(completed?.error?.retryable, true);
   assert.match(completed?.error?.message ?? '', /three times/u);
   assert.equal(
     events.some(
@@ -3508,7 +3663,7 @@ test('RuntimeHost preserves typed provider failures caught by ADK', async () => 
   );
 });
 
-test('RuntimeHost keeps every provider reasoning channel private', async () => {
+test('RuntimeHost exposes provider reasoning summaries but keeps raw reasoning private', async () => {
   const events: RuntimeEvent[] = [];
   let resolveTerminal: (() => void) | undefined;
   const terminal = new Promise<void>((resolve) => {
@@ -3559,7 +3714,15 @@ test('RuntimeHost keeps every provider reasoning channel private', async () => {
     visibleText.some((text) =>
       text.includes('I checked the relevant project files.'),
     ),
-    false,
+    true,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.itemId.includes(':reasoning-summary:'),
+    ),
+    true,
   );
   assert.equal(
     events.some(
@@ -3615,17 +3778,29 @@ test('RuntimeHost cleans a model-facing preamble without requesting a rewrite', 
     events.some(
       (event) =>
         (event.type === 'turn.toolCall' &&
-          event.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) ||
+          event.name === 'submit_final_response') ||
         event.type === 'turn.toolResult',
     ),
     false,
   );
   assert.equal(
-    events.some((event) =>
-      (event.type === 'turn.textDelta' || event.type === 'turn.textCompleted') &&
-      ('delta' in event ? event.delta : event.text).includes('Now produce')
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'final' &&
+        event.text.includes('Now produce'),
     ),
     false,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'turn.textCompleted' &&
+        event.phase === 'commentary' &&
+        event.itemId.includes(':reasoning-summary:') &&
+        event.text.includes('Now produce'),
+    ),
+    true,
   );
   assert.equal(
     events.some(
@@ -3950,61 +4125,6 @@ test('RuntimeHost streams only text after the explicit final boundary', async ()
       event.type === 'turn.textCompleted' && event.phase === 'final',
   );
   assert.equal(final?.text, '流式最终答复。');
-});
-
-test('RuntimeHost streams submit_final_response tool content before completion', async () => {
-  const events: RuntimeEvent[] = [];
-  let resolveTerminal: (() => void) | undefined;
-  const terminal = new Promise<void>((resolve) => {
-    resolveTerminal = resolve;
-  });
-  const host = new RuntimeHost({
-    createModel: () => new StreamingStructuredFinalLlm({ model: 'fixture-model' }),
-    postEvent: (event) => {
-      events.push(event);
-      if (event.type === 'turn.completed') resolveTerminal?.();
-    },
-  });
-  host.handle({
-    type: 'initialize',
-    requestId: 'request-initialize-streaming-structured-final',
-    protocolVersion: 8,
-    dataDirectory: '/tmp/sugarcode-v3-streaming-structured-final-fixture',
-  });
-  host.handle({
-    type: 'turn.start',
-    requestId: 'request-turn-streaming-structured-final',
-    workspaceId: 'workspace-streaming-structured-final',
-    threadId: 'thread-streaming-structured-final',
-    turnId: 'turn-streaming-structured-final',
-    provider: {
-      wireApi: 'openaiResponses',
-      model: 'fixture-model',
-      baseUrl: 'http://127.0.0.1:1/v1',
-      timeoutMs: 5_000,
-      parallelTools: false,
-    },
-    content: [{ type: 'text', text: '请回答。' }],
-  });
-
-  await terminal;
-
-  const deltas = events.flatMap((event) =>
-    event.type === 'turn.textDelta' && event.phase === 'final'
-      ? [event.delta]
-      : [],
-  );
-  assert.equal(deltas.length > 1, true);
-  assert.equal(deltas.join(''), '工具参数也会流式显示。');
-  assert.equal(
-    events.some(
-      (event) =>
-        event.type === 'turn.textCompleted' &&
-        event.phase === 'final' &&
-        event.text === '工具参数也会流式显示。',
-    ),
-    true,
-  );
 });
 
 test('RuntimeHost fails after two output truncations without publishing success', async () => {
@@ -5079,7 +5199,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
         event.phase === 'commentary' &&
         event.text.includes('The user asked'),
     ),
-    false,
+    true,
   );
   assert.equal(
     events.some(
@@ -5103,7 +5223,7 @@ test('RuntimeHost executes ADK workspace tools through the native boundary', asy
   assert.equal(persistedKinds.includes('turn.textDelta'), false);
   assert.equal(
     persistedKinds.filter((kind) => kind === 'turn.textCompleted').length,
-    2,
+    3,
   );
 });
 

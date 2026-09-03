@@ -316,6 +316,39 @@ const startApplication = async (): Promise<void> => {
       event.action.accepted
     ) {
       runtimeMcpSessionController?.synchronizeActive(event.activeServerIds);
+    } else if (event.type === 'browser.requested') {
+      void (async () => {
+        const workspace = workspaceController.getLaunchContext();
+        const result =
+          previewController && workspace?.workspaceId === event.workspaceId
+            ? await previewController.runAgentAction(
+                event.action,
+                workspace.generation,
+              )
+            : {
+                ok: false as const,
+                error: 'The active workspace is unavailable or changed.',
+              };
+        runtimeSupervisor?.send({
+          type: 'browser.result',
+          requestId: event.requestId,
+          operationId: event.operationId,
+          result,
+        });
+      })().catch((error: unknown) => {
+        runtimeSupervisor?.send({
+          type: 'browser.result',
+          requestId: event.requestId,
+          operationId: event.operationId,
+          result: {
+            ok: false,
+            error:
+              error instanceof Error
+                ? error.message
+                : 'The browser action failed.',
+          },
+        });
+      });
     }
   });
   runtimeSupervisor.start();
@@ -423,6 +456,8 @@ const startApplication = async (): Promise<void> => {
       }
     },
     showItemInFolder: (filePath) => shell.showItemInFolder(filePath),
+    browserAgentOutputDirectory: () =>
+      path.join(app.getPath('temp'), 'sugarcode-browser-agent'),
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',

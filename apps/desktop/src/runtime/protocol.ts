@@ -75,6 +75,12 @@ import {
   type GoalSnapshot,
 } from '../shared/goals.ts';
 import { isConversationGoalMutation } from '../shared/conversation/validation/requests.ts';
+import {
+  isBrowserAgentAction,
+  isBrowserAgentResult,
+  type BrowserAgentAction,
+  type BrowserAgentResult,
+} from '../shared/browser-agent.ts';
 
 export const RUNTIME_PROTOCOL_VERSION = 8 as const;
 
@@ -836,6 +842,12 @@ export type RuntimeCommand =
       requestId: string;
       paused: boolean;
     }>
+  | Readonly<{
+      type: 'browser.result';
+      requestId: string;
+      operationId: string;
+      result: BrowserAgentResult;
+    }>
   | Readonly<{ type: 'shutdown'; requestId: string }>;
 
 export type RuntimeUsage = Readonly<{
@@ -884,6 +896,7 @@ export type RuntimeProviderError = Readonly<{
     | 'timeout'
     | 'connection'
     | 'protocol'
+    | 'incomplete'
     | 'filtered'
     | 'unsupportedToolArguments'
     | 'outputTooLarge'
@@ -1424,6 +1437,15 @@ export type RuntimeEvent =
           | WorkspaceGitDiffResponse
           | WorkspaceGitMutationResponse
           | WorkspaceGitCommitResponse;
+      }>)
+  | (RuntimeEventBase &
+      Readonly<{
+        type: 'browser.requested';
+        workspaceId: string;
+        threadId: string;
+        turnId: string;
+        operationId: string;
+        action: BrowserAgentAction;
       }>);
 
 type WithoutSequence<T> = T extends unknown ? Omit<T, 'sequence'> : never;
@@ -2186,6 +2208,12 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         value.query.trim().length > 0 &&
         value.query.length <= 4_000
       );
+    case 'browser.result':
+      return (
+        typeof value.operationId === 'string' &&
+        /^[0-9a-f-]{16,64}$/iu.test(value.operationId) &&
+        isBrowserAgentResult(value.result)
+      );
     case 'shutdown':
       return true;
     default:
@@ -2226,6 +2254,7 @@ const RUNTIME_PROVIDER_ERROR_KINDS: readonly RuntimeProviderError['kind'][] = [
   'timeout',
   'connection',
   'protocol',
+  'incomplete',
   'filtered',
   'unsupportedToolArguments',
   'outputTooLarge',
@@ -2758,6 +2787,13 @@ export const isRuntimeEvent = (value: unknown): value is RuntimeEvent => {
           (['stage', 'unstage'].includes(value.operation) &&
             isGitMutationResponse(value.result)) ||
           (value.operation === 'commit' && isGitCommitResponse(value.result)))
+      );
+    case 'browser.requested':
+      return (
+        hasTurnCoordinates(value) &&
+        typeof value.operationId === 'string' &&
+        /^[0-9a-f-]{16,64}$/iu.test(value.operationId) &&
+        isBrowserAgentAction(value.action)
       );
     default:
       return false;

@@ -14,6 +14,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { userInputBoundaryCommentary } from '../shared/conversation/user-input-boundary.ts';
 import {
   isTrustedCommentaryId,
+  modelProgressCommentaryId,
+  reasoningSummaryCommentaryId,
   toolProgressCommentaryId,
 } from '../shared/conversation/trusted-commentary.ts';
 import { parseComposerSubmission } from '../shared/composer.ts';
@@ -31,15 +33,12 @@ import { RuntimeProtocolError } from './protocol-error.ts';
 import { buildAgentInstructions } from './agent-instructions.ts';
 import {
   finalResponseCandidateIssue,
+  hasLikelyModelFacingPreamble,
   normalizeFinalResponseCandidate,
 } from './final-response-quality.ts';
 import {
-  createSubmitFinalResponseTool,
   extractDelimitedFinalResponse,
   streamableDelimitedFinalResponse,
-  streamableFinalResponseToolContent,
-  SUBMIT_FINAL_RESPONSE_TOOL_NAME,
-  type FinalResponseSubmissionGuard,
 } from './final-response-submission.ts';
 import {
   composerIntentInstruction,
@@ -66,7 +65,6 @@ import {
 } from '../shared/model-metadata.ts';
 import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '../shared/model-request-limits.ts';
 import {
-  readModelFunctionCallArgumentsMetadata,
   readModelItemMetadata,
   readModelStepOutcome,
 } from './models/step-outcome.ts';
@@ -169,6 +167,10 @@ import type {
 } from '../shared/command-environment.ts';
 import { isModelConfigInspection } from '../shared/model-config.ts';
 import type { GoalSnapshot } from '../shared/goals.ts';
+import {
+  isBrowserAgentAction,
+  type BrowserAgentResult,
+} from '../shared/browser-agent.ts';
 import {
   createUpdateGoalTool,
   GoalTurnSession,
@@ -284,6 +286,23 @@ const SUBMIT_PLAN_SCHEMA = {
   required: ['content'],
 } satisfies Schema;
 
+const BROWSER_AGENT_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    action: {
+      type: Type.STRING,
+      enum: ['open', 'snapshot', 'click', 'type', 'wait', 'screenshot', 'close'],
+    },
+    url: { type: Type.STRING },
+    sessionId: { type: Type.STRING },
+    selector: { type: Type.STRING },
+    text: { type: Type.STRING },
+    milliseconds: { type: Type.INTEGER },
+    path: { type: Type.STRING },
+  },
+  required: ['action'],
+} satisfies Schema;
+
 type RuntimeHostOptions = Readonly<{
   postEvent: (event: RuntimeEvent) => void;
   createModel?: (provider: RuntimeProviderConfig) => BaseLlm;
@@ -311,6 +330,12 @@ type PendingUserInput = Readonly<{
   turnId: string;
   questions: readonly RuntimeUserInputQuestion[];
   resolve: (result: RuntimeUserInputSubmission) => void;
+}>;
+
+type PendingBrowserOperation = Readonly<{
+  turnId: string;
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (result: BrowserAgentResult) => void;
 }>;
 
 type RecoveredApprovalRecord = Readonly<{
@@ -418,7 +443,6 @@ type TextItemState = {
   completed: boolean;
   pendingFinal: boolean;
   streamedFinalText?: string;
-  structuredFinalCallId?: string;
   structuredFinalTargetText?: string;
   structuredFinalDisplayedText?: string;
   structuredFinalAnimation?: Promise<void>;
@@ -439,6 +463,7 @@ type TurnDriverOptions = Readonly<{
   consumePendingSteers?: () => readonly Content[];
   completionGate?: () => boolean;
   retryFinalAfterToolFailure?: () => boolean;
+  preserveRejectedFinalCandidate?: boolean;
   terminalToolResult?: (
     event: Event,
     textItems: Map<string, TextItemState>,
@@ -673,16 +698,15 @@ const parseUserInputQuestions = (
     : undefined;
 };
 
-// Provider reasoning summaries are untrusted and may contain private chain of
-// thought. Only ordinary model text crosses the visible Runtime boundary.
+// Provider-authored summaries are explicitly designed for presentation. Raw
+// reasoning remains private and never crosses the visible Runtime boundary.
 const isVisibleModelTextPart = (part: Part): boolean => {
   if (typeof part.text !== 'string' || part.text.trim().length === 0) {
     return false;
   }
-  return (
-    part.thought !== true &&
-    readModelItemMetadata(part)?.reasoningVisibility === undefined
-  );
+  const visibility = readModelItemMetadata(part)?.reasoningVisibility;
+  return visibility === 'summary' ||
+    (part.thought !== true && visibility === undefined);
 };
 
 const stableJsonValue = (value: unknown): unknown => {
@@ -823,6 +847,10 @@ export class RuntimeHost {
   private readonly cancellationSources = new Map<string, 'stopButton'>();
   private readonly pendingApprovals = new Map<string, PendingApproval>();
   private readonly pendingUserInputs = new Map<string, PendingUserInput>();
+  private readonly pendingBrowserOperations = new Map<
+    string,
+    PendingBrowserOperation
+  >();
   private readonly activeOperations = new Map<string, Set<string>>();
   private readonly terminals = new Map<string, ActiveTerminal>();
   private readonly workspaceKinds = new Map<string, RuntimeWorkspaceKind>();
@@ -1271,7 +1299,16 @@ export class RuntimeHost {
         this.cancelTurnApprovals(command.turnId);
         this.cancelTurnUserInputs(command.turnId);
         this.cancelTurnOperations(command.turnId);
+        this.cancelTurnBrowserOperations(command.turnId);
         break;
+      case 'browser.result': {
+        const pending = this.pendingBrowserOperations.get(command.operationId);
+        if (!pending) break;
+        clearTimeout(pending.timer);
+        this.pendingBrowserOperations.delete(command.operationId);
+        pending.resolve(command.result);
+        break;
+      }
       case 'turn.userInputResponse': {
         const pending = this.pendingUserInputs.get(command.inputRequestId);
         const expectedQuestionIds = pending?.questions.map(
@@ -2038,6 +2075,7 @@ export class RuntimeHost {
           this.collaboration.cancelTurn(turnId);
           this.cancelTurnApprovals(turnId);
           this.cancelTurnOperations(turnId);
+          this.cancelTurnBrowserOperations(turnId);
         }
         this.activeTurns.clear();
         this.activeTurnThreads.clear();
@@ -3263,6 +3301,55 @@ export class RuntimeHost {
     }
   };
 
+  private browserAgentTool = (
+    command: TurnExecutionCommand,
+  ): FunctionTool<Schema> =>
+    new FunctionTool({
+      name: 'browser',
+      description:
+        'Inspect and interact with the visible, isolated SugarCode preview browser. Agent navigation is limited to loopback development URLs. Use one action per call: open, snapshot, click, type, wait, screenshot, or close. Reuse the sessionId returned by open. screenshot path, when supplied, must be a plain .png file name.',
+      parameters: BROWSER_AGENT_SCHEMA,
+      execute: async (input) => {
+        if (!isBrowserAgentAction(input)) {
+          return {
+            ok: false,
+            error:
+              'Invalid browser arguments. Supply one action and only the fields required by that action.',
+          };
+        }
+        const operationId = randomUUID();
+        return await new Promise<BrowserAgentResult>((resolve) => {
+          const timer = setTimeout(() => {
+            this.pendingBrowserOperations.delete(operationId);
+            resolve({ ok: false, error: 'The browser action timed out.' });
+          }, 30_000);
+          this.pendingBrowserOperations.set(operationId, {
+            turnId: command.turnId,
+            timer,
+            resolve,
+          });
+          this.emit({
+            type: 'browser.requested',
+            requestId: command.requestId,
+            workspaceId: command.workspaceId,
+            threadId: command.threadId,
+            turnId: command.turnId,
+            operationId,
+            action: input,
+          });
+        });
+      },
+    });
+
+  private cancelTurnBrowserOperations = (turnId: string): void => {
+    for (const [operationId, pending] of this.pendingBrowserOperations) {
+      if (pending.turnId !== turnId) continue;
+      clearTimeout(pending.timer);
+      this.pendingBrowserOperations.delete(operationId);
+      pending.resolve({ ok: false, error: 'The browser action was cancelled.' });
+    }
+  };
+
   private invalidArgumentsTool = (
     guard: InvalidArgumentGuard,
     knowledgeSelected: boolean,
@@ -3470,9 +3557,6 @@ export class RuntimeHost {
   ): void => {
     for (const part of event.content?.parts ?? []) {
       if (part.functionCall?.name) {
-        if (part.functionCall.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
-          continue;
-        }
         const callId = part.functionCall.id ?? part.functionCall.name;
         guard.calls.set(
           callId,
@@ -3483,9 +3567,6 @@ export class RuntimeHost {
         );
       }
       if (!part.functionResponse?.name) {
-        continue;
-      }
-      if (part.functionResponse.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
         continue;
       }
       const result = part.functionResponse.response ?? {};
@@ -3735,16 +3816,22 @@ export class RuntimeHost {
           ? options.validateRecoveredFinalCandidate?.(candidateText)
           : options.validateFinalCandidate?.(candidateText);
         if (candidateIssue) {
-          await options.settleFinalCandidate?.(false, textItems);
           finalCandidateRecoveryCount += 1;
           if (finalCandidateRecoveryCount >= 2) {
+            await options.settleFinalCandidate?.(
+              options.preserveRejectedFinalCandidate === true &&
+                candidateText.trim().length > 0,
+              textItems,
+              recoveredText,
+            );
             throw new ProviderAdapterError({
-              kind: 'protocol',
-              retryable: false,
+              kind: 'incomplete',
+              retryable: true,
               message:
-                'The model repeatedly produced a final answer that did not satisfy the Turn completion requirements.',
+                'The model response was preserved, but it did not satisfy the Turn completion requirements after one retry.',
             });
           }
+          await options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
             parts: [
@@ -3753,7 +3840,7 @@ export class RuntimeHost {
                   '# Internal continuation after invalid final response\n\n' +
                   `${candidateIssue} ` +
                   'Discard the candidate and return one complete, self-contained user-facing answer from the beginning. ' +
-                  'Ordinary assistant text is valid; an exact <final_response>...</final_response> envelope or submit_final_response call is optional when an explicit response boundary helps. ' +
+                  'Ordinary assistant text is valid and should contain the complete user-facing response. ' +
                   'Include every necessary section instead of continuing prior numbering. ' +
                   'Output only user-facing results: do not include analysis, private reasoning, self-instructions, drafting notes, or tool narration. ' +
                   'If a structured question was resolved, incorporate only the resulting decisions and do not repeat its prompts. ' +
@@ -3766,16 +3853,21 @@ export class RuntimeHost {
           continue;
         }
         if (isFutureActionOnlyFinal(candidateText)) {
-          await options.settleFinalCandidate?.(false, textItems);
           futureActionFinalCount += 1;
           if (futureActionFinalCount >= 2) {
+            await options.settleFinalCandidate?.(
+              options.preserveRejectedFinalCandidate === true,
+              textItems,
+              recoveredText,
+            );
             throw new ProviderAdapterError({
-              kind: 'protocol',
-              retryable: false,
+              kind: 'incomplete',
+              retryable: true,
               message:
-                'The model repeatedly submitted a promise of future work as its final answer.',
+                'The model response was preserved, but it still announced future work instead of reporting a completed result.',
             });
           }
+          await options.settleFinalCandidate?.(false, textItems);
           message = {
             role: 'user',
             parts: [
@@ -3801,7 +3893,7 @@ export class RuntimeHost {
               'The model submitted a final answer while Turn work remained pending.',
           });
         }
-        await options.settleFinalCandidate?.(true, textItems, recoveredText);
+        await options.settleFinalCandidate?.(true, textItems, candidateText);
         return;
       }
       if (outcome.kind === 'toolCalls') {
@@ -3815,8 +3907,8 @@ export class RuntimeHost {
         commentaryOnlyCount += 1;
         if (commentaryOnlyCount >= 3) {
           throw new ProviderAdapterError({
-            kind: 'protocol',
-            retryable: false,
+            kind: 'incomplete',
+            retryable: true,
             message:
               'The model produced commentary without progress three times.',
           });
@@ -4209,7 +4301,6 @@ export class RuntimeHost {
         instructionDeliveredFor: 0,
       };
       const planSubmissionGuard: PlanSubmissionGuard = {};
-      const finalResponseSubmissionGuard: FinalResponseSubmissionGuard = {};
       const nativeWorkspaceId = this.nativeRuntime
         ? this.taskWorkspaceBindingId(command.workspaceId, command.threadId)
         : command.workspaceId;
@@ -4401,59 +4492,8 @@ export class RuntimeHost {
         ),
         ...(turnMode === 'plan'
           ? [this.submitPlanTool(command, planSubmissionGuard)]
-          : [
-              createSubmitFinalResponseTool({
-                guard: finalResponseSubmissionGuard,
-                validate: async (content) => {
-                  const goalIssue = goalSession?.finalIssue();
-                  if (goalIssue) return goalIssue;
-                  if (content.trim().length === 0) {
-                    return 'The submitted response is empty.';
-                  }
-                  if (isFutureActionOnlyFinal(content)) {
-                    return 'The submitted response only announces future work. Complete the work first, or report the concrete blocker and remaining work.';
-                  }
-                  const userInputIssue =
-                    userInputFinalGuard.resolvedRequests > 0
-                      ? userInputFinalCandidateIssue(
-                          content,
-                          userInputFinalGuard.questions,
-                        )
-                      : undefined;
-                  if (userInputIssue) return userInputIssue;
-                  if (
-                    (this.pendingSteersByTurn.get(command.turnId)?.length ??
-                      0) > 0
-                  ) {
-                    return 'The user added a new direction while the response was being prepared. Apply it before submitting the final response again.';
-                  }
-                  const pendingResults =
-                    await this.collaboration.consumePendingResults(
-                      command.turnId,
-                      controller.signal,
-                    );
-                  if (pendingResults) {
-                    return (
-                      'Child Agent results completed before submission. Incorporate the following results and submit a new complete response:\n\n' +
-                      pendingResults
-                    );
-                  }
-                  if (
-                    controller.signal.aborted ||
-                    [...this.pendingUserInputs.values()].some(
-                      (pending) => pending.turnId === command.turnId,
-                    ) ||
-                    [...this.pendingApprovals.values()].some(
-                      (approval) => approval.turnId === command.turnId,
-                    ) ||
-                    this.activeOperations.get(command.turnId)?.size
-                  ) {
-                    return 'Turn work is still pending. Wait for it to finish before submitting the final response.';
-                  }
-                  return undefined;
-                },
-              }),
-            ]),
+          : []),
+        ...(turnMode === 'execute' ? [this.browserAgentTool(command)] : []),
         ...imageAnalysisTools,
         ...videoAnalysisTools,
         ...(this.nativeRuntime
@@ -4686,7 +4726,8 @@ export class RuntimeHost {
               !this.activeOperations.get(command.turnId)?.size,
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
-            terminalToolResult: async (event, textItems) => {
+            preserveRejectedFinalCandidate: turnMode !== 'plan',
+            terminalToolResult: async (event) => {
               const parts = event.content?.parts ?? [];
               if (
                 turnMode === 'plan' &&
@@ -4699,40 +4740,7 @@ export class RuntimeHost {
               ) {
                 return true;
               }
-              const submitted = finalResponseSubmissionGuard.content;
-              if (
-                turnMode === 'plan' ||
-                !submitted ||
-                !parts.some(
-                  (part) =>
-                    part.functionResponse?.name ===
-                      SUBMIT_FINAL_RESPONSE_TOOL_NAME &&
-                    isRecord(part.functionResponse.response) &&
-                    part.functionResponse.response.ok === true,
-                )
-              ) {
-                return false;
-              }
-              if (
-                (this.pendingSteersByTurn.get(command.turnId)?.length ?? 0) >
-                0
-              ) {
-                finalResponseSubmissionGuard.content = undefined;
-                return false;
-              }
-              this.settleFinalCandidate(
-                command,
-                textItems,
-                false,
-                false,
-                true,
-              );
-              await this.finishStructuredFinalResponse(
-                command,
-                textItems,
-                this.normalizeUserFacingFinalResponse(command, submitted),
-              );
-              return true;
+              return false;
             },
             validateFinalCandidate: (candidateText) => {
               const goalIssue = goalSession?.finalIssue();
@@ -4789,8 +4797,8 @@ export class RuntimeHost {
                   )
                 : undefined;
             },
-            settleFinalCandidate: async (accepted, textItems, recoveredText) => {
-              if (accepted && recoveredText) {
+            settleFinalCandidate: async (accepted, textItems, finalText) => {
+              if (accepted && finalText && turnMode !== 'plan') {
                 this.settleFinalCandidate(
                   command,
                   textItems,
@@ -4801,7 +4809,7 @@ export class RuntimeHost {
                 await this.finishStructuredFinalResponse(
                   command,
                   textItems,
-                  recoveredText,
+                  finalText,
                 );
                 return;
               }
@@ -5692,7 +5700,6 @@ export class RuntimeHost {
     textItems: Map<string, TextItemState>,
     bufferModelText = false,
   ): void => {
-    this.publishStructuredFinalResponseDelta(command, event, textItems);
     const parts = event.content?.parts ?? [];
     this.publishNativeCompaction(command, selection, event, parts);
     const hasUserInputCall = parts.some(
@@ -5743,13 +5750,22 @@ export class RuntimeHost {
         const metadata = readModelItemMetadata(part);
         const initialPhase: ModelTextPhase =
           metadata?.phase ?? (part.thought ? 'commentary' : 'provisional');
-        const existingItem = [...textItems.entries()].find(
-          ([, item]) => !item.completed && item.phase === initialPhase,
-        );
+        const streamsAsPublicProgress = initialPhase === 'commentary';
+        const reasoningSummary = metadata?.reasoningVisibility === 'summary';
+        const existingItem = metadata?.itemId
+          ? undefined
+          : [...textItems.entries()].find(
+              ([, item]) => !item.completed && item.phase === initialPhase,
+            );
+        const sourceItemId =
+          metadata?.itemId ?? `${command.turnId}:text:${textItems.size}`;
         const itemId =
-          metadata?.itemId ??
           existingItem?.[0] ??
-          `${command.turnId}:text:${textItems.size}`;
+          (streamsAsPublicProgress
+            ? reasoningSummary
+              ? reasoningSummaryCommentaryId(command.turnId, sourceItemId)
+              : modelProgressCommentaryId(command.turnId, sourceItemId)
+            : sourceItemId);
         const state = textItems.get(itemId) ?? {
           phase: initialPhase,
           sourcePhase: metadata?.phase,
@@ -5760,15 +5776,17 @@ export class RuntimeHost {
         };
         if (!state.started) {
           state.started = true;
-          this.emitTransient({
-            type: 'turn.textStarted',
-            requestId: command.requestId,
-            workspaceId: command.workspaceId,
-            threadId: command.threadId,
-            turnId: command.turnId,
-            itemId,
-            phase: initialPhase,
-          });
+          if (!bufferModelText || streamsAsPublicProgress) {
+            this.emitTransient({
+              type: 'turn.textStarted',
+              requestId: command.requestId,
+              workspaceId: command.workspaceId,
+              threadId: command.threadId,
+              turnId: command.turnId,
+              itemId,
+              phase: initialPhase,
+            });
+          }
         }
         if (event.partial === false) {
           const outcome =
@@ -5804,11 +5822,38 @@ export class RuntimeHost {
           if (completedPhase === 'final') {
             state.pendingFinal = true;
           } else {
+            if (bufferModelText && state.streamedFinalText !== undefined) {
+              this.discardStructuredFinalResponseDraft(command, textItems);
+              state.streamedFinalText = undefined;
+            }
             state.completed = true;
+            if (
+              !hasUserInputCall &&
+              !hasPlanSubmissionCall
+            ) {
+              const progressItemId = isTrustedCommentaryId(
+                command.turnId,
+                itemId,
+              )
+                ? itemId
+                : reasoningSummary
+                  ? reasoningSummaryCommentaryId(command.turnId, sourceItemId)
+                  : modelProgressCommentaryId(command.turnId, sourceItemId);
+              this.emit({
+                type: 'turn.textCompleted',
+                requestId: command.requestId,
+                workspaceId: command.workspaceId,
+                threadId: command.threadId,
+                turnId: command.turnId,
+                itemId: progressItemId,
+                phase: 'commentary',
+                text: completedText,
+              });
+            }
           }
         } else {
           state.text += part.text;
-          if (bufferModelText) {
+          if (bufferModelText && !streamsAsPublicProgress) {
             this.publishDelimitedFinalDelta(command, textItems, state);
           } else {
             this.emitTransient({
@@ -5826,9 +5871,6 @@ export class RuntimeHost {
         textItems.set(itemId, state);
       }
       if (part.functionCall?.name) {
-        if (part.functionCall.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
-          continue;
-        }
         const metadata = readModelItemMetadata(part);
         const callId = part.functionCall.id ?? `${event.id}:${index}`;
         if (event.partial === false) {
@@ -5858,16 +5900,6 @@ export class RuntimeHost {
         });
       }
       if (part.functionResponse?.name) {
-        if (part.functionResponse.name === SUBMIT_FINAL_RESPONSE_TOOL_NAME) {
-          if (
-            event.partial === false &&
-            (!isRecord(part.functionResponse.response) ||
-              part.functionResponse.response.ok !== true)
-          ) {
-            this.discardStructuredFinalResponseDraft(command, textItems);
-          }
-          continue;
-        }
         const metadata = readModelItemMetadata(part);
         if (
           event.partial !== true &&
@@ -6038,7 +6070,19 @@ export class RuntimeHost {
     textItems: Map<string, TextItemState>,
     state: TextItemState,
   ): void => {
-    const visible = streamableDelimitedFinalResponse(state.text)?.trimStart();
+    const delimited = streamableDelimitedFinalResponse(state.text)?.trimStart();
+    const normalized = normalizeFinalResponseCandidate(state.text);
+    const trimmed = state.text.trimStart();
+    const waitsForExplicitBoundary =
+      trimmed.startsWith('<think>') ||
+      trimmed.startsWith('<final_response>') ||
+      '<final_response>'.startsWith(trimmed);
+    const visible = delimited ??
+      (normalized.removedPrefix
+        ? normalized.text
+        : waitsForExplicitBoundary || hasLikelyModelFacingPreamble(state.text)
+          ? undefined
+          : state.text);
     if (visible === undefined) return;
     const previous = state.streamedFinalText ?? '';
     if (!visible.startsWith(previous)) return;
@@ -6051,18 +6095,9 @@ export class RuntimeHost {
     command: TurnExecutionCommand,
     textItems: Map<string, TextItemState>,
     visible: string,
-    callId?: string,
   ): void => {
     const itemId = `${command.turnId}:final-response`;
     let state = textItems.get(itemId);
-    if (
-      callId !== undefined &&
-      state?.structuredFinalCallId !== undefined &&
-      state.structuredFinalCallId !== callId
-    ) {
-      this.discardStructuredFinalResponseDraft(command, textItems);
-      state = undefined;
-    }
     const previous = state?.structuredFinalTargetText ?? '';
     if (!visible.startsWith(previous)) {
       this.discardStructuredFinalResponseDraft(command, textItems);
@@ -6076,36 +6111,9 @@ export class RuntimeHost {
       pendingFinal: false,
       structuredFinalDisplayedText: '',
     };
-    if (callId !== undefined) {
-      state.structuredFinalCallId = callId;
-    }
     state.structuredFinalTargetText = visible;
     textItems.set(itemId, state);
     this.animateStructuredFinalResponse(command, textItems, state);
-  };
-
-  private publishStructuredFinalResponseDelta = (
-    command: TurnExecutionCommand,
-    event: Event,
-    textItems: Map<string, TextItemState>,
-  ): void => {
-    const streamedCall =
-      readModelFunctionCallArgumentsMetadata(event.customMetadata) ??
-      (event.content?.parts ?? []).map((part) =>
-        readModelFunctionCallArgumentsMetadata(part.partMetadata)
-      ).find((metadata) => metadata !== undefined);
-    if (streamedCall?.name !== SUBMIT_FINAL_RESPONSE_TOOL_NAME) return;
-    const visible = streamableFinalResponseToolContent(
-      streamedCall.arguments,
-    )?.trimStart();
-    if (visible === undefined) return;
-
-    this.queueFinalResponseDisplay(
-      command,
-      textItems,
-      visible,
-      streamedCall.callId,
-    );
   };
 
   private animateStructuredFinalResponse = (
@@ -6210,7 +6218,6 @@ export class RuntimeHost {
       started: false,
       completed: false,
       pendingFinal: false,
-      structuredFinalCallId: 'completed',
       structuredFinalDisplayedText: '',
     };
     state.structuredFinalTargetText = text;
@@ -6235,6 +6242,21 @@ export class RuntimeHost {
         message:
           'Removed a likely model-facing preamble from the final response.',
       });
+      if (normalized.removedPrefixText) {
+        this.emit({
+          type: 'turn.textCompleted',
+          requestId: command.requestId,
+          workspaceId: command.workspaceId,
+          threadId: command.threadId,
+          turnId: command.turnId,
+          itemId: reasoningSummaryCommentaryId(
+            command.turnId,
+            'recovered-final-prefix',
+          ),
+          phase: 'commentary',
+          text: normalized.removedPrefixText,
+        });
+      }
     }
     return normalized.text;
   };

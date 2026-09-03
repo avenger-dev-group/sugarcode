@@ -6,11 +6,15 @@ import {
   projectTurnActivities,
 } from '../../../src/main/runtime/conversation-tool-activities.ts';
 import type { RuntimeTurnItemRecord } from '../../../src/runtime/protocol.ts';
-import { toolProgressCommentaryId } from '../../../src/shared/conversation/trusted-commentary.ts';
+import {
+  modelProgressCommentaryId,
+  toolProgressCommentaryId,
+} from '../../../src/shared/conversation/trusted-commentary.ts';
 
-test('commentary projection keeps Runtime progress and drops provider-authored prose', () => {
+test('commentary projection keeps Runtime and explicitly public model progress', () => {
   const turnId = 'turn-fixture';
   const trustedId = toolProgressCommentaryId(turnId, 'call-read');
+  const modelId = modelProgressCommentaryId(turnId, 'message-1');
   const items: readonly RuntimeTurnItemRecord[] = [
     {
       id: 'provider-commentary',
@@ -34,16 +38,37 @@ test('commentary projection keeps Runtime progress and drops provider-authored p
         text: '正在读取 README.md。',
       },
     },
+    {
+      id: modelId,
+      turnId,
+      sequence: 3,
+      kind: 'turn.textCompleted',
+      payload: {
+        itemId: modelId,
+        phase: 'commentary',
+        text: '我会先核对相关配置。',
+      },
+    },
   ];
 
-  assert.deepEqual(projectTurnActivities(items), [{
-    type: 'commentary',
-    activity: {
-      id: trustedId,
-      text: '正在读取 README.md。',
-      status: 'completed',
+  assert.deepEqual(projectTurnActivities(items), [
+    {
+      type: 'commentary',
+      activity: {
+        id: trustedId,
+        text: '正在读取 README.md。',
+        status: 'completed',
+      },
     },
-  }]);
+    {
+      type: 'commentary',
+      activity: {
+        id: modelId,
+        text: '我会先核对相关配置。',
+        status: 'completed',
+      },
+    },
+  ]);
 });
 
 test('workspace_read projection preserves every requested path', () => {

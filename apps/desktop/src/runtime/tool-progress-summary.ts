@@ -84,6 +84,19 @@ export const toolProgressSummary = (
         return paths[0] ? `正在生成 ${pathBasename(paths[0])} 图表。` : '正在生成 Draw.io 图表。';
       case 'shell_exec':
         return '正在运行项目命令。';
+      case 'browser': {
+        const action = boundedProgressValue(argumentsValue.action);
+        const labels: Readonly<Record<string, string>> = {
+          open: '正在打开本地预览页面。',
+          snapshot: '正在读取浏览器页面。',
+          click: '正在操作浏览器页面。',
+          type: '正在向浏览器页面输入内容。',
+          wait: '正在等待浏览器页面更新。',
+          screenshot: '正在截取浏览器画面。',
+          close: '正在关闭浏览器页面。',
+        };
+        return action ? labels[action] ?? '正在使用内置浏览器。' : '正在使用内置浏览器。';
+      }
       case ANALYZE_IMAGE_TOOL_NAME:
         return '正在分析图片内容。';
       case ANALYZE_VIDEO_TOOL_NAME:
@@ -117,6 +130,19 @@ export const toolProgressSummary = (
       return paths[0] ? `Generating the ${pathBasename(paths[0])} diagram.` : 'Generating a Draw.io diagram.';
     case 'shell_exec':
       return 'Running a project command.';
+    case 'browser': {
+      const action = boundedProgressValue(argumentsValue.action);
+      const labels: Readonly<Record<string, string>> = {
+        open: 'Opening the local preview page.',
+        snapshot: 'Reading the browser page.',
+        click: 'Interacting with the browser page.',
+        type: 'Entering text in the browser page.',
+        wait: 'Waiting for the browser page to update.',
+        screenshot: 'Capturing the browser page.',
+        close: 'Closing the browser page.',
+      };
+      return action ? labels[action] ?? 'Using the built-in browser.' : 'Using the built-in browser.';
+    }
     case ANALYZE_IMAGE_TOOL_NAME:
       return 'Analyzing the image content.';
     case ANALYZE_VIDEO_TOOL_NAME:

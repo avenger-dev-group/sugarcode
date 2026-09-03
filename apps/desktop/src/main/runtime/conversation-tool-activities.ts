@@ -5,7 +5,10 @@ import type {
   ConversationUserInputQuestion,
   ConversationUserInputSubmission,
 } from '../../shared/conversation.ts';
-import { isTrustedCommentaryId } from '../../shared/conversation/trusted-commentary.ts';
+import {
+  isReasoningSummaryCommentaryId,
+  isTrustedCommentaryId,
+} from '../../shared/conversation/trusted-commentary.ts';
 import type {
   RuntimeTurnItemRecord,
   RuntimeUserInputQuestion,
@@ -612,11 +615,15 @@ export const projectTurnActivities = (
         isTrustedCommentaryId(item.turnId, id) &&
         !activities.some(
           (activity) =>
-            activity.type === 'commentary' && activity.activity.id === id,
+            (activity.type === 'commentary' ||
+              activity.type === 'reasoningSummary') &&
+            activity.activity.id === id,
         )
       ) {
         activities.push({
-          type: 'commentary',
+          type: isReasoningSummaryCommentaryId(item.turnId, id)
+            ? 'reasoningSummary'
+            : 'commentary',
           activity: {
             id,
             text,

@@ -421,7 +421,10 @@ test('OpenAI Responses SDK maps function calls back to the ADK tool name', async
     arguments: '{"path":"README.md"}',
   });
   assert.equal(receivedBody?.max_output_tokens, 32_768);
-  assert.deepEqual(receivedBody?.reasoning, { effort: 'max' });
+  assert.deepEqual(receivedBody?.reasoning, {
+    summary: 'auto',
+    effort: 'max',
+  });
   assert.equal(receivedBody?.service_tier, 'priority');
   assert.equal(events.at(-1)?.turnComplete, true);
 });
@@ -461,6 +464,54 @@ test('OpenAI Responses serializes video as an input file without changing protoc
     file_data: 'data:video/mp4;base64,bXA0',
     filename: 'clip.mp4',
   });
+});
+
+test('OpenAI Responses falls back when a compatible gateway rejects reasoning summaries', async (context) => {
+  const receivedBodies: Record<string, unknown>[] = [];
+  const fixture = await serve(async (request, response) => {
+    receivedBodies.push(JSON.parse(await readBody(request)) as Record<string, unknown>);
+    if (receivedBodies.length === 1) {
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({
+        error: {
+          message: 'Unknown parameter: reasoning.summary is not supported.',
+          type: 'invalid_request_error',
+          code: 'unknown_parameter',
+        },
+      }));
+      return;
+    }
+    writeSse(response, [{
+      event: 'response.completed',
+      data: {
+        type: 'response.completed',
+        sequence_number: 1,
+        response: {
+          id: 'resp_reasoning_summary_fallback',
+          status: 'completed',
+          output: [],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        },
+      },
+    }]);
+  });
+  context.after(fixture.close);
+  const model = new OpenAiLlm({
+    wireApi: 'openaiResponses',
+    model: 'fixture-model',
+    baseUrl: fixture.baseUrl,
+    apiKey: 'test-key',
+    reasoningEffort: 'max',
+  });
+
+  await collect(model.generateContentAsync(llmRequest(), true));
+
+  assert.equal(receivedBodies.length, 2);
+  assert.deepEqual(receivedBodies[0]?.reasoning, {
+    summary: 'auto',
+    effort: 'max',
+  });
+  assert.deepEqual(receivedBodies[1]?.reasoning, { effort: 'max' });
 });
 
 test('OpenAI Responses preserves extracted audio as a dedicated input item', async (context) => {

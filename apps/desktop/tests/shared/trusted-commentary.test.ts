@@ -3,14 +3,19 @@ import test from 'node:test';
 
 import {
   isTrustedCommentaryId,
+  modelProgressCommentaryId,
   toolProgressCommentaryId,
 } from '../../src/shared/conversation/trusted-commentary.ts';
 
-test('only Runtime-authored tool progress uses the trusted commentary namespace', () => {
+test('Runtime-authored tool and public model progress use trusted commentary namespaces', () => {
   const id = toolProgressCommentaryId('turn-1', 'call-1');
+  const modelId = modelProgressCommentaryId('turn-1', 'message-1');
 
   assert.equal(id, 'turn-1:progress:call-1');
+  assert.equal(modelId, 'turn-1:model-progress:message-1');
   assert.equal(isTrustedCommentaryId('turn-1', id), true);
+  assert.equal(isTrustedCommentaryId('turn-1', modelId), true);
   assert.equal(isTrustedCommentaryId('turn-1', 'provider-commentary'), false);
   assert.equal(isTrustedCommentaryId('turn-2', id), false);
+  assert.equal(isTrustedCommentaryId('turn-2', modelId), false);
 });

@@ -151,6 +151,7 @@ export const runtimeError = (
                     'invalidRequest',
                     'timeout',
                     'protocol',
+                    'incomplete',
                     'server',
                     'filtered',
                     'unsupportedToolArguments',

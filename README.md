@@ -50,6 +50,15 @@ or cloud rendering without changing the core video workflow. Final MP4, WebM,
 and MOV files can be handed back with a `::preview{path="..."}` directive and
 played in the Preview panel or opened in the system player.
 
+## Agent trajectory
+
+SugarCode keeps model presentation separate from execution safety. Ordinary
+assistant text can complete a Turn, public model commentary and tool activity
+are preserved in the process timeline, and provider-marked private reasoning
+stays hidden. If a model repeats an incomplete answer, the last usable text is
+still displayed while the Turn reports an explicit incomplete outcome. Tool
+schemas, approvals, workspace boundaries, and persistence checks remain strict.
+
 ## Trusted project environments
 
 Repositories can declare task setup, exported environment variables, and named

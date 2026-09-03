@@ -163,6 +163,10 @@ export type TurnActivityViewModel =
       activity: AgentCommentaryViewModel;
     }>
   | Readonly<{
+      type: 'reasoningSummary';
+      activity: AgentCommentaryViewModel;
+    }>
+  | Readonly<{
       type: 'workspaceRead';
       activity: WorkspaceReadActivityViewModel;
     }>

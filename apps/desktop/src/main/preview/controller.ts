@@ -6,6 +6,8 @@ import {
   WebContentsView,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import type {
   PreviewActionReason,
@@ -23,6 +25,13 @@ import type {
   PreviewTabState,
 } from '@/shared/preview';
 import type { WorkspaceStateSnapshot } from '@/shared/workspace';
+import {
+  MAX_BROWSER_AGENT_ELEMENTS,
+  MAX_BROWSER_AGENT_TEXT_BYTES,
+  type BrowserAgentAction,
+  type BrowserAgentResult,
+  type BrowserAgentSnapshot,
+} from '@/shared/browser-agent';
 
 import { resolvePreviewArtifact } from './artifact-file';
 import {
@@ -34,6 +43,67 @@ import {
 } from './url';
 
 const INITIAL_LOAD_TIMEOUT_MS = 15_000;
+const BROWSER_AGENT_SETTLE_MS = 120;
+
+const isLoopbackPreviewUrl = (url: string): boolean => {
+  const location = parsePreviewLocation(url);
+  return location ? isLoopbackPreviewLocation(location) : false;
+};
+
+const browserAgentSnapshotScript = `(() => {
+  const byteLimit = ${MAX_BROWSER_AGENT_TEXT_BYTES};
+  const elementLimit = ${MAX_BROWSER_AGENT_ELEMENTS};
+  const truncateBytes = (value, limit) => {
+    const bytes = new TextEncoder().encode(String(value ?? ''));
+    return bytes.length <= limit
+      ? String(value ?? '')
+      : new TextDecoder().decode(bytes.slice(0, limit));
+  };
+  const visible = (element) => {
+    const style = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.visibility !== 'hidden' && style.display !== 'none' &&
+      rect.width > 0 && rect.height > 0;
+  };
+  const selectorFor = (element) => {
+    if (element.id) return '#' + CSS.escape(element.id);
+    const pieces = [];
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE && pieces.length < 6) {
+      let piece = current.localName;
+      const parent = current.parentElement;
+      if (parent) {
+        const peers = Array.from(parent.children).filter(
+          (candidate) => candidate.localName === current.localName,
+        );
+        if (peers.length > 1) piece += ':nth-of-type(' + (peers.indexOf(current) + 1) + ')';
+      }
+      pieces.unshift(piece);
+      current = parent;
+    }
+    return pieces.join(' > ');
+  };
+  const candidates = Array.from(document.querySelectorAll(
+    'a[href],button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]',
+  ));
+  const elements = candidates.filter(visible).slice(0, elementLimit).map((element) => ({
+    selector: selectorFor(element),
+    tag: element.localName,
+    label: truncateBytes(
+      element.getAttribute('aria-label') || element.getAttribute('title') ||
+      element.getAttribute('placeholder') || element.innerText || element.value || '',
+      2048,
+    ),
+    ...(element.getAttribute('role') ? { role: element.getAttribute('role') } : {}),
+    ...('disabled' in element ? { disabled: Boolean(element.disabled) } : {}),
+  }));
+  return {
+    url: location.href,
+    title: truncateBytes(document.title, 2048),
+    text: truncateBytes(document.body?.innerText || '', byteLimit),
+    elements,
+  };
+})()`;
 
 type DialogBoundary = Pick<Dialog, 'showMessageBox'>;
 
@@ -46,6 +116,7 @@ type PreviewControllerOptions = Readonly<{
   openExternal: (url: string) => Promise<void>;
   openPath: (path: string) => Promise<void>;
   showItemInFolder: (path: string) => void;
+  browserAgentOutputDirectory: () => string;
   createWebContentsView?: (
     options: Electron.WebContentsViewConstructorOptions,
   ) => WebContentsView;
@@ -66,6 +137,7 @@ type ActivePreview = {
   browserView: WebContentsView;
   browserSession: Session;
   bounds: PreviewBounds | null;
+  agentControlled: boolean;
 };
 
 const actionResult = (
@@ -136,6 +208,136 @@ export class PreviewController {
     return () => this.listeners.delete(listener);
   };
 
+  runAgentAction = async (
+    action: BrowserAgentAction,
+    generation: number,
+  ): Promise<BrowserAgentResult> => {
+    const workspace = this.options.getWorkspace();
+    if (
+      !workspace ||
+      workspace.generation !== generation ||
+      this.options.getWorkspaceState().status !== 'ready'
+    ) {
+      return { ok: false, error: 'The workspace or browser session is stale.' };
+    }
+    if (this.options.isApprovalPending()) {
+      return { ok: false, error: 'Another approval is currently pending.' };
+    }
+    if (action.action === 'open') {
+      const location = parsePreviewLocation(action.url);
+      if (!location || !isLoopbackPreviewLocation(location)) {
+        return {
+          ok: false,
+          error: 'Agent browser navigation is limited to local loopback development URLs.',
+        };
+      }
+      const previewId = randomUUID();
+      const opened = await this.openLocation(
+        { previewId, generation },
+        location,
+        true,
+        true,
+      );
+      if (!opened.accepted) {
+        return { ok: false, error: `The browser could not open (${opened.reason}).` };
+      }
+      const active = this.actives.get(previewId);
+      return active
+        ? { ok: true, snapshot: await this.agentSnapshot(active) }
+        : { ok: false, error: 'The browser session disappeared while opening.' };
+    }
+
+    const active = this.getMatchingActive({
+      generation,
+      sessionId: action.sessionId,
+    });
+    if (!active) {
+      return { ok: false, error: 'The browser session is unavailable or stale.' };
+    }
+    try {
+      switch (action.action) {
+        case 'snapshot':
+          return { ok: true, snapshot: await this.agentSnapshot(active) };
+        case 'click': {
+          const clicked = await active.browserView.webContents.executeJavaScript(
+            `(() => { const element = document.querySelector(${JSON.stringify(action.selector)}); if (!(element instanceof HTMLElement)) return false; element.click(); return true; })()`,
+            true,
+          ) as unknown;
+          if (clicked !== true) {
+            return { ok: false, error: 'No clickable element matched that selector.' };
+          }
+          await this.agentSettle();
+          return { ok: true, snapshot: await this.agentSnapshot(active) };
+        }
+        case 'type': {
+          const typed = await active.browserView.webContents.executeJavaScript(
+            `(() => {
+              const element = document.querySelector(${JSON.stringify(action.selector)});
+              if (!(element instanceof HTMLElement)) return false;
+              element.focus();
+              if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+                const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+                setter?.call(element, ${JSON.stringify(action.text)});
+              } else if (element.isContentEditable) {
+                element.textContent = ${JSON.stringify(action.text)};
+              } else return false;
+              element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ${JSON.stringify(action.text)} }));
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            })()`,
+            true,
+          ) as unknown;
+          if (typed !== true) {
+            return { ok: false, error: 'No editable element matched that selector.' };
+          }
+          await this.agentSettle();
+          return { ok: true, snapshot: await this.agentSnapshot(active) };
+        }
+        case 'wait':
+          await this.agentSettle(action.milliseconds);
+          return { ok: true, snapshot: await this.agentSnapshot(active) };
+        case 'screenshot': {
+          const directory = this.options.browserAgentOutputDirectory();
+          await mkdir(directory, { recursive: true });
+          const fileName = action.path ?? `${randomUUID()}.png`;
+          const absolutePath = path.join(directory, fileName);
+          const image = await active.browserView.webContents.capturePage();
+          await writeFile(
+            absolutePath,
+            image.toPNG(),
+          );
+          return {
+            ok: true,
+            snapshot: await this.agentSnapshot(active),
+            screenshotPath: absolutePath,
+          };
+        }
+        case 'close':
+          await this.closePreviewId(active.previewId, true);
+          return { ok: true };
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : 'Browser action failed.',
+      };
+    }
+  };
+
+  private agentSettle = (milliseconds = BROWSER_AGENT_SETTLE_MS): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  private agentSnapshot = async (
+    active: ActivePreview,
+  ): Promise<BrowserAgentSnapshot> => {
+    const value = await active.browserView.webContents.executeJavaScript(
+      browserAgentSnapshotScript,
+      true,
+    ) as Omit<BrowserAgentSnapshot, 'sessionId'>;
+    return { sessionId: active.sessionId, ...value };
+  };
+
   open = async (
     request: PreviewOpenRequest,
   ): Promise<PreviewActionResult> => {
@@ -175,6 +377,7 @@ export class PreviewController {
     request: Pick<PreviewOpenRequest, 'previewId' | 'generation'>,
     location: PreviewLocation,
     confirmLocalService: boolean,
+    agentControlled = false,
   ): Promise<PreviewActionResult> => {
     if (this.operationActive) {
       return actionResult('busy');
@@ -242,7 +445,11 @@ export class PreviewController {
         return actionResult('failed');
       }
       try {
-        await this.installSessionPolicy(browserSession, location);
+        await this.installSessionPolicy(
+          browserSession,
+          location,
+          agentControlled,
+        );
       } catch {
         await this.clearSession(browserSession);
         this.publishFailure(
@@ -304,6 +511,7 @@ export class PreviewController {
         browserView,
         browserSession,
         bounds: null,
+        agentControlled,
       };
       this.actives.set(active.previewId, active);
       try {
@@ -579,6 +787,7 @@ export class PreviewController {
   private installSessionPolicy = async (
     browserSession: Session,
     location: PreviewLocation,
+    agentControlled: boolean,
   ): Promise<void> => {
     await browserSession.clearStorageData();
     await browserSession.setProxy({
@@ -595,13 +804,19 @@ export class PreviewController {
     browserSession.webRequest.onBeforeRequest(
       { urls: ['<all_urls>'] },
       (details, callback) => {
+        const agentNavigationBlocked =
+          agentControlled &&
+          details.resourceType === 'mainFrame' &&
+          !isLoopbackPreviewUrl(details.url);
         callback({
-          cancel: !isAllowedPreviewRequest(
-            location,
-            details.url,
-            details.method,
-            details.resourceType,
-          ),
+          cancel:
+            agentNavigationBlocked ||
+            !isAllowedPreviewRequest(
+              location,
+              details.url,
+              details.method,
+              details.resourceType,
+            ),
         });
       },
     );
@@ -624,7 +839,11 @@ export class PreviewController {
   private installViewPolicy = (active: ActivePreview): void => {
     const { browserView, policyLocation } = active;
     browserView.webContents.setWindowOpenHandler(({ url }) => {
-      if (isAllowedPreviewRequest(policyLocation, url, 'GET', 'mainFrame')) {
+      if (
+        (!active.agentControlled ||
+          isLoopbackPreviewUrl(url)) &&
+        isAllowedPreviewRequest(policyLocation, url, 'GET', 'mainFrame')
+      ) {
         void browserView.webContents.loadURL(url);
       }
       return { action: 'deny' };
@@ -637,6 +856,8 @@ export class PreviewController {
       targetUrl: string,
     ): void => {
       if (
+        (active.agentControlled &&
+          !isLoopbackPreviewUrl(targetUrl)) ||
         !isAllowedPreviewRequest(
           policyLocation,
           targetUrl,

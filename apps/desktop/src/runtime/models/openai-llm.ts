@@ -822,6 +822,7 @@ export class OpenAiLlm extends BaseLlm {
     'auto' | undefined
   >;
   private readonly serviceTier?: 'default' | 'priority';
+  private reasoningSummarySupported = true;
 
   constructor(options: OpenAiLlmOptions) {
     super({ model: options.model });
@@ -926,6 +927,45 @@ export class OpenAiLlm extends BaseLlm {
     const streamDiagnostics = new Map<string, Set<string>>();
     const completedCalls: ToolCallAccumulator[] = [];
     const textItems = new Map<string, TextItemAccumulator>();
+    const createStream = (includeReasoningSummary: boolean) =>
+      this.client.responses.create(
+        {
+          model: request.model,
+          input: responseInput(request, this.compatibilityKey),
+          instructions: request.system || undefined,
+          tools: [...responseTools(request.tools)],
+          parallel_tool_calls: this.parallelTools,
+          max_output_tokens: maxOutputTokens(request),
+          ...(includeReasoningSummary
+            ? {
+                reasoning: {
+                  summary: 'auto' as const,
+                  ...(this.reasoningEffort
+                    ? { effort: this.reasoningEffort }
+                    : {}),
+                },
+              }
+            : this.reasoningEffort
+              ? { reasoning: { effort: this.reasoningEffort } }
+              : {}),
+          ...(this.serviceTier
+            ? { service_tier: this.serviceTier }
+            : {}),
+          ...(this.nativeCompaction
+            ? {
+                context_management: [{
+                  type: 'compaction' as const,
+                  ...(this.compactThresholdTokens === undefined
+                    ? {}
+                    : { compact_threshold: this.compactThresholdTokens }),
+                }],
+              }
+            : {}),
+          stream: true,
+          store: false,
+        },
+        { signal: abortSignal },
+      );
     const stream = streamWithPreOutputRetry<ResponseStreamEvent>({
       signal: abortSignal,
       maxRetries: this.maxRetries,
@@ -934,36 +974,22 @@ export class OpenAiLlm extends BaseLlm {
         event.type !== 'response.created' &&
         event.type !== 'response.in_progress' &&
         event.type !== 'response.queued',
-      create: async () =>
-        this.client.responses.create(
-          {
-            model: request.model,
-            input: responseInput(request, this.compatibilityKey),
-            instructions: request.system || undefined,
-            tools: [...responseTools(request.tools)],
-            parallel_tool_calls: this.parallelTools,
-            max_output_tokens: maxOutputTokens(request),
-            ...(this.reasoningEffort
-              ? { reasoning: { effort: this.reasoningEffort } }
-              : {}),
-            ...(this.serviceTier
-              ? { service_tier: this.serviceTier }
-              : {}),
-            ...(this.nativeCompaction
-              ? {
-                  context_management: [{
-                    type: 'compaction',
-                    ...(this.compactThresholdTokens === undefined
-                      ? {}
-                      : { compact_threshold: this.compactThresholdTokens }),
-                  }],
-                }
-              : {}),
-            stream: true,
-            store: false,
-          },
-          { signal: abortSignal },
-        ),
+      create: async () => {
+        try {
+          return await createStream(this.reasoningSummarySupported);
+        } catch (error) {
+          if (
+            this.reasoningSummarySupported &&
+            error instanceof OpenAI.APIError &&
+            /reasoning[._ ]?summary|summary[._ ]?reasoning/iu.test(error.message) &&
+            /unsupported|unknown|unrecognized|invalid|not allowed/iu.test(error.message)
+          ) {
+            this.reasoningSummarySupported = false;
+            return await createStream(false);
+          }
+          throw error;
+        }
+      },
     });
     for await (const event of stream) {
       const fingerprints = streamDiagnostics.get(event.type) ?? new Set();

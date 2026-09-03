@@ -14,7 +14,6 @@ const mainTools = [
   'workspace_search',
   'workspace_apply_patch',
   'shell_exec',
-  'submit_final_response',
   'collaboration_dispatch',
 ];
 
@@ -39,8 +38,9 @@ test('main Agent instructions are dynamically scoped to capabilities', () => {
   assert.match(prompt, /Skill fixture/u);
   assert.match(prompt, /\*\*\* Begin Patch/u);
   assert.match(prompt, /absolute executable and arguments are separate/u);
-  assert.doesNotMatch(prompt, /at most one tool per response/u);
-  assert.match(prompt, /Ordinary assistant text may complete the Turn/u);
+  assert.match(prompt, /at most one tool call in each model response/u);
+  assert.match(prompt, /one standalone JSON object/u);
+  assert.doesNotMatch(prompt, /submit_final_response/u);
   assert.match(prompt, /Adapt the response to the actual result/u);
   assert.match(prompt, /implementation or modification/u);
   assert.match(prompt, /diagnosis or review/u);

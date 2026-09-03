@@ -58,6 +58,9 @@ export type ConversationCommentaryActivity = Readonly<{
   status: ConversationMessageStatus;
 }>;
 
+export type ConversationReasoningSummaryActivity =
+  ConversationCommentaryActivity;
+
 export type ConversationAgentOutput = Readonly<{
   responseOrdinal: number;
   outputIndex: number;
@@ -430,6 +433,10 @@ export type ConversationActivity =
   | Readonly<{
       type: 'commentary';
       activity: ConversationCommentaryActivity;
+    }>
+  | Readonly<{
+      type: 'reasoningSummary';
+      activity: ConversationReasoningSummaryActivity;
     }>
   | Readonly<{
       type: 'workspaceRead';

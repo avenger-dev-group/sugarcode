@@ -2,12 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  createSubmitFinalResponseTool,
   extractDelimitedFinalResponse,
-  MAX_FINAL_RESPONSE_BYTES,
   streamableDelimitedFinalResponse,
-  streamableFinalResponseToolContent,
-  type FinalResponseSubmissionGuard,
 } from '../../src/runtime/final-response-submission.ts';
 
 test('extracts only explicitly delimited final content without language heuristics', () => {
@@ -56,73 +52,4 @@ test('exposes only stream-safe content after a complete final boundary', () => {
     ),
     'Answer',
   );
-});
-
-test('decodes stream-safe final content from partial tool arguments', () => {
-  assert.equal(
-    streamableFinalResponseToolContent('{"content":"第一行\\n第二'),
-    '第一行\n第二',
-  );
-  assert.equal(
-    streamableFinalResponseToolContent('{"content":"emoji: \\uD83D'),
-    'emoji: ',
-  );
-  assert.equal(
-    streamableFinalResponseToolContent(
-      '{"content":"emoji: \\uD83D\\uDE00"}',
-    ),
-    'emoji: 😀',
-  );
-  assert.equal(
-    streamableFinalResponseToolContent('{"content":"quote: \\'),
-    'quote: ',
-  );
-  assert.equal(
-    streamableFinalResponseToolContent('{"content":"done"}'),
-    'done',
-  );
-  assert.equal(
-    streamableFinalResponseToolContent('{"unrelated":"private"}'),
-    undefined,
-  );
-});
-
-const runTool = async (
-  content: unknown,
-  validate: (value: string) => string | undefined = () => undefined,
-): Promise<Readonly<{ result: unknown; guard: FinalResponseSubmissionGuard }>> => {
-  const guard: FinalResponseSubmissionGuard = {};
-  const tool = createSubmitFinalResponseTool({ guard, validate });
-  const result = await tool.runAsync({
-    args: { content },
-    toolContext: {} as never,
-  });
-  return { result, guard };
-};
-
-test('accepts and stores only the trimmed user-facing response', async () => {
-  const { result, guard } = await runTool('  修复已完成。  ');
-
-  assert.deepEqual(result, {
-    ok: true,
-    message:
-      'The final response was accepted and will be shown to the user. Do not repeat it.',
-  });
-  assert.equal(guard.content, '修复已完成。');
-});
-
-test('rejects empty, oversized, and validator-rejected submissions', async () => {
-  const empty = await runTool('   ');
-  assert.equal(empty.guard.content, undefined);
-  assert.match(JSON.stringify(empty.result), /must not be empty/u);
-
-  const oversized = await runTool('a'.repeat(MAX_FINAL_RESPONSE_BYTES + 1));
-  assert.equal(oversized.guard.content, undefined);
-  assert.match(JSON.stringify(oversized.result), /exceeds/u);
-
-  const invalid = await runTool('Internal draft', () =>
-    'The response contains private work.',
-  );
-  assert.equal(invalid.guard.content, undefined);
-  assert.match(JSON.stringify(invalid.result), /private work/u);
 });

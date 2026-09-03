@@ -147,6 +147,7 @@ const toolInstruction = (
   }
   const guidance: string[] = [
     'Tools are request-scoped. Follow each offered schema and its returned guidance.',
+    'Issue at most one tool call in each model response. Every tool call must contain one standalone JSON object that matches its schema; never concatenate multiple JSON objects into one arguments payload.',
   ];
   if (names.some((name) => ['workspace_list', 'workspace_read', 'workspace_search'].includes(name))) {
     guidance.push(
@@ -180,9 +181,9 @@ const toolInstruction = (
       'Use submit_plan only after all blocking decisions are resolved. Put the complete actionable plan in its content field; after it succeeds, finish without repeating the plan or asking whether to proceed.',
     );
   }
-  if (names.includes('submit_final_response')) {
+  if (names.includes('browser')) {
     guidance.push(
-      'Ordinary assistant text may complete the Turn after all work finishes. Use one <final_response>...</final_response> envelope or one submit_final_response call only when an explicit private/public boundary helps. Include the complete answer once; keep reasoning in private provider channels.',
+      'Use browser only for a local development page the user asked you to inspect or verify. Open returns a sessionId; reuse it for later fixed actions. Prefer snapshot before click or type, and never claim a visual check from DOM text alone when a screenshot is needed.',
     );
   }
   return `# Tool use\n\n${guidance.map((line) => `- ${line}`).join('\n')}`;
