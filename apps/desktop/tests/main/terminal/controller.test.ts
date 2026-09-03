@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { TerminalController } from '../../../src/main/terminal/controller.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
 import type {
   RuntimeCommand,
   RuntimeEvent,
-} from '../../../src/runtime/protocol.ts';
+} from '../../../src/runtime/contracts/protocol.ts';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 

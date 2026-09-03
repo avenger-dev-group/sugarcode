@@ -36,7 +36,7 @@ import {
   RuntimeProtocolError,
   protocolProviderError,
   protocolShapeSha256,
-} from '../protocol-error.ts';
+} from '../contracts/protocol-error.ts';
 import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import {

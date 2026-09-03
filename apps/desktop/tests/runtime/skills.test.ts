@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
-import { createTurnSkills } from '../../src/runtime/skills.ts';
+import type { NativeRuntimeBinding } from '../../src/runtime/persistence/native.ts';
+import { createTurnSkills } from '../../src/runtime/capabilities/skills.ts';
 
 const runtimeSkill = (name: string, description = `${name} instructions`) => {
   const content = `---\nname: ${name}\ndescription: ${description}\n---\n\nFollow ${name}.\n`;

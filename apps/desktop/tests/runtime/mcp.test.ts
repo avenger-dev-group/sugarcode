@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { RuntimeMcpManager } from '../../src/runtime/mcp.ts';
+import { RuntimeMcpManager } from '../../src/runtime/capabilities/mcp.ts';
 
 const fixtureDirectory = path.join(
   path.dirname(fileURLToPath(import.meta.url)),

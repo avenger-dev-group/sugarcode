@@ -4,11 +4,11 @@ import test from 'node:test';
 import type { LlmRequest } from '@google/adk';
 import type { Content } from '@google/genai';
 
-import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
+import type { NativeRuntimeBinding } from '../../src/runtime/persistence/native.ts';
 import {
   instructionScopesForPatch,
   WorkspaceInstructionContext,
-} from '../../src/runtime/workspace-instructions.ts';
+} from '../../src/runtime/instructions/workspace.ts';
 
 const requestWith = (contents: Content[]): LlmRequest => ({
   model: 'fixture',

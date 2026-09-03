@@ -9,7 +9,7 @@ import {
   SKILLS_EXPORT_ZIP_CHANNEL,
   SKILLS_SET_ENABLED_CHANNEL,
 } from '@/shared/skills';
-import type { RuntimeSkillsController } from '@/main/runtime/skills-controller';
+import type { RuntimeSkillsController } from '@/main/runtime/skills/controller';
 
 import {
   isTrustedIpcSender,

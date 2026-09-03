@@ -6,7 +6,7 @@ import type {
   ResponseOutputItem,
 } from 'openai/resources/responses/responses';
 
-import { RuntimeProtocolError } from '../../src/runtime/protocol-error.ts';
+import { RuntimeProtocolError } from '../../src/runtime/contracts/protocol-error.ts';
 import { OpenAiResponsesReconciler } from '../../src/runtime/models/openai-responses-reconciler.ts';
 
 const response = (

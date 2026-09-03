@@ -7,8 +7,8 @@ import {
   contentFromStoredModelHistory,
   encodeModelHistory,
   parseStoredModelHistory,
-} from '../../src/runtime/model-history-codec.ts';
-import { RuntimeProtocolError } from '../../src/runtime/protocol-error.ts';
+} from '../../src/runtime/persistence/model-history-codec.ts';
+import { RuntimeProtocolError } from '../../src/runtime/contracts/protocol-error.ts';
 import {
   openAiResponsesPartReplay,
   readOpenAiResponsesPartReplay,

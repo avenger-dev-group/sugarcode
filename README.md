@@ -37,18 +37,18 @@ authorization or OAuth. See the [Figma Desktop MCP setup guide](docs/figma-deskt
 
 ## Video capability
 
-SugarCode exposes video production as a bundled `video-production` Skill rather
-than coupling the Agent runtime to one renderer. The Skill selects an existing
-project engine or an explicitly requested adapter and uses the normal workspace
-and command tools to author, preview, render, and verify the result. New
-code-driven projects default to a project-local Remotion setup, while direct
-FFmpeg remains appropriate for simple media edits.
+SugarCode exposes video production as a bundled `video-production` Skill plus
+structured runtime tools. Existing project engines and explicitly requested
+adapters remain supported. New code-driven compositions default to a shared,
+version-locked Remotion 4 runtime managed in SugarCode's app data, so each
+project does not repeat package and browser installation. Authored source stays
+under `.sugarcode/video/`; direct FFmpeg remains appropriate for simple edits.
 
-Local authoring and rendering do not require a hosted media API. Optional MCP
-servers or provider tools can supply generated footage, images, voices, music,
-or cloud rendering without changing the core video workflow. Final MP4, WebM,
-and MOV files can be handed back with a `::preview{path="..."}` directive and
-played in the Preview panel or opened in the system player.
+Local authoring, rendering, system voiceover, loudness normalization, and audio
+mixing do not require a hosted media API. Optional providers can still supply
+higher-quality voices, generated footage, images, music, or cloud rendering
+when explicitly authorized. Successful render and mix tools return a
+`::preview{path="..."}` directive for the Preview panel and system player.
 
 ## Agent trajectory
 

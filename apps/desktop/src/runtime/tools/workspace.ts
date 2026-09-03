@@ -2,8 +2,8 @@ import { FunctionTool } from '@google/adk';
 import { Type, type Schema } from '@google/genai';
 import { basename, isAbsolute } from 'node:path';
 
-import type { NativeRuntimeBinding } from '../native.ts';
-import type { SugarCodeExperience } from '../agent-instructions.ts';
+import type { NativeRuntimeBinding } from '../persistence/native.ts';
+import type { SugarCodeExperience } from '../instructions/agent.ts';
 import {
   drawioAddPatch,
   isDrawioPath,
@@ -14,7 +14,7 @@ import {
   instructionScopesForPatch,
   type WorkspaceInstructionContext,
   type WorkspaceInstructionError,
-} from '../workspace-instructions.ts';
+} from '../instructions/workspace.ts';
 
 const MAX_DECLARED_WORKSPACE_READ_PATHS = 8;
 const MAX_COMPATIBLE_WORKSPACE_READ_PATHS = 16;

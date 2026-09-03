@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RuntimeGitAdapter } from '../../../src/main/runtime/git-adapter.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
-import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/protocol.ts';
+import { RuntimeGitAdapter } from '../../../src/main/runtime/workspace/git-adapter.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
+import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/contracts/protocol.ts';
 
 class FixtureRuntime {
   readonly requested: Exclude<RuntimeCommand, { type: 'initialize' }>[] = [];

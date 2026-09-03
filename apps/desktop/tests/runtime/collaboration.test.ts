@@ -6,8 +6,8 @@ import type { BaseTool } from '@google/adk';
 import {
   CollaborationCoordinator,
   type AgentTaskExecutionContext,
-} from '../../src/runtime/collaboration.ts';
-import type { RuntimeAgentTask } from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/execution/collaboration.ts';
+import type { RuntimeAgentTask } from '../../src/runtime/contracts/protocol.ts';
 
 const turn = {
   requestId: 'request-collaboration',

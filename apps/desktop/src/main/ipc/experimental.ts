@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron';
 
 import { EXPERIMENTAL_GOAL_POWER_SAVE_SET_CHANNEL } from '@/shared/experimental';
-import type { GoalPowerSaveController } from '@/main/runtime/goal-power-save-controller';
+import type { GoalPowerSaveController } from '@/main/runtime/conversation/goals/power-save-controller';
 import { isTrustedIpcSender, type IpcSenderValidationOptions } from './trusted-sender';
 
 export const registerExperimentalIpc = (

@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   toolProgressSummary,
   toolResultSummary,
-} from '../../src/runtime/tool-progress-summary.ts';
+} from '../../src/runtime/tools/progress-summary.ts';
 
 test('workspace read progress uses compact basenames for a small batch', () => {
   assert.equal(
@@ -83,5 +83,24 @@ test('video analysis result reports the actual transport and audio path', () => 
       transport: 'extractedFrames',
     }),
     'Video analysis completed with extracted frames because native video was unavailable; no usable audio transcript was obtained.',
+  );
+});
+
+test('video production tools have localized progress and completion summaries', () => {
+  assert.equal(
+    toolProgressSummary('制作一个有声视频', 'video_render', {
+      outputPath: 'renders/demo.mp4',
+    }),
+    '正在单并发渲染 demo.mp4。',
+  );
+  assert.equal(
+    toolProgressSummary('制作一个有声视频', 'video_audio_mix', {
+      outputPath: 'renders/final.mp4',
+    }),
+    '正在混音并生成 final.mp4。',
+  );
+  assert.equal(
+    toolResultSummary('制作一个有声视频', 'video_audio_mix', { ok: true }),
+    '音轨已混入，最终视频检查完成。',
   );
 });

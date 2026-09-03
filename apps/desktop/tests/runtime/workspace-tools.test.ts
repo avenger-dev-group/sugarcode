@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
+import type { NativeRuntimeBinding } from '../../src/runtime/persistence/native.ts';
 import {
   createWorkspaceTools,
   executePrivilegedWorkspaceTool,
   workspacePatchApprovalSummary,
 } from '../../src/runtime/tools/workspace.ts';
-import { WorkspaceInstructionContext } from '../../src/runtime/workspace-instructions.ts';
+import { WorkspaceInstructionContext } from '../../src/runtime/instructions/workspace.ts';
 
 test('workspace patch approval summary describes file effects without internal tool names', () => {
   assert.equal(

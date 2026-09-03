@@ -4,8 +4,8 @@ import test from 'node:test';
 import {
   projectThread,
   runtimeError,
-} from '../../../src/main/runtime/conversation-projection.ts';
-import type { RuntimeThreadSnapshot } from '../../../src/runtime/protocol.ts';
+} from '../../../src/main/runtime/conversation/projection/project-thread.ts';
+import type { RuntimeThreadSnapshot } from '../../../src/runtime/contracts/protocol.ts';
 
 test('durable thread recovery preserves structured knowledge references', () => {
   const knowledgeBaseId = `kb_${'1'.repeat(32)}`;

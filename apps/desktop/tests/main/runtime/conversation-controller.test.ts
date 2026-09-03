@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RuntimeConversationController } from '../../../src/main/runtime/conversation-controller.ts';
-import { createUuidV7 } from '../../../src/main/runtime/id.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
+import { RuntimeConversationController } from '../../../src/main/runtime/conversation/controller.ts';
+import { createUuidV7 } from '../../../src/main/runtime/conversation/id.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
 import type {
   RuntimeCommand,
   RuntimeEvent,
   RuntimeThreadRecord,
   RuntimeThreadSnapshot,
   RuntimeThreadQueue,
-} from '../../../src/runtime/protocol.ts';
+} from '../../../src/runtime/contracts/protocol.ts';
 import {
   MAX_CONVERSATION_INPUT_BYTES,
   isConversationStateSnapshot,
@@ -727,6 +727,106 @@ test('an interrupted Turn pauses its durable queue until resume', async () => {
     fixture.sent.some((command) => command.type === 'turn.startQueued'),
   );
 });
+
+for (const startAnotherTurn of [false, true]) {
+  test(`invalid terminal projection recovers without overwriting a newer Turn (${startAnotherTurn})`, async () => {
+    const fixture = new FixtureRuntime();
+    const request = fixture.request;
+    let finishRecovery: ((event: RuntimeEvent) => void) | undefined;
+    fixture.request = async (command) => {
+      if (command.type !== 'thread.load') return request(command);
+      fixture.sent.push(command);
+      return new Promise<RuntimeEvent>((resolve) => { finishRecovery = resolve; });
+    };
+    const controller = new RuntimeConversationController(
+      fixture as unknown as RuntimeSupervisor,
+    );
+    const snapshots: ConversationThreadProjectionSnapshot[] = [];
+    controller.subscribeThreadProjection((snapshot) => snapshots.push(snapshot));
+    await controller.switchWorkspace(WORKSPACE_ID);
+    await controller.startTurn({ input: 'Recover this response' });
+    const started = fixture.sent.find(
+      (command): command is Extract<RuntimeCommand, { type: 'turn.start' }> =>
+        command.type === 'turn.start',
+    );
+    assert.ok(started);
+    const coordinates = {
+      requestId: started.requestId,
+      workspaceId: WORKSPACE_ID,
+      threadId: THREAD_ID,
+      turnId: started.turnId,
+    };
+    // Each sample is valid on its own; adding them exceeds a safe integer.
+    for (let sequence = 1; sequence <= 2; sequence += 1) {
+      assert.doesNotThrow(() => fixture.emit({
+        ...coordinates,
+        type: 'turn.usage',
+        sequence,
+        usage: {
+          inputTokens: Number.MAX_SAFE_INTEGER,
+          outputTokens: 0,
+          totalTokens: Number.MAX_SAFE_INTEGER,
+        },
+      }));
+    }
+    assert.equal(finishRecovery, undefined, 'live streaming is not reloaded');
+    assert.doesNotThrow(() => fixture.emit({
+      ...coordinates,
+      type: 'turn.completed',
+      sequence: 3,
+      status: 'completed',
+    }));
+    assert.ok(finishRecovery);
+    if (startAnotherTurn) {
+      assert.equal((await controller.startTurn({ input: 'Newer message' })).accepted, true);
+    }
+    finishRecovery({
+      type: 'thread.loaded',
+      requestId: 'recovery',
+      sequence: 4,
+      workspaceId: WORKSPACE_ID,
+      snapshot: {
+        thread: {
+          id: THREAD_ID,
+          workspaceId: WORKSPACE_ID,
+          title: 'Recovered',
+          createdAt: 1,
+          updatedAt: 2,
+          archivedAt: null,
+          parentThreadId: null,
+        },
+        turns: [{
+          id: started.turnId,
+          requestId: started.requestId,
+          status: 'completed',
+          providerWireApi: 'openaiResponses',
+          model: 'fixture',
+          errorJson: null,
+          startedAt: 1,
+          completedAt: 2,
+        }],
+        items: [{
+          id: 'persisted-final',
+          turnId: started.turnId,
+          sequence: 3,
+          kind: 'turn.textCompleted',
+          payload: { ...coordinates, itemId: 'final', phase: 'final', text: 'Durable answer' },
+        }],
+        agentTasks: [],
+        queue: { paused: false, messages: [] },
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(isConversationStateSnapshot(controller.getSnapshot()));
+    assert.ok(isConversationThreadProjectionSnapshot(snapshots.at(-1)));
+    assert.equal(controller.getSnapshot().turns[0]?.messages[0]?.text, 'Durable answer');
+    if (startAnotherTurn) {
+      assert.equal(controller.getSnapshot().turns[1]?.messages[0]?.text, 'Newer message');
+      assert.equal(controller.getSnapshot().turns[1]?.status, 'inProgress');
+    }
+    assert.equal(fixture.sent.filter((command) => command.type === 'thread.load').length, 1);
+  });
+}
 
 test('command output projection updates are batched and completion flushes them', async () => {
   const fixture = new FixtureRuntime();

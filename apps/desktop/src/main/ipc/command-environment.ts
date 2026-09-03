@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 
-import type { RuntimeCommandEnvironmentController } from '@/main/runtime/command-environment-controller';
+import type { RuntimeCommandEnvironmentController } from '@/main/runtime/configuration/command-environment-controller';
 import {
   COMMAND_ENVIRONMENT_GET_CHANNEL,
   COMMAND_ENVIRONMENT_PROFILE_CHANNEL,

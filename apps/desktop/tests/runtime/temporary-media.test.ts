@@ -7,7 +7,7 @@ import path from 'node:path';
 import {
   createDashscopeTemporaryMediaPublisher,
   effectiveMediaTransport,
-} from '../../src/runtime/temporary-media.ts';
+} from '../../src/runtime/media/temporary-media.ts';
 
 test('automatic media transport recognizes DashScope endpoints only', () => {
   assert.equal(

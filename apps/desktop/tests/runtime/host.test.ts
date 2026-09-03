@@ -22,9 +22,9 @@ import {
   modelItemMetadata,
 } from '../../src/runtime/models/step-outcome.ts';
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
-import { VideoAnalyzer } from '../../src/runtime/video-analysis.ts';
-import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
-import type { RuntimeEvent } from '../../src/runtime/protocol.ts';
+import { VideoAnalyzer } from '../../src/runtime/media/video/analysis.ts';
+import type { NativeRuntimeBinding } from '../../src/runtime/persistence/native.ts';
+import type { RuntimeEvent } from '../../src/runtime/contracts/protocol.ts';
 
 const emptyThreadSnapshot = (threadId = 'thread-fixture'): string =>
   JSON.stringify({

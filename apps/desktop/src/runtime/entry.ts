@@ -1,5 +1,5 @@
 import { RuntimeHost } from './host.ts';
-import { isRuntimeCommand } from './protocol.ts';
+import { isRuntimeCommand } from './contracts/protocol.ts';
 
 const runtimePort = process.parentPort;
 if (!runtimePort) {

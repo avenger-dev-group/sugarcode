@@ -249,12 +249,17 @@ fn native_bundled_video_skill_requires_stable_remotion_rendering() {
         .as_str()
         .expect("video Skill instructions");
     assert!(instructions.contains("--concurrency=1"));
-    assert!(instructions.contains("scan the encoded video"));
+    assert!(instructions.contains("isolated single-frame luminance outliers"));
     assert!(instructions.contains("system-installed Chrome or Chromium"));
     assert!(instructions.contains("at most one tool call"));
     assert!(instructions.contains("standalone JSON object"));
     assert!(instructions.contains("quick playback card"));
     assert!(instructions.contains("::preview{path=\"renders/final.mp4\"}"));
+    assert!(instructions.contains("video_runtime_prepare"));
+    assert!(instructions.contains("video_render"));
+    assert!(instructions.contains("video_voiceover"));
+    assert!(instructions.contains("video_audio_mix"));
+    assert!(instructions.contains("do not install Remotion packages into the project"));
 }
 
 #[cfg(unix)]

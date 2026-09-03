@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   initialTurnContent,
   revisedTurnContent,
-} from '../../../src/main/runtime/conversation-turn-content.ts';
+} from '../../../src/main/runtime/conversation/turns/content.ts';
 import { MAX_CONVERSATION_INPUT_BYTES } from '../../../src/shared/conversation.ts';
 
 const userMessage = {

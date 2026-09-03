@@ -1,6 +1,6 @@
 import { BasePlugin, type LlmResponse } from '@google/adk';
 
-import type { RuntimeProviderError } from '../protocol.ts';
+import type { RuntimeProviderError } from '../contracts/protocol.ts';
 
 export class ProviderAdapterError extends Error {
   readonly details: RuntimeProviderError;

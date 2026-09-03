@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron';
 
-import type { RuntimeKnowledgeController } from '@/main/runtime/knowledge-controller';
+import type { RuntimeKnowledgeController } from '@/main/runtime/knowledge/controller';
 import {
   KNOWLEDGE_ADD_FILES_CHANNEL,
   KNOWLEDGE_ADD_FOLDER_CHANNEL,

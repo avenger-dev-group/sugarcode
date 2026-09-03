@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RuntimeMcpApprovalController } from '../../../src/main/runtime/mcp-approval-controller.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
-import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/protocol.ts';
+import { RuntimeMcpApprovalController } from '../../../src/main/runtime/approvals/mcp-controller.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
+import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/contracts/protocol.ts';
 import { isMcpApprovalStateSnapshot } from '../../../src/shared/mcp.ts';
 
 test('runtime MCP approval keeps the existing UI contract and resolves by stable coordinates', async () => {

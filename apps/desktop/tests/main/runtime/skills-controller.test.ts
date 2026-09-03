@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RuntimeSkillsController } from '../../../src/main/runtime/skills-controller.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
+import { RuntimeSkillsController } from '../../../src/main/runtime/skills/controller.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
 
 const inspection = { skills: [], workspaceAvailable: true } as const;
 

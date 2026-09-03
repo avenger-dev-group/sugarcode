@@ -4,8 +4,8 @@ import test from 'node:test';
 import {
   interruptPendingUserInputActivities,
   projectTurnActivities,
-} from '../../../src/main/runtime/conversation-tool-activities.ts';
-import type { RuntimeTurnItemRecord } from '../../../src/runtime/protocol.ts';
+} from '../../../src/main/runtime/conversation/projection/tool-activities.ts';
+import type { RuntimeTurnItemRecord } from '../../../src/runtime/contracts/protocol.ts';
 import {
   modelProgressCommentaryId,
   toolProgressCommentaryId,

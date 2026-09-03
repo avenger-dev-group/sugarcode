@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import test from 'node:test';
 
-import type { RuntimeConnectionController } from '../../../src/main/runtime/connection-controller.ts';
-import type { RuntimeConversationController } from '../../../src/main/runtime/conversation-controller.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
+import type { RuntimeConnectionController } from '../../../src/main/runtime/connection/controller.ts';
+import type { RuntimeConversationController } from '../../../src/main/runtime/conversation/controller.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
 import type { ConversationStateSnapshot } from '../../../src/shared/conversation.ts';
-import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/protocol.ts';
+import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/contracts/protocol.ts';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -28,7 +28,7 @@ const { ThreadRegistry } = await import(
   '../../../src/main/navigation/thread-registry.ts'
 );
 const { RuntimeWorkspaceAdapter } = await import(
-  '../../../src/main/runtime/workspace-adapter.ts'
+  '../../../src/main/runtime/workspace/adapter.ts'
 );
 
 const THREAD_ID = '019fd4ee-6482-7e10-943a-1ef2ea409dcc';

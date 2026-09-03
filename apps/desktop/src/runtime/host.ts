@@ -20,32 +20,36 @@ import {
 } from '../shared/conversation/trusted-commentary.ts';
 import { parseComposerSubmission } from '../shared/composer.ts';
 import {
+  appendAgentPreviewDirective,
+  parseAgentPreviewResponse,
+} from '../shared/preview-intent.ts';
+import {
   ContextManager,
   type RuntimeContextCheckpoint,
-} from './context-manager.ts';
+} from './execution/context-manager.ts';
 import {
   contentFromStoredModelHistory,
   encodeModelHistory,
   parseStoredModelHistory,
   type StoredModelHistoryV2,
-} from './model-history-codec.ts';
-import { RuntimeProtocolError } from './protocol-error.ts';
-import { buildAgentInstructions } from './agent-instructions.ts';
+} from './persistence/model-history-codec.ts';
+import { RuntimeProtocolError } from './contracts/protocol-error.ts';
+import { buildAgentInstructions } from './instructions/agent.ts';
 import {
   extractDelimitedFinalResponse,
   streamableDelimitedFinalResponse,
-} from './final-response-submission.ts';
+} from './execution/final-response-submission.ts';
 import {
   composerIntentInstruction,
   composerModelText,
   composerRequiresFigmaMcp,
   composerTurnMode,
-} from './composer-intent.ts';
+} from './instructions/composer-intent.ts';
 import {
   CollaborationCoordinator,
   type AgentTaskExecutionContext,
-} from './collaboration.ts';
-import { WorkspaceInstructionContext } from './workspace-instructions.ts';
+} from './execution/collaboration.ts';
+import { WorkspaceInstructionContext } from './instructions/workspace.ts';
 import {
   ProviderAdapterError,
   ProviderErrorCapturePlugin,
@@ -71,28 +75,28 @@ import {
   imageAttachmentReference,
   type ImageAnalysisModel,
   type StoredImageContent,
-} from './media-analysis.ts';
+} from './media/analysis.ts';
 import {
   audioAnalysisProfileIds,
   availableThreadVideos,
   availableThreadImages,
   imageAnalysisProfileIds,
   videoAnalysisProfileIds,
-} from './media-routing.ts';
-import type { AudioAnalysisModel } from './audio-transcription.ts';
+} from './media/routing.ts';
+import type { AudioAnalysisModel } from './media/audio/transcription.ts';
 import {
   createVideoAnalysisTool,
   VideoAnalyzer,
   videoAttachmentReference,
   type StoredVideoContent,
   type VideoAnalysisModel,
-} from './video-analysis.ts';
+} from './media/video/analysis.ts';
 import {
   createDashscopeTemporaryMediaPublisher,
   effectiveMediaTransport,
   type TemporaryMediaPublisher,
-} from './temporary-media.ts';
-import { loadNativeRuntime, type NativeRuntimeBinding } from './native.ts';
+} from './media/temporary-media.ts';
+import { loadNativeRuntime, type NativeRuntimeBinding } from './persistence/native.ts';
 import {
   isRuntimeContentPart,
   MAX_RUNTIME_PLAN_BYTES,
@@ -116,28 +120,29 @@ import {
   type RuntimeWorkspaceDocument,
   type RuntimeWorkspaceEntry,
   type RuntimeWorkspaceKind,
-} from './protocol.ts';
+} from './contracts/protocol.ts';
 import {
   createWorkspaceTools,
   executePrivilegedWorkspaceTool,
   workspacePatchApprovalSummary,
 } from './tools/workspace.ts';
-import { createTurnSkills, type TurnSkills } from './skills.ts';
+import { createVideoProductionTools } from './tools/video-production.ts';
+import { createTurnSkills, type TurnSkills } from './capabilities/skills.ts';
 import {
   createTurnKnowledge,
   resolveKnowledgeReferences,
-} from './knowledge.ts';
+} from './capabilities/knowledge.ts';
 import {
   toolFailureRecoveryKey,
   toolResultFailed,
   toolResultRequiresFinalRecovery,
-} from './tool-result.ts';
+} from './tools/result.ts';
 import {
   toolProgressSummary,
   toolResultSummary,
-} from './tool-progress-summary.ts';
-import { generateThreadTitle, titleSourceFromContent } from './thread-title.ts';
-import { RuntimeMcpManager, type McpToolApproval } from './mcp.ts';
+} from './tools/progress-summary.ts';
+import { generateThreadTitle, titleSourceFromContent } from './execution/thread-title.ts';
+import { RuntimeMcpManager, type McpToolApproval } from './capabilities/mcp.ts';
 import type {
   McpConfigActionResult,
   McpConfigInspection,
@@ -170,7 +175,7 @@ import {
   createUpdateGoalTool,
   GoalTurnSession,
   goalTurnRuntimeContent,
-} from './goals.ts';
+} from './execution/goals.ts';
 import {
   MAX_CONVERSATION_ATTACHMENT_BYTES,
   MAX_CONVERSATION_ATTACHMENT_PREVIEW_URL_LENGTH,
@@ -835,6 +840,7 @@ export class RuntimeHost {
   >();
   private readonly activeTurnSkills = new Map<string, TurnSkills>();
   private readonly activeGoalSessions = new Map<string, GoalTurnSession>();
+  private readonly artifactDirectivesByTurn = new Map<string, string>();
   private readonly pendingSteersByTurn = new Map<
     string,
     RuntimeContentPart[][]
@@ -859,6 +865,8 @@ export class RuntimeHost {
   private shuttingDown = false;
   private nativeRuntime: NativeRuntimeBinding | null = null;
   private revisionNativeAvailable = false;
+  private dataDirectory?: string;
+  private ffmpegPath?: string;
 
   constructor(options: RuntimeHostOptions) {
     this.postEvent = options.postEvent;
@@ -870,6 +878,8 @@ export class RuntimeHost {
   handle = (command: RuntimeCommand): void => {
     switch (command.type) {
       case 'initialize':
+        this.dataDirectory = command.dataDirectory;
+        this.ffmpegPath = command.ffmpegPath;
         this.videoAnalyzer.setFfmpegPath(command.ffmpegPath);
         if (command.nativeModulePath) {
           this.nativeRuntime = this.loadNative(
@@ -4521,6 +4531,34 @@ export class RuntimeHost {
                 nativeWorkspaceId,
                 experience,
               ),
+              ...(turnMode === 'execute' && this.dataDirectory
+                ? createVideoProductionTools({
+                    nativeRuntime: this.nativeRuntime,
+                    workspaceId: command.workspaceId,
+                    threadId: command.threadId,
+                    dataDirectory: this.dataDirectory,
+                    ffmpegPath: this.ffmpegPath,
+                    runPrivileged: (toolName, argumentsValue, execute) =>
+                      this.runPrivilegedTool(
+                        command,
+                        toolName,
+                        argumentsValue,
+                        execute,
+                      ),
+                    onCommandOutput: (operationId, stream, delta) => {
+                      this.emit({
+                        type: 'operation.output',
+                        requestId: command.requestId,
+                        workspaceId: command.workspaceId,
+                        threadId: command.threadId,
+                        turnId: command.turnId,
+                        operationId,
+                        stream,
+                        delta,
+                      });
+                    },
+                  })
+                : []),
               ...(turnMode === 'execute'
                 ? this.mcp.toolsForTurn((request) =>
                     this.runMcpTool(command, request),
@@ -4780,6 +4818,10 @@ export class RuntimeHost {
             },
             settleFinalCandidate: async (accepted, textItems, finalText) => {
               if (accepted && finalText && turnMode !== 'plan') {
+                const deliveredText = appendAgentPreviewDirective(
+                  finalText,
+                  this.artifactDirectivesByTurn.get(command.turnId),
+                );
                 this.settleFinalCandidate(
                   command,
                   textItems,
@@ -4790,7 +4832,7 @@ export class RuntimeHost {
                 await this.finishStructuredFinalResponse(
                   command,
                   textItems,
-                  finalText,
+                  deliveredText,
                 );
                 return;
               }
@@ -4976,6 +5018,7 @@ export class RuntimeHost {
       this.activeTurnSelections.delete(command.turnId);
       this.activeTurnSkills.delete(command.turnId);
       this.activeGoalSessions.delete(command.turnId);
+      this.artifactDirectivesByTurn.delete(command.turnId);
       this.pendingSteersByTurn.delete(command.turnId);
       this.cancellationSources.delete(command.turnId);
     }
@@ -5886,10 +5929,25 @@ export class RuntimeHost {
           event.partial !== true &&
           isRecord(part.functionResponse.response)
         ) {
+          const response = part.functionResponse.response;
+          if (
+            response.ok === true &&
+            typeof response.finalDirective === 'string' &&
+            ['video_render', 'video_audio_mix'].includes(
+              part.functionResponse.name,
+            ) &&
+            parseAgentPreviewResponse(response.finalDirective).intent?.kind ===
+              'artifact'
+          ) {
+            this.artifactDirectivesByTurn.set(
+              command.turnId,
+              response.finalDirective,
+            );
+          }
           const summary = toolResultSummary(
             userText,
             part.functionResponse.name,
-            part.functionResponse.response,
+            response,
           );
           if (summary) {
             publishToolStatus(

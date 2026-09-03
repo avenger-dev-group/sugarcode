@@ -4,9 +4,9 @@ import test from 'node:test';
 import {
   createTurnKnowledge,
   resolveKnowledgeReferences,
-} from '../../src/runtime/knowledge.ts';
-import type { NativeRuntimeBinding } from '../../src/runtime/native.ts';
-import type { RuntimeContentPart } from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/capabilities/knowledge.ts';
+import type { NativeRuntimeBinding } from '../../src/runtime/persistence/native.ts';
+import type { RuntimeContentPart } from '../../src/runtime/contracts/protocol.ts';
 
 const knowledgeBaseId = `kb_${'1'.repeat(32)}`;
 const alternateKnowledgeBaseId = `kb_${'2'.repeat(32)}`;

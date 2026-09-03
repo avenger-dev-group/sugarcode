@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RuntimeConnectionController } from '../../../src/main/runtime/connection-controller.ts';
+import { RuntimeConnectionController } from '../../../src/main/runtime/connection/controller.ts';
 import type {
   RuntimeLifecycleSnapshot,
   RuntimeSupervisor,
-} from '../../../src/main/runtime/supervisor.ts';
+} from '../../../src/main/runtime/connection/supervisor.ts';
 
 class FixtureRuntime {
   private readonly listeners = new Set<(

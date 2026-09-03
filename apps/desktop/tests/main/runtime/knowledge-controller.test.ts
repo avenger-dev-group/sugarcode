@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RuntimeKnowledgeController } from '../../../src/main/runtime/knowledge-controller.ts';
+import { RuntimeKnowledgeController } from '../../../src/main/runtime/knowledge/controller.ts';
 import type { KnowledgeBaseDetail } from '../../../src/shared/knowledge.ts';
 
 const knowledgeBaseId = `kb_${'1'.repeat(32)}`;

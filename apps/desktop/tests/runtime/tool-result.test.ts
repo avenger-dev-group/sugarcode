@@ -5,7 +5,7 @@ import {
   toolFailureRecoveryKey,
   toolResultFailed,
   toolResultRequiresFinalRecovery,
-} from '../../src/runtime/tool-result.ts';
+} from '../../src/runtime/tools/result.ts';
 
 test('workspace instruction discovery is recoverable but unavailable rules are failures', () => {
   assert.equal(toolResultFailed({

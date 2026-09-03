@@ -14,8 +14,8 @@ import {
   createVideoAnalysisTool,
   VideoAnalyzer,
   videoAttachmentReference,
-} from '../../src/runtime/video-analysis.ts';
-import type { RuntimeAssetDescriptor } from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/media/video/analysis.ts';
+import type { RuntimeAssetDescriptor } from '../../src/runtime/contracts/protocol.ts';
 
 class VideoFixtureLlm extends BaseLlm {
   requests: LlmRequest[] = [];

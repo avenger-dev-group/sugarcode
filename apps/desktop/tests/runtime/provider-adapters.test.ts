@@ -13,7 +13,7 @@ import {
   contentFromStoredModelHistory,
   encodeModelHistory,
   parseStoredModelHistory,
-} from '../../src/runtime/model-history-codec.ts';
+} from '../../src/runtime/persistence/model-history-codec.ts';
 import {
   modelItemMetadata,
   readModelFunctionCallArgumentsMetadata,

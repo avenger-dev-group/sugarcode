@@ -13,8 +13,8 @@ import {
   ContextManager,
   estimateRequestTokens,
   type RuntimeContextCheckpoint,
-} from '../../src/runtime/context-manager.ts';
-import type { RuntimeModelSelection } from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/execution/context-manager.ts';
+import type { RuntimeModelSelection } from '../../src/runtime/contracts/protocol.ts';
 
 class SummaryLlm extends BaseLlm {
   requests: LlmRequest[] = [];

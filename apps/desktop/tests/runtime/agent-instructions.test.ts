@@ -4,8 +4,8 @@ import test from 'node:test';
 import {
   buildAgentInstructions,
   hostPlatformInstruction,
-} from '../../src/runtime/agent-instructions.ts';
-import { FINAL_RESPONSE_INSTRUCTION } from '../../src/runtime/final-response-instructions.ts';
+} from '../../src/runtime/instructions/agent.ts';
+import { FINAL_RESPONSE_INSTRUCTION } from '../../src/runtime/instructions/final-response.ts';
 
 const mainTools = [
   'request_user_input',

@@ -8,11 +8,11 @@ import {
   availableThreadVideos,
   imageAnalysisProfileIds,
   videoAnalysisProfileIds,
-} from '../../src/runtime/media-routing.ts';
+} from '../../src/runtime/media/routing.ts';
 import type {
   RuntimeAssetDescriptor,
   RuntimeThreadSnapshot,
-} from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/contracts/protocol.ts';
 
 const config = (): ModelConfigValue => ({
   defaultProfileId: 'default_model',

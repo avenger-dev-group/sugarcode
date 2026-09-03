@@ -15,7 +15,7 @@ import {
   generateThreadTitle,
   normalizeGeneratedTitle,
   titleSourceFromContent,
-} from '../../src/runtime/thread-title.ts';
+} from '../../src/runtime/execution/thread-title.ts';
 
 class TitleFixtureLlm extends BaseLlm {
   request: LlmRequest | null = null;

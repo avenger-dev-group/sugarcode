@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseAgentPreviewResponse } from '../../src/shared/preview-intent.ts';
+import {
+  appendAgentPreviewDirective,
+  parseAgentPreviewResponse,
+} from '../../src/shared/preview-intent.ts';
 
 test('terminal artifact metadata becomes a validated Agent preview intent', () => {
   assert.deepEqual(
@@ -106,5 +109,26 @@ test('unsafe or incomplete preview metadata stays hidden without creating an int
   assert.deepEqual(
     parseAgentPreviewResponse('Done.\n::draw{path="../diagram.drawio"}'),
     { text: 'Done.', intent: null },
+  );
+});
+
+test('runtime can append a verified artifact directive without duplicating model output', () => {
+  assert.equal(
+    appendAgentPreviewDirective(
+      '视频制作完成。',
+      '::preview{path="renders/final.mp4"}',
+    ),
+    '视频制作完成。\n\n::preview{path="renders/final.mp4"}',
+  );
+  assert.equal(
+    appendAgentPreviewDirective(
+      '完成。\n\n::preview{path="renders/model.mp4"}',
+      '::preview{path="renders/runtime.mp4"}',
+    ),
+    '完成。\n\n::preview{path="renders/model.mp4"}',
+  );
+  assert.equal(
+    appendAgentPreviewDirective('完成。', '::preview{path="../escape.mp4"}'),
+    '完成。',
   );
 });

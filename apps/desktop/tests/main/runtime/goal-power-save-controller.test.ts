@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { GoalPowerSaveController } from '../../../src/main/runtime/goal-power-save-controller.ts';
+import { GoalPowerSaveController } from '../../../src/main/runtime/conversation/goals/power-save-controller.ts';
 
 test('Goal power blocker is idempotent and scoped to active Goal Turns', () => {
   const started: number[] = [];

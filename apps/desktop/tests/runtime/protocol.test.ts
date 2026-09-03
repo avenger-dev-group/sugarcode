@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   isRuntimeCommand,
   isRuntimeEvent,
-} from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/contracts/protocol.ts';
 
 test('private runtime validates Goal mutation, execution, and projection events', () => {
   const modelRequest = { reasoningEffort: 'high', serviceTier: 'auto' } as const;

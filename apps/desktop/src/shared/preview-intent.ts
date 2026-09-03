@@ -153,3 +153,18 @@ export const parseAgentPreviewResponse = (
         : null,
   };
 };
+
+export const appendAgentPreviewDirective = (
+  source: string,
+  directive: string | undefined,
+): string => {
+  if (!directive || parseAgentPreviewResponse(source).intent) {
+    return source;
+  }
+  const parsedDirective = parseAgentPreviewResponse(directive);
+  if (!parsedDirective.intent || parsedDirective.text.trim().length > 0) {
+    return source;
+  }
+  const body = source.trimEnd();
+  return `${body}${body.length > 0 ? '\n\n' : ''}${directive.trim()}`;
+};

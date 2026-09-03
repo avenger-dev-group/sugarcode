@@ -9,7 +9,7 @@ import type {
 import {
   RuntimeProtocolError,
   protocolProviderError,
-} from '../protocol-error.ts';
+} from '../contracts/protocol-error.ts';
 import {
   toolCallConflictFields,
   toolCallContentKey,

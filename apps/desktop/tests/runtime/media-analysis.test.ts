@@ -13,8 +13,8 @@ import {
   createImageAnalysisTool,
   ImageAnalyzer,
   imageAttachmentReference,
-} from '../../src/runtime/media-analysis.ts';
-import type { RuntimeAssetDescriptor } from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/media/analysis.ts';
+import type { RuntimeAssetDescriptor } from '../../src/runtime/contracts/protocol.ts';
 
 class ImageFixtureLlm extends BaseLlm {
   requests: LlmRequest[] = [];

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { GoalCoordinator } from '../../../src/main/runtime/goal-coordinator.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
+import { GoalCoordinator } from '../../../src/main/runtime/conversation/goals/coordinator.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
 import type { GoalSnapshot } from '../../../src/shared/goals.ts';
 
 const goal: GoalSnapshot = {

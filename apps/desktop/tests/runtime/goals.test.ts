@@ -5,7 +5,7 @@ import {
   createUpdateGoalTool,
   GoalTurnSession,
   goalTurnRuntimeContent,
-} from '../../src/runtime/goals.ts';
+} from '../../src/runtime/execution/goals.ts';
 import type { GoalSnapshot } from '../../src/shared/goals.ts';
 
 const goal = (revision = 1): GoalSnapshot => ({

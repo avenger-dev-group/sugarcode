@@ -3,11 +3,11 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
-import { RuntimeSupervisor } from '../../src/main/runtime/supervisor.ts';
+import { RuntimeSupervisor } from '../../src/main/runtime/connection/supervisor.ts';
 import type {
   RuntimeCommand,
   RuntimeEvent,
-} from '../../src/runtime/protocol.ts';
+} from '../../src/runtime/contracts/protocol.ts';
 
 class FixtureChild extends EventEmitter {
   readonly messages: RuntimeCommand[] = [];
@@ -23,6 +23,44 @@ class FixtureChild extends EventEmitter {
     return true;
   }
 }
+
+test('RuntimeSupervisor isolates runtime event listener failures', () => {
+  const child = new FixtureChild();
+  const delivered: RuntimeEvent[] = [];
+  const listenerErrors: string[] = [];
+  const supervisor = new RuntimeSupervisor({
+    runtimePath: '/fixture/runtime.js',
+    dataDirectory: '/fixture/.sugarcode/v3',
+    nativeModulePath: '/fixture/sugarcode-desktop-native.node',
+    spawn: () => child as never,
+    onListenerError: (error, source) => {
+      listenerErrors.push(
+        `${source}:${error instanceof Error ? error.message : String(error)}`,
+      );
+    },
+  });
+  supervisor.subscribe(() => {
+    throw new Error('conversation projection failed');
+  });
+  supervisor.subscribe((event) => delivered.push(event));
+
+  supervisor.start();
+  child.emit('spawn');
+  assert.doesNotThrow(() =>
+    child.emit('message', {
+      type: 'runtime.ready',
+      sequence: 1,
+      requestId: child.messages[0]?.requestId,
+      protocolVersion: 8,
+    }),
+  );
+
+  assert.equal(delivered.at(-1)?.type, 'runtime.ready');
+  assert.deepEqual(listenerErrors, [
+    'runtimeEvent:conversation projection failed',
+  ]);
+  supervisor.shutdown();
+});
 
 test('RuntimeSupervisor tracks Goal-owned Turns for crash reconciliation', () => {
   const child = new FixtureChild();

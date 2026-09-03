@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { RuntimeApprovalController } from '../../../src/main/runtime/approval-controller.ts';
-import type { RuntimeSupervisor } from '../../../src/main/runtime/supervisor.ts';
-import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/protocol.ts';
+import { RuntimeApprovalController } from '../../../src/main/runtime/approvals/controller.ts';
+import type { RuntimeSupervisor } from '../../../src/main/runtime/connection/supervisor.ts';
+import type { RuntimeCommand, RuntimeEvent } from '../../../src/runtime/contracts/protocol.ts';
 import { isCommandApprovalStateSnapshot } from '../../../src/shared/command-approval.ts';
 
 class FixtureRuntime {

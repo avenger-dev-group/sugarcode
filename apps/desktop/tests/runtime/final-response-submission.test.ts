@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   extractDelimitedFinalResponse,
   streamableDelimitedFinalResponse,
-} from '../../src/runtime/final-response-submission.ts';
+} from '../../src/runtime/execution/final-response-submission.ts';
 
 test('extracts only explicitly delimited final content without language heuristics', () => {
   assert.equal(

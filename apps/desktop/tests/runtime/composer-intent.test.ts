@@ -6,7 +6,7 @@ import {
   composerModelText,
   composerRequiresFigmaMcp,
   composerTurnMode,
-} from '../../src/runtime/composer-intent.ts';
+} from '../../src/runtime/instructions/composer-intent.ts';
 
 test('composer selections become explicit command, Skill, and file instructions', () => {
   const instruction = composerIntentInstruction([

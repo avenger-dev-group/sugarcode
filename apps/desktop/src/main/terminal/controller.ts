@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { WorkspaceLaunchContext } from '@/main/workspace/controller';
-import type { RuntimeSupervisor } from '@/main/runtime/supervisor';
+import type { RuntimeSupervisor } from '@/main/runtime/connection/supervisor';
 import {
   TERMINAL_OUTPUT_CHUNK_MAX_BYTES,
   type TerminalActionReason,
@@ -17,7 +17,7 @@ import {
   type TerminalStateSignal,
   type TerminalStateSnapshot,
 } from '../../shared/terminal.ts';
-import type { RuntimeEvent } from '@/runtime/protocol';
+import type { RuntimeEvent } from '@/runtime/contracts/protocol';
 
 const OUTPUT_HIGH_WATER_BYTES = 768 * 1_024;
 const OUTPUT_LOW_WATER_BYTES = 384 * 1_024;
