@@ -1,7 +1,7 @@
 import { FunctionTool } from '@google/adk';
 import { Type, type Schema } from '@google/genai';
 import { existsSync } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { isAbsolute, normalize, posix, relative, win32 } from 'node:path';
 
 import type { NativeRuntimeBinding } from '../persistence/native.ts';
 import { executePrivilegedWorkspaceTool } from './workspace.ts';
@@ -226,8 +226,12 @@ const posixQuote = (value: string): string => {
 const powershellQuote = (value: string): string =>
   `'${value.replaceAll("'", "''")}'`;
 
+// Command builders can target a different platform from the host running them.
+const platformPaths = (platform: NodeJS.Platform) =>
+  platform === 'win32' ? win32 : posix;
+
 const executablePath = (runtimeRoot: string, platform: NodeJS.Platform): string =>
-  join(
+  platformPaths(platform).join(
     runtimeRoot,
     'node_modules',
     '.bin',
@@ -241,15 +245,16 @@ const ffprobeExecutable = (
   if (!ffmpegPath) {
     return 'ffprobe';
   }
-  const candidate = join(
-    dirname(ffmpegPath),
+  const paths = platformPaths(platform);
+  const candidate = paths.join(
+    paths.dirname(ffmpegPath),
     platform === 'win32' ? 'ffprobe.exe' : 'ffprobe',
   );
   return existsSync(candidate) ? candidate : 'ffprobe';
 };
 
-const outputDirectory = (path: string): string => {
-  const directory = dirname(path).replaceAll('\\', '/');
+const outputDirectory = (path: string, platform: NodeJS.Platform): string => {
+  const directory = platformPaths(platform).dirname(path).replaceAll('\\', '/');
   return directory === '.' ? '.' : directory;
 };
 
@@ -266,16 +271,19 @@ const shellResultDetail = (result: unknown): Readonly<Record<string, unknown>> =
     ? result
     : { result };
 
-export const managedVideoRuntimeRoot = (dataDirectory: string): string =>
-  resolve(dataDirectory, 'video-runtime', RUNTIME_DIRECTORY_NAME);
+export const managedVideoRuntimeRoot = (
+  dataDirectory: string,
+  platform: NodeJS.Platform = process.platform,
+): string => platformPaths(platform).resolve(dataDirectory, 'video-runtime', RUNTIME_DIRECTORY_NAME);
 
 export const buildVideoRuntimePrepareCommand = (
   runtimeRoot: string,
   projectDirectory: string,
   platform: NodeJS.Platform,
 ): string => {
+  const paths = platformPaths(platform);
   const cliPath = executablePath(runtimeRoot, platform);
-  const modulePath = join(runtimeRoot, 'node_modules');
+  const modulePath = paths.join(runtimeRoot, 'node_modules');
   if (platform === 'win32') {
     const manifest = JSON.stringify({ name: 'sugarcode-video-runtime', private: true });
     return [
@@ -292,12 +300,12 @@ export const buildVideoRuntimePrepareCommand = (
   }
   const manifestScript = `const fs=require('node:fs');const path=process.argv[1];if(!fs.existsSync(path))fs.writeFileSync(path,JSON.stringify({name:'sugarcode-video-runtime',private:true})+'\\n')`;
   return [
-    `mkdir -p ${posixQuote(runtimeRoot)} ${posixQuote(projectDirectory)} ${posixQuote(join(projectDirectory, 'public'))}`,
-    `node -e ${posixQuote(manifestScript)} ${posixQuote(join(runtimeRoot, 'package.json'))}`,
+    `mkdir -p ${posixQuote(runtimeRoot)} ${posixQuote(projectDirectory)} ${posixQuote(paths.join(projectDirectory, 'public'))}`,
+    `node -e ${posixQuote(manifestScript)} ${posixQuote(paths.join(runtimeRoot, 'package.json'))}`,
     `[ -x ${posixQuote(cliPath)} ] || npm install --prefix ${posixQuote(runtimeRoot)} --package-lock --save-exact remotion@4 @remotion/cli@4 react@18.3.1 react-dom@18.3.1`,
     `${posixQuote(cliPath)} versions`,
     `${posixQuote(cliPath)} browser ensure`,
-    `[ -e ${posixQuote(join(projectDirectory, 'node_modules'))} ] || ln -s ${posixQuote(modulePath)} ${posixQuote(join(projectDirectory, 'node_modules'))}`,
+    `[ -e ${posixQuote(paths.join(projectDirectory, 'node_modules'))} ] || ln -s ${posixQuote(modulePath)} ${posixQuote(paths.join(projectDirectory, 'node_modules'))}`,
   ].join(' && ');
 };
 
@@ -321,7 +329,7 @@ export const buildVideoRenderCommand = (options: Readonly<{
     values(options.compositionId),
     values(options.outputPath),
     '--concurrency=1',
-    `--public-dir=${values(join(DEFAULT_PROJECT_DIRECTORY, 'public'))}`,
+    `--public-dir=${values(platformPaths(options.platform).join(DEFAULT_PROJECT_DIRECTORY, 'public'))}`,
     '--log=verbose',
     `--overwrite=${String(options.overwrite)}`,
     ...(options.outputPath.toLowerCase().endsWith('.webm')
@@ -335,8 +343,8 @@ export const buildVideoRenderCommand = (options: Readonly<{
   const flashScanner = `let s='';process.stdin.setEncoding('utf8');process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const v=[...s.matchAll(/lavfi\\.signalstats\\.YAVG=([0-9.]+)/g)].map(m=>Number(m[1]));if(v.length===0){console.error('SugarCode flash scan received no frames');process.exit(3)}const f=[];for(let i=1;i<v.length-1;i++){if(Math.abs(v[i]-v[i-1])>=45&&Math.abs(v[i]-v[i+1])>=45&&Math.abs(v[i-1]-v[i+1])<=12)f.push(i)}console.log(JSON.stringify({sugarcodeFlashScan:{frames:v.length,isolatedLuminanceOutliers:f}}));if(f.length>0)process.exit(2)})`;
   const scan = `${invoke}${values(options.ffmpegPath)} -v error -i ${values(options.outputPath)} -vf ${values('signalstats,metadata=print:file=-')} -an -f null ${options.platform === 'win32' ? 'NUL' : '/dev/null'} | node -e ${values(flashScanner)}`;
   const makeDirectory = options.platform === 'win32'
-    ? `New-Item -ItemType Directory -Force -Path ${values(outputDirectory(options.outputPath))} | Out-Null`
-    : `mkdir -p ${values(outputDirectory(options.outputPath))}`;
+    ? `New-Item -ItemType Directory -Force -Path ${values(outputDirectory(options.outputPath, options.platform))} | Out-Null`
+    : `mkdir -p ${values(outputDirectory(options.outputPath, options.platform))}`;
   const separator = options.platform === 'win32'
     ? `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; `
     : ' && ';
@@ -360,7 +368,7 @@ export const buildVideoVoiceoverCommand = (options: Readonly<{
     const overwriteGuard = options.overwrite
       ? ''
       : `if (Test-Path ${powershellQuote(options.outputPath)}) { throw 'Output already exists.' }; `;
-    return `${overwriteGuard}New-Item -ItemType Directory -Force -Path ${powershellQuote(outputDirectory(options.outputPath))} | Out-Null; Add-Type -AssemblyName System.Speech; $synth=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voiceSelection}$synth.Rate=${Math.max(-10, Math.min(10, Math.round((options.rate - 180) / 18)))}; $synth.SetOutputToWaveFile(${powershellQuote(temporaryPath)}); $synth.Speak((Get-Content -Raw -LiteralPath ${powershellQuote(options.scriptPath)})); $synth.Dispose(); & ${powershellQuote(options.ffmpegPath)} ${options.overwrite ? '-y' : '-n'} -i ${powershellQuote(temporaryPath)} -ar 48000 -ac 2 ${powershellQuote(options.outputPath)}; $code=$LASTEXITCODE; Remove-Item -LiteralPath ${powershellQuote(temporaryPath)} -ErrorAction SilentlyContinue; exit $code`;
+    return `${overwriteGuard}New-Item -ItemType Directory -Force -Path ${powershellQuote(outputDirectory(options.outputPath, options.platform))} | Out-Null; Add-Type -AssemblyName System.Speech; $synth=New-Object System.Speech.Synthesis.SpeechSynthesizer; ${voiceSelection}$synth.Rate=${Math.max(-10, Math.min(10, Math.round((options.rate - 180) / 18)))}; $synth.SetOutputToWaveFile(${powershellQuote(temporaryPath)}); $synth.Speak((Get-Content -Raw -LiteralPath ${powershellQuote(options.scriptPath)})); $synth.Dispose(); & ${powershellQuote(options.ffmpegPath)} ${options.overwrite ? '-y' : '-n'} -i ${powershellQuote(temporaryPath)} -ar 48000 -ac 2 ${powershellQuote(options.outputPath)}; $code=$LASTEXITCODE; Remove-Item -LiteralPath ${powershellQuote(temporaryPath)} -ErrorAction SilentlyContinue; exit $code`;
   }
   const renderSource = options.platform === 'darwin'
     ? [
@@ -384,7 +392,7 @@ export const buildVideoVoiceoverCommand = (options: Readonly<{
         ...(options.voice ? ['-v', posixQuote(options.voice)] : []),
       ].join(' ');
   return [
-    `mkdir -p ${posixQuote(outputDirectory(options.outputPath))}`,
+    `mkdir -p ${posixQuote(outputDirectory(options.outputPath, options.platform))}`,
     options.overwrite ? 'true' : `[ ! -e ${posixQuote(options.outputPath)} ]`,
     renderSource,
     `${posixQuote(options.ffmpegPath)} ${options.overwrite ? '-y' : '-n'} -i ${posixQuote(temporaryPath)} -ar 48000 -ac 2 ${posixQuote(options.outputPath)}`,
@@ -423,8 +431,8 @@ export const buildVideoAudioMixCommand = (options: Readonly<{
   const mix = `${invoke}${quote(options.ffmpegPath)} ${options.overwrite ? '-y' : '-n'} ${inputArguments} -filter_complex ${quote(filter)} -map 0:v:0 -map ${quote('[aout]')} -c:v copy -c:a aac -b:a 192k -shortest ${quote(options.outputPath)}`;
   const probe = `${invoke}${quote(options.ffprobePath)} -v error -show_streams -show_format -of json ${quote(options.outputPath)}`;
   const makeDirectory = options.platform === 'win32'
-    ? `New-Item -ItemType Directory -Force -Path ${quote(outputDirectory(options.outputPath))} | Out-Null`
-    : `mkdir -p ${quote(outputDirectory(options.outputPath))}`;
+    ? `New-Item -ItemType Directory -Force -Path ${quote(outputDirectory(options.outputPath, options.platform))} | Out-Null`
+    : `mkdir -p ${quote(outputDirectory(options.outputPath, options.platform))}`;
   const separator = options.platform === 'win32'
     ? `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; `
     : ' && ';
@@ -470,7 +478,7 @@ export const createVideoProductionTools = (
   options: VideoProductionToolOptions,
 ): readonly FunctionTool<Schema>[] => {
   const platform = options.platform ?? process.platform;
-  const runtimeRoot = managedVideoRuntimeRoot(options.dataDirectory);
+  const runtimeRoot = managedVideoRuntimeRoot(options.dataDirectory, platform);
   const cliPath = executablePath(runtimeRoot, platform);
   const ffmpegPath = options.ffmpegPath ?? 'ffmpeg';
   const ffprobePath = ffprobeExecutable(options.ffmpegPath, platform);
