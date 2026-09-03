@@ -26,6 +26,7 @@ import { hasRemainingContextTabs } from './context-tab-state';
 export type BrowserContextTab = Readonly<{
   id: string;
   title: string;
+  videoPath?: string;
 }>;
 
 export type ContextFileRequest = Readonly<{
@@ -321,15 +322,6 @@ export const OrchestrationStoreProvider = ({
 
   const openPreview = useCallback(
     (url?: string): string => {
-      if (browserTabsRef.current.length >= 12) {
-        const existing = browserTabsRef.current.at(-1);
-        if (existing) {
-          setActiveTab(`browser:${existing.id}`);
-          onRequestOpen();
-          return existing.id;
-        }
-      }
-      const id = crypto.randomUUID();
       let title = '新标签页';
       if (url) {
         try {
@@ -338,7 +330,21 @@ export const OrchestrationStoreProvider = ({
           title = url.split(/[\\/]/u).at(-1) || '浏览器';
         }
       }
-      setBrowserTabs((current) => [...current, { id, title }]);
+      const videoPath = url && !/^[a-z]+:\/\//iu.test(url) && /\.(?:mp4|webm|mov)$/iu.test(url)
+        ? url : undefined;
+      if (browserTabsRef.current.length >= 12) {
+        const existing = browserTabsRef.current.at(-1);
+        if (existing) {
+          // Reusing a slot must also switch its viewer kind (web page vs video).
+          setBrowserTabs((current) => current.map((tab) => tab.id === existing.id
+            ? { id: tab.id, title, ...(videoPath ? { videoPath } : {}) } : tab));
+          setActiveTab(`browser:${existing.id}`);
+          onRequestOpen();
+          return existing.id;
+        }
+      }
+      const id = crypto.randomUUID();
+      setBrowserTabs((current) => [...current, { id, title, ...(videoPath ? { videoPath } : {}) }]);
       setActiveTab(`browser:${id}`);
       onRequestOpen();
       return id;

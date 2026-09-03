@@ -14,6 +14,7 @@ import { Button } from '@/renderer/components/ui/button';
 import { useModalLayerOpen } from '@/renderer/components/ui/use-modal-layer';
 
 import { useStore } from './use-store';
+import { VideoWorkbench } from './video-workbench';
 
 const previewStatusLabel = (
   status: ReturnType<typeof useStore>['state']['status'],
@@ -34,12 +35,14 @@ type PreviewWorkbenchProps = Readonly<{
   active: boolean;
   onTitleChange?: (title: string) => void;
   previewId: string;
+  videoPath?: string;
 }>;
 
 const PreviewWorkbenchView = ({
   active,
   onTitleChange,
   previewId,
+  videoPath,
 }: PreviewWorkbenchProps) => {
   const store = useStore(previewId);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -47,14 +50,19 @@ const PreviewWorkbenchView = ({
   const onTitleChangeRef = useRef(onTitleChange);
   const modalLayerOpen = useModalLayerOpen();
   const ready = store.state.status === 'ready';
-  const connected = store.state.status === 'opening' || ready;
+  const mediaPath = store.state.status === 'video' ? store.state.path : videoPath;
+  const connected = !mediaPath && (store.state.status === 'opening' || ready);
   const workspaceReady = store.workspace.status === 'ready';
-  const sessionId = connected ? store.state.sessionId : null;
+  const sessionId = store.state.status === 'opening' || store.state.status === 'ready' ? store.state.sessionId : null;
   setBoundsRef.current = store.setBounds;
   onTitleChangeRef.current = onTitleChange;
 
   useEffect(() => {
     if (store.state.status === 'closed') {
+      return;
+    }
+    if (store.state.status === 'video') {
+      onTitleChangeRef.current?.(store.state.path.split('/').at(-1) ?? '视频');
       return;
     }
     try {
@@ -109,6 +117,11 @@ const PreviewWorkbenchView = ({
       void setBoundsRef.current(null);
     };
   }, [active, connected, modalLayerOpen, ready, sessionId]);
+
+  if (mediaPath) {
+    return <VideoWorkbench active={active && !modalLayerOpen} path={mediaPath}
+      previewId={previewId} generation={store.workspace.generation} state={store.state} />;
+  }
 
   return (
     <section
@@ -302,5 +315,6 @@ const PreviewWorkbenchView = ({
 export const PreviewWorkbench = memo(
   PreviewWorkbenchView,
   (previous, next) =>
-    previous.active === next.active && previous.previewId === next.previewId,
+    previous.active === next.active && previous.previewId === next.previewId &&
+    previous.videoPath === next.videoPath,
 );

@@ -157,6 +157,21 @@ test('preview bounds accept a bounded visible rectangle or an explicit hide', ()
   );
 });
 
+test('video preview state uses a scoped media token rather than a browser file URL', () => {
+  const tab = {
+    previewId: sessionId, generation: 4, sessionId, status: 'video',
+    url: `sugarcode-video://media/${sessionId}`, origin: 'sugarcode-video://media',
+    path: 'renders/final.mp4',
+  };
+  assert.equal(isPreviewStateSnapshot({ revision: 1, tabs: [tab] }), true);
+  for (const change of [
+    { path: '../escape.mp4' }, { path: 'index.html' },
+    { url: 'file:///outside.mp4' }, { url: `sugarcode-video://media/${secondSessionId}` },
+  ]) {
+    assert.equal(isPreviewStateSnapshot({ revision: 1, tabs: [{ ...tab, ...change }] }), false);
+  }
+});
+
 test('preview navigation requires a bounded url and exact session shape', () => {
   assert.equal(
     isPreviewNavigateRequest({

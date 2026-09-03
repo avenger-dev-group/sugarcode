@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, powerSaveBlocker, shell, Tray } from 'electron';
+import { app, BrowserWindow, dialog, Menu, powerSaveBlocker, protocol, shell, Tray } from 'electron';
 import started from 'electron-squirrel-startup';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -41,6 +41,12 @@ import { RuntimeWorkspaceAdapter } from '@/main/runtime/workspace/adapter';
 import { UpdateController } from '@/main/update/controller';
 import { registerUpdateIpc } from '@/main/update/ipc';
 import { runDesktopE2EProbe } from '@/main/e2e-probe';
+import { VIDEO_PREVIEW_SCHEME } from '@/shared/preview';
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: VIDEO_PREVIEW_SCHEME,
+  privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true },
+}]);
 
 const processStartedAtMs = Date.now();
 const e2eRoot = process.env.SUGARCODE_E2E_PROBE === '1'
@@ -462,6 +468,9 @@ const startApplication = async (): Promise<void> => {
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',
   });
+  protocol.handle(VIDEO_PREVIEW_SCHEME, (request) =>
+    previewController?.serveVideo(request) ?? new Response(null, { status: 404 }),
+  );
   disposeConnectionIpc = registerConnectionIpc({
     supervisor: runtimeConnectionController,
     getMainWindow: () => mainWindow,

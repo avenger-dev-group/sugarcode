@@ -34,6 +34,8 @@ import {
 } from '@/shared/browser-agent';
 
 import { resolvePreviewArtifact } from './artifact-file';
+import { VideoPreviewMedia } from './video-media';
+import { VIDEO_PREVIEW_SCHEME } from '../../shared/preview';
 import {
   createArtifactPreviewLocation,
   isAllowedPreviewRequest,
@@ -170,6 +172,7 @@ const withTimeout = async <Value>(
 };
 
 export class PreviewController {
+  private readonly videoMedia: VideoPreviewMedia;
   private readonly listeners = new Set<Listener>();
   private readonly createWebContentsView: NonNullable<
     PreviewControllerOptions['createWebContentsView']
@@ -191,6 +194,7 @@ export class PreviewController {
   };
 
   constructor(private readonly options: PreviewControllerOptions) {
+    this.videoMedia = new VideoPreviewMedia(options.getWorkspace);
     this.createWebContentsView =
       options.createWebContentsView ??
       ((viewOptions) => new WebContentsView(viewOptions));
@@ -202,6 +206,8 @@ export class PreviewController {
   }
 
   getSnapshot = (): PreviewStateSnapshot => this.snapshot;
+
+  serveVideo = (request: Request): Promise<Response> => this.videoMedia.respond(request);
 
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
@@ -364,6 +370,32 @@ export class PreviewController {
       return actionResult('stale');
     }
     const artifact = await resolvePreviewArtifact(workspace, request.path);
+    if (artifact && /\.(?:mp4|webm|mov)$/iu.test(request.path)) {
+      if (this.operationActive || this.options.isApprovalPending()) return actionResult('busy');
+      this.operationActive = true;
+      try {
+        await this.closePreviewId(request.previewId, false);
+        const currentWorkspace = this.options.getWorkspace();
+        if (!currentWorkspace || currentWorkspace.generation !== workspace.generation ||
+            currentWorkspace.path !== workspace.path || currentWorkspace.threadId !== workspace.threadId ||
+            currentWorkspace.workspaceId !== workspace.workspaceId) {
+          return actionResult('stale');
+        }
+        if (this.options.isApprovalPending()) return actionResult('busy');
+        const media = this.videoMedia.grant(workspace, request.path, artifact.absolutePath);
+        this.publishTab({
+          previewId: request.previewId,
+          generation: request.generation,
+          status: 'video',
+          origin: `${VIDEO_PREVIEW_SCHEME}://media`,
+          path: request.path,
+          ...media,
+        });
+        return actionResult('accepted');
+      } finally {
+        this.operationActive = false;
+      }
+    }
     return artifact
       ? this.openLocation(
           request,
@@ -742,6 +774,14 @@ export class PreviewController {
   close = async (
     request: PreviewSessionRequest,
   ): Promise<PreviewActionResult> => {
+    const video = [...this.tabStates.values()].find((tab) =>
+      tab.status === 'video' && tab.sessionId === request.sessionId &&
+      tab.generation === request.generation,
+    );
+    if (video) {
+      await this.closePreviewId(video.previewId, true);
+      return actionResult('accepted');
+    }
     const active = this.getMatchingActive(request);
     if (!active) {
       return actionResult(this.isStale(request) ? 'stale' : 'unavailable');
@@ -1009,6 +1049,8 @@ export class PreviewController {
     previewId: string,
     publishClosed: boolean,
   ): Promise<void> => {
+    const tab = this.tabStates.get(previewId);
+    if (tab?.status === 'video') this.videoMedia.revoke(tab.sessionId);
     const active = this.actives.get(previewId);
     if (!active) {
       if (publishClosed) {
@@ -1031,6 +1073,7 @@ export class PreviewController {
   };
 
   private closeAll = async (publishClosed: boolean): Promise<void> => {
+    this.videoMedia.clear();
     await Promise.all(
       [...this.actives.keys()].map((previewId) =>
         this.closePreviewId(previewId, publishClosed),

@@ -14,6 +14,7 @@ export const PREVIEW_GO_FORWARD_CHANNEL = 'preview:go-forward';
 export const PREVIEW_CLOSE_CHANNEL = 'preview:close';
 
 export const PREVIEW_URL_MAX_BYTES = 2_048;
+export const VIDEO_PREVIEW_SCHEME = 'sugarcode-video';
 
 export type PreviewFailure =
   | 'loadFailed'
@@ -29,6 +30,10 @@ type PreviewSessionState = Readonly<{
 }>;
 
 export type PreviewTabState =
+  | (PreviewSessionState & Readonly<{
+      status: 'video';
+      path: string;
+    }>)
   | (PreviewSessionState &
       Readonly<{
         status: 'opening';
@@ -323,6 +328,14 @@ const isPreviewTabState = (value: unknown): value is PreviewTabState => {
     typeof value.status !== 'string'
   ) {
     return false;
+  }
+  if (value.status === 'video') {
+    return hasOnlyKeys(value, [
+      'previewId', 'status', 'generation', 'sessionId', 'url', 'origin', 'path',
+    ]) && hasSessionState(value) && isPreviewArtifactPath(value.path) &&
+      /\.(?:mp4|webm|mov)$/iu.test(String(value.path)) &&
+      value.origin === `${VIDEO_PREVIEW_SCHEME}://media` &&
+      value.url === `${VIDEO_PREVIEW_SCHEME}://media/${value.sessionId}`;
   }
   if (value.status === 'opening') {
     return (

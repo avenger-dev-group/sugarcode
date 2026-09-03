@@ -56,6 +56,9 @@ const samePreviewState = (
   if (current.sessionId !== next.sessionId) {
     return false;
   }
+  if (current.status === 'video' || next.status === 'video') {
+    return current.status === 'video' && next.status === 'video' && current.path === next.path;
+  }
   return current.status === 'opening' ||
     next.status === 'opening' ||
     (current.canGoBack === next.canGoBack &&
@@ -159,7 +162,7 @@ export const useStore = (previewId: string): PreviewWorkbenchStore => {
   };
 
   const sessionRequest = (): PreviewSessionRequest | null =>
-    state.status === 'opening' || state.status === 'ready'
+    state.status === 'opening' || state.status === 'ready' || state.status === 'video'
       ? {
           generation: state.generation,
           sessionId: state.sessionId,

@@ -5,6 +5,7 @@ import {
   FileCode2,
   FileDiff,
   Files,
+  Film,
   GitBranch,
   Globe2,
   Target,
@@ -173,7 +174,7 @@ export const ContextRail = ({
     void getPreviewState()
       .then((snapshot) => snapshot.tabs.find((tab) => tab.previewId === id))
       .then((tab) => {
-        if (tab?.status === 'opening' || tab?.status === 'ready') {
+        if (tab?.status === 'opening' || tab?.status === 'ready' || tab?.status === 'video') {
           return closePreview({
             generation: tab.generation,
             sessionId: tab.sessionId,
@@ -216,7 +217,7 @@ export const ContextRail = ({
             <ContextTab
               key={tab.id}
               active={activeTab === `browser:${tab.id}`}
-              icon={<Globe2 className="size-3.5" />}
+              icon={tab.videoPath ? <Film className="size-3.5" /> : <Globe2 className="size-3.5" />}
               label={tab.title}
               onActivate={() => setActiveTab(`browser:${tab.id}`)}
               onClose={() => handleCloseBrowser(tab.id)}
@@ -296,8 +297,9 @@ export const ContextRail = ({
         return (
           <div key={tab.id} className={`${active ? 'block' : 'hidden'} min-h-0 flex-1`} aria-hidden={!active}>
             <PreviewWorkbench
-              active={active}
+              active={visible && active}
               previewId={tab.id}
+              videoPath={tab.videoPath}
               onTitleChange={(title) => setPreviewTitle(tab.id, title)}
             />
           </div>
