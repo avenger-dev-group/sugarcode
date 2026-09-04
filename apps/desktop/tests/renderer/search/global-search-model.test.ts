@@ -6,6 +6,7 @@ import {
   parseRecentGlobalSearchItems,
   rankGlobalSearchCandidates,
   recordRecentGlobalSearchItem,
+  startGlobalSearchLoads,
 } from '../../../src/renderer/components/search/global-search-model.ts';
 
 const items = [
@@ -44,4 +45,27 @@ test('recent global search storage rejects malformed values and keeps a bounded 
   assert.equal(Object.keys(recent).length, 100);
   assert.equal('item:119' in recent, true);
   assert.equal('item:0' in recent, false);
+});
+
+test('global search applies ready sources without waiting for slower sources', async () => {
+  let resolveSlow: ((apply: () => void) => void) | undefined;
+  const applied: string[] = [];
+  const progress: { failed: number; pending: number; total: number }[] = [];
+  const slow = new Promise<() => void>((resolve) => {
+    resolveSlow = resolve;
+  });
+
+  const cancel = startGlobalSearchLoads([
+    () => slow,
+    async () => () => applied.push('ready'),
+  ], (value) => progress.push(value));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(applied, ['ready']);
+  assert.deepEqual(progress, [{ failed: 0, pending: 1, total: 2 }]);
+
+  cancel();
+  resolveSlow?.(() => applied.push('late'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(applied, ['ready']);
 });

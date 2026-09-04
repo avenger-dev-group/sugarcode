@@ -37,6 +37,7 @@ import {
   parseRecentGlobalSearchItems,
   rankGlobalSearchCandidates,
   recordRecentGlobalSearchItem,
+  startGlobalSearchLoads,
   type RecentGlobalSearchItems,
 } from './global-search-model';
 
@@ -102,29 +103,21 @@ export const GlobalSearch = ({
     returnFocus.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
-    const controller = new AbortController();
     const generation = loadGeneration.current + 1;
     loadGeneration.current = generation;
     setLoading(true);
     setLoadError(false);
-    void Promise.allSettled([getWorkspaceState(), getKnowledge(), getSkills()]).then(
-      ([workspaceResult, knowledgeResult, skillsResult]) => {
-        if (controller.signal.aborted || loadGeneration.current !== generation) return;
-        if (workspaceResult.status === 'fulfilled') setWorkspace(workspaceResult.value);
-        if (knowledgeResult.status === 'fulfilled') {
-          setKnowledge(knowledgeResult.value.knowledgeBases);
-        }
-        if (skillsResult.status === 'fulfilled') setSkills(skillsResult.value.skills);
-        setLoadError(
-          workspaceResult.status === 'rejected' &&
-          knowledgeResult.status === 'rejected' &&
-          skillsResult.status === 'rejected',
-        );
-        setLoading(false);
-      },
-    );
+    const cancel = startGlobalSearchLoads([
+      () => getWorkspaceState().then((value) => () => setWorkspace(value)),
+      () => getKnowledge().then((value) => () => setKnowledge(value.knowledgeBases)),
+      () => getSkills().then((value) => () => setSkills(value.skills)),
+    ], ({ failed, pending, total }) => {
+      if (loadGeneration.current !== generation) return;
+      setLoading(pending > 0);
+      setLoadError(pending === 0 && failed === total);
+    });
     return () => {
-      controller.abort();
+      cancel();
       loadGeneration.current += 1;
     };
   }, [open]);

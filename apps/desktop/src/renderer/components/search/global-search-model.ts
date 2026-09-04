@@ -8,6 +8,48 @@ export type GlobalSearchCandidate = Readonly<{
 
 export type RecentGlobalSearchItems = Readonly<Record<string, number>>;
 
+export type GlobalSearchLoadProgress = Readonly<{
+  failed: number;
+  pending: number;
+  total: number;
+}>;
+
+type GlobalSearchLoad = () => Promise<() => void>;
+
+export const startGlobalSearchLoads = (
+  loads: readonly GlobalSearchLoad[],
+  onProgress: (progress: GlobalSearchLoadProgress) => void,
+): (() => void) => {
+  let active = true;
+  let failed = 0;
+  let pending = loads.length;
+  const settle = (rejected: boolean): void => {
+    if (!active) return;
+    if (rejected) failed += 1;
+    pending -= 1;
+    onProgress({ failed, pending, total: loads.length });
+  };
+  for (const load of loads) {
+    void Promise.resolve()
+      .then(load)
+      .then(
+        (apply) => {
+          if (!active) return;
+          try {
+            apply();
+            settle(false);
+          } catch {
+            settle(true);
+          }
+        },
+        () => settle(true),
+      );
+  }
+  return () => {
+    active = false;
+  };
+};
+
 const normalize = (value: string): string =>
   value
     .normalize('NFKC')
