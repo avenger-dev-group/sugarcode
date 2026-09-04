@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import {
   BookOpenText,
   ClipboardList,
@@ -124,10 +124,16 @@ export const ContextRail = ({
   goalEditor,
   scopeKey,
   visible,
+  scheduledArtifact,
+  openScheduledFiles = false,
+  onScheduledArtifactHandled,
 }: Readonly<{
   goalEditor?: ReactNode;
   scopeKey: string | null;
   visible: boolean;
+  scheduledArtifact?: string;
+  openScheduledFiles?: boolean;
+  onScheduledArtifactHandled?: () => void;
 }>) => {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const {
@@ -140,6 +146,7 @@ export const ContextRail = ({
     closeResourceTab,
     filesTabOpen,
     openFiles,
+    openFile,
     openPreview,
     requestedFile,
     selectedPlan,
@@ -148,6 +155,12 @@ export const ContextRail = ({
     setActiveTab,
     setPreviewTitle,
   } = useOrchestrationStore();
+  useEffect(() => {
+    if (!scheduledArtifact && !openScheduledFiles) return;
+    if (scheduledArtifact) openFile(scheduledArtifact);
+    else openFiles();
+    onScheduledArtifactHandled?.();
+  }, [scheduledArtifact, openScheduledFiles, openFile, openFiles, onScheduledArtifactHandled]);
   const hasTabs =
     filesTabOpen ||
     browserTabs.length > 0 ||

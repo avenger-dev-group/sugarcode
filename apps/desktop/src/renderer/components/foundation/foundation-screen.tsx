@@ -16,6 +16,11 @@ import { isApprovalVisibleForThread } from '@/renderer/utils/approval-visibility
 import { KnowledgeCenter } from '@/renderer/components/knowledge/knowledge-center';
 import { GlobalSearch } from '@/renderer/components/search/global-search';
 import { useEffect, useState } from 'react';
+import { SchedulesPanel } from '@/renderer/components/schedules/schedules-panel';
+import { useSchedules } from '@/renderer/components/schedules/use-schedules';
+import { isActiveScheduledRun } from '@/shared/schedules';
+import type { ParsedScheduleCommand } from '@/shared/schedule-command';
+import { SCHEDULE_COMMAND_EVENT } from '@/renderer/services/schedule-command';
 
 import { ContextRail } from './context-rail';
 import { useStore } from './use-store';
@@ -25,8 +30,13 @@ export const FoundationScreen = () => {
   const [knowledgeTargetId, setKnowledgeTargetId] = useState<string>();
   const [skillTargetId, setSkillTargetId] = useState<string>();
   const threadStore = useThreadStore();
+  const schedules = useSchedules();
+  const [scheduleDraft, setScheduleDraft] = useState<ParsedScheduleCommand>();
+  const [scheduledArtifact, setScheduledArtifact] = useState<{ path?: string }>();
+  const [scheduledRunScopeId, setScheduledRunScopeId] = useState<string>();
   const activeThreadId = threadStore.thread.threadIdentity;
-  const foundation = useStore(activeThreadId ?? null);
+  const contextScopeKey = scheduledRunScopeId ? `scheduled-run:${scheduledRunScopeId}` : activeThreadId ?? null;
+  const foundation = useStore(contextScopeKey);
   const commandApprovalStore = useCommandApprovalStore();
   const mcpStore = useMcpStore();
   const activeCommandApproval = commandApprovalStore.requests.find(
@@ -48,6 +58,40 @@ export const FoundationScreen = () => {
     threadStore.thread.phase === 'starting' ||
     threadStore.thread.phase === 'inProgress' ||
     threadStore.thread.phase === 'stopping';
+  const approvalSurface = activeCommandApproval ? (
+    <CommandApprovalView
+      store={commandApprovalStore}
+      activeThreadId={activeThreadId}
+    />
+  ) : activeMcpApproval ? (
+    <McpApprovalSurface
+      store={mcpStore}
+      permissionStore={commandApprovalStore}
+      activeThreadId={activeThreadId}
+      activeWorkspaceId={threadStore.thread.workspaceIdentity}
+    />
+  ) : undefined;
+
+  useEffect(() => {
+    const handleScheduleCommand = (event: Event): void => {
+      const command = (event as CustomEvent<ParsedScheduleCommand>).detail;
+      if (!command) return;
+      foundation.setSurface('schedules');
+      if (command.missing.length > 0) {
+        setScheduleDraft(command);
+        return;
+      }
+      void schedules.request({ action: 'save', input: command.input }).then((result) => {
+        if (!result.accepted) setScheduleDraft(command);
+      });
+    };
+    window.addEventListener(SCHEDULE_COMMAND_EVENT, handleScheduleCommand);
+    return () => window.removeEventListener(SCHEDULE_COMMAND_EVENT, handleScheduleCommand);
+  }, [foundation.setSurface, schedules.request]);
+
+  useEffect(() => {
+    if (scheduledArtifact !== undefined) foundation.openContextRail();
+  }, [foundation.openContextRail, scheduledArtifact]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -61,10 +105,12 @@ export const FoundationScreen = () => {
   }, [foundation.openSearch]);
 
   const openKnowledge = (knowledgeBaseId?: string): void => {
+    setScheduledRunScopeId(undefined);
     setKnowledgeTargetId(knowledgeBaseId);
     foundation.setSurface('knowledge');
   };
   const openSkills = (skillId?: string): void => {
+    setScheduledRunScopeId(undefined);
     setSkillTargetId(skillId);
     foundation.setSurface('capabilities');
   };
@@ -76,7 +122,7 @@ export const FoundationScreen = () => {
       }`}
     >
       <OrchestrationStoreProvider
-        scopeKey={activeThreadId}
+        scopeKey={contextScopeKey}
         onRequestClose={foundation.closeContextRail}
         onRequestOpen={foundation.openContextRail}
       >
@@ -97,21 +143,7 @@ export const FoundationScreen = () => {
                 disabled={turnBusy}
               />
             }
-            approvalSurface={
-              activeCommandApproval ? (
-                <CommandApprovalView
-                  store={commandApprovalStore}
-                  activeThreadId={activeThreadId}
-                />
-              ) : activeMcpApproval ? (
-                <McpApprovalSurface
-                  store={mcpStore}
-                  permissionStore={commandApprovalStore}
-                  activeThreadId={activeThreadId}
-                  activeWorkspaceId={threadStore.thread.workspaceIdentity}
-                />
-              ) : undefined
-            }
+            approvalSurface={approvalSurface}
             navigationFooter={
               <div className="space-y-1">
                 <UpdateAction />
@@ -128,6 +160,9 @@ export const FoundationScreen = () => {
             }
             contextRail={
               <ContextRail
+                scheduledArtifact={scheduledArtifact?.path}
+                openScheduledFiles={scheduledArtifact !== undefined && scheduledArtifact.path === undefined}
+                onScheduledArtifactHandled={() => setScheduledArtifact(undefined)}
                 goalEditor={threadStore.thread.goal ? (
                   <GoalEditor
                     goal={threadStore.thread.goal}
@@ -135,7 +170,7 @@ export const FoundationScreen = () => {
                     onMutate={threadStore.mutateGoal}
                   />
                 ) : undefined}
-                scopeKey={activeThreadId ?? null}
+                scopeKey={contextScopeKey}
                 visible={foundation.contextRailOpen}
               />
             }
@@ -144,9 +179,30 @@ export const FoundationScreen = () => {
             onOpenSearch={foundation.openSearch}
             onOpenKnowledge={openKnowledge}
             onOpenSkills={openSkills}
-            onOpenWorkbench={() => foundation.setSurface('workbench')}
+            onOpenSchedules={() => foundation.setSurface('schedules')}
+            scheduledReviewCount={schedules.snapshot.runs.filter((run) => !isActiveScheduledRun(run) && !run.reviewedAt).length}
+            onOpenWorkbench={() => { setScheduledRunScopeId(undefined); foundation.setSurface('workbench'); }}
             mainSurface={
-              foundation.surface === 'knowledge' ? (
+              foundation.surface === 'schedules' ? (
+                <SchedulesPanel
+                  store={schedules}
+                  threadStore={threadStore}
+                  modelOptions={threadStore.modelOptions}
+                  navigatorOpen={foundation.navigatorOpen}
+                  contextRailOpen={foundation.contextRailOpen}
+                  onToggleContextRail={foundation.toggleContextRail}
+                  approvalSurface={approvalSurface}
+                  initialDraft={scheduleDraft}
+                  onInitialDraftHandled={() => setScheduleDraft(undefined)}
+                  onDetailRunChange={setScheduledRunScopeId}
+                  onOpenRun={(run, artifact) => {
+                    const file = artifact ?? run.artifacts[0];
+                    if (run.threadId) {
+                      setScheduledArtifact(file ? { path: file } : {});
+                    }
+                  }}
+                />
+              ) : foundation.surface === 'knowledge' ? (
                 <KnowledgeCenter
                   workspaceId={threadStore.thread.workspaceIdentity}
                   navigatorOpen={foundation.navigatorOpen}
@@ -169,7 +225,7 @@ export const FoundationScreen = () => {
         onOpenChange={(open) => open ? foundation.openSearch() : foundation.closeSearch()}
         onOpenKnowledge={openKnowledge}
         onOpenSkills={openSkills}
-        onOpenWorkbench={() => foundation.setSurface('workbench')}
+        onOpenWorkbench={() => { setScheduledRunScopeId(undefined); foundation.setSurface('workbench'); }}
         onOpenSettings={() => setSettingsOpen(true)}
       />
     </div>

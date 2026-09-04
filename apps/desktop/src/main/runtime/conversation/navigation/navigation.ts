@@ -113,8 +113,11 @@ export class ConversationNavigation {
       ) {
         return accepted();
       }
+      const visibleThreads = event.threads.filter(
+        (thread) => !this.state.scheduledThreadIds.has(thread.id),
+      );
       const titles = Object.fromEntries(
-        event.threads.flatMap((thread) =>
+        visibleThreads.flatMap((thread) =>
           thread.title ? [[thread.id, thread.title]] : [],
         ),
       );
@@ -122,8 +125,8 @@ export class ConversationNavigation {
         ...this.state.navigator,
         search: {
           query: normalizedQuery,
-          status: event.threads.length > 0 ? 'ready' : 'empty',
-          threadIds: event.threads.map((thread) => thread.id),
+          status: visibleThreads.length > 0 ? 'ready' : 'empty',
+          threadIds: visibleThreads.map((thread) => thread.id),
           threadTitles: titles,
           truncated: event.threads.length === 200,
         },
@@ -148,11 +151,25 @@ export class ConversationNavigation {
 
   selectThread = async (
     threadId: unknown,
+    loadMissing = false,
   ): Promise<ConversationActionResult> => {
     if (typeof threadId !== 'string') {
       return rejected('unknownThread');
     }
-    const thread = this.state.threadRecords.get(threadId);
+    let thread = this.state.threadRecords.get(threadId);
+    if (!thread && loadMissing && this.state.workspaceId) {
+      const workspaceId = this.state.workspaceId;
+      const selectionGeneration = ++this.state.threadSelectionGeneration;
+      try {
+        const event = await this.context.runtime.request(
+          { type: 'thread.load', requestId: randomUUID(), workspaceId, threadId }, 'thread.loaded',
+        );
+        if (this.state.workspaceId !== workspaceId || this.state.threadSelectionGeneration !== selectionGeneration) return accepted();
+        if (event.snapshot.thread.id !== threadId || event.workspaceId !== workspaceId || event.snapshot.thread.workspaceId !== workspaceId) return rejected('unknownThread');
+        thread = event.snapshot.thread;
+        this.state.threadRecords.set(threadId, thread);
+      } catch { return rejected('unknownThread'); }
+    }
     if (!thread || thread.workspaceId !== this.state.workspaceId) {
       return rejected('unknownThread');
     }
@@ -318,7 +335,9 @@ export class ConversationNavigation {
       : this.state.navigator.status,
   ): void => {
     const threads = [...this.state.threadRecords.values()]
-      .filter((thread) => thread.workspaceId === this.state.workspaceId)
+      .filter((thread) =>
+        thread.workspaceId === this.state.workspaceId &&
+        !this.state.scheduledThreadIds.has(thread.id))
       .sort(
         (left, right) =>
           right.updatedAt - left.updatedAt || right.id.localeCompare(left.id),
@@ -333,18 +352,23 @@ export class ConversationNavigation {
         ),
       ),
       activeTruncated: threads.length === 200,
-      runningThreadIds: [...this.state.activeTurnsByThread.keys()],
+      runningThreadIds: [...this.state.activeTurnsByThread.keys()].filter(
+        (threadId) => !this.state.scheduledThreadIds.has(threadId)),
       inputRequiredThreadIds: [...this.state.activeTurnsByThread.entries()].flatMap(
         ([threadId, activeTurn]) =>
-          this.state.turnsByThread
+          !this.state.scheduledThreadIds.has(threadId) && this.state.turnsByThread
             .get(threadId)
             ?.find((turn) => turn.id === activeTurn.turnId)?.userInputRequest
             ? [threadId]
             : [],
       ),
-      ...(this.state.unreadThreadStatuses.size > 0
+      ...([...this.state.unreadThreadStatuses].some(
+        ([threadId]) => !this.state.scheduledThreadIds.has(threadId))
         ? {
-            unreadThreadStatuses: Object.fromEntries(this.state.unreadThreadStatuses),
+            unreadThreadStatuses: Object.fromEntries(
+              [...this.state.unreadThreadStatuses].filter(
+                ([threadId]) => !this.state.scheduledThreadIds.has(threadId)),
+            ),
           }
         : {}),
     };

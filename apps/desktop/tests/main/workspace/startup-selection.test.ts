@@ -893,3 +893,52 @@ test('chat activation creates a dated managed directory and one atomic launch bi
     threadId: null,
   });
 });
+
+test('scheduled results use a transient workspace and remove legacy automation projects', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'sugarcode-scheduled-navigation-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const automationRoot = path.join(root, 'Automations', 'schedule-id');
+  const chatRootPath = path.join(root, 'chats');
+  const sessionPath = path.join(root, 'workspace-session.json');
+  await mkdir(automationRoot, { recursive: true });
+  const canonicalRoot = await realpath(automationRoot);
+  const workspaceId = createHash('sha256').update(canonicalRoot).digest('hex');
+  await writeFile(sessionPath, JSON.stringify({
+    schemaVersion: 1,
+    projects: [{ id: 'legacy-automation-project', path: canonicalRoot, name: 'schedule-id', threadIds: [PROJECT_THREAD_ID], threadTitles: { [PROJECT_THREAD_ID]: 'Daily report' }, lastOpenedAtMs: 1, workspaceId }],
+    active: { kind: 'project', projectId: 'legacy-automation-project' },
+    chats: [],
+  }));
+  let bindingId: string | null = null;
+  let selectedThreadId: string | null = null;
+  const registry = new ThreadRegistry();
+  const supervisor = {
+    subscribe: (): (() => void) => (): void => undefined,
+    getWorkspaceSwitchBlock: (): null => null,
+    switchWorkspace: async (workspacePath: string) => { bindingId = createHash('sha256').update(workspacePath).digest('hex'); return true; },
+    getWorkspaceBindingId: () => bindingId,
+    conversation: {
+      getSnapshot: () => ({ threadId: selectedThreadId, navigator: { runningThreadIds: [] } } as unknown as ConversationStateSnapshot),
+      selectThread: async (threadId: string) => { selectedThreadId = threadId; return { accepted: true, reason: 'accepted' }; },
+      getThreadProjection: (threadId: string) => selectedThreadId === threadId && bindingId ? { revision: 1, workspaceId: bindingId, threadId, phase: 'ready', turns: [] } as unknown as ConversationThreadProjectionSnapshot : null,
+    },
+  } as unknown as WorkspaceRuntimeBoundary;
+  const controller = new WorkspaceController({
+    threadRegistry: registry,
+    supervisor,
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showMessageBox: async () => ({ response: 0, checkboxChecked: false }) },
+    getMainWindow: () => null,
+    sessionPath,
+    chatRootPath,
+  });
+  await controller.restore();
+  assert.equal(controller.getSnapshot().projects?.length, 1);
+  await controller.cleanupScheduledNavigation([canonicalRoot], [PROJECT_THREAD_ID]);
+  assert.deepEqual(controller.getSnapshot().projects, []);
+  const opened = await controller.openScheduledTask(canonicalRoot, PROJECT_THREAD_ID, 'Daily report');
+  assert.equal(opened.accepted, true);
+  assert.equal(controller.getSnapshot().name, '定时任务 · Daily report');
+  assert.deepEqual(controller.getSnapshot().projectThreadIds, []);
+  assert.deepEqual(controller.getSnapshot().projects, []);
+  await assert.rejects(readFile(sessionPath, 'utf8'), { code: 'ENOENT' });
+});

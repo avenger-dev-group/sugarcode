@@ -1,5 +1,6 @@
 import { app, type BrowserWindow } from 'electron';
 import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
 type RendererProbeResult = Readonly<{
   checks: readonly string[];
@@ -140,6 +141,15 @@ export const runDesktopE2EProbe = async (
       `(${rendererProbe.toString()})()`,
       true,
     ) as RendererProbeResult;
+    const { prepareScheduleFixtures, schedulesRendererProbe } = await import('./e2e-schedules-probe');
+    const fixtureRoot = path.join(path.dirname(reportPath), 'schedule-workspace');
+    await prepareScheduleFixtures(fixtureRoot);
+    const scheduleChecks = await window.webContents.executeJavaScript(
+      `(${schedulesRendererProbe.toString()})(${JSON.stringify(fixtureRoot)})`, true,
+    ) as string[];
+    if (process.env.SUGARCODE_E2E_SCREENSHOT) {
+      await writeFile(process.env.SUGARCODE_E2E_SCREENSHOT, (await window.webContents.capturePage()).toPNG());
+    }
     const mainMemory = await process.getProcessMemoryInfo();
     const rendererPid = window.webContents.getOSProcessId();
     const rendererMetric = app.getAppMetrics().find(
@@ -150,7 +160,7 @@ export const runDesktopE2EProbe = async (
       startupMs: Date.now() - startedAtMs,
       mainPrivateKb: mainMemory.private,
       rendererWorkingSetKb: rendererMetric?.memory?.workingSetSize ?? 0,
-      checks: renderer.checks,
+      checks: [...renderer.checks, ...scheduleChecks],
       knowledgeBaseId: renderer.knowledgeBaseId,
     }, null, 2));
   } catch (error) {

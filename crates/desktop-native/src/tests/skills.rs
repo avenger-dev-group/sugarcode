@@ -259,6 +259,9 @@ fn native_bundled_video_skill_requires_stable_remotion_rendering() {
     assert!(instructions.contains("video_render"));
     assert!(instructions.contains("video_voiceover"));
     assert!(instructions.contains("video_audio_mix"));
+    assert!(instructions.contains("voicePreset: \"female\""));
+    assert!(instructions.contains("measured frame timing manifest"));
+    assert!(instructions.contains("always pass the returned `timingPath`"));
     assert!(instructions.contains("do not install Remotion packages into the project"));
 }
 

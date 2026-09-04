@@ -125,6 +125,7 @@ export type AgentMarkdownProps = Readonly<{
   isStreaming: boolean;
   verifiedFilePaths?: readonly string[];
   knowledgeCitations?: readonly ConversationKnowledgeCitation[];
+  onOpenFile?: (path: string) => void;
 }>;
 
 export type FileReferenceResolution =

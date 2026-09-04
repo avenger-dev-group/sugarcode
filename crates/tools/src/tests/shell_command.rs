@@ -113,6 +113,14 @@ async fn full_access_shell_executes_pipeline_redirection_and_streams_output() {
     let ShellCommandExecution::FullAccessCompleted(output) = execution else {
         panic!("full access execution: {execution:?}");
     };
+    assert_eq!(output.sandbox_policy, None);
+    assert!(
+        serde_json::to_value(&output)
+            .expect("serialize full access output")
+            .get("sandboxPolicy")
+            .is_none(),
+        "full access output must not report a sandbox policy"
+    );
     assert_eq!(output.stdout, "SUGAR CODE\n");
     assert_eq!(
         std::fs::read_to_string(directory.path().join("result.txt")).expect("redirected file"),

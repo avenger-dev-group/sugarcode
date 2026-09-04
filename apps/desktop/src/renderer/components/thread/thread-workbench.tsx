@@ -680,6 +680,9 @@ const TurnActivityTimeline = ({
   );
 };
 
+// Keep every turn in normal layout. `content-visibility: auto` substitutes an
+// intrinsic height for skipped turns, so the real scroll extent changes while
+// scrolling and makes both wheel navigation and the transcript-end anchor drift.
 const TranscriptTurnView = ({
   threadId,
   turn,
@@ -699,10 +702,6 @@ const TranscriptTurnView = ({
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
     className={`min-w-0 max-w-full ${
-      turn.status === 'inProgress'
-        ? ''
-        : '[contain-intrinsic-size:auto_240px] [content-visibility:auto]'
-    } ${
       boundary === 'divider'
         ? 'mt-8 border-t pt-8'
         : boundary === 'precedingTerminal'
@@ -814,7 +813,7 @@ const TranscriptTurnView = ({
   </section>
 );
 
-const TranscriptTurn = memo(TranscriptTurnView);
+export const TranscriptTurn = memo(TranscriptTurnView);
 
 const ThreadSelectionSkeleton = () => (
   <div className="space-y-8 py-3" role="status" aria-label="正在加载目标会话">
@@ -878,6 +877,8 @@ export const ThreadWorkbenchView = ({
   onOpenSearch,
   onOpenKnowledge,
   onOpenSkills,
+  onOpenSchedules,
+  scheduledReviewCount,
   onOpenWorkbench,
 }: ThreadWorkbenchViewProps) => {
   const agentTaskActivity = currentOrchestrationActivity(store);
@@ -911,10 +912,12 @@ export const ThreadWorkbenchView = ({
   const userInputTurn = store.thread.turns.findLast(
     (turn) => turn.userInputRequest !== undefined,
   );
-  const composerSurface = resolveComposerSurface(
-    Boolean(approvalSurface),
-    Boolean(userInputTurn?.userInputRequest),
-  );
+  const composerSurface = mainSurface
+    ? 'composer'
+    : resolveComposerSurface(
+        Boolean(approvalSurface),
+        Boolean(userInputTurn?.userInputRequest),
+      );
   const selectionError = pendingThreadId
     ? store.navigator.selectionNotice
     : undefined;
@@ -950,6 +953,8 @@ export const ThreadWorkbenchView = ({
               onOpenSearch={onOpenSearch}
               onOpenKnowledge={onOpenKnowledge}
               onOpenSkills={onOpenSkills}
+              onOpenSchedules={onOpenSchedules}
+              scheduledReviewCount={scheduledReviewCount}
               onOpenWorkbench={onOpenWorkbench}
             />
           </div>

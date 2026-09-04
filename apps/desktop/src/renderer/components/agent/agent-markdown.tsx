@@ -52,6 +52,7 @@ const renderTokens = (
   resolveVerifiedFileReference: (value: string) => string | null,
   fileDisplayLabels: ReadonlyMap<string, string>,
   knowledgeCitations: ReadonlyMap<string, NonNullable<AgentMarkdownProps['knowledgeCitations']>[number]>,
+  fileReferencesAreExact: boolean,
 ): ReactNode[] => {
   let offset = 0;
   return tokens.flatMap((token, index): ReactNode[] => {
@@ -67,6 +68,7 @@ const renderTokens = (
         resolveVerifiedFileReference,
         fileDisplayLabels,
         knowledgeCitations,
+        fileReferencesAreExact,
       );
 
     const citationText = (text: string): ReactNode[] => {
@@ -325,6 +327,7 @@ const renderTokens = (
           if (fileLink) {
             return [
               <FileReferenceLink
+                exactPath={fileReferencesAreExact}
                 key={key}
                 openFile={openFile}
                 path={fileLink.path}
@@ -395,8 +398,10 @@ const AgentMarkdownView = ({
   isStreaming,
   verifiedFilePaths = [],
   knowledgeCitations = [],
+  onOpenFile,
 }: AgentMarkdownProps): ReactElement => {
-  const { openFile } = useOrchestrationActions();
+  const { openFile: openWorkspaceFile } = useOrchestrationActions();
+  const openFile = onOpenFile ?? openWorkspaceFile;
   const workspaceGeneration = useZustandStore(
     workspaceProjectionStore,
     (projection) => projection.snapshot.generation,
@@ -446,6 +451,7 @@ const AgentMarkdownView = ({
         resolveVerifiedFileReference,
         fileDisplayLabels,
         citationByLabel,
+        onOpenFile !== undefined,
       )}
     </div>
   );

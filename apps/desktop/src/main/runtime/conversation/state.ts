@@ -21,6 +21,8 @@ export class ConversationState {
     string,
     'completed' | 'failed' | 'interrupted'
   >();
+  /** Scheduled runs stay reviewable without appearing in normal task navigation. */
+  readonly scheduledThreadIds = new Set<string>();
   readonly activeTurnsByThread = new Map<
     string,
     Readonly<{

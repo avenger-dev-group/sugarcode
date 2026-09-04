@@ -3,6 +3,7 @@ import started from 'electron-squirrel-startup';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -42,6 +43,10 @@ import { UpdateController } from '@/main/update/controller';
 import { registerUpdateIpc } from '@/main/update/ipc';
 import { runDesktopE2EProbe } from '@/main/e2e-probe';
 import { VIDEO_PREVIEW_SCHEME } from '@/shared/preview';
+import { SchedulesController } from '@/main/schedules/controller';
+import { registerSchedulesIpc } from '@/main/schedules/ipc';
+import { ArtifactsController } from '@/main/artifacts/controller';
+import { registerArtifactsIpc } from '@/main/artifacts/ipc';
 
 protocol.registerSchemesAsPrivileged([{
   scheme: VIDEO_PREVIEW_SCHEME,
@@ -88,6 +93,9 @@ let disposeRuntimeEvents: (() => void) | null = null;
 let gitController: GitController | null = null;
 let updateController: UpdateController | null = null;
 let disposeUpdateIpc: (() => void) | null = null;
+let schedulesController: SchedulesController | null = null;
+let disposeSchedulesIpc: (() => void) | null = null;
+let disposeArtifactsIpc: (() => void) | null = null;
 
 const rendererFilePath = path.join(
   __dirname,
@@ -236,6 +244,7 @@ const hasActiveWork = (): boolean => {
     phase === 'starting' ||
     phase === 'inProgress' ||
     phase === 'stopping' ||
+    schedulesController?.getSnapshot().runs.some((run) => ['queued', 'running', 'waiting'].includes(run.status)) === true ||
     runtimeApprovalController?.getSnapshot().status === 'pending' ||
     runtimeMcpApprovalController?.getSnapshot().status === 'pending' ||
     gitController?.getSnapshot().pending !== undefined ||
@@ -442,6 +451,47 @@ const startApplication = async (): Promise<void> => {
     },
   });
   await workspaceController.restore();
+  const scheduledConversation = runtimeConversationController;
+  const schedulesDefaultWorkspace = path.join(app.getPath('documents'), 'SugarCode', 'Automations');
+  schedulesController = new SchedulesController({
+    storagePath: path.join(app.getPath('userData'), 'schedules-v1.json'),
+    defaultWorkspace: schedulesDefaultWorkspace,
+    runtime: runtimeSupervisor,
+    activeWorkspaceId: () => workspaceController.getLaunchContext()?.workspaceId ?? null,
+    startTurn: (snapshot, turnId, prompt, modelProfileId) => scheduledConversation.startBackgroundTurn(snapshot, turnId, prompt, modelProfileId),
+    stopTurn: (threadId) => scheduledConversation.stopTurn(threadId),
+    deleteThread: async (workspaceId, threadId) => {
+      const result = await workspaceRuntime.deleteThread(workspaceId, threadId);
+      scheduledConversation.forgetScheduledThread(threadId);
+      return result;
+    },
+    preparePermissions: (workspaceId, root, threadId, autoApprove) => {
+      runtimeApprovalController?.openWorkspace(workspaceId, root);
+      runtimeMcpApprovalController?.openWorkspace(workspaceId, root);
+      if (autoApprove) runtimeApprovalController?.setMode('thread', threadId);
+    },
+    releasePermissions: (threadId) => { runtimeApprovalController?.setMode('ask', threadId); },
+  });
+  disposeSchedulesIpc = registerSchedulesIpc({
+    controller: schedulesController, workspace: workspaceController,
+    getMainWindow: () => mainWindow, isAllowedUrl: isAllowedRendererUrl,
+  });
+  await schedulesController.initialize();
+  const scheduledState = schedulesController.getSnapshot();
+  const scheduledThreadIds = scheduledState.runs.flatMap((run) => run.threadId ? [run.threadId] : []);
+  scheduledConversation.hideScheduledThreads(scheduledThreadIds);
+  const canonicalSchedulesRoot = await realpath(schedulesDefaultWorkspace).catch((): null => null);
+  const managedScheduleCandidates = [
+    ...scheduledState.tasks.map((task) => ({ id: task.id, workspacePath: task.workspacePath })),
+    ...scheduledState.runs.map((run) => ({ id: run.scheduleId, workspacePath: run.workspacePath })),
+  ];
+  const managedScheduleRoots = canonicalSchedulesRoot
+    ? [...new Set(managedScheduleCandidates.flatMap((item) =>
+        path.dirname(item.workspacePath) === canonicalSchedulesRoot && path.basename(item.workspacePath) === item.id
+          ? [item.workspacePath]
+          : []))]
+    : [];
+  await workspaceController.cleanupScheduledNavigation(managedScheduleRoots, scheduledThreadIds);
   terminalController = new TerminalController({
     runtime: runtimeSupervisor,
     getWorkspace: workspaceController.getLaunchContext,
@@ -467,6 +517,15 @@ const startApplication = async (): Promise<void> => {
     isApprovalPending: () =>
       runtimeApprovalController?.getSnapshot().status === 'pending' ||
       runtimeMcpApprovalController?.getSnapshot().status === 'pending',
+  });
+  disposeArtifactsIpc = registerArtifactsIpc({
+    controller: new ArtifactsController({
+      dialog, getMainWindow: () => mainWindow,
+      getWorkspace: workspaceController.getLaunchContext,
+      openPath: async (filePath) => { const error = await shell.openPath(filePath); if (error) throw new Error(error); },
+      reveal: (filePath) => shell.showItemInFolder(filePath),
+    }),
+    getMainWindow: () => mainWindow, isAllowedUrl: isAllowedRendererUrl,
   });
   protocol.handle(VIDEO_PREVIEW_SCHEME, (request) =>
     previewController?.serveVideo(request) ?? new Response(null, { status: 404 }),
@@ -681,6 +740,12 @@ if (started) {
     tray?.destroy();
     tray = null;
     updateController?.stop();
+    schedulesController?.dispose();
+    schedulesController = null;
+    disposeSchedulesIpc?.();
+    disposeSchedulesIpc = null;
+    disposeArtifactsIpc?.();
+    disposeArtifactsIpc = null;
     updateController = null;
     runtimeSupervisor?.shutdown();
     runtimeSupervisor = null;

@@ -89,7 +89,8 @@ pub struct ShellCommandOutput {
     pub stderr_truncated: bool,
     pub duration_ms: u64,
     pub outcome: ShellCommandOutcome,
-    pub sandbox_policy: sugarcode_sandbox::CommandSandboxPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_policy: Option<sugarcode_sandbox::CommandSandboxPolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,7 +348,7 @@ fn probe_native_supervisor(
     }
     match serde_json::from_slice::<SupervisorResponse>(&response) {
         Ok(SupervisorResponse::Completed(output))
-            if output.sandbox_policy == sandbox_policy
+            if output.sandbox_policy == Some(sandbox_policy)
                 && matches!(output.outcome, ShellCommandOutcome::ExitCode { code: 0 })
                 && output.stdout.contains(SANDBOX_PROBE_SENTINEL) =>
         {
@@ -680,8 +681,7 @@ async fn execute_full_access_shell(
             stderr_truncated: stderr.truncated,
             duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             outcome,
-            sandbox_policy:
-                sugarcode_sandbox::CommandSandboxPolicy::FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1,
+            sandbox_policy: None,
         })
     }
 }
@@ -901,7 +901,9 @@ async fn run_native(
         return ShellCommandExecution::Error(ShellCommandErrorKind::Unavailable);
     }
     match serde_json::from_slice::<SupervisorResponse>(&response) {
-        Ok(SupervisorResponse::Completed(output)) if output.sandbox_policy == requested_policy => {
+        Ok(SupervisorResponse::Completed(output))
+            if output.sandbox_policy == Some(requested_policy) =>
+        {
             ShellCommandExecution::Completed(output)
         }
         Ok(SupervisorResponse::Completed(_)) => {
@@ -1061,7 +1063,7 @@ fn execute_supervised(
         stderr_truncated: stderr.truncated,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         outcome,
-        sandbox_policy: adapter.policy(),
+        sandbox_policy: Some(adapter.policy()),
     })
 }
 

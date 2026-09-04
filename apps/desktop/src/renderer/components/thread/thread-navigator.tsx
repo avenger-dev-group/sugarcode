@@ -1,5 +1,6 @@
 import {
   Blocks,
+  CalendarClock,
   CircleAlert,
   CircleCheck,
   CircleHelp,
@@ -73,6 +74,8 @@ type ThreadNavigatorProps = Readonly<{
   onOpenSearch?: () => void;
   onOpenKnowledge?: () => void;
   onOpenSkills?: () => void;
+  onOpenSchedules?: () => void;
+  scheduledReviewCount?: number;
   onOpenWorkbench?: () => void;
 }>;
 
@@ -142,6 +145,8 @@ export const ThreadNavigator = ({
   onOpenSearch,
   onOpenKnowledge,
   onOpenSkills,
+  onOpenSchedules,
+  scheduledReviewCount = 0,
   onOpenWorkbench,
 }: ThreadNavigatorProps) => {
   const searchShortcut = navigator.platform.toLocaleLowerCase().includes('mac')
@@ -531,6 +536,12 @@ export const ThreadNavigator = ({
               icon={Blocks}
               label="能力中心"
               onClick={onOpenSkills}
+            />
+            <NavigatorSurfaceButton
+              active={surface === 'schedules'}
+              icon={CalendarClock}
+              label={`定时任务${scheduledReviewCount ? ` · ${scheduledReviewCount}` : ''}`}
+              onClick={onOpenSchedules}
             />
           </div>
         </div>

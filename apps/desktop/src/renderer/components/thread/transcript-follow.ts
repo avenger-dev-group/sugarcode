@@ -9,6 +9,14 @@ export const isTranscriptScrollUpKey = (
   key === 'Home' ||
   (key === ' ' && shiftKey);
 
+export const shouldTrackTranscriptPointerScroll = ({
+  pointerType,
+  targetIsScrollbar,
+}: Readonly<{
+  pointerType: string;
+  targetIsScrollbar: boolean;
+}>): boolean => pointerType !== 'mouse' || targetIsScrollbar;
+
 export const shouldFollowTranscriptAfterScroll = ({
   wasFollowing,
   previousScrollTop,

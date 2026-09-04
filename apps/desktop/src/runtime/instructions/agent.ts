@@ -183,7 +183,7 @@ const toolInstruction = (
   }
   if (names.includes('video_voiceover')) {
     guidance.push(
-      'For local narration, write the reviewed script to a workspace .txt or .md file and call video_voiceover. It uses the operating-system speech engine without a hosted API. Then call video_audio_mix to add narration or authorized local music to the video.',
+      'For local narration, video_voiceover provides female (default) and male local presets without a hosted API. For narrated multi-scene or long videos, provide one reviewed JSON cue sheet, generate narration before finalizing the composition, and use the returned measured timing manifest as the only source for Sequence frames and total duration. Pass that timingPath to video_audio_mix so mismatched audio/video is rejected instead of truncated.',
     );
   }
   if (names.includes('request_user_input')) {

@@ -75,6 +75,7 @@ export type WorkspaceRuntimeBoundary = Readonly<{
     getSnapshot: () => import('@/shared/conversation').ConversationStateSnapshot;
     selectThread: (
       threadId: string,
+      loadMissing?: boolean,
     ) => Promise<import('@/shared/conversation').ConversationActionResult>;
     getThreadProjection: (
       threadId: unknown,
@@ -173,6 +174,7 @@ export class WorkspaceController {
   private workspaceId: string | null = null;
   private workspacePath: string | null = null;
   private workspaceKind: WorkspaceKind | null = null;
+  private transientWorkspaceName: string | null = null;
   private activeChatThreadId: string | null = null;
   private workspaceSwitchActive = false;
   private snapshot: WorkspaceStateSnapshot = {
@@ -212,9 +214,9 @@ export class WorkspaceController {
           workspaceId: this.workspaceId,
           path: this.workspacePath,
           name:
-            this.workspaceKind === 'chat'
+            this.transientWorkspaceName ?? (this.workspaceKind === 'chat'
               ? '工作台'
-              : path.basename(this.workspacePath),
+              : path.basename(this.workspacePath)),
           threadId:
             this.options.supervisor.conversation.getSnapshot().threadId ?? null,
         }
@@ -487,6 +489,96 @@ export class WorkspaceController {
     return { accepted: false, reason: 'invalid' };
   };
 
+  openScheduledTask = async (root: string, threadId: string, name: string): Promise<WorkspaceSelectResult> => {
+    if (!isThreadId(threadId)) return { accepted: false, reason: 'invalid' };
+    const validated = await validateDirectory(root);
+    if (!validated || validated !== root) return { accepted: false, reason: 'invalid' };
+    const generation = ++this.foregroundGeneration;
+    const selected = await this.activateScheduledWorkspace(validated, threadId, name);
+    return selected.accepted ? this.focusResult(threadId, generation) : selected;
+  };
+
+  cleanupScheduledNavigation = async (
+    managedRoots: readonly string[],
+    threadIds: readonly string[],
+  ): Promise<void> => {
+    const roots = new Set(managedRoots);
+    const scheduled = new Set(threadIds);
+    let changed = false;
+    for (const project of [...this.projects.values()]) {
+      if (!roots.has(project.path)) continue;
+      const ownerKey = projectOwnerKey(project.id);
+      const owned = this.options.threadRegistry.getOwnerView(ownerKey).threadIds;
+      if (owned.some((threadId) => !scheduled.has(threadId))) continue;
+      changed = true;
+      this.projects.delete(project.id);
+      this.options.threadRegistry.removeOwner(ownerKey);
+      if (this.activeProjectId === project.id) {
+        this.activeProjectId = null;
+        this.projectPath = null;
+      }
+      if (this.persistedActive?.kind === 'project' && this.persistedActive.projectId === project.id) {
+        this.persistedActive = this.getFallbackPersistedActive();
+      }
+    }
+    if (!changed) return;
+    await this.persist();
+    this.publish(this.workspacePath ? 'ready' : 'unselected');
+  };
+
+  private activateScheduledWorkspace = async (
+    root: string,
+    threadId: string,
+    name: string,
+  ): Promise<WorkspaceSelectResult> => {
+    if (this.workspaceSwitchActive || this.options.supervisor.getWorkspaceSwitchBlock()) return { accepted: false, reason: 'busy' };
+    this.workspaceSwitchActive = true;
+    const previous = {
+      path: this.workspacePath, id: this.workspaceId, kind: this.workspaceKind,
+      chatThreadId: this.activeChatThreadId, projectPath: this.projectPath,
+      projectId: this.activeProjectId, transientName: this.transientWorkspaceName,
+    };
+    try {
+      await this.options.beforeWorkspaceSwitch?.();
+      this.workspacePath = root;
+      this.workspaceKind = 'project';
+      this.workspaceId = null;
+      this.activeChatThreadId = null;
+      this.projectPath = null;
+      this.activeProjectId = null;
+      this.transientWorkspaceName = `定时任务 · ${name}`;
+      this.publish('selecting');
+      if (!(await this.options.supervisor.switchWorkspace(root, 'project'))) {
+        this.restoreWorkspaceFields(previous);
+        this.publish(previous.path ? 'ready' : 'failed', 'The scheduled task workspace could not be opened.');
+        return { accepted: false, reason: 'failed' };
+      }
+      this.workspaceId = this.options.supervisor.getWorkspaceBindingId();
+      if (!this.workspaceId) {
+        this.restoreWorkspaceFields(previous);
+        this.publish(previous.path ? 'ready' : 'failed', 'The scheduled task workspace did not return a binding.');
+        return { accepted: false, reason: 'failed' };
+      }
+      this.generation += 1;
+      this.publish('ready');
+      return this.selectActivatedThread(threadId);
+    } finally { this.workspaceSwitchActive = false; }
+  };
+
+  private restoreWorkspaceFields = (previous: Readonly<{
+    path: string | null; id: string | null; kind: WorkspaceKind | null;
+    chatThreadId: string | null; projectPath: string | null;
+    projectId: string | null; transientName: string | null;
+  }>): void => {
+    this.workspacePath = previous.path;
+    this.workspaceId = previous.id;
+    this.workspaceKind = previous.kind;
+    this.activeChatThreadId = previous.chatThreadId;
+    this.projectPath = previous.projectPath;
+    this.activeProjectId = previous.projectId;
+    this.transientWorkspaceName = previous.transientName;
+  };
+
   private selectActivatedThread = async (
     threadId?: string,
   ): Promise<WorkspaceSelectResult> => {
@@ -498,6 +590,7 @@ export class WorkspaceController {
     }
     const selected = await this.options.supervisor.conversation.selectThread(
       threadId,
+      true,
     );
     return selected.accepted
       ? { accepted: true }
@@ -824,9 +917,11 @@ export class WorkspaceController {
     const previousWorkspaceId = this.workspaceId;
     const previousKind = this.workspaceKind;
     const previousThreadId = this.activeChatThreadId;
+    const previousTransientName = this.transientWorkspaceName;
     await this.options.beforeWorkspaceSwitch?.();
     this.workspacePath = directory;
     this.workspaceKind = 'chat';
+    this.transientWorkspaceName = null;
     this.activeChatThreadId = threadId ?? null;
     this.publish('selecting');
     if (
@@ -835,6 +930,7 @@ export class WorkspaceController {
       this.workspacePath = previousPath;
       this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
+      this.transientWorkspaceName = previousTransientName;
       this.activeChatThreadId = previousThreadId;
       this.publish(
         previousPath ? 'ready' : 'failed',
@@ -847,6 +943,7 @@ export class WorkspaceController {
       this.workspacePath = previousPath;
       this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
+      this.transientWorkspaceName = previousTransientName;
       this.activeChatThreadId = previousThreadId;
       this.publish(
         previousPath ? 'ready' : 'failed',
@@ -871,6 +968,7 @@ export class WorkspaceController {
       this.workspacePath = previousPath;
       this.workspaceId = previousWorkspaceId;
       this.workspaceKind = previousKind;
+      this.transientWorkspaceName = previousTransientName;
       this.activeChatThreadId = previousThreadId;
       this.publish(previousPath ? 'ready' : 'failed');
       return selected;
@@ -1078,6 +1176,7 @@ export class WorkspaceController {
     const previousThreadId = this.activeChatThreadId;
     const previousProjectPath = this.projectPath;
     const previousProjectId = this.activeProjectId;
+    const previousTransientName = this.transientWorkspaceName;
     const existing = requestedProjectId
       ? this.projects.get(requestedProjectId)
       : [...this.projects.values()].find(
@@ -1087,6 +1186,7 @@ export class WorkspaceController {
     await this.options.beforeWorkspaceSwitch?.();
     this.workspacePath = selected;
     this.workspaceKind = 'project';
+    this.transientWorkspaceName = null;
     this.activeChatThreadId = null;
     this.projectPath = selected;
     this.activeProjectId = projectId;
@@ -1100,6 +1200,7 @@ export class WorkspaceController {
       this.activeChatThreadId = previousThreadId;
       this.projectPath = previousProjectPath;
       this.activeProjectId = previousProjectId;
+      this.transientWorkspaceName = previousTransientName;
       this.publish(
         previousPath ? 'ready' : 'failed',
         'The local runtime could not bind the selected project.',
@@ -1114,6 +1215,7 @@ export class WorkspaceController {
       this.activeChatThreadId = previousThreadId;
       this.projectPath = previousProjectPath;
       this.activeProjectId = previousProjectId;
+      this.transientWorkspaceName = previousTransientName;
       this.publish(
         previousPath ? 'ready' : 'failed',
         'The local runtime did not return a Workspace binding.',
@@ -1357,9 +1459,9 @@ export class WorkspaceController {
       ...(this.workspacePath
         ? {
             name:
-              this.workspaceKind === 'chat'
+              this.transientWorkspaceName ?? (this.workspaceKind === 'chat'
                 ? '工作台'
-                : path.basename(this.workspacePath),
+                : path.basename(this.workspacePath)),
           }
         : {}),
       ...(this.projectPath

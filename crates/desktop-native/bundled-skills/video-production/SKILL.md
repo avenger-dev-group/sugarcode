@@ -35,14 +35,15 @@ For tool reliability throughout this workflow:
 
 1. Identify the subject and available input. Ask only when the subject itself is missing; otherwise infer safe defaults and state them briefly.
 2. Inspect the workspace for an existing video project, media assets, fonts, and engine configuration. For a new composition, call `video_runtime_prepare`; it installs the shared runtime only when SugarCode's cache is missing and otherwise reuses it.
-3. Write a concise storyboard before implementation. Include scenes, timing, narration or caption intent, aspect ratio, frame rate, and output format.
+3. Write a concise storyboard before implementation. Include scenes, narration or caption intent, aspect ratio, one canonical frame rate, and output format. Storyboard time estimates are provisional whenever narration will be synthesized.
 4. Freeze all used media into a project asset directory. Record source or generation provenance in an asset ledger when media came from outside the workspace.
 5. Author deterministic, frame-derived animation. Given the same inputs and frame number, the composition must render the same pixels. Avoid wall-clock time, uncontrolled randomness, live network media, autoplay-dependent state, and animations that cannot be sought.
 6. Preview locally. Inspect representative frames from the beginning, middle, transitions, and end; fix clipping, overflow, missing media, font fallback, and unreadable captions.
-7. Render a short sample to a distinct path with `video_render` before the long final render. Use the same managed browser and mandatory concurrency one planned for the final render. Report progress during a long render and preserve actionable engine errors.
-8. Render the complete output with `video_render`. The tool fully decodes the result, rejects isolated single-frame luminance outliers, and probes the encoded media with `ffprobe`; confirm its duration, dimensions, frame rate, video codec, and expected audio stream from the command result. Representative stills alone are insufficient because they do not exercise full-video capture. If the outlier scan reports a frame, render that exact frame as a still and fix or explicitly account for it before retrying.
-9. When narration is requested, write the final narration to a workspace `.txt` or `.md` file, call `video_voiceover`, then call `video_audio_mix`. The local system voice requires no hosted API. When both narration and authorized local music are supplied, the mixer normalizes narration and ducks the music under speech. Use a new output path and verify that the result contains an audio stream.
-10. After successful production, always finish with the verified workspace-relative video artifact directive returned by `video_render` or `video_audio_mix`, on its own final line, so SugarCode displays the quick playback card. The video is not fully handed off until this card can be derived:
+7. For narrated multi-scene or long-form work, write one cue-sheet JSON and call `video_voiceover` with `cueSheetPath` before authoring final scene durations. Use the returned `.timing.json` as the single source of truth: each Remotion `Sequence` must use its cue's `startFrame` and `durationInFrames`, and the Composition must use `totalDurationInFrames` at the same `fps`. Do not estimate frames from character counts, maintain a second design fps, or independently round every scene boundary. Keep semantic visual changes inside the corresponding measured cue window.
+8. Render a short sample to a distinct path with `video_render` before the long final render. Use the same managed browser and mandatory concurrency one planned for the final render. For work over three minutes, also inspect frames near early, middle, and late cue boundaries. Report progress during a long render and preserve actionable engine errors.
+9. Render the complete output with `video_render`. The tool fully decodes the result, rejects isolated single-frame luminance outliers, and probes the encoded media with `ffprobe`; confirm its duration, dimensions, frame rate, video codec, and expected audio stream from the command result. Representative stills alone are insufficient because they do not exercise full-video capture. If the outlier scan reports a frame, render that exact frame as a still and fix or explicitly account for it before retrying.
+10. When narration is requested, call `video_audio_mix` after rendering. For cue-sheet narration, always pass the returned `timingPath`; the mixer must reject the result when the visual duration, narration duration, and measured timeline differ by more than the synchronization tolerance. Never omit the timing manifest to force a mismatched long video through, and never use `-shortest` as a synchronization strategy. When both narration and authorized local music are supplied, the mixer normalizes narration and ducks the music under speech. Use a new output path and verify that the result contains an audio stream.
+11. After successful production, always finish with the verified workspace-relative video artifact directive returned by `video_render` or `video_audio_mix`, on its own final line, so SugarCode displays the quick playback card. The video is not fully handed off until this card can be derived:
 
    `::preview{path="renders/final.mp4"}`
 
@@ -52,7 +53,27 @@ For tool reliability throughout this workflow:
 - Shorts, Reels, or TikTok: 9:16, 1080x1920.
 - Social feed when vertical is not requested: 1:1, 1080x1080.
 - Narration and captions use the user's language.
+- Local narration defaults to `voicePreset: "female"`; use `voicePreset: "male"` when the user asks for a male voice. These two presets require no voice discovery step. Use `voice` only when the user names a specific installed system voice.
 - Prefer MP4 for ordinary delivery and WebM only when transparency or a web-specific codec is required.
+
+## Synchronized narration cue sheet
+
+Use cues at semantic visual-beat boundaries, usually one or two spoken sentences—not one seven-minute paragraph and not arbitrary fixed-length chunks:
+
+```json
+{
+  "fps": 30,
+  "leadInSeconds": 0.3,
+  "tailSeconds": 0.5,
+  "defaultGapSeconds": 0.25,
+  "cues": [
+    { "id": "hook", "text": "先说结论。" },
+    { "id": "evidence", "text": "接着看证据。", "gapAfterSeconds": 0.4 }
+  ]
+}
+```
+
+`video_voiceover` generates all cues in one call and writes `<audio-name>.timing.json`. Import that generated file into the Remotion source; use its cumulative frame boundaries directly rather than copying or recalculating them. `voiceStartSeconds` and `voiceEndSeconds` are the correct windows for captions and semantic animation changes.
 
 ## Managed runtime
 
@@ -60,8 +81,8 @@ For the default Remotion path, use the structured video tools instead of constru
 
 - `video_runtime_prepare` owns the shared, version-locked Remotion 4 packages, package lock, browser download, and workspace link. It may require network access only on the first preparation or after the managed cache is removed.
 - `video_render` owns the Remotion command, concurrency, bounded execution, and `ffprobe` verification.
-- `video_voiceover` owns local system TTS and creates a 48 kHz stereo WAV without a hosted API.
-- `video_audio_mix` owns narration/music mixing, loudness treatment, speech ducking, AAC encoding, and final media verification.
+- `video_voiceover` owns local system TTS and creates a 48 kHz stereo WAV without a hosted API. In synchronized mode it accepts a cue sheet and returns a measured frame timing manifest in one call.
+- `video_audio_mix` owns narration/music mixing, loudness treatment, speech ducking, AAC encoding, and final media verification. Supplying the measured timing manifest activates the mandatory drift gate.
 
 Do not run `npm install`, `npx remotion browser ensure`, or `npx remotion render` directly for this managed path. A missing encoder or unavailable Linux system voice is a runtime dependency problem, not a reason to switch models or silently call an external media API.
 
@@ -72,6 +93,7 @@ For the default new-project adapter:
 - The managed runtime keeps all `remotion` and `@remotion/*` packages on the same exact version through its package lock.
 - Define compositions with explicit width, height, fps, and duration.
 - Derive visual state from the current frame and input props.
+- Use exactly one fps for timing data, animations, Sequences, captions, and Composition metadata. Do not compensate for an fps mismatch with a scale factor.
 - Default final renders to one browser worker (`--concurrency=1` or `Config.setConcurrency(1)`). This is mandatory when using a system-installed Chrome or Chromium instead of Remotion's managed browser: concurrent tabs can intermittently capture a scaled or tiled viewport even when separately rendered stills are correct.
 - Do not increase final-render concurrency merely to work around a timeout. Raise the render timeout instead. If higher concurrency is intentionally tested, decode the entire result and inspect every flagged temporal discontinuity before accepting it.
 - When a decoded frame is an unexplained temporal outlier, render that exact frame as a standalone still. If the still is correct, treat the video frame as a capture-concurrency failure, discard the video, and render again with concurrency one.

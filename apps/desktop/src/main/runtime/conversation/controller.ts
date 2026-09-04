@@ -21,10 +21,13 @@ import { ConversationGoalActions } from './goals/actions.ts';
 import { ConversationEvents } from './events.ts';
 import { ConversationView } from './projection/view.ts';
 import { ConversationProjectionRecovery } from './projection/recovery.ts';
+import { ConversationBackgroundTurns } from './turns/background.ts';
+import type { RuntimeThreadSnapshot } from '../../../runtime/contracts/protocol.ts';
 
 // Composition root and stable IPC-facing API. Business operations live in
 // focused services; no service imports this controller.
 export class RuntimeConversationController {
+  private readonly background: ConversationBackgroundTurns;
   private readonly projections: ConversationProjectionPublisher;
   private readonly attachments: ConversationAttachments;
   private readonly navigation: ConversationNavigation;
@@ -66,6 +69,7 @@ export class RuntimeConversationController {
       reconcileGoalAfterRuntimeRestart: (...args) => this.goalActions.reconcileGoalAfterRuntimeRestart(...args),
     };
     this.attachments = new ConversationAttachments(services);
+    this.background = new ConversationBackgroundTurns(services);
     this.navigation = new ConversationNavigation(services);
     this.threadMutations = new ConversationThreadMutations(services);
     this.turnStarter = new ConversationTurnStarter(services);
@@ -98,6 +102,17 @@ export class RuntimeConversationController {
   startTurn = (input: unknown) =>
     this.turnStarter.startTurn(input);
 
+  startBackgroundTurn = (snapshot: RuntimeThreadSnapshot, turnId: string, input: string, modelProfileId?: string) =>
+    this.background.start(snapshot, turnId, input, modelProfileId);
+
+  hideScheduledThreads = (threadIds: readonly string[]): void => {
+    this.background.hideAll(threadIds);
+  };
+
+  forgetScheduledThread = (threadId: string): void => {
+    this.background.forget(threadId);
+  };
+
   updateQueuedMessage = (input: unknown) =>
     this.queueCommands.updateQueuedMessage(input);
 
@@ -122,8 +137,8 @@ export class RuntimeConversationController {
   searchThreads = (query: unknown) =>
     this.navigation.searchThreads(query);
 
-  selectThread = (threadId: unknown) =>
-    this.navigation.selectThread(threadId);
+  selectThread = (threadId: unknown, loadMissing = false) =>
+    this.navigation.selectThread(threadId, loadMissing);
 
   startNewThread = () =>
     this.navigation.startNewThread();

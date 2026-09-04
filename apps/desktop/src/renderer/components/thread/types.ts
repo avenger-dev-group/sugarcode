@@ -395,6 +395,8 @@ export type ThreadWorkbenchViewProps = Readonly<{
   onOpenSearch?: () => void;
   onOpenKnowledge?: () => void;
   onOpenSkills?: () => void;
+  onOpenSchedules?: () => void;
+  scheduledReviewCount?: number;
   onOpenWorkbench?: () => void;
 }>;
 

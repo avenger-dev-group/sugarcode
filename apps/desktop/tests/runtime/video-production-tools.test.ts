@@ -4,9 +4,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  buildCuedVideoVoiceoverCommand,
   buildVideoAudioMixCommand,
   buildVideoRenderCommand,
   buildVideoRuntimePrepareCommand,
+  buildVideoSynchronizationCheckCommand,
   buildVideoVoiceoverCommand,
   createVideoProductionTools,
   managedVideoRuntimeRoot,
@@ -79,6 +81,61 @@ test('runtime exposes separate prepare, render, voiceover, and mix tools', async
   assert.ok(String(calls[0]?.command).includes(
     "'/definitely-missing/sugarcode-video-runtime-test/video-runtime/remotion-v4/node_modules/.bin/remotion' versions",
   ));
+});
+
+test('cued narration returns measured timing and defaults to the female preset', async () => {
+  const calls: Readonly<Record<string, unknown>>[] = [];
+  const tools = createVideoProductionTools({
+    nativeRuntime: {} as NativeRuntimeBinding,
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    dataDirectory: '/tmp/sugarcode-video-runtime-test',
+    platform: 'darwin',
+    runPrivileged: async (_toolName, argumentsValue) => {
+      calls.push(argumentsValue);
+      return {
+        status: 'completed',
+        output: {
+          stdout: '{"sugarcodeVoiceTiming":{"totalDurationSeconds":12.5,"totalDurationInFrames":375,"cueCount":3,"fps":30,"resolvedVoice":"Tingting"}}\n',
+          outcome: { type: 'exitCode', code: 0 },
+        },
+      };
+    },
+  });
+  const voiceover = tools.find((tool) => tool.name === 'video_voiceover');
+  assert.ok(voiceover);
+  const result = await voiceover.runAsync({
+    args: {
+      cueSheetPath: 'assets/audio/cues.json',
+      outputPath: 'assets/audio/narration.wav',
+    },
+    toolContext: {} as never,
+  }) as Record<string, unknown>;
+
+  assert.equal(result.ok, true);
+  assert.equal(result.voicePreset, 'female');
+  assert.deepEqual(result.timing, {
+    source: 'measuredAudio',
+    path: 'assets/audio/narration.timing.json',
+    totalDurationSeconds: 12.5,
+    totalDurationInFrames: 375,
+    cueCount: 3,
+    fps: 30,
+    resolvedVoice: 'Tingting',
+  });
+  assert.match(String(calls[0]?.command), /assets\/audio\/cues\.json/u);
+  assert.match(String(calls[0]?.command), /assets\/audio\/narration\.timing\.json/u);
+  await assert.rejects(
+    voiceover.runAsync({
+      args: {
+        scriptPath: 'assets/audio/script.txt',
+        cueSheetPath: 'assets/audio/cues.json',
+        outputPath: 'assets/audio/narration.wav',
+      },
+      toolContext: {} as never,
+    }),
+    /exactly one/u,
+  );
 });
 
 test('video paths stay workspace-relative and extension constrained', () => {
@@ -191,8 +248,63 @@ test('local voiceover reads a script file and emits normalized wav audio', () =>
 
   assert.match(command, /\/usr\/bin\/say/u);
   assert.match(command, /-f 'assets\/audio\/narration\.txt'/u);
+  assert.match(command, /-o 'assets\/audio\/narration\.wav\.sugarcode-source\.aiff'/u);
   assert.match(command, /--voice 'Tingting'/u);
   assert.match(command, /-ar 48000 -ac 2/u);
+});
+
+test('local voiceover exposes stable female and male presets without voice discovery', () => {
+  const female = buildVideoVoiceoverCommand({
+    scriptPath: 'assets/audio/narration.txt',
+    outputPath: 'assets/audio/female.wav',
+    voicePreset: 'female',
+    rate: 180,
+    overwrite: false,
+    ffmpegPath: '/opt/bin/ffmpeg',
+    platform: 'darwin',
+  });
+  const male = buildVideoVoiceoverCommand({
+    scriptPath: 'assets/audio/narration.txt',
+    outputPath: 'assets/audio/male.wav',
+    voicePreset: 'male',
+    rate: 180,
+    overwrite: false,
+    ffmpegPath: '/opt/bin/ffmpeg',
+    platform: 'darwin',
+  });
+  const windowsFemale = buildVideoVoiceoverCommand({
+    scriptPath: String.raw`assets\audio\narration.txt`,
+    outputPath: String.raw`assets\audio\female.wav`,
+    voicePreset: 'female',
+    rate: 180,
+    overwrite: false,
+    ffmpegPath: 'ffmpeg',
+    platform: 'win32',
+  });
+
+  assert.match(female, /Tingting/u);
+  assert.match(male, /Reed \(中文（中国大陆）\)/u);
+  assert.match(windowsFemale, /VoiceGender\]::Female/u);
+});
+
+test('cued voiceover creates one measured timing manifest in a single command', () => {
+  const command = buildCuedVideoVoiceoverCommand({
+    cueSheetPath: 'assets/audio/cues.json',
+    outputPath: 'assets/audio/narration.wav',
+    timingPath: 'assets/audio/narration.timing.json',
+    voicePreset: 'female',
+    rate: 180,
+    overwrite: false,
+    ffmpegPath: '/opt/bin/ffmpeg',
+    ffprobePath: '/opt/bin/ffprobe',
+    platform: 'darwin',
+  });
+
+  assert.match(command, /^node -e /u);
+  assert.match(command, /assets\/audio\/cues\.json/u);
+  assert.match(command, /assets\/audio\/narration\.timing\.json/u);
+  assert.match(command, /sugarcodeVoiceTiming/u);
+  assert.match(command, /durationInFrames/u);
 });
 
 test('Windows voiceover and mixing create the target output directories', () => {
@@ -217,7 +329,24 @@ test('Windows voiceover and mixing create the target output directories', () => 
   });
 
   assert.ok(voiceover.includes("New-Item -ItemType Directory -Force -Path 'assets/audio' | Out-Null"));
+  assert.ok(voiceover.includes(String.raw`SetOutputToWaveFile('assets\audio\narration.wav.sugarcode-source.wav')`));
+  assert.ok(!voiceover.includes('.sugarcode-source.aiff'));
   assert.ok(mix.startsWith("New-Item -ItemType Directory -Force -Path 'renders' | Out-Null"));
+});
+
+test('Linux voiceover keeps the native espeak WAV source format', () => {
+  const command = buildVideoVoiceoverCommand({
+    scriptPath: 'assets/audio/narration.txt',
+    outputPath: 'assets/audio/narration.wav',
+    rate: 190,
+    overwrite: false,
+    ffmpegPath: '/usr/bin/ffmpeg',
+    platform: 'linux',
+  });
+
+  assert.match(command, /espeak-ng/u);
+  assert.match(command, /-w 'assets\/audio\/narration\.wav\.sugarcode-source\.wav'/u);
+  assert.doesNotMatch(command, /\.sugarcode-source\.aiff/u);
 });
 
 test('audio mix normalizes narration and ducks music under speech', () => {
@@ -239,4 +368,32 @@ test('audio mix normalizes narration and ducks music under speech', () => {
   assert.match(command, /sidechaincompress/u);
   assert.match(command, /-c:v copy -c:a aac/u);
   assert.match(command, /ffprobe.*-show_streams -show_format/u);
+});
+
+test('audio mix rejects measured timeline drift before shortening narration', () => {
+  const check = buildVideoSynchronizationCheckCommand({
+    timingPath: 'assets/audio/narration.timing.json',
+    videoPath: 'renders/silent.mp4',
+    narrationPath: 'assets/audio/narration.wav',
+    maxDriftSeconds: 0.1,
+    ffprobePath: '/opt/bin/ffprobe',
+    platform: 'darwin',
+  });
+  const mix = buildVideoAudioMixCommand({
+    videoPath: 'renders/silent.mp4',
+    narrationPath: 'assets/audio/narration.wav',
+    timingPath: 'assets/audio/narration.timing.json',
+    outputPath: 'renders/final.mp4',
+    narrationVolume: 1,
+    musicVolume: 0.18,
+    overwrite: false,
+    ffmpegPath: '/opt/bin/ffmpeg',
+    ffprobePath: '/opt/bin/ffprobe',
+    platform: 'darwin',
+  });
+
+  assert.match(check, /sugarcodeSynchronizationCheck/u);
+  assert.match(check, /2 \/ fps/u);
+  assert.ok(mix.indexOf('sugarcodeSynchronizationCheck') < mix.indexOf("'/opt/bin/ffmpeg' -n"));
+  assert.match(mix, /Rebuild the composition from the measured timing manifest/u);
 });

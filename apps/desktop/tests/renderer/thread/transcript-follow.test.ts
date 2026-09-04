@@ -6,6 +6,7 @@ import {
   shouldFollowTranscriptAfterScroll,
   shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
+  shouldTrackTranscriptPointerScroll,
 } from '../../../src/renderer/components/thread/transcript-follow.ts';
 
 test('layout shrink preserves tail following when scrollTop is clamped upward', () => {
@@ -57,6 +58,33 @@ test('keyboard scroll-up intent covers transcript navigation keys', () => {
   assert.equal(isTranscriptScrollUpKey(' ', true), true);
   assert.equal(isTranscriptScrollUpKey('PageDown', false), false);
   assert.equal(isTranscriptScrollUpKey(' ', false), false);
+});
+
+test('mouse clicks in transcript content are not treated as scrollbar drags', () => {
+  assert.equal(
+    shouldTrackTranscriptPointerScroll({
+      pointerType: 'mouse',
+      targetIsScrollbar: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldTrackTranscriptPointerScroll({
+      pointerType: 'mouse',
+      targetIsScrollbar: true,
+    }),
+    true,
+  );
+});
+
+test('touch gestures remain explicit transcript scroll intent', () => {
+  assert.equal(
+    shouldTrackTranscriptPointerScroll({
+      pointerType: 'touch',
+      targetIsScrollbar: false,
+    }),
+    true,
+  );
 });
 
 test('completed selection resets transcript following for the selected Thread', () => {

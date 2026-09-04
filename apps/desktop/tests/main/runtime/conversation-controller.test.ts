@@ -2345,3 +2345,39 @@ test('runtime conversation controller ignores a stale Workspace list result', as
   assert.equal(snapshot.workspaceId, SECOND_WORKSPACE_ID);
   assert.deepEqual(snapshot.navigator.activeThreadIds, [SECOND_THREAD_ID]);
 });
+
+test('background turns project independently and never change foreground workspace or task', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(fixture as unknown as RuntimeSupervisor);
+  await controller.switchWorkspace(WORKSPACE_ID);
+  const before = controller.getSnapshot();
+  const turnId = createUuidV7();
+  const snapshot: RuntimeThreadSnapshot = {
+    thread: { id: SECOND_THREAD_ID, workspaceId: WORKSPACE_ID, title: 'Scheduled report', createdAt: 1, updatedAt: 1, archivedAt: null, parentThreadId: null },
+    turns: [], items: [], agentTasks: [], queue: { paused: false, messages: [] },
+  };
+  controller.startBackgroundTurn(snapshot, turnId, 'Produce a daily report', 'profile-1');
+  const current = controller.getSnapshot();
+  assert.equal(current.workspaceId, before.workspaceId);
+  assert.equal(current.threadId, before.threadId);
+  assert.equal(current.navigator.activeThreadIds.includes(SECOND_THREAD_ID), false);
+  assert.equal(current.navigator.runningThreadIds?.includes(SECOND_THREAD_ID), false);
+  const background = controller.getThreadProjection(SECOND_THREAD_ID);
+  assert.equal(background?.turns[0]?.messages[0]?.text, 'Produce a daily report');
+  assert.ok(fixture.sent.some((c) => c.type === 'turn.start' && c.threadId === SECOND_THREAD_ID && c.workspaceId === WORKSPACE_ID));
+  fixture.emit({ type: 'turn.completed', requestId: 'background-test', sequence: 8, workspaceId: WORKSPACE_ID, threadId: SECOND_THREAD_ID, turnId, status: 'completed' });
+  assert.equal(controller.getThreadProjection(SECOND_THREAD_ID)?.turns[0]?.status, 'completed');
+  assert.equal(controller.getSnapshot().threadId, before.threadId);
+  assert.equal(controller.getSnapshot().navigator.unreadThreadStatuses?.[SECOND_THREAD_ID], undefined);
+});
+
+test('explicitly opening a persisted task can load it beyond the recent thread list', async () => {
+  const fixture = new FixtureRuntime();
+  const controller = new RuntimeConversationController(fixture as unknown as RuntimeSupervisor);
+  await controller.switchWorkspace(WORKSPACE_ID);
+  controller.hideScheduledThreads([SECOND_THREAD_ID]);
+  assert.equal((await controller.selectThread(SECOND_THREAD_ID)).accepted, false);
+  assert.equal((await controller.selectThread(SECOND_THREAD_ID, true)).accepted, true);
+  assert.equal(controller.getSnapshot().threadId, SECOND_THREAD_ID);
+  assert.equal(controller.getSnapshot().navigator.activeThreadIds.includes(SECOND_THREAD_ID), false);
+});

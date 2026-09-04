@@ -1,4 +1,6 @@
 import type { IpcRendererEvent } from 'electron';
+import { SCHEDULES_CHANNEL, SCHEDULES_CHANGED_CHANNEL, isSchedulesRequest, isSchedulesSnapshot, type SchedulesResult } from '@/shared/schedules';
+import { ARTIFACTS_CHANNEL, isArtifactDocument, isArtifactRequest, type ArtifactResult } from '@/shared/artifacts';
 
 import {
   COMMAND_APPROVAL_APPROVE_CHANNEL,
@@ -307,6 +309,29 @@ export const createDesktopApi = (
   ipcRenderer: IpcRendererBoundary,
   getPathForFile?: (file: File) => string,
 ): DesktopApi => ({
+  requestArtifact: async (request): Promise<ArtifactResult> => {
+    if (!isArtifactRequest(request)) throw new Error('Invalid artifact request.');
+    const result = await ipcRenderer.invoke(ARTIFACTS_CHANNEL, request) as ArtifactResult;
+    if (!result || typeof result.accepted !== 'boolean' || (result.document !== undefined && !isArtifactDocument(result.document))) throw new Error('Main returned an invalid artifact result.');
+    return result;
+  },
+  requestSchedules: async (request): Promise<SchedulesResult> => {
+    if (!isSchedulesRequest(request)) throw new Error('Invalid scheduled task request.');
+    const result = await ipcRenderer.invoke(SCHEDULES_CHANNEL, request) as SchedulesResult;
+    if (!result || typeof result.accepted !== 'boolean' ||
+      (result.snapshot !== undefined && !isSchedulesSnapshot(result.snapshot)) ||
+      (result.navigation !== undefined && !isWorkspaceSelectResult(result.navigation))) {
+      throw new Error('Main returned an invalid scheduled task result.');
+    }
+    return result;
+  },
+  onSchedulesChanged: (listener) => {
+    const handler = (_event: IpcRendererEvent, snapshot: unknown): void => {
+      if (isSchedulesSnapshot(snapshot)) listener(snapshot);
+    };
+    ipcRenderer.on(SCHEDULES_CHANGED_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(SCHEDULES_CHANGED_CHANNEL, handler);
+  },
   setGoalPowerSaveEnabled: async (enabled): Promise<boolean> => {
     const result = await ipcRenderer.invoke(
       EXPERIMENTAL_GOAL_POWER_SAVE_SET_CHANNEL,

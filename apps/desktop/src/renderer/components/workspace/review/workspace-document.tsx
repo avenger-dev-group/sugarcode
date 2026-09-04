@@ -5,6 +5,7 @@ import { Button } from '@/renderer/components/ui/button';
 import { FileInspector } from '@/renderer/components/workspace/workbench/file-inspector';
 
 import { useStore } from './use-store';
+import { ArtifactWorkbench } from '@/renderer/components/artifacts/artifact-workbench';
 
 const WorkspaceDocumentView = ({
   path,
@@ -48,4 +49,6 @@ const WorkspaceDocumentView = ({
   );
 };
 
-export const WorkspaceDocument = memo(WorkspaceDocumentView);
+export const WorkspaceDocument = memo((props: Readonly<{ path: string; showHeader?: boolean }>) =>
+  /\.drawio$/iu.test(props.path) ? <WorkspaceDocumentView {...props} /> : <ArtifactWorkbench key={props.path} path={props.path} />,
+);

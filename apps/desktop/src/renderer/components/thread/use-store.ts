@@ -65,6 +65,8 @@ import {
   type ConversationWorkspaceSearchActivity,
 } from '@/shared/conversation';
 import { parseGoalCommand } from '@/shared/goal-command';
+import { parseScheduleCommand } from '@/shared/schedule-command';
+import { requestScheduleFromConversation } from '@/renderer/services/schedule-command';
 import type {
   ModelReasoningEffort,
   ModelRequestOptions,
@@ -124,6 +126,7 @@ import {
   shouldFollowTranscriptAfterScroll,
   shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
+  shouldTrackTranscriptPointerScroll,
 } from './transcript-follow';
 import {
   completedProcessDurationLabel,
@@ -1274,6 +1277,7 @@ export const useTranscriptFollow = (
   const recordWheelScrollIntent: TranscriptFollow['recordWheelScrollIntent'] = (
     event,
   ): void => {
+    pointerScrollActive.current = false;
     if (event.deltaY < 0) {
       shouldFollowTranscript.current = false;
     }
@@ -1282,18 +1286,41 @@ export const useTranscriptFollow = (
   const recordKeyScrollIntent: TranscriptFollow['recordKeyScrollIntent'] = (
     event,
   ): void => {
+    pointerScrollActive.current = false;
     if (isTranscriptScrollUpKey(event.key, event.shiftKey)) {
       shouldFollowTranscript.current = false;
     }
   };
 
-  const beginPointerScroll: TranscriptFollow['beginPointerScroll'] = (): void => {
-    pointerScrollActive.current = true;
+  const beginPointerScroll: TranscriptFollow['beginPointerScroll'] = (
+    event,
+  ): void => {
+    const target = event.target;
+    pointerScrollActive.current = shouldTrackTranscriptPointerScroll({
+      pointerType: event.pointerType,
+      targetIsScrollbar:
+        target instanceof Element &&
+        target.closest('[data-slot="scroll-area-scrollbar"]') !== null,
+    });
   };
 
   const endPointerScroll: TranscriptFollow['endPointerScroll'] = (): void => {
     pointerScrollActive.current = false;
   };
+
+  useEffect(() => {
+    const clearPointerScroll = (): void => {
+      pointerScrollActive.current = false;
+    };
+    window.addEventListener('pointerup', clearPointerScroll, true);
+    window.addEventListener('pointercancel', clearPointerScroll, true);
+    window.addEventListener('blur', clearPointerScroll);
+    return () => {
+      window.removeEventListener('pointerup', clearPointerScroll, true);
+      window.removeEventListener('pointercancel', clearPointerScroll, true);
+      window.removeEventListener('blur', clearPointerScroll);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (settlingThreadSelection) {
@@ -1776,6 +1803,18 @@ export const useStore = (): ThreadStore => {
     setIsSending(true);
     setActionError(null);
     try {
+      const scheduleCommand = attachments.length === 0
+        ? parseScheduleCommand(draft, Date.now(), {
+            workspacePath: '',
+            modelProfileId: selectedModelProfileId,
+          })
+        : null;
+      if (scheduleCommand) {
+        requestScheduleFromConversation(scheduleCommand);
+        setDraft('');
+        setAttachments([]);
+        return;
+      }
       if (startsChatOnSend) {
         const activation = await activateWorkspaceChat();
         if (!activation.accepted) {

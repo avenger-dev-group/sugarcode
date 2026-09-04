@@ -30,6 +30,14 @@ pnpm dev
 pnpm check
 ```
 
+## Scheduled tasks and artifact review
+
+Schedule local Agent work from the sidebar and review each run's results later.
+The right workspace supports editable text, Excel cells, Word paragraphs, PDF
+review notes, and image previews. The computer must remain awake with SugarCode
+running. See the [scheduled tasks guide](docs/scheduled-tasks.md) for setup,
+execution behavior, and supported editing capabilities.
+
 ## Figma Desktop MCP
 
 SugarCode can connect to Figma Desktop's local MCP server without browser
@@ -49,6 +57,10 @@ mixing do not require a hosted media API. Optional providers can still supply
 higher-quality voices, generated footage, images, music, or cloud rendering
 when explicitly authorized. Successful render and mix tools return a
 `::preview{path="..."}` directive for the Preview panel and system player.
+Local narration includes `female` (default) and `male` presets. Narrated
+multi-scene videos can be generated from one cue sheet; SugarCode measures each
+spoken cue, emits the canonical frame timeline, and rejects final mixing when
+video duration, frame rate, or narration drift beyond the measured timeline.
 
 ## Agent trajectory
 
