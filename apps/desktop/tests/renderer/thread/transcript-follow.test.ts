@@ -3,7 +3,9 @@ import test from 'node:test';
 
 import {
   isTranscriptScrollUpKey,
+  shouldFollowProcessAfterScroll,
   shouldFollowTranscriptAfterScroll,
+  shouldHandoffWheelScroll,
   shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
   shouldTrackTranscriptPointerScroll,
@@ -84,6 +86,67 @@ test('touch gestures remain explicit transcript scroll intent', () => {
       targetIsScrollbar: false,
     }),
     true,
+  );
+});
+
+test('nested process scrolling hands downward wheel input to the transcript at its bottom edge', () => {
+  assert.equal(
+    shouldHandoffWheelScroll({
+      deltaY: 24,
+      scrollTop: 400,
+      scrollHeight: 800,
+      clientHeight: 400,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldHandoffWheelScroll({
+      deltaY: 24,
+      scrollTop: 300,
+      scrollHeight: 800,
+      clientHeight: 400,
+    }),
+    false,
+  );
+});
+
+test('nested process scrolling hands upward wheel input to the transcript at its top edge', () => {
+  assert.equal(
+    shouldHandoffWheelScroll({
+      deltaY: -24,
+      scrollTop: 0,
+      scrollHeight: 800,
+      clientHeight: 400,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldHandoffWheelScroll({
+      deltaY: -24,
+      scrollTop: 40,
+      scrollHeight: 800,
+      clientHeight: 400,
+    }),
+    false,
+  );
+});
+
+test('streaming process content follows only while its viewport remains near the bottom', () => {
+  assert.equal(
+    shouldFollowProcessAfterScroll({
+      scrollTop: 376,
+      scrollHeight: 800,
+      clientHeight: 400,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldFollowProcessAfterScroll({
+      scrollTop: 300,
+      scrollHeight: 800,
+      clientHeight: 400,
+    }),
+    false,
   );
 });
 

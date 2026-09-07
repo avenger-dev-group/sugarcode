@@ -1,4 +1,6 @@
 export const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
+export const PROCESS_BOTTOM_THRESHOLD_PX = 24;
+const SCROLL_EDGE_EPSILON_PX = 1;
 
 export const isTranscriptScrollUpKey = (
   key: string,
@@ -16,6 +18,39 @@ export const shouldTrackTranscriptPointerScroll = ({
   pointerType: string;
   targetIsScrollbar: boolean;
 }>): boolean => pointerType !== 'mouse' || targetIsScrollbar;
+
+export const shouldHandoffWheelScroll = ({
+  deltaY,
+  scrollTop,
+  scrollHeight,
+  clientHeight,
+}: Readonly<{
+  deltaY: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}>): boolean => {
+  if (deltaY < 0) {
+    return scrollTop <= SCROLL_EDGE_EPSILON_PX;
+  }
+  if (deltaY > 0) {
+    return (
+      scrollHeight - scrollTop - clientHeight <= SCROLL_EDGE_EPSILON_PX
+    );
+  }
+  return false;
+};
+
+export const shouldFollowProcessAfterScroll = ({
+  scrollTop,
+  scrollHeight,
+  clientHeight,
+}: Readonly<{
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}>): boolean =>
+  scrollHeight - scrollTop - clientHeight <= PROCESS_BOTTOM_THRESHOLD_PX;
 
 export const shouldFollowTranscriptAfterScroll = ({
   wasFollowing,

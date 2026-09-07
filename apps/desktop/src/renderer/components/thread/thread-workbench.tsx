@@ -548,22 +548,9 @@ const TurnActivity = ({
 }>) => {
   switch (entry.type) {
     case 'commentary':
-      return (
-        <NarrativeActivity
-          activity={entry.activity}
-          kind="commentary"
-          language={language}
-        />
-      );
     case 'reasoning':
     case 'reasoningSummary':
-      return (
-        <NarrativeActivity
-          activity={entry.activity}
-          kind={entry.type}
-          language={language}
-        />
-      );
+      return <NarrativeActivity activity={entry.activity} />;
     case 'workspaceRead':
       return <WorkspaceReadActivity activity={entry.activity} />;
     case 'workspaceList':
@@ -655,10 +642,7 @@ const TurnActivityTimeline = ({
         const key = `${entry.type}:${entry.activity.id}`;
         if (!isCompactToolActivity(entry)) {
           return (
-            <div
-              key={key}
-              className="max-h-64 min-w-0 overflow-y-auto overscroll-y-auto pr-1 [scrollbar-gutter:stable]"
-            >
+            <div key={key} className="min-w-0 pr-1">
               <TurnActivity
                 entry={entry}
                 language={language}
@@ -668,10 +652,7 @@ const TurnActivityTimeline = ({
           );
         }
         return (
-          <div
-            key={key}
-            className="max-h-64 min-w-0 overflow-y-auto overscroll-y-auto pr-1 [scrollbar-gutter:stable]"
-          >
+          <div key={key} className="min-w-0 pr-1">
             <ToolActivityGroup activities={[entry]} language={language} />
           </div>
         );
