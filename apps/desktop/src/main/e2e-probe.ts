@@ -57,6 +57,10 @@ const rendererProbe = async (): Promise<RendererProbeResult> => {
       `search result ${label}`,
     );
     option.click();
+    await waitFor(
+      () => document.querySelector('input[role="combobox"]') ? undefined : true,
+      `search close after selecting ${label}`,
+    );
   };
 
   const checks: string[] = [];
