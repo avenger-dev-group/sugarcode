@@ -592,11 +592,13 @@ const TurnActivityTimeline = ({
   turnStatus,
   language,
   progress,
+  durationLabel,
 }: Readonly<{
   activities: readonly TurnActivityViewModel[];
   turnStatus: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['status'];
   language: ThreadWorkbenchViewProps['store']['thread']['turns'][number]['processLanguage'];
   progress?: TranscriptTurnProps['progress'];
+  durationLabel?: string;
 }>) => {
   const requiresAttention = activities.some(
     (entry) =>
@@ -606,12 +608,35 @@ const TurnActivityTimeline = ({
       (entry.type === 'mcp' && entry.activity.state === 'awaiting') ||
       (entry.type === 'userInput' && entry.activity.state === 'awaiting'),
   );
+  const toolCount = activities.filter(isCompactToolActivity).length;
+  const narrativeCount = activities.filter(
+    (entry) => entry.type === 'commentary' || entry.type === 'reasoning' || entry.type === 'reasoningSummary',
+  ).length;
+  const activitySummary = [
+    ...(toolCount > 0
+      ? [language === 'zh' ? `${toolCount} 个工具` : `${toolCount} tools`]
+      : []),
+    ...(narrativeCount > 0
+      ? [
+          language === 'zh'
+            ? `${narrativeCount} 段过程`
+            : `${narrativeCount} updates`,
+        ]
+      : []),
+  ].join(' · ');
+
   return (
     <ProcessActivityGroup
+      groupId={activities[0]?.activity.id ?? 'empty-process'}
       status={turnStatus}
       requiresAttention={requiresAttention}
       language={language}
       activeLabel={progress?.label}
+      animateActive={
+        progress?.state !== 'uncertain' && progress?.state !== 'waitingForInput'
+      }
+      durationLabel={durationLabel}
+      activitySummary={activitySummary || undefined}
     >
       {activities.map((entry) => {
         const key = `${entry.type}:${entry.activity.id}`;
@@ -694,6 +719,7 @@ const TranscriptTurnView = ({
           turnStatus={turn.status}
           language={turn.processLanguage}
           progress={progress}
+          durationLabel={turn.durationLabel}
         />
       ) : null}
       {!turn.activities && turn.workspaceRead ? (

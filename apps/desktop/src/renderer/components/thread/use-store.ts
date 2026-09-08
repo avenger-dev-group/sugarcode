@@ -132,6 +132,7 @@ import {
   completedProcessDurationLabel,
   formatProcessDuration,
   processLanguageFromText,
+  resolveActivityDisclosureExpanded,
 } from './activity-disclosure';
 import { toTurnFailureViewModel } from './turn-failure';
 import {
@@ -149,11 +150,24 @@ export const useActivityDisclosureStore = (
   groupId: string,
   initiallyExpanded = false,
 ): ActivityDisclosureStore => {
-  const [expanded, setExpanded] = useState<boolean>(initiallyExpanded);
-
-  useEffect(() => {
-    setExpanded(initiallyExpanded);
-  }, [groupId, initiallyExpanded]);
+  const [state, setState] = useState(() => ({
+    groupId,
+    initiallyExpanded,
+    expanded: initiallyExpanded,
+  }));
+  const expanded = resolveActivityDisclosureExpanded({
+    storedGroupId: state.groupId,
+    storedInitiallyExpanded: state.initiallyExpanded,
+    storedExpanded: state.expanded,
+    groupId,
+    initiallyExpanded,
+  });
+  const setExpanded = useCallback(
+    (nextExpanded: boolean): void => {
+      setState({ groupId, initiallyExpanded, expanded: nextExpanded });
+    },
+    [groupId, initiallyExpanded],
+  );
 
   return { expanded, setExpanded };
 };

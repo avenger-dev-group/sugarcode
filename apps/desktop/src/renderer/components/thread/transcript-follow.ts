@@ -1,16 +1,6 @@
-import type { ConversationTurnStatus } from '@/shared/conversation';
-
 export const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
 export const PROCESS_BOTTOM_THRESHOLD_PX = 24;
 const SCROLL_EDGE_EPSILON_PX = 1;
-
-export const shouldUseProcessScrollViewport = ({
-  status,
-  requiresAttention,
-}: Readonly<{
-  status: ConversationTurnStatus;
-  requiresAttention: boolean;
-}>): boolean => status === 'inProgress' && !requiresAttention;
 
 export const isTranscriptScrollUpKey = (
   key: string,

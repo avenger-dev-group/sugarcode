@@ -67,6 +67,23 @@ export const shouldAutoExpandActivityGroup = (
   requiresAttention: boolean,
 ): boolean => status === 'inProgress' || requiresAttention;
 
+export const resolveActivityDisclosureExpanded = ({
+  storedGroupId,
+  storedInitiallyExpanded,
+  storedExpanded,
+  groupId,
+  initiallyExpanded,
+}: Readonly<{
+  storedGroupId: string;
+  storedInitiallyExpanded: boolean;
+  storedExpanded: boolean;
+  groupId: string;
+  initiallyExpanded: boolean;
+}>): boolean =>
+  storedGroupId === groupId && storedInitiallyExpanded === initiallyExpanded
+    ? storedExpanded
+    : initiallyExpanded;
+
 export const processActivityLabel = (
   status: ConversationTurnStatus,
   requiresAttention: boolean,

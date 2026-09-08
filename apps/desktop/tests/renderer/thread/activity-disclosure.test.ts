@@ -6,8 +6,35 @@ import {
   formatProcessDuration,
   processLanguageFromText,
   processActivityLabel,
+  resolveActivityDisclosureExpanded,
   shouldAutoExpandActivityGroup,
 } from '../../../src/renderer/components/thread/activity-disclosure.ts';
+
+test('activity disclosure applies a changed completion default in the same render', () => {
+  assert.equal(
+    resolveActivityDisclosureExpanded({
+      storedGroupId: 'process-1',
+      storedInitiallyExpanded: true,
+      storedExpanded: true,
+      groupId: 'process-1',
+      initiallyExpanded: false,
+    }),
+    false,
+  );
+});
+
+test('activity disclosure preserves a user toggle while its identity is stable', () => {
+  assert.equal(
+    resolveActivityDisclosureExpanded({
+      storedGroupId: 'process-1',
+      storedInitiallyExpanded: false,
+      storedExpanded: true,
+      groupId: 'process-1',
+      initiallyExpanded: false,
+    }),
+    true,
+  );
+});
 
 const uuidV7At = (timestampMs: number): string => {
   const timestamp = timestampMs.toString(16).padStart(12, '0');

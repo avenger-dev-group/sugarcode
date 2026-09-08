@@ -9,32 +9,7 @@ import {
   shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
   shouldTrackTranscriptPointerScroll,
-  shouldUseProcessScrollViewport,
 } from '../../../src/renderer/components/thread/transcript-follow.ts';
-
-test('nested process scrolling exists only while the turn is actively running', () => {
-  assert.equal(
-    shouldUseProcessScrollViewport({
-      status: 'inProgress',
-      requiresAttention: false,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldUseProcessScrollViewport({
-      status: 'completed',
-      requiresAttention: false,
-    }),
-    false,
-  );
-  assert.equal(
-    shouldUseProcessScrollViewport({
-      status: 'inProgress',
-      requiresAttention: true,
-    }),
-    false,
-  );
-});
 
 test('layout shrink preserves tail following when scrollTop is clamped upward', () => {
   assert.equal(
