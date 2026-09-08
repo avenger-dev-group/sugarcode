@@ -423,14 +423,10 @@ export type ActivityDisclosureStore = Readonly<{
 }>;
 
 export type ProcessActivityGroupProps = Readonly<{
-  groupId: string;
   status: ConversationTurnStatus;
   requiresAttention: boolean;
   language: ProcessLanguage;
   activeLabel?: string;
-  animateActive?: boolean;
-  durationLabel?: string;
-  activitySummary?: string;
   children: ReactNode;
 }>;
 
