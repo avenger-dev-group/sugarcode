@@ -957,7 +957,7 @@ export const ThreadWorkbenchView = ({
           />
         ) : null}
         <section
-          className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-background ${
+          className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-white ${
             store.thread.isEmpty ? 'empty-thread-workbench' : ''
           }`}
         >
