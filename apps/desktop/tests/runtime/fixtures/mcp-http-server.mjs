@@ -7,6 +7,8 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 
+let initializeCount = 0;
+
 const httpServer = createHttpServer(async (request, response) => {
   if (request.method !== 'POST' || request.url !== '/mcp') {
     response.writeHead(405, { 'content-type': 'application/json' });
@@ -23,6 +25,10 @@ const httpServer = createHttpServer(async (request, response) => {
     let payload = '';
     for await (const chunk of request) {
       payload += chunk;
+    }
+    const message = JSON.parse(payload);
+    if (message.method === 'initialize') {
+      initializeCount += 1;
     }
 
     const server = new Server(
@@ -44,7 +50,10 @@ const httpServer = createHttpServer(async (request, response) => {
     server.setRequestHandler(CallToolRequestSchema, async (toolRequest) => ({
       content: [{
         type: 'text',
-        text: JSON.stringify(toolRequest.params.arguments ?? {}),
+        text: JSON.stringify({
+          ...(toolRequest.params.arguments ?? {}),
+          fixtureInitializeCount: initializeCount,
+        }),
       }],
     }));
 
@@ -57,7 +66,7 @@ const httpServer = createHttpServer(async (request, response) => {
       void transport.close();
       void server.close();
     });
-    await transport.handleRequest(request, response, JSON.parse(payload));
+    await transport.handleRequest(request, response, message);
   } catch (error) {
     if (!response.headersSent) {
       response.writeHead(500, { 'content-type': 'application/json' });

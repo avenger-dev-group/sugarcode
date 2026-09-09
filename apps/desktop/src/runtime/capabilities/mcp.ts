@@ -1,10 +1,17 @@
 import {
   BaseTool,
-  MCPToolset,
-  type MCPConnectionParams,
+  MCPTool,
+  type MCPSessionManager,
   type RunAsyncToolRequest,
 } from '@google/adk';
 import { Type } from '@google/genai';
+import { Client } from '@modelcontextprotocol/sdk/client';
+// The MCP package's wildcard export needs its runtime .js suffix. The current
+// ESLint resolver does not understand that conditional package-export shape.
+// eslint-disable-next-line import/no-unresolved
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+// eslint-disable-next-line import/no-unresolved
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createHash } from 'node:crypto';
 
 import type {
@@ -48,10 +55,12 @@ const approvalPurpose = (
 
 type ActiveServer = Readonly<{
   id: string;
-  toolset: MCPToolset;
+  client: Client;
   tools: readonly BaseTool[];
   inventorySha256: string;
 }>;
+
+const MCP_REQUEST_TIMEOUT_MS = 15_000;
 
 const result = (
   reason: McpSessionActionResult['reason'],
@@ -82,25 +91,53 @@ const inventoryRevision = (tools: readonly BaseTool[]): string => {
     .digest('hex');
 };
 
-const connectionParams = (server: McpServerConfig): MCPConnectionParams =>
-  server.transport === 'stdio'
-    ? {
-        type: 'StdioConnectionParams',
-        serverParams: {
-          command: server.executable,
-          args: [...server.argv],
-          cwd: server.cwd,
-          stderr: 'inherit',
-        },
-        timeout: 15_000,
-      }
-    : {
-        type: 'StreamableHTTPConnectionParams',
-        url: server.endpoint,
-        timeout: 15_000,
-        sseReadTimeout: 120_000,
-        terminateOnClose: true,
-      };
+const connect = async (server: McpServerConfig): Promise<Client> => {
+  const client = new Client({
+    name: 'SugarCode Desktop MCP',
+    version: '1.0.0',
+  });
+  const transport = server.transport === 'stdio'
+    ? new StdioClientTransport({
+        command: server.executable,
+        args: [...server.argv],
+        cwd: server.cwd,
+        stderr: 'inherit',
+      })
+    : new StreamableHTTPClientTransport(new URL(server.endpoint));
+  try {
+    await client.connect(transport, { timeout: MCP_REQUEST_TIMEOUT_MS });
+    return client;
+  } catch (error) {
+    await client.close().catch((): undefined => undefined);
+    throw error;
+  }
+};
+
+const toolsFrom = async (
+  server: McpServerConfig,
+  client: Client,
+): Promise<readonly BaseTool[]> => {
+  const inventory = await client.listTools(
+    undefined,
+    { timeout: MCP_REQUEST_TIMEOUT_MS },
+  );
+  // ADK's MCPTool only needs this small session-manager surface. Keeping the
+  // already-negotiated client here is important for stateful local servers
+  // such as Figma Desktop, and avoids ADK's optional runtime require of the
+  // MCP SDK (which is not present as a loose node_module in packaged builds).
+  const sessionManager = {
+    createSession: async (): Promise<Client> => client,
+    closeSession: async (): Promise<void> => undefined,
+    getActiveSessions: () => [client],
+  } as unknown as MCPSessionManager;
+  return inventory.tools.map((tool) =>
+    new MCPTool(
+      { ...tool, name: `mcp__${server.id}__${tool.name}` },
+      sessionManager,
+      tool.name,
+    ),
+  );
+};
 
 const isFigmaDesktopServer = (server: McpServerConfig): boolean => {
   if (server.id.toLocaleLowerCase().includes('figma')) {
@@ -242,21 +279,23 @@ export class RuntimeMcpManager {
     const next: ActiveServer[] = [];
     try {
       for (const server of selected) {
-        const toolset = new MCPToolset(
-          connectionParams(server),
-          [],
-          `mcp__${server.id}_`,
-        );
-        const tools = await toolset.getTools();
+        const client = await connect(server);
+        let tools: readonly BaseTool[];
+        try {
+          tools = await toolsFrom(server, client);
+        } catch (error) {
+          await client.close().catch((): undefined => undefined);
+          throw error;
+        }
         next.push({
           id: server.id,
-          toolset,
+          client,
           tools,
           inventorySha256: inventoryRevision(tools),
         });
       }
     } catch {
-      await Promise.allSettled(next.map(({ toolset }) => toolset.close()));
+      await Promise.allSettled(next.map(({ client }) => client.close()));
       return result(
         selected.some(
           (server) => server.transport === 'loopbackStreamableHttp',
@@ -267,7 +306,7 @@ export class RuntimeMcpManager {
     }
     const previous = this.active;
     this.active = next;
-    await Promise.allSettled(previous.map(({ toolset }) => toolset.close()));
+    await Promise.allSettled(previous.map(({ client }) => client.close()));
     return result('accepted');
   };
 
@@ -310,6 +349,6 @@ export class RuntimeMcpManager {
   close = async (): Promise<void> => {
     const active = this.active;
     this.active = [];
-    await Promise.allSettled(active.map(({ toolset }) => toolset.close()));
+    await Promise.allSettled(active.map(({ client }) => client.close()));
   };
 }

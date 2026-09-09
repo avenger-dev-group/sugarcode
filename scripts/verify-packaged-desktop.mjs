@@ -120,6 +120,19 @@ if (packagedManifest.version !== sourceManifest.version) {
   );
 }
 
+const packagedRuntime = extractFile(
+  asarPath,
+  '.vite/build/runtime.mjs',
+).toString('utf8');
+if (
+  !packagedRuntime.includes('SugarCode Desktop MCP') ||
+  !packagedRuntime.includes('Streamable HTTP error:')
+) {
+  throw new Error(
+    'Packaged Agent Runtime is missing the bundled Streamable HTTP MCP client.',
+  );
+}
+
 const expectedMachine = {
   'darwin:arm64': 0x0100000c,
   'darwin:x64': 0x01000007,

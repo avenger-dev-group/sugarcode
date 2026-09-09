@@ -39,7 +39,7 @@ const createLoopbackFixture = async () => {
   };
 };
 
-test('RuntimeMcpManager discovers and invokes an ADK MCPToolset behind approval', async () => {
+test('RuntimeMcpManager discovers and invokes an MCP tool behind approval', async () => {
   const manager = new RuntimeMcpManager();
   manager.configure({
     contractVersion: 1,
@@ -182,7 +182,7 @@ test('RuntimeMcpManager discovers and invokes a loopback Streamable HTTP MCP ser
       {
         content: [{
           type: 'text',
-          text: '{"value":"local-figma"}',
+          text: '{"value":"local-figma","fixtureInitializeCount":1}',
         }],
       },
     );
