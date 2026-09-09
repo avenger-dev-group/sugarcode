@@ -3,9 +3,7 @@ import test from 'node:test';
 
 import {
   isTranscriptScrollUpKey,
-  shouldFollowProcessAfterScroll,
   shouldFollowTranscriptAfterScroll,
-  shouldHandoffWheelScroll,
   shouldHoldTranscriptPlaceholder,
   shouldResetTranscriptFollow,
   shouldTrackTranscriptPointerScroll,
@@ -16,6 +14,7 @@ test('layout shrink preserves tail following when scrollTop is clamped upward', 
     shouldFollowTranscriptAfterScroll({
       wasFollowing: true,
       previousScrollTop: 900,
+      previousScrollHeight: 1_800,
       scrollTop: 120,
       scrollHeight: 1_200,
       clientHeight: 600,
@@ -30,10 +29,26 @@ test('pointer-driven upward scrolling disables tail following away from the bott
     shouldFollowTranscriptAfterScroll({
       wasFollowing: true,
       previousScrollTop: 900,
+      previousScrollHeight: 1_600,
       scrollTop: 700,
       scrollHeight: 1_600,
       clientHeight: 600,
       pointerScrollActive: true,
+    }),
+    false,
+  );
+});
+
+test('the first upward wheel step near the bottom does not re-enable following', () => {
+  assert.equal(
+    shouldFollowTranscriptAfterScroll({
+      wasFollowing: false,
+      previousScrollTop: 1_000,
+      previousScrollHeight: 1_600,
+      scrollTop: 980,
+      scrollHeight: 1_600,
+      clientHeight: 600,
+      pointerScrollActive: false,
     }),
     false,
   );
@@ -44,6 +59,7 @@ test('returning near the bottom resumes tail following', () => {
     shouldFollowTranscriptAfterScroll({
       wasFollowing: false,
       previousScrollTop: 400,
+      previousScrollHeight: 1_600,
       scrollTop: 960,
       scrollHeight: 1_600,
       clientHeight: 600,
@@ -86,67 +102,6 @@ test('touch gestures remain explicit transcript scroll intent', () => {
       targetIsScrollbar: false,
     }),
     true,
-  );
-});
-
-test('nested process scrolling hands downward wheel input to the transcript at its bottom edge', () => {
-  assert.equal(
-    shouldHandoffWheelScroll({
-      deltaY: 24,
-      scrollTop: 400,
-      scrollHeight: 800,
-      clientHeight: 400,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldHandoffWheelScroll({
-      deltaY: 24,
-      scrollTop: 300,
-      scrollHeight: 800,
-      clientHeight: 400,
-    }),
-    false,
-  );
-});
-
-test('nested process scrolling hands upward wheel input to the transcript at its top edge', () => {
-  assert.equal(
-    shouldHandoffWheelScroll({
-      deltaY: -24,
-      scrollTop: 0,
-      scrollHeight: 800,
-      clientHeight: 400,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldHandoffWheelScroll({
-      deltaY: -24,
-      scrollTop: 40,
-      scrollHeight: 800,
-      clientHeight: 400,
-    }),
-    false,
-  );
-});
-
-test('streaming process content follows only while its viewport remains near the bottom', () => {
-  assert.equal(
-    shouldFollowProcessAfterScroll({
-      scrollTop: 376,
-      scrollHeight: 800,
-      clientHeight: 400,
-    }),
-    true,
-  );
-  assert.equal(
-    shouldFollowProcessAfterScroll({
-      scrollTop: 300,
-      scrollHeight: 800,
-      clientHeight: 400,
-    }),
-    false,
   );
 });
 

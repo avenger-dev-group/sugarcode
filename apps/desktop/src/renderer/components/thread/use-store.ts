@@ -1230,6 +1230,7 @@ export const useTranscriptFollow = (
   const transcriptViewport = useRef<HTMLDivElement | null>(null);
   const shouldFollowTranscript = useRef<boolean>(true);
   const previousScrollTop = useRef<number>(0);
+  const previousScrollHeight = useRef<number>(0);
   const pointerScrollActive = useRef<boolean>(false);
   const previousThreadIdentity = useRef<string | null>(thread.threadIdentity);
   const previousPendingThreadId = useRef<string | null>(pendingThreadId);
@@ -1270,6 +1271,7 @@ export const useTranscriptFollow = (
     if (viewport) {
       viewport.scrollTop = viewport.scrollHeight;
       previousScrollTop.current = viewport.scrollTop;
+      previousScrollHeight.current = viewport.scrollHeight;
       return;
     }
     transcriptEnd.current?.scrollIntoView({ block: 'end' });
@@ -1280,12 +1282,14 @@ export const useTranscriptFollow = (
     shouldFollowTranscript.current = shouldFollowTranscriptAfterScroll({
       wasFollowing: shouldFollowTranscript.current,
       previousScrollTop: previousScrollTop.current,
+      previousScrollHeight: previousScrollHeight.current,
       scrollTop: viewport.scrollTop,
       scrollHeight: viewport.scrollHeight,
       clientHeight: viewport.clientHeight,
       pointerScrollActive: pointerScrollActive.current,
     });
     previousScrollTop.current = viewport.scrollTop;
+    previousScrollHeight.current = viewport.scrollHeight;
   };
 
   const recordWheelScrollIntent: TranscriptFollow['recordWheelScrollIntent'] = (
