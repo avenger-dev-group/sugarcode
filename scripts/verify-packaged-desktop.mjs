@@ -120,9 +120,12 @@ if (packagedManifest.version !== sourceManifest.version) {
   );
 }
 
+// @electron/asar resolves archive entries with the host path module. Nested
+// entry names therefore need native separators when extracting on Windows.
+const packagedRuntimePath = path.join('.vite', 'build', 'runtime.mjs');
 const packagedRuntime = extractFile(
   asarPath,
-  '.vite/build/runtime.mjs',
+  packagedRuntimePath,
 ).toString('utf8');
 if (
   !packagedRuntime.includes('SugarCode Desktop MCP') ||
