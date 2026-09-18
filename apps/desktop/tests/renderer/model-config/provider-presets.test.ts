@@ -4,10 +4,19 @@ import test from 'node:test';
 import {
   baseUrlForProviderWireChange,
   DEFAULT_NEW_MODEL_WIRE_API,
+  PROVIDER_PRESETS,
 } from '../../../src/renderer/components/model-config/provider-presets.ts';
 
-test('new model configurations default to OpenAI Responses', () => {
-  assert.equal(DEFAULT_NEW_MODEL_WIRE_API, 'openaiResponses');
+test('new model configurations default to Compatible Chat', () => {
+  assert.equal(DEFAULT_NEW_MODEL_WIRE_API, 'openaiChatCompletions');
+  assert.deepEqual(
+    PROVIDER_PRESETS.map((preset) => preset.wireApi),
+    [
+      'openaiChatCompletions',
+      'anthropicMessages',
+      'openaiResponses',
+    ],
+  );
 });
 
 test('provider protocol changes preserve a custom Base URL', () => {

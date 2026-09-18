@@ -52,10 +52,10 @@ export const ModelConfigSettingsPanel = (
               size="lg"
               variant="outline"
               disabled={store.busy}
-              onClick={store.addConfiguration}
+              onClick={store.addProvider}
             >
               <Plus aria-hidden="true" />
-              新建
+              添加提供商
             </Button>
           ) : null}
         </header>

@@ -10,14 +10,15 @@ export type ProviderPreset = Readonly<{
   wireApi: ModelWireApi;
 }>;
 
-export const DEFAULT_NEW_MODEL_WIRE_API: ModelWireApi = 'openaiResponses';
+export const DEFAULT_NEW_MODEL_WIRE_API: ModelWireApi =
+  'openaiChatCompletions';
 
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   {
     providerFamily: 'openai',
-    label: 'OpenAI Responses',
+    label: 'OpenAI-compatible',
     baseUrl: 'https://api.openai.com/v1',
-    wireApi: 'openaiResponses',
+    wireApi: 'openaiChatCompletions',
   },
   {
     providerFamily: 'anthropic',
@@ -27,9 +28,9 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
   },
   {
     providerFamily: 'openai',
-    label: 'OpenAI-compatible',
+    label: 'OpenAI Responses',
     baseUrl: 'https://api.openai.com/v1',
-    wireApi: 'openaiChatCompletions',
+    wireApi: 'openaiResponses',
   },
 ];
 

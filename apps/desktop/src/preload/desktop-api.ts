@@ -175,6 +175,7 @@ import {
   MODEL_CONFIG_SAVE_CHANNEL,
   type ModelConfigActionResult,
   type ModelConfigInspection,
+  type ModelDiscoveryRequest,
   type ModelDiscoveryResult,
   type ModelConfigSaveRequest,
 } from '@/shared/model-config';
@@ -1526,11 +1527,11 @@ export const createDesktopApi = (
     return action;
   },
   discoverModels: async (
-    connectionId: string,
+    request: ModelDiscoveryRequest,
   ): Promise<ModelDiscoveryResult> => {
     const result: unknown = await ipcRenderer.invoke(
       MODEL_CONFIG_DISCOVER_CHANNEL,
-      connectionId,
+      request,
     );
     if (!isModelDiscoveryResult(result)) {
       throw new Error('Main returned an invalid model discovery result.');

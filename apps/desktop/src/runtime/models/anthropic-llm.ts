@@ -31,7 +31,10 @@ import { ProviderAdapterError, cancelledProviderError } from './errors.ts';
 import { isMetisModel, metisAnthropicThinking, resolveReasoningEffort } from './compatibility/metis.ts';
 import { normalizeLlmRequest } from './normalize-request.ts';
 import { createRequestDeadline } from './request-deadline.ts';
-import { streamWithPreOutputRetry } from './retry.ts';
+import {
+  rateLimitRetryDecision,
+  streamWithPreOutputRetry,
+} from './retry.ts';
 import {
   modelFunctionCallArgumentsMetadata,
   modelItemMetadata,
@@ -470,8 +473,16 @@ export class AnthropicLlm extends BaseLlm {
       const stream = streamWithPreOutputRetry<RawMessageStreamEvent>({
         signal: deadline.signal,
         maxRetries: this.maxRetries,
-        shouldRetry: (error) =>
-          mapAnthropicError(error, deadline.signal).details.retryable,
+        shouldRetry: (error, failedAttempts) => {
+          const mapped = mapAnthropicError(error, deadline.signal).details;
+          return mapped.kind === 'rateLimit'
+            ? rateLimitRetryDecision(
+                error,
+                failedAttempts,
+                isMetisModel(this.model),
+              )
+            : mapped.retryable;
+        },
         countsAsOutput: (event) => event.type !== 'message_start',
         create: async () => {
           const maxTokens = Math.max(

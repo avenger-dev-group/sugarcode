@@ -166,7 +166,10 @@ import type {
   TaskWorkspaceActionResult,
   TaskWorkspaceStatus,
 } from '../shared/command-environment.ts';
-import { isModelConfigInspection } from '../shared/model-config.ts';
+import {
+  isModelConfigInspection,
+  type ModelDiscoveryRequest,
+} from '../shared/model-config.ts';
 import type { GoalSnapshot } from '../shared/goals.ts';
 import {
   isBrowserAgentAction,
@@ -2070,7 +2073,7 @@ export class RuntimeHost {
         break;
       case 'model.discover':
         this.requireReady(command.requestId);
-        void this.discover(command.requestId, command.connectionId);
+        void this.discover(command.requestId, command.request);
         break;
       case 'shutdown':
         this.shuttingDown = true;
@@ -3129,10 +3132,7 @@ export class RuntimeHost {
         ...(typeof resolved.apiKey === 'string'
           ? { apiKey: resolved.apiKey }
           : {}),
-        timeoutMs:
-          typeof connection.requestTimeoutMs === 'number'
-            ? connection.requestTimeoutMs
-            : DEFAULT_PROVIDER_TIMEOUT_MS,
+        timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
         parallelTools: selection.effectiveCapabilities.parallelTools,
         ...(effectiveCompactThreshold >= 4_096
           ? { compactThresholdTokens: effectiveCompactThreshold }
@@ -3289,11 +3289,21 @@ export class RuntimeHost {
 
   private discover = async (
     requestId: string,
-    connectionId: string,
+    request: ModelDiscoveryRequest,
   ): Promise<void> => {
     try {
+      let apiKey = request.apiKey;
+      if (!apiKey) {
+        const saved = JSON.parse(
+          this.requireNative().modelConnectionJson(request.connection.id),
+        ) as { apiKey?: unknown };
+        apiKey = typeof saved.apiKey === 'string' ? saved.apiKey : undefined;
+      }
       const discovery = await discoverModels(
-        this.requireNative().modelConnectionJson(connectionId),
+        JSON.stringify({
+          connection: request.connection,
+          ...(apiKey ? { apiKey } : {}),
+        }),
       );
       this.emit({ type: 'model.discovery', requestId, discovery });
     } catch (error) {

@@ -20,7 +20,7 @@ type ModelConfigIpcOptions = IpcSenderValidationOptions &
         request: unknown,
       ) => Promise<import('@/shared/model-config').ModelConfigActionResult>;
       discover: (
-        connectionId: unknown,
+        request: unknown,
       ) => Promise<import('@/shared/model-config').ModelDiscoveryResult>;
       deleteApiKey: (
         connectionId: unknown,
@@ -49,9 +49,9 @@ export const registerModelConfigIpc = (
   });
   ipcMain.handle(
     MODEL_CONFIG_DISCOVER_CHANNEL,
-    (event, connectionId: unknown) => {
+    (event, request: unknown) => {
       trusted(event);
-      return options.controller.discover(connectionId);
+      return options.controller.discover(request);
     },
   );
   ipcMain.handle(

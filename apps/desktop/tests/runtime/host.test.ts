@@ -1870,7 +1870,7 @@ class InspectionFallbackLlm extends BaseLlm {
 }
 
 test('future-action-only final detection distinguishes promises from outcomes', () => {
-  assert.equal(DEFAULT_MODEL_REQUEST_TIMEOUT_MS, 600_000);
+  assert.equal(DEFAULT_MODEL_REQUEST_TIMEOUT_MS, 3_600_000);
   assert.equal(
     isFutureActionOnlyFinal('好的，现在我开始生成完整的演示文稿。'),
     true,
@@ -2103,7 +2103,7 @@ test('RuntimeHost bridges the bounded browser tool through the desktop protocol'
   );
 });
 
-test('RuntimeHost applies the selected connection request deadline', async () => {
+test('RuntimeHost uses the fixed sixty-minute model request deadline', async () => {
   let resolvedTimeoutMs: number | undefined;
   let resolveCompleted: (() => void) | undefined;
   const completed = new Promise<void>((resolve) => {
@@ -2131,7 +2131,7 @@ test('RuntimeHost applies the selected connection request deadline', async () =>
         enabled: true,
         wireApi: 'openaiResponses',
         continuationMode: 'localReplay',
-        requestTimeoutMs: 3_600_000,
+        requestTimeoutMs: 60_000,
       },
     }),
   } as NativeRuntimeBinding;

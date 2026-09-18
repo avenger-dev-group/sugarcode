@@ -1,8 +1,3 @@
-import {
-  MAX_MODEL_REQUEST_TIMEOUT_MS,
-  MIN_MODEL_REQUEST_TIMEOUT_MS,
-} from './model-request-limits.ts';
-
 export const MODEL_CONFIG_GET_CHANNEL = 'model-config:get';
 export const MODEL_CONFIG_SAVE_CHANNEL = 'model-config:save';
 export const MODEL_CONFIG_DELETE_API_KEY_CHANNEL =
@@ -42,7 +37,6 @@ export type ModelConnectionValue = Readonly<{
   enabled: boolean;
   wireApi: ModelWireApi;
   continuationMode: ModelContinuationMode;
-  requestTimeoutMs?: number;
 }>;
 
 export type ModelProfileValue = Readonly<{
@@ -123,6 +117,11 @@ export type ModelDiscoveryResult = Readonly<{
   models: readonly DiscoveredModel[];
 }>;
 
+export type ModelDiscoveryRequest = Readonly<{
+  connection: ModelConnectionValue;
+  apiKey?: string;
+}>;
+
 export type ModelConfigApi = Readonly<{
   getModelConfig: () => Promise<ModelConfigInspection>;
   saveModelConfig: (
@@ -132,7 +131,9 @@ export type ModelConfigApi = Readonly<{
     connectionId: string,
     expectedRevision: string,
   ) => Promise<ModelConfigActionResult>;
-  discoverModels: (connectionId: string) => Promise<ModelDiscoveryResult>;
+  discoverModels: (
+    request: ModelDiscoveryRequest,
+  ) => Promise<ModelDiscoveryResult>;
 }>;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -219,7 +220,10 @@ const LEGACY_MEDIA_TRANSPORTS = [
   'dashscopeTemporaryUrl',
 ] as const;
 
-const isConnection = (value: unknown): value is ModelConnectionValue =>
+const isConnection = (
+  value: unknown,
+  allowLegacyRequestTimeout = false,
+): value is ModelConnectionValue =>
   isRecord(value) &&
   hasOnlyKeys(
     value,
@@ -232,7 +236,10 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
       'wireApi',
       'continuationMode',
     ],
-    ['mediaTransport', 'requestTimeoutMs'],
+    [
+      'mediaTransport',
+      ...(allowLegacyRequestTimeout ? ['requestTimeoutMs'] : []),
+    ],
   ) &&
   isId(value.id) &&
   PROVIDER_FAMILIES.includes(
@@ -246,14 +253,26 @@ const isConnection = (value: unknown): value is ModelConnectionValue =>
   ['localReplay', 'providerManaged'].includes(
     value.continuationMode as ModelContinuationMode,
   ) &&
-  (value.requestTimeoutMs === undefined ||
+  (!allowLegacyRequestTimeout ||
+    value.requestTimeoutMs === undefined ||
     (Number.isInteger(value.requestTimeoutMs) &&
-      (value.requestTimeoutMs as number) >= MIN_MODEL_REQUEST_TIMEOUT_MS &&
-      (value.requestTimeoutMs as number) <= MAX_MODEL_REQUEST_TIMEOUT_MS)) &&
+      (value.requestTimeoutMs as number) >= 60_000 &&
+      (value.requestTimeoutMs as number) <= 3_600_000)) &&
   (value.mediaTransport === undefined ||
     LEGACY_MEDIA_TRANSPORTS.includes(
       value.mediaTransport as (typeof LEGACY_MEDIA_TRANSPORTS)[number],
     ));
+
+export const isModelDiscoveryRequest = (
+  value: unknown,
+): value is ModelDiscoveryRequest =>
+  isRecord(value) &&
+  hasOnlyKeys(value, ['connection'], ['apiKey']) &&
+  isConnection(value.connection) &&
+  (value.apiKey === undefined ||
+    (typeof value.apiKey === 'string' &&
+      value.apiKey.length > 0 &&
+      byteLength(value.apiKey) <= 16_384));
 
 const isProfile = (value: unknown): value is ModelProfileValue =>
   isRecord(value) &&
@@ -326,8 +345,9 @@ const isMediaRouting = (value: unknown): value is MediaModelRoutingValue =>
   (value.videoProfileId === undefined || isId(value.videoProfileId)) &&
   (value.audioProfileId === undefined || isId(value.audioProfileId));
 
-export const isModelConfigValue = (
+const isModelConfigValueInternal = (
   value: unknown,
+  allowLegacyRequestTimeout: boolean,
 ): value is ModelConfigValue => {
   if (
     !isRecord(value) ||
@@ -340,7 +360,9 @@ export const isModelConfigValue = (
     !Array.isArray(value.connections) ||
     value.connections.length < 1 ||
     value.connections.length > 16 ||
-    !value.connections.every(isConnection) ||
+    !value.connections.every((connection) =>
+      isConnection(connection, allowLegacyRequestTimeout),
+    ) ||
     !Array.isArray(value.profiles) ||
     value.profiles.length < 1 ||
     value.profiles.length > 128 ||
@@ -417,6 +439,10 @@ export const isModelConfigValue = (
   );
 };
 
+export const isModelConfigValue = (
+  value: unknown,
+): value is ModelConfigValue => isModelConfigValueInternal(value, false);
+
 const isCredentialStatus = (
   value: unknown,
 ): value is ModelCredentialStatus =>
@@ -437,7 +463,7 @@ export const isModelConfigInspection = (
   ]) &&
   value.contractVersion === 1 &&
   isRevision(value.revision) &&
-  (value.config === null || isModelConfigValue(value.config)) &&
+  (value.config === null || isModelConfigValueInternal(value.config, true)) &&
   Array.isArray(value.credentialStatuses) &&
   value.credentialStatuses.every(isCredentialStatus);
 

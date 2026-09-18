@@ -50,7 +50,10 @@ import {
   readOpenAiResponsesPartReplay,
 } from './openai-responses-replay.ts';
 import { createRequestDeadline } from './request-deadline.ts';
-import { streamWithPreOutputRetry } from './retry.ts';
+import {
+  rateLimitRetryDecision,
+  streamWithPreOutputRetry,
+} from './retry.ts';
 import {
   modelFunctionCallArgumentsMetadata,
   modelItemMetadata,
@@ -980,7 +983,16 @@ export class OpenAiLlm extends BaseLlm {
     const stream = streamWithPreOutputRetry<ResponseStreamEvent>({
       signal: abortSignal,
       maxRetries: this.maxRetries,
-      shouldRetry: (error) => mapOpenAiError(error, abortSignal).details.retryable,
+      shouldRetry: (error, failedAttempts) => {
+        const mapped = mapOpenAiError(error, abortSignal).details;
+        return mapped.kind === 'rateLimit'
+          ? rateLimitRetryDecision(
+              error,
+              failedAttempts,
+              isMetisModel(this.model),
+            )
+          : mapped.retryable;
+      },
       countsAsOutput: (event) =>
         event.type !== 'response.created' &&
         event.type !== 'response.in_progress' &&
@@ -1375,7 +1387,16 @@ export class OpenAiLlm extends BaseLlm {
     const stream = streamWithPreOutputRetry({
       signal: abortSignal,
       maxRetries: this.maxRetries,
-      shouldRetry: (error) => mapOpenAiError(error, abortSignal).details.retryable,
+      shouldRetry: (error, failedAttempts) => {
+        const mapped = mapOpenAiError(error, abortSignal).details;
+        return mapped.kind === 'rateLimit'
+          ? rateLimitRetryDecision(
+              error,
+              failedAttempts,
+              isMetisModel(this.model),
+            )
+          : mapped.retryable;
+      },
       countsAsOutput: chatCompletionChunkCountsAsOutput,
       create: async () =>
         this.client.chat.completions.create(

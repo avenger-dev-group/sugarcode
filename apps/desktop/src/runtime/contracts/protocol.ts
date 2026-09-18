@@ -2,11 +2,13 @@ import {
   isModelConfigActionResult,
   isModelConfigInspection,
   isModelConfigSaveRequest,
+  isModelDiscoveryRequest,
   isModelRequestOptions,
   isModelDiscoveryResult,
   type ModelConfigActionResult,
   type ModelConfigInspection,
   type ModelConfigSaveRequest,
+  type ModelDiscoveryRequest,
   type ModelDiscoveryResult,
   type ModelReasoningEffort,
   type ModelServiceTier,
@@ -676,7 +678,7 @@ export type RuntimeCommand =
   | Readonly<{
       type: 'model.discover';
       requestId: string;
-      connectionId: string;
+      request: ModelDiscoveryRequest;
     }>
   | Readonly<{ type: 'mcp.configInspect'; requestId: string }>
   | Readonly<{
@@ -2001,10 +2003,7 @@ export const isRuntimeCommand = (value: unknown): value is RuntimeCommand => {
         /^[0-9a-f]{64}$/u.test(value.expectedRevision)
       );
     case 'model.discover':
-      return (
-        typeof value.connectionId === 'string' &&
-        /^[A-Za-z0-9_-]{1,64}$/u.test(value.connectionId)
-      );
+      return isModelDiscoveryRequest(value.request);
     case 'mcp.configInspect':
       return true;
     case 'mcp.configSave':

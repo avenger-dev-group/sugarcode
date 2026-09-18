@@ -12,8 +12,8 @@ export const saveModelConfig: typeof window.sugarcode.saveModelConfig = async (
   return result;
 };
 export const discoverModels: typeof window.sugarcode.discoverModels = (
-  connectionId,
-) => window.sugarcode.discoverModels(connectionId);
+  request,
+) => window.sugarcode.discoverModels(request);
 export const deleteModelApiKey: typeof window.sugarcode.deleteModelApiKey =
   async (connectionId, expectedRevision) => {
     const result = await window.sugarcode.deleteModelApiKey(

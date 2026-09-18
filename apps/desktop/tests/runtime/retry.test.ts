@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ProviderAdapterError } from '../../src/runtime/models/errors.ts';
-import { streamWithPreOutputRetry } from '../../src/runtime/models/retry.ts';
+import {
+  rateLimitRetryDecision,
+  retryAfterMs,
+  streamWithPreOutputRetry,
+} from '../../src/runtime/models/retry.ts';
 
 const collect = async <T>(stream: AsyncIterable<T>): Promise<readonly T[]> => {
   const values: T[] = [];
@@ -52,5 +56,78 @@ test('pre-output retry never replays a stream after meaningful output', async ()
   });
 
   await assert.rejects(collect(stream), /connection closed/u);
+  assert.equal(attempts, 1);
+});
+
+test('retry-after supports seconds, dates, and the SDK millisecond extension', () => {
+  const now = Date.parse('2026-09-17T00:00:00Z');
+  assert.equal(
+    retryAfterMs({ headers: new Headers({ 'retry-after': '2.5' }) }, now),
+    2_500,
+  );
+  assert.equal(
+    retryAfterMs({
+      headers: new Headers({
+        'retry-after': 'Thu, 17 Sep 2026 00:03:00 GMT',
+      }),
+    }, now),
+    180_000,
+  );
+  assert.equal(
+    retryAfterMs({
+      headers: new Headers({
+        'retry-after': '120',
+        'retry-after-ms': '750',
+      }),
+    }, now),
+    750,
+  );
+});
+
+test('persistent rate limits retry beyond the ordinary retry cap', async () => {
+  let attempts = 0;
+  const values = await collect(streamWithPreOutputRetry({
+    shouldRetry: (_error, failedAttempts) => ({
+      ...rateLimitRetryDecision(_error, failedAttempts, true),
+      delayMs: 0,
+    }),
+    create: async () => {
+      attempts += 1;
+      if (attempts <= 6) {
+        throw new Error('capacity unavailable');
+      }
+      return (async function* () {
+        yield 'ready';
+      })();
+    },
+  }));
+
+  assert.deepEqual(values, ['ready']);
+  assert.equal(attempts, 7);
+});
+
+test('persistent rate limits back off from one minute to a five-minute cap', () => {
+  assert.equal(rateLimitRetryDecision({}, 0, true, () => 0).delayMs, 60_000);
+  assert.equal(rateLimitRetryDecision({}, 1, true, () => 0).delayMs, 120_000);
+  assert.equal(rateLimitRetryDecision({}, 2, true, () => 0).delayMs, 240_000);
+  assert.equal(rateLimitRetryDecision({}, 3, true, () => 0).delayMs, 300_000);
+  assert.equal(rateLimitRetryDecision({}, 20, true, () => 0).delayMs, 300_000);
+  assert.equal(rateLimitRetryDecision({}, 20, true, () => 1).delayMs, 330_000);
+});
+
+test('an explicit retry limit still overrides persistent rate-limit retries', async () => {
+  let attempts = 0;
+  await assert.rejects(
+    collect(streamWithPreOutputRetry({
+      maxRetries: 0,
+      shouldRetry: (error, failedAttempts) =>
+        rateLimitRetryDecision(error, failedAttempts, true),
+      create: async () => {
+        attempts += 1;
+        throw new Error('capacity unavailable');
+      },
+    })),
+    /capacity unavailable/u,
+  );
   assert.equal(attempts, 1);
 });

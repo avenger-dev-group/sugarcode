@@ -94,6 +94,7 @@ import { UserMessage } from './user-message';
 import { AgentPreviewCard } from './agent-preview-card';
 import { GoalRunDock } from './goal-run-dock';
 import { AgentDrawioCard } from './agent-drawio-card';
+import { ModelProfilePicker } from './model-profile-picker';
 
 const currentOrchestrationActivity = (
   store: ThreadWorkbenchViewProps['store'],
@@ -357,26 +358,16 @@ const QueueDock = ({
                     </p>
                   ) : null}
                   <div className="flex items-center gap-2">
-                    <Select
+                    <ModelProfilePicker
+                      options={store.modelOptions}
                       value={store.queueEditor.modelProfileId}
                       onValueChange={store.setQueueEditModel}
                       disabled={pending}
-                    >
-                      <SelectTrigger className="h-8 max-w-52 text-xs">
-                        <SelectValue placeholder="选择模型" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {store.modelOptions.map((option) => (
-                          <SelectItem
-                            key={option.profileId}
-                            value={option.profileId}
-                            disabled={!option.available}
-                          >
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      className="max-w-52 border border-border-strong bg-surface-raised shadow-[var(--shadow-raised)]"
+                      placeholder="选择模型"
+                      ariaLabel="队列消息模型"
+                      side="bottom"
+                    />
                     <Select
                       value={store.queueEditor.modelRequest.reasoningEffort ?? 'auto'}
                       onValueChange={(value) =>
@@ -1334,32 +1325,18 @@ export const ThreadWorkbenchView = ({
                         >
                           <Paperclip className="size-4" aria-hidden="true" />
                         </Button>
-                        <Select
+                        <ModelProfilePicker
+                          options={store.modelOptions}
                           value={store.selectedModelProfileId}
                           onValueChange={store.setSelectedModelProfileId}
                           disabled={
                             store.modelSelectionDisabled ||
                             store.modelOptions.length === 0
                           }
-                        >
-                          <SelectTrigger
-                            className="h-8 w-auto max-w-56 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-surface"
-                            aria-label="Model for next turn"
-                          >
-                            <SelectValue placeholder="No model configured" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {store.modelOptions.map((option) => (
-                              <SelectItem
-                                key={option.profileId}
-                                value={option.profileId}
-                                disabled={!option.available}
-                              >
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                          className="w-auto max-w-56"
+                          placeholder="No model configured"
+                          ariaLabel="Model for next turn"
+                        />
                         <Select
                           value={store.selectedModelRequest.reasoningEffort ?? 'auto'}
                           onValueChange={(value) =>

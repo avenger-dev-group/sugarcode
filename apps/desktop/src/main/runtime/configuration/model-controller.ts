@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  isModelDiscoveryRequest,
   isModelConfigSaveRequest,
   type ModelConfigActionResult,
   type ModelConfigInspection,
@@ -68,18 +69,15 @@ export class RuntimeModelConfigController {
     }
   };
 
-  discover = async (connectionId: unknown): Promise<ModelDiscoveryResult> => {
-    if (
-      typeof connectionId !== 'string' ||
-      !/^[A-Za-z0-9_-]{1,64}$/u.test(connectionId)
-    ) {
-      throw new Error('The model connection identifier was invalid.');
+  discover = async (request: unknown): Promise<ModelDiscoveryResult> => {
+    if (!isModelDiscoveryRequest(request)) {
+      throw new Error('The model discovery request was invalid.');
     }
     const event = await this.runtime.request(
       {
         type: 'model.discover',
         requestId: randomUUID(),
-        connectionId,
+        request,
       },
       'model.discovery',
     );

@@ -6,10 +6,11 @@ import {
   type ModelConfigValue,
   type ModelConnectionValue,
   type ModelProfileValue,
+  type DiscoveredModel,
 } from '@/shared/model-config';
-import { DEFAULT_MODEL_REQUEST_TIMEOUT_MS } from '@/shared/model-request-limits';
 import {
   deleteModelApiKey,
+  discoverModels,
   getModelConfig,
   saveModelConfig,
 } from '@/renderer/services/model-config';
@@ -22,8 +23,10 @@ import type {
 import {
   baseUrlForProviderWireChange,
   DEFAULT_NEW_MODEL_WIRE_API,
+  PROVIDER_PRESETS,
   presetForWire,
 } from './provider-presets';
+import { consolidateProviderConnections } from './catalog';
 
 const INITIAL_CONNECTION: ModelConnectionValue = {
   id: 'conn_openai',
@@ -33,7 +36,6 @@ const INITIAL_CONNECTION: ModelConnectionValue = {
   enabled: true,
   wireApi: DEFAULT_NEW_MODEL_WIRE_API,
   continuationMode: 'localReplay',
-  requestTimeoutMs: DEFAULT_MODEL_REQUEST_TIMEOUT_MS,
 };
 
 const INITIAL_PROFILE: ModelProfileValue = {
@@ -96,28 +98,48 @@ export const useStore = ({
   const [selectedProfileId, setSelectedProfileId] = useState<string>(
     INITIAL_PROFILE.id,
   );
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string>(
+    INITIAL_CONNECTION.id,
+  );
   const [notice, setNotice] = useState<string | null>(null);
-  const [credentialValue, setCredentialValue] = useState<string>('');
+  const [credentialDrafts, setCredentialDrafts] = useState<
+    Readonly<Record<string, string>>
+  >({});
   const [deleteCredentialOpen, setDeleteCredentialOpen] =
     useState<boolean>(false);
+  const [discoveryCandidates, setDiscoveryCandidates] = useState<
+    readonly DiscoveredModel[] | null
+  >(null);
 
   useEffect(() => {
     if (!active) {
-      setCredentialValue('');
+      setCredentialDrafts({});
+      setDiscoveryCandidates(null);
       return;
     }
     let current = true;
     setPhase('loading');
     setNotice(null);
+    setDiscoveryCandidates(null);
     void getModelConfig()
       .then((next) => {
         if (!current) {
           return;
         }
-        const nextConfig = next.config ?? EMPTY_CONFIG;
+        const nextConfig = next.config
+          ? consolidateProviderConnections(
+              next.config,
+              next.credentialStatuses,
+            )
+          : EMPTY_CONFIG;
         setInspection(next);
         setConfig(nextConfig);
         setSelectedProfileId(nextConfig.defaultProfileId);
+        setSelectedConnectionId(
+          nextConfig.profiles.find(
+            (profile) => profile.id === nextConfig.defaultProfileId,
+          )?.connectionId ?? nextConfig.connections[0]?.id ?? INITIAL_CONNECTION.id,
+        );
         setPhase('idle');
       })
       .catch(() => {
@@ -137,8 +159,9 @@ export const useStore = ({
     INITIAL_PROFILE;
   const selectedConnection =
     config.connections.find(
-      (connection) => connection.id === selectedProfile.connectionId,
+      (connection) => connection.id === selectedConnectionId,
     ) ?? config.connections[0] ?? INITIAL_CONNECTION;
+  const credentialValue = credentialDrafts[selectedConnection.id] ?? '';
 
   const updateConfig = (
     updater: (current: ModelConfigValue) => ModelConfigValue,
@@ -170,7 +193,19 @@ export const useStore = ({
     }));
   };
 
-  const addConfiguration = (): void => {
+  const updateProfile = (
+    id: string,
+    patch: Partial<ModelProfileValue>,
+  ): void => {
+    updateConfig((current) => ({
+      ...current,
+      profiles: current.profiles.map((profile) =>
+        profile.id === id ? { ...profile, ...patch } : profile,
+      ),
+    }));
+  };
+
+  const addProvider = (): void => {
     if (config.connections.length >= 16) {
       setNotice('模型目录最多可包含 16 个连接。');
       return;
@@ -204,64 +239,228 @@ export const useStore = ({
       profiles: [...current.profiles, profile],
     }));
     setSelectedProfileId(profileId);
-    setCredentialValue('');
+    setSelectedConnectionId(connectionId);
     setNotice(null);
   };
 
-  const deleteConfiguration = (): void => {
-    if (config.profiles.length === 1) {
-      setNotice('至少需要保留一个模型配置。');
+  const deleteProvider = (): void => {
+    if (config.connections.length === 1) {
+      setNotice('至少需要保留一个模型提供商。');
       return;
     }
-    const nextProfile =
-      config.profiles.find((profile) => profile.id !== selectedProfile.id) ??
-      config.profiles[0];
-    const connectionIsShared = config.profiles.some(
-      (profile) =>
-        profile.id !== selectedProfile.id &&
-        profile.connectionId === selectedConnection.id,
+    const removedProfileIds = new Set(
+      config.profiles
+        .filter((profile) => profile.connectionId === selectedConnection.id)
+        .map((profile) => profile.id),
     );
+    const nextConnection = config.connections.find(
+      (connection) => connection.id !== selectedConnection.id,
+    ) ?? INITIAL_CONNECTION;
+    const nextProfile = config.profiles.find(
+      (profile) => profile.connectionId === nextConnection.id,
+    ) ?? INITIAL_PROFILE;
     updateConfig((current) => ({
       ...current,
-      ...(current.mediaRouting?.imageProfileId === selectedProfile.id ||
-          current.mediaRouting?.videoProfileId === selectedProfile.id ||
-          current.mediaRouting?.audioProfileId === selectedProfile.id
+      mediaRouting: current.mediaRouting
         ? {
-            mediaRouting: {
-              ...current.mediaRouting,
-              ...(current.mediaRouting.imageProfileId === selectedProfile.id
-                ? { imageProfileId: undefined }
-                : {}),
-              ...(current.mediaRouting.videoProfileId === selectedProfile.id
-                ? { videoProfileId: undefined }
-                : {}),
-              ...(current.mediaRouting.audioProfileId === selectedProfile.id
-                ? { audioProfileId: undefined }
-                : {}),
-            },
+            ...current.mediaRouting,
+            ...(current.mediaRouting.imageProfileId &&
+            removedProfileIds.has(current.mediaRouting.imageProfileId)
+              ? { imageProfileId: undefined }
+              : {}),
+            ...(current.mediaRouting.videoProfileId &&
+            removedProfileIds.has(current.mediaRouting.videoProfileId)
+              ? { videoProfileId: undefined }
+              : {}),
+            ...(current.mediaRouting.audioProfileId &&
+            removedProfileIds.has(current.mediaRouting.audioProfileId)
+              ? { audioProfileId: undefined }
+              : {}),
           }
-        : {}),
-      defaultProfileId:
-        current.defaultProfileId === selectedProfile.id
-          ? nextProfile.id
-          : current.defaultProfileId,
+        : undefined,
+      defaultProfileId: removedProfileIds.has(current.defaultProfileId)
+        ? nextProfile.id
+        : current.defaultProfileId,
       profiles: current.profiles.filter(
-        (profile) => profile.id !== selectedProfile.id,
+        (profile) => !removedProfileIds.has(profile.id),
       ),
-      connections: connectionIsShared
-        ? current.connections
-        : current.connections.filter(
-            (connection) => connection.id !== selectedConnection.id,
-          ),
+      connections: current.connections.filter(
+        (connection) => connection.id !== selectedConnection.id,
+      ),
     }));
     setSelectedProfileId(nextProfile.id);
-    setCredentialValue('');
-    setNotice('已从当前草稿中移除该配置，保存后生效。');
+    setSelectedConnectionId(nextConnection.id);
+    setCredentialDrafts((current) => {
+      const next = { ...current };
+      delete next[selectedConnection.id];
+      return next;
+    });
+    setNotice('已从草稿中移除该提供商及其模型，保存后生效。');
+  };
+
+  const addModel = (): void => {
+    if (config.profiles.length >= 128) {
+      setNotice('模型目录最多可包含 128 个模型。');
+      return;
+    }
+    const profileId = uniqueId(
+      'model',
+      config.profiles.map((profile) => profile.id),
+    );
+    const profile: ModelProfileValue = {
+      ...INITIAL_PROFILE,
+      id: profileId,
+      connectionId: selectedConnection.id,
+      displayName: '新模型',
+    };
+    updateConfig((current) => ({
+      ...current,
+      profiles: [...current.profiles, profile],
+    }));
+    setSelectedProfileId(profileId);
+    setNotice(null);
+  };
+
+  const deleteModel = (id: string): void => {
+    const providerProfiles = config.profiles.filter(
+      (profile) => profile.connectionId === selectedConnection.id,
+    );
+    if (providerProfiles.length === 1 || config.profiles.length === 1) {
+      setNotice('每个提供商至少需要保留一个模型。');
+      return;
+    }
+    const nextProfile = providerProfiles.find((profile) => profile.id !== id) ??
+      config.profiles.find((profile) => profile.id !== id) ?? INITIAL_PROFILE;
+    updateConfig((current) => ({
+      ...current,
+      defaultProfileId:
+        current.defaultProfileId === id ? nextProfile.id : current.defaultProfileId,
+      mediaRouting: current.mediaRouting
+        ? {
+            ...current.mediaRouting,
+            ...(current.mediaRouting.imageProfileId === id
+              ? { imageProfileId: undefined }
+              : {}),
+            ...(current.mediaRouting.videoProfileId === id
+              ? { videoProfileId: undefined }
+              : {}),
+            ...(current.mediaRouting.audioProfileId === id
+              ? { audioProfileId: undefined }
+              : {}),
+          }
+        : undefined,
+      profiles: current.profiles.filter((profile) => profile.id !== id),
+    }));
+    if (selectedProfileId === id) setSelectedProfileId(nextProfile.id);
+    setNotice('已从草稿中移除该模型，保存后生效。');
+  };
+
+  const discoveredProfile = (
+    current: ModelConfigValue,
+    model: DiscoveredModel,
+  ): ModelProfileValue => ({
+    ...INITIAL_PROFILE,
+    id: uniqueId('model', current.profiles.map((profile) => profile.id)),
+    connectionId: selectedConnection.id,
+    displayName: model.displayName || model.modelId,
+    modelId: model.modelId,
+    ...(model.contextWindowTokens === undefined
+      ? {}
+      : { contextWindowTokens: model.contextWindowTokens }),
+  });
+
+  const discoverProviderModels = (): void => {
+    if (phase !== 'idle') return;
+    if (!selectedConnection.baseUrl.trim()) {
+      setNotice('请先填写提供商的基础 URL。');
+      return;
+    }
+    setPhase('discovering');
+    setNotice(null);
+    void discoverModels({
+      connection: selectedConnection,
+      ...(credentialValue.trim() ? { apiKey: credentialValue } : {}),
+    })
+      .then((result) => {
+        setDiscoveryCandidates(
+          result.models.length > 0 ? result.models : null,
+        );
+        setNotice(
+          result.models.length > 0
+            ? `发现 ${result.models.length} 个模型，请选择要添加的项目。`
+            : '该提供商没有返回可用模型。',
+        );
+        setPhase('idle');
+      })
+      .catch(() => {
+        setNotice('无法从该提供商获取模型，请检查地址、协议和 API 密钥。');
+        setPhase('idle');
+      });
+  };
+
+  const adoptDiscoveredModels = (modelIds: readonly string[]): void => {
+    if (!discoveryCandidates) return;
+    const picked = new Set(modelIds);
+    const known = new Set(
+      config.profiles
+        .filter((profile) => profile.connectionId === selectedConnection.id)
+        .map((profile) => profile.modelId),
+    );
+    const additions: ModelProfileValue[] = [];
+    for (const model of discoveryCandidates) {
+      if (
+        !picked.has(model.modelId) ||
+        known.has(model.modelId) ||
+        config.profiles.length + additions.length >= 128
+      ) {
+        continue;
+      }
+      const profile = discoveredProfile(
+        { ...config, profiles: [...config.profiles, ...additions] },
+        model,
+      );
+      additions.push(profile);
+      known.add(model.modelId);
+    }
+    if (additions.length > 0) {
+      const blankIds = new Set(
+        config.profiles
+          .filter(
+            (profile) =>
+              profile.connectionId === selectedConnection.id &&
+              profile.modelId.trim().length === 0,
+          )
+          .map((profile) => profile.id),
+      );
+      updateConfig(() => ({
+        ...config,
+        defaultProfileId: blankIds.has(config.defaultProfileId)
+          ? (additions[0]?.id ?? config.defaultProfileId)
+          : config.defaultProfileId,
+        profiles: [
+          ...config.profiles.filter((profile) => !blankIds.has(profile.id)),
+          ...additions,
+        ],
+      }));
+      const firstAddedId = additions[0]?.id;
+      if (firstAddedId) setSelectedProfileId(firstAddedId);
+    }
+    setDiscoveryCandidates(null);
+    setNotice(
+      additions.length > 0
+        ? `已添加 ${additions.length} 个模型；已有同名模型保持不变。`
+        : '没有添加新的模型。',
+    );
   };
 
   const applyResult = (result: ModelConfigActionResult): void => {
     if (result.inspection) {
-      const nextConfig = result.inspection.config ?? EMPTY_CONFIG;
+      const nextConfig = result.inspection.config
+        ? consolidateProviderConnections(
+            result.inspection.config,
+            result.inspection.credentialStatuses,
+          )
+        : EMPTY_CONFIG;
       setInspection(result.inspection);
       setConfig(nextConfig);
       setSelectedProfileId((current) =>
@@ -269,8 +468,17 @@ export const useStore = ({
           ? current
           : nextConfig.defaultProfileId,
       );
+      setSelectedConnectionId((current) =>
+        nextConfig.connections.some((connection) => connection.id === current)
+          ? current
+          : nextConfig.profiles.find(
+              (profile) => profile.id === nextConfig.defaultProfileId,
+            )?.connectionId ??
+              nextConfig.connections[0]?.id ??
+              INITIAL_CONNECTION.id,
+      );
     }
-    setCredentialValue('');
+    setCredentialDrafts({});
     setNotice(noticeFor(result));
     setPhase('idle');
   };
@@ -295,19 +503,19 @@ export const useStore = ({
     void saveModelConfig({
       expectedRevision: inspection.revision,
       config: savedConfig,
-      credentialUpdates: savedConfig.connections.map((connection) =>
-        connection.id === selectedConnection.id &&
-        credentialValue.length > 0
+      credentialUpdates: savedConfig.connections.map((connection) => {
+        const draft = credentialDrafts[connection.id];
+        return draft
           ? {
               action: 'set' as const,
               connectionId: connection.id,
-              value: credentialValue,
+              value: draft,
             }
           : {
               action: 'preserve' as const,
               connectionId: connection.id,
-            },
-      ),
+            };
+      }),
     })
       .then(applyResult)
       .catch(() => {
@@ -342,20 +550,35 @@ export const useStore = ({
     selectedProfile,
     selectedProfileId,
     selectedConnection,
+    selectedConnectionId: selectedConnection.id,
     notice,
     deleteCredentialOpen,
     credentialValue,
+    discoveryCandidates,
+    setSelectedConnectionId: (id) => {
+      const profile = config.profiles.find(
+        (candidate) => candidate.connectionId === id,
+      );
+      setSelectedConnectionId(id);
+      if (profile) setSelectedProfileId(profile.id);
+      setNotice(null);
+    },
     setSelectedProfileId: (id) => {
       setSelectedProfileId(id);
-      setCredentialValue('');
+      const profile = config.profiles.find((candidate) => candidate.id === id);
+      if (profile) setSelectedConnectionId(profile.connectionId);
       setNotice(null);
     },
     setDeleteCredentialOpen,
-    setCredentialValue,
-    setDefaultProfile: () =>
+    setCredentialValue: (value) =>
+      setCredentialDrafts((current) => ({
+        ...current,
+        [selectedConnection.id]: value,
+      })),
+    setDefaultProfile: (profileId) =>
       updateConfig((current) => ({
         ...current,
-        defaultProfileId: selectedProfile.id,
+        defaultProfileId: profileId ?? selectedProfile.id,
       })),
     setProviderWire: (wireApi) => {
       const preset = presetForWire(wireApi);
@@ -366,7 +589,11 @@ export const useStore = ({
             ? {
                 ...connection,
                 providerFamily: preset.providerFamily,
-                displayName: preset.label,
+                displayName: PROVIDER_PRESETS.some(
+                  (candidate) => candidate.label === connection.displayName,
+                )
+                  ? preset.label
+                  : connection.displayName,
                 baseUrl: baseUrlForProviderWireChange(
                   connection.wireApi,
                   connection.baseUrl,
@@ -404,6 +631,7 @@ export const useStore = ({
     },
     updateConnection,
     updateSelectedProfile,
+    updateProfile,
     setImageAnalysisProfile: (profileId) =>
       updateConfig((current) => ({
         ...current,
@@ -428,8 +656,13 @@ export const useStore = ({
           audioProfileId: profileId,
         },
       })),
-    addConfiguration,
-    deleteConfiguration,
+    addProvider,
+    deleteProvider,
+    addModel,
+    deleteModel,
+    discoverProviderModels,
+    closeDiscoveryCandidates: () => setDiscoveryCandidates(null),
+    adoptDiscoveredModels,
     save,
     deleteCredential,
   };

@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isModelConfigInspection,
   isModelConfigSaveRequest,
   isModelConfigValue,
+  isModelDiscoveryRequest,
 } from '../../src/shared/model-config.ts';
 
 const catalog = (contextWindowTokens?: number) => ({
@@ -49,25 +51,25 @@ test('context window rejects out-of-range and fractional values', () => {
   assert.equal(isModelConfigValue(catalog(131_072.5)), false);
 });
 
-test('connection request timeout is optional and bounded to sixty minutes', () => {
+test('connection request timeout is no longer configurable', () => {
   const configured = catalog();
   const connection = configured.connections[0];
   assert.equal(isModelConfigValue({
     ...configured,
     connections: [{ ...connection, requestTimeoutMs: 60_000 }],
-  }), true);
-  assert.equal(isModelConfigValue({
-    ...configured,
-    connections: [{ ...connection, requestTimeoutMs: 3_600_000 }],
-  }), true);
-  assert.equal(isModelConfigValue({
-    ...configured,
-    connections: [{ ...connection, requestTimeoutMs: 59_999 }],
   }), false);
-  assert.equal(isModelConfigValue({
-    ...configured,
-    connections: [{ ...connection, requestTimeoutMs: 3_600_001 }],
-  }), false);
+  assert.equal(isModelConfigInspection({
+    contractVersion: 1,
+    revision: '0'.repeat(64),
+    config: {
+      ...configured,
+      connections: [{ ...connection, requestTimeoutMs: 60_000 }],
+    },
+    credentialStatuses: [{
+      connectionId: connection.id,
+      status: 'notConfigured',
+    }],
+  }), true);
 });
 
 test('compaction settings remain optional and validate threshold bounds', () => {
@@ -115,6 +117,26 @@ test('save request carries one credential action per connection without a key ec
       ],
     }),
     true,
+  );
+});
+
+test('model discovery accepts an unsaved provider draft and optional draft key', () => {
+  const connection = catalog().connections[0];
+  assert.equal(isModelDiscoveryRequest({ connection }), true);
+  assert.equal(
+    isModelDiscoveryRequest({ connection, apiKey: 'new-unsaved-key' }),
+    true,
+  );
+  assert.equal(
+    isModelDiscoveryRequest({
+      connection: { ...connection, displayName: '' },
+      apiKey: 'key',
+    }),
+    false,
+  );
+  assert.equal(
+    isModelDiscoveryRequest({ connection, apiKey: '', unexpected: true }),
+    false,
   );
 });
 

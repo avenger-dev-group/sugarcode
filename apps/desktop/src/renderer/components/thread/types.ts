@@ -92,6 +92,16 @@ export type TurnModelViewModel = Readonly<{
   wireApi: 'openaiResponses' | 'openaiChatCompletions' | 'anthropicMessages';
 }>;
 
+export type ModelOptionViewModel = Readonly<{
+  profileId: string;
+  label: string;
+  modelId: string;
+  connectionId: string;
+  providerLabel: string;
+  available: boolean;
+  providerFamily?: 'openai' | 'anthropic';
+}>;
+
 export type ActiveTurnProgressViewModel = Readonly<{
   turnId: string;
   state:
@@ -321,12 +331,7 @@ export type ThreadStore = Readonly<{
     error: string | null;
     canSave: boolean;
   }>;
-  modelOptions: readonly Readonly<{
-    profileId: string;
-    label: string;
-    available: boolean;
-    providerFamily?: 'openai' | 'anthropic';
-  }>[];
+  modelOptions: readonly ModelOptionViewModel[];
   selectedModelProfileId: string;
   selectedModelRequest: ModelRequestOptions;
   selectedModelProviderFamily: 'openai' | 'anthropic';

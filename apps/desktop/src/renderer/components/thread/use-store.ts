@@ -26,6 +26,7 @@ import {
   getModelConfig,
   MODEL_CONFIG_CHANGED_EVENT,
 } from '@/renderer/services/model-config';
+import { consolidateProviderConnections } from '@/renderer/components/model-config/catalog';
 import {
   activateWorkspaceChat,
   focusWorkspaceTask,
@@ -2255,7 +2256,12 @@ export const useStore = (): ThreadStore => {
     [snapshot],
   );
   const modelOptions = useMemo(() => {
-    const catalog = modelInspection?.config;
+    const catalog = modelInspection?.config
+      ? consolidateProviderConnections(
+          modelInspection.config,
+          modelInspection.credentialStatuses,
+        )
+      : null;
     const available = (catalog?.profiles ?? []).map((profile) => {
       const connection = catalog?.connections.find(
         (candidate) => candidate.id === profile.connectionId,
@@ -2263,6 +2269,9 @@ export const useStore = (): ThreadStore => {
       return {
         profileId: profile.id,
         label: profile.displayName,
+        modelId: profile.modelId,
+        connectionId: profile.connectionId,
+        providerLabel: connection?.displayName ?? '未知提供商',
         available: connection?.enabled === true,
         providerFamily: connection?.providerFamily,
       };
@@ -2276,6 +2285,9 @@ export const useStore = (): ThreadStore => {
       available.push({
         profileId: selectedModelProfileId,
         label: '当前模型不可用',
+        modelId: '',
+        connectionId: 'unavailable',
+        providerLabel: '不可用',
         available: false,
         providerFamily: 'openai',
       });
