@@ -754,8 +754,6 @@ fn terminate_full_access_tree(child: &mut tokio::process::Child) {
 // suppresses that window without changing pipe-based stdio behavior.
 #[cfg(windows)]
 fn configure_no_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
 }
 

@@ -843,8 +843,6 @@ async fn capture_shell_environment(shell: &CommandShell) -> Result<Vec<(String, 
 // time an environment snapshot is taken. CREATE_NO_WINDOW suppresses it.
 #[cfg(windows)]
 fn configure_no_window(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
 }
 
