@@ -595,6 +595,8 @@ async fn execute_full_access_shell(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(windows)]
+        configure_no_window(&mut command);
         #[cfg(target_os = "macos")]
         unsafe {
             command.as_std_mut().pre_exec(|| {
@@ -746,6 +748,17 @@ fn terminate_full_access_tree(child: &mut tokio::process::Child) {
     let _ = child.start_kill();
 }
 
+// A GUI-subsystem host (the desktop runtime) that spawns a console-subsystem
+// executable such as powershell.exe, cmd.exe, or the supervisor would otherwise
+// allocate a new visible console window for every command. CREATE_NO_WINDOW
+// suppresses that window without changing pipe-based stdio behavior.
+#[cfg(windows)]
+fn configure_no_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SupervisorRequest {
@@ -798,6 +811,8 @@ async fn run_native(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    configure_no_window(&mut command);
     configure_minimal_environment_tokio(&mut command);
     #[cfg(unix)]
     if configure_workspace_root_inheritance_tokio(&mut command, request.workspace_root_fd).is_err()

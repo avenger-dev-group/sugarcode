@@ -225,6 +225,8 @@ pub async fn capture_project_environment(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    configure_no_window(&mut command);
     let output = tokio::time::timeout(CAPTURE_TIMEOUT, command.output())
         .await
         .map_err(|_| "project environment initialization timed out".to_owned())?
@@ -747,6 +749,8 @@ async fn capture_shell_environment(shell: &CommandShell) -> Result<Vec<(String, 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    configure_no_window(&mut command);
     #[cfg(unix)]
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -832,6 +836,16 @@ async fn capture_shell_environment(shell: &CommandShell) -> Result<Vec<(String, 
         return Err("the login shell returned an environment without PATH".to_owned());
     }
     Ok(variables)
+}
+
+// The desktop runtime hosts these captures inside a GUI-subsystem process, so a
+// console-subsystem shell would briefly flash a console window on Windows every
+// time an environment snapshot is taken. CREATE_NO_WINDOW suppresses it.
+#[cfg(windows)]
+fn configure_no_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+
+    command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
 }
 
 async fn read_limited(
