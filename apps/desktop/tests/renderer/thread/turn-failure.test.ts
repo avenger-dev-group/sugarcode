@@ -51,6 +51,17 @@ test('local persistence failures are not presented as model service failures', (
   assert.match(failure.guidance, /Restart SugarCode/u);
 });
 
+test('unexpected internal failures are attributed to SugarCode', () => {
+  const failure = toTurnFailureViewModel({
+    kind: 'internal',
+    retryable: false,
+  });
+
+  assert.match(failure.summary, /SugarCode/u);
+  assert.doesNotMatch(failure.summary, /model service/iu);
+  assert.match(failure.guidance, /local project configuration/iu);
+});
+
 test('repeated tool failures follow the original user language', () => {
   const chinese = toTurnFailureViewModel(
     { kind: 'unsupportedToolArguments', retryable: false },

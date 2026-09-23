@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -340,6 +340,7 @@ fn discover(
         }
     }
     let mut effective = BTreeMap::<String, SkillEntry>::new();
+    let mut canonical_roots = BTreeSet::<PathBuf>::new();
     let mut observed = 0usize;
     for skill in bundled_skills(preferences)? {
         observed += 1;
@@ -357,6 +358,9 @@ fn discover(
         } else {
             canonical_directory(&root)?
         };
+        if !canonical_roots.insert(root.clone()) {
+            continue;
+        }
         let mut entries = fs::read_dir(&root)
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
@@ -488,7 +492,10 @@ fn canonical_directory(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn canonical_descendant(path: &Path, owner: &Path) -> Result<PathBuf, String> {
-    let canonical = canonical_directory(path)?;
+    let canonical = path.canonicalize().map_err(|error| error.to_string())?;
+    if !canonical.is_dir() {
+        return Err("Skill path must resolve to a directory.".to_owned());
+    }
     let owner = owner.canonicalize().map_err(|error| error.to_string())?;
     if !canonical.starts_with(&owner) {
         return Err("Project Skill directories must stay inside the project.".to_owned());

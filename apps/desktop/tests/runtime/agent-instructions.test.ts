@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { LlmAgent } from '@google/adk';
 
 import {
   buildAgentInstructions,
   hostPlatformInstruction,
+  literalAgentInstruction,
 } from '../../src/runtime/instructions/agent.ts';
 import { FINAL_RESPONSE_INSTRUCTION } from '../../src/runtime/instructions/final-response.ts';
 
@@ -54,6 +56,28 @@ test('main Agent instructions are dynamically scoped to capabilities', () => {
   assert.match(prompt, /never start or keep a development server running solely/u);
   assert.match(prompt, /do not use &, nohup, disown/u);
   assert.doesNotMatch(prompt, /Ask 1 to 3/u);
+});
+
+test('literal Agent instructions preserve project braces without ADK state injection', async () => {
+  const instruction = literalAgentInstruction({
+    role: 'main',
+    access: 'workspaceWrite',
+    availableTools: [],
+    collaborationEnabled: false,
+    skillInstruction:
+      'Archive implemented notes under archived/{kind} without changing that path.',
+  });
+
+  assert.equal(typeof instruction, 'function');
+  const agent = new LlmAgent({
+    name: 'literal_instruction_test',
+    model: 'test-model',
+    instruction,
+  });
+  const resolved = await agent.canonicalInstruction({} as never);
+
+  assert.equal(resolved.requireStateInjection, false);
+  assert.match(resolved.instruction, /archived\/\{kind\}/u);
 });
 
 test('read-only role prompts expose a bounded mission without write or collaboration guidance', () => {

@@ -162,3 +162,17 @@ test('runtime projection preserves safe protocol diagnostics', () => {
     },
   });
 });
+
+test('runtime projection does not present unknown local failures as model service failures', () => {
+  assert.deepEqual(
+    runtimeError({
+      kind: 'unknown',
+      retryable: false,
+      message: 'Skill path must be a real directory.',
+    }),
+    {
+      kind: 'internal',
+      retryable: false,
+    },
+  );
+});

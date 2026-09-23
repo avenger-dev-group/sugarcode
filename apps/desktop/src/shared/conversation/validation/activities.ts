@@ -54,6 +54,7 @@ const ERROR_KINDS = new Set<ConversationTurnError['kind']>([
   'providerRequestTooLarge',
   'providerResponseTooLarge',
   'outputTooLarge',
+  'internal',
   'stateUnavailable',
 ]);
 

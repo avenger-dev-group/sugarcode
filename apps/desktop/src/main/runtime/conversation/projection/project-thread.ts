@@ -144,7 +144,7 @@ export const runtimeError = (
           : kind === 'cancelled' || kind === 'runtimeRestart'
             ? 'incomplete'
             : kind === 'unknown'
-              ? 'server'
+              ? 'internal'
               : [
                     'authentication',
                     'contextWindowExceeded',

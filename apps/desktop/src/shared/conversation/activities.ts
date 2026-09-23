@@ -505,6 +505,7 @@ export type ConversationTurnError = Readonly<{
     | 'providerRequestTooLarge'
     | 'providerResponseTooLarge'
     | 'outputTooLarge'
+    | 'internal'
     | 'stateUnavailable';
   retryable: boolean;
   protocol?: Readonly<{

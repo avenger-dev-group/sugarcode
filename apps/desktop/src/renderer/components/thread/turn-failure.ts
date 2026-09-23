@@ -21,6 +21,7 @@ const FAILURE_SUMMARIES: Record<ConversationTurnError['kind'], string> = {
   providerResponseTooLarge:
     'The provider returned an abnormally large internal response',
   outputTooLarge: 'The visible model or tool output exceeded the local limit',
+  internal: 'SugarCode encountered an unexpected internal error',
   stateUnavailable: 'SugarCode could not save this Turn safely',
 };
 
@@ -98,6 +99,8 @@ export const toTurnFailureViewModel = (
       ? protocolGuidance(error.protocol)
       : error.kind === 'stateUnavailable'
       ? 'Restart SugarCode before continuing. Your earlier saved messages are unchanged.'
+      : error.kind === 'internal'
+        ? 'Review the local project configuration and retry. If the problem persists, inspect the saved Turn error for the underlying cause.'
       : error.kind === 'unsupportedToolArguments'
         ? LOCALIZED_TOOL_FAILURE[language].guidance
       : error.kind === 'outputTooLarge'

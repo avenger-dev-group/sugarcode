@@ -267,6 +267,46 @@ fn native_bundled_video_skill_requires_stable_remotion_rendering() {
 
 #[cfg(unix)]
 #[test]
+fn native_skills_accept_project_root_aliases_that_stay_inside_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let data = tempfile::tempdir().expect("data directory");
+    let workspace = tempfile::tempdir().expect("workspace");
+    write_skill(
+        &workspace.path().join(".agents/skills/review"),
+        "review",
+        "Project review",
+        "Project instructions.",
+    );
+    fs::create_dir_all(workspace.path().join(".claude")).expect("create Claude directory");
+    symlink("../.agents/skills", workspace.path().join(".claude/skills"))
+        .expect("link project Skills alias");
+    let runtime =
+        NativeRuntime::open(data.path().to_string_lossy().into_owned()).expect("native runtime");
+    runtime
+        .ensure_workspace(
+            "workspace-1".to_owned(),
+            workspace.path().to_string_lossy().into_owned(),
+        )
+        .expect("register workspace");
+
+    let inspection = json(
+        runtime
+            .inspect_skills_json(Some("workspace-1".to_owned()))
+            .expect("inspect Skills through in-project alias"),
+    );
+    let review_skills = inspection["skills"]
+        .as_array()
+        .expect("Skills array")
+        .iter()
+        .filter(|skill| skill["name"] == "review")
+        .collect::<Vec<_>>();
+    assert_eq!(review_skills.len(), 1);
+    assert_eq!(review_skills[0]["path"], ".agents/skills/review/SKILL.md");
+}
+
+#[cfg(unix)]
+#[test]
 fn native_skills_reject_project_roots_that_escape_through_symlinks() {
     use std::os::unix::fs::symlink;
 

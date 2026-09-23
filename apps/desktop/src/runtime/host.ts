@@ -35,7 +35,7 @@ import {
   type StoredModelHistoryV2,
 } from './persistence/model-history-codec.ts';
 import { RuntimeProtocolError } from './contracts/protocol-error.ts';
-import { buildAgentInstructions } from './instructions/agent.ts';
+import { literalAgentInstruction } from './instructions/agent.ts';
 import {
   extractDelimitedFinalResponse,
   streamableDelimitedFinalResponse,
@@ -4586,7 +4586,7 @@ export class RuntimeHost {
         description: experience === 'project'
           ? 'SugarCode local project development agent'
           : 'SugarCode general workspace agent',
-        instruction: buildAgentInstructions({
+        instruction: literalAgentInstruction({
           role: 'main',
           access: turnAccess,
           experience,
@@ -5525,7 +5525,7 @@ export class RuntimeHost {
       const agent = new LlmAgent({
         name: `sugarcode_${context.task.role}_agent`,
         description: `${context.task.role} subagent for ${context.task.title}`,
-        instruction: buildAgentInstructions({
+        instruction: literalAgentInstruction({
           role: context.task.role,
           access: context.task.access,
           experience,

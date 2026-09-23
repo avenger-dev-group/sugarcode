@@ -1,3 +1,5 @@
+import type { InstructionProvider } from '@google/adk';
+
 import { FINAL_RESPONSE_INSTRUCTION } from './final-response.ts';
 
 export type SugarCodeAgentRole = 'main' | 'explorer' | 'worker' | 'auditor';
@@ -225,3 +227,12 @@ export const buildAgentInstructions = (
     options.skillInstruction?.trim() ?? '',
   ].filter(Boolean).join('\n\n');
 };
+
+/**
+ * ADK treats braces in string instructions as session-state placeholders.
+ * SugarCode instructions contain literal user and project text, so provide
+ * them through a callback to keep braces literal and disable state injection.
+ */
+export const literalAgentInstruction = (
+  options: AgentInstructionOptions,
+): InstructionProvider => () => buildAgentInstructions(options);
