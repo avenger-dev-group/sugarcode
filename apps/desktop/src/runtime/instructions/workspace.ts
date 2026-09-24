@@ -101,6 +101,10 @@ const isProjectContext = (content: Content): boolean =>
       part.partMetadata[PROJECT_CONTEXT_METADATA_KEY] === true,
   );
 
+const isToolResultContent = (content: Content): boolean =>
+  (content.parts?.length ?? 0) > 0 &&
+  (content.parts ?? []).every((part) => part.functionResponse !== undefined);
+
 export class WorkspaceInstructionContext {
   private readonly nativeRuntime: NativeRuntimeBinding;
   private readonly workspaceId: string;
@@ -212,7 +216,11 @@ export class WorkspaceInstructionContext {
     }
     if (index === request.contents.length) {
       for (let cursor = request.contents.length - 1; cursor >= 0; cursor -= 1) {
-        if (request.contents[cursor]?.role === 'user') {
+        const candidate = request.contents[cursor];
+        if (
+          candidate?.role === 'user' &&
+          !isToolResultContent(candidate)
+        ) {
           index = cursor;
           break;
         }

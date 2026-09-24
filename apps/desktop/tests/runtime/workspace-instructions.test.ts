@@ -86,6 +86,54 @@ test('project context metadata does not remove user text that resembles the inte
   assert.equal(request.contents[1], user);
 });
 
+test('project context injection does not split a tool call from its result', () => {
+  const root = document('AGENTS.md', '.', 'Use repository rules.');
+  const native = {
+    workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {
+      const scopes = JSON.parse(scopesJson) as string[];
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: [root],
+        chains: scopes.map((scope) => ({ scope, paths: ['AGENTS.md'] })),
+        errors: [],
+      });
+    },
+  } as NativeRuntimeBinding;
+  const context = new WorkspaceInstructionContext(native, 'workspace');
+  context.preloadRoot();
+  const toolCall: Content = {
+    role: 'model',
+    parts: [{
+      functionCall: {
+        id: 'call-read',
+        name: 'workspace_read',
+        args: { path: 'README.md' },
+      },
+    }],
+  };
+  const toolResult: Content = {
+    role: 'user',
+    parts: [{
+      functionResponse: {
+        id: 'call-read',
+        name: 'workspace_read',
+        response: { content: 'fixture' },
+      },
+    }],
+  };
+  const request = requestWith([
+    { role: 'user', parts: [{ text: 'Inspect the repository.' }] },
+    toolCall,
+    toolResult,
+  ]);
+
+  context.injectIntoRequest(request);
+
+  assert.equal(request.contents[2], toolCall);
+  assert.equal(request.contents[3], toolResult);
+  assert.match(request.contents[0]?.parts?.[0]?.text ?? '', /Source: AGENTS\.md/u);
+});
+
 test('nested instructions block the first write until a model boundary delivers them', () => {
   const root = document('AGENTS.md', '.', 'Root rules.');
   const nested = document('src/CLAUDE.md', 'src', 'Nested rules.');
