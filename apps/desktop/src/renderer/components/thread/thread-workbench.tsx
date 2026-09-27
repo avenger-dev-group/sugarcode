@@ -95,6 +95,7 @@ import { AgentPreviewCard } from './agent-preview-card';
 import { GoalRunDock } from './goal-run-dock';
 import { AgentDrawioCard } from './agent-drawio-card';
 import { ModelProfilePicker } from './model-profile-picker';
+import { ConversationTurnNavigator } from './conversation-turn-navigator';
 
 const currentOrchestrationActivity = (
   store: ThreadWorkbenchViewProps['store'],
@@ -673,6 +674,7 @@ const TranscriptTurnView = ({
 }: TranscriptTurnProps) => (
   <section
     aria-label={`第 ${turnNumber} 轮对话`}
+    data-conversation-turn-id={turn.id}
     className={`min-w-0 max-w-full ${
       boundary === 'divider'
         ? 'mt-8 border-t pt-8'
@@ -1085,6 +1087,14 @@ export const ThreadWorkbenchView = ({
               ref: transcriptViewport,
               onScroll: recordScrollPosition,
             }}
+            overlay={
+              pendingThreadId || settlingThreadSelection ? null : (
+                <ConversationTurnNavigator
+                  turns={store.thread.turns}
+                  viewportRef={transcriptViewport}
+                />
+              )
+            }
           >
             <div
               ref={transcriptContent}
