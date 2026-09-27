@@ -89,6 +89,7 @@ typings/
 
 # Vite
 .vite/
+dist/
 .electron-test/
 
 # Electron-Forge

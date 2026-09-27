@@ -3,6 +3,7 @@ import {
   Binoculars,
   Check,
   ChevronDown,
+  ChevronRight,
   Circle,
   Clock3,
   FilePenLine,
@@ -118,6 +119,42 @@ const statusTone = (status: AgentTaskViewModel['status']): string => {
   }
 };
 
+const statusSurface = (status: AgentTaskViewModel['status']): string => {
+  switch (status) {
+    case 'running':
+      return 'border-process/30 bg-process/5';
+    case 'waitingApproval':
+      return 'border-primary/35 bg-primary/5';
+    case 'completed':
+      return 'border-success/25 bg-success/5';
+    case 'failed':
+      return 'border-destructive/35 bg-destructive/5';
+    case 'interrupted':
+      return 'border-secondary/30 bg-surface';
+    case 'cancelled':
+    case 'queued':
+      return 'border-border bg-background';
+  }
+};
+
+const statusRail = (status: AgentTaskViewModel['status']): string => {
+  switch (status) {
+    case 'running':
+      return 'bg-process';
+    case 'waitingApproval':
+      return 'bg-primary';
+    case 'completed':
+      return 'bg-success';
+    case 'failed':
+      return 'bg-destructive';
+    case 'interrupted':
+      return 'bg-secondary';
+    case 'cancelled':
+    case 'queued':
+      return 'bg-border';
+  }
+};
+
 const compactMarkdown = (value: string | undefined): string | undefined => {
   const compact = value
     ?.replace(/[#*`>|_~]/gu, '')
@@ -129,11 +166,13 @@ const compactMarkdown = (value: string | undefined): string | undefined => {
 };
 
 const taskSummary = (task: AgentTaskViewModel): string | undefined =>
-  compactMarkdown(
-    task.result?.summaryMarkdown ??
-      task.progress?.summaryMarkdown ??
-      task.taskMarkdown,
-  );
+  task.result
+    ? compactMarkdown(task.result.summaryMarkdown)
+    : task.progress?.stage === 'runningTool'
+      ? compactMarkdown(task.progress.summaryMarkdown)
+      : task.progress?.stage === 'streaming'
+        ? 'Response is streaming. Open details to follow the live output.'
+        : compactMarkdown(task.taskMarkdown);
 
 const formatUpdateTime = (updatedAt: number): string =>
   new Date(updatedAt).toLocaleTimeString(undefined, {
@@ -183,29 +222,33 @@ const AgentTaskCard = ({
         type="button"
         onClick={() => onSelect(task)}
         className={cn(
-          'group/task flex min-h-24 w-full min-w-0 flex-col rounded-lg border bg-background p-2.5 text-left transition-[border-color,background-color,box-shadow] hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-          selected && 'border-brand/40 bg-brand/10 shadow-sm',
-          !selected && task.status === 'failed' && 'border-destructive',
+          'group/task relative flex min-h-32 w-full min-w-0 flex-col overflow-hidden rounded-xl border p-3 text-left shadow-sm transition-[transform,border-color,background-color,box-shadow] duration-150 hover:-translate-y-px hover:shadow-[0_8px_24px_var(--shadow-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transform-none motion-reduce:transition-none',
+          statusSurface(task.status),
+          selected && 'border-brand/50 bg-brand/10 ring-1 ring-brand/15',
         )}
         aria-label={`${ROLE_LABELS[task.role]} ${task.title}, ${STATUS_LABELS[task.status]}`}
         aria-pressed={selected}
         data-agent-status={task.status}
       >
+        <span
+          className={cn(
+            'absolute inset-y-3 left-0 w-0.5 rounded-r-full',
+            statusRail(task.status),
+          )}
+          aria-hidden="true"
+        />
         <span className="flex min-w-0 items-start gap-2.5">
           <span
             className={cn(
-              'flex size-7 shrink-0 items-center justify-center rounded-md border bg-surface [&>svg]:size-3.5',
+              'flex size-8 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-background/80 shadow-sm [&>svg]:size-3.5',
               statusTone(task.status),
             )}
           >
             <RoleIcon role={task.role} />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium leading-5 text-primary">
-              {task.title}
-            </span>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-tertiary">
-              <span>{ROLE_LABELS[task.role]}</span>
+            <span className="flex min-w-0 items-center gap-1.5 font-mono text-[9px] uppercase tracking-[0.12em] text-tertiary">
+              <span className="truncate">{ROLE_LABELS[task.role]}</span>
               {task.dependsOn.length > 0 ? (
                 <>
                   <span aria-hidden="true">·</span>
@@ -214,10 +257,13 @@ const AgentTaskCard = ({
                 </>
               ) : null}
             </span>
+            <span className="mt-1 block line-clamp-2 text-sm font-semibold leading-5 text-primary">
+              {task.title}
+            </span>
           </span>
           <span
             className={cn(
-              'inline-flex shrink-0 items-center gap-1 pt-0.5 text-[11px] font-medium [&>svg]:size-3.5',
+              'inline-flex shrink-0 items-center gap-1 rounded-full border border-current/15 bg-background/60 px-1.5 py-0.5 text-[10px] font-medium [&>svg]:size-3',
               statusTone(task.status),
               task.status === 'running' && 'agent-status-shimmer',
             )}
@@ -229,21 +275,28 @@ const AgentTaskCard = ({
         {summary ? (
           <span
             className={cn(
-              'mt-2 block max-h-9 overflow-hidden text-xs font-normal leading-[18px] text-primary',
+              'mt-2.5 block line-clamp-2 text-[12px] font-normal leading-[18px] text-secondary',
               task.status === 'failed' && 'text-destructive',
             )}
-            aria-live={task.status === 'running' ? 'polite' : undefined}
           >
             {summary}
           </span>
         ) : null}
-        <span className="mt-auto flex min-w-0 items-center gap-1.5 pt-2 font-mono text-[11px] leading-4 text-tertiary">
-          {task.result ? (
-            <Clock3 className="size-3 shrink-0" aria-hidden="true" />
-          ) : task.status === 'queued' ? (
-            <LockKeyhole className="size-3 shrink-0" aria-hidden="true" />
+        <span className="mt-auto flex min-w-0 items-center gap-2 pt-3 text-[10px] leading-4 text-tertiary">
+          <span className="flex min-w-0 flex-1 items-center gap-1.5 font-mono">
+            {task.result ? (
+              <Clock3 className="size-3 shrink-0" aria-hidden="true" />
+            ) : task.status === 'queued' ? (
+              <LockKeyhole className="size-3 shrink-0" aria-hidden="true" />
+            ) : (
+              <span className="agent-activity-beacon" data-active={task.status === 'running'} aria-hidden="true" />
+            )}
+            <span className="truncate">{taskMeta(task, tasks)}</span>
+          </span>
+          {(task.progressEvents?.length ?? 0) > 0 ? (
+            <span className="shrink-0 tabular-nums">{task.progressEvents?.length} steps</span>
           ) : null}
-          <span className="truncate">{taskMeta(task, tasks)}</span>
+          <ChevronRight className="size-3.5 shrink-0 transition-transform group-hover/task:translate-x-0.5 motion-reduce:transition-none" aria-hidden="true" />
         </span>
       </button>
     </li>
@@ -262,32 +315,36 @@ const AgentTaskWaveGrid = ({
   const waves = agentTaskWaves(activity.tasks);
 
   return (
-    <div className="space-y-3">
+    <div className="relative space-y-4">
       {waves.map((wave) => (
         <section
           key={wave.index}
+          className="relative"
           aria-labelledby={`agent-wave-${activity.id}-${wave.index}`}
         >
-          <div className="mb-2 flex min-w-0 items-center gap-2 px-0.5">
+          <div className="mb-2.5 flex min-w-0 items-center gap-2">
+            <span className="grid size-5 shrink-0 place-items-center rounded-full border border-border bg-background font-mono text-[9px] tabular-nums text-tertiary shadow-sm">
+              {String(wave.index + 1).padStart(2, '0')}
+            </span>
             <h3
               id={`agent-wave-${activity.id}-${wave.index}`}
-              className="shrink-0 text-xs font-medium text-secondary"
+              className="shrink-0 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-secondary"
             >
-              Wave {wave.index + 1}
+              Execution wave
             </h3>
             <span
-              className="h-px min-w-4 flex-1 bg-border"
+              className="h-px min-w-4 flex-1 bg-border-subtle"
               aria-hidden="true"
             />
-            <span className="shrink-0 text-[11px] text-tertiary">
+            <span className="shrink-0 text-[10px] text-tertiary">
               {wave.tasks.length === 1
                 ? '1 task'
                 : wave.tasks.every((task) => task.access === 'readOnly')
-                  ? `${wave.tasks.length} parallel-capable`
-                  : `${wave.tasks.length} share workspace access`}
+                  ? `${wave.tasks.length} parallel`
+                  : `${wave.tasks.length} coordinated`}
             </span>
           </div>
-          <ol className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2">
+          <ol className="grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-2.5 pl-7">
             {wave.tasks.map((task) => (
               <AgentTaskCard
                 key={task.taskId}
@@ -311,9 +368,11 @@ const settledTaskCount = (tasks: readonly AgentTaskViewModel[]): number =>
 
 const AgentTaskDockRow = ({
   task,
+  tasks,
   onSelect,
 }: Readonly<{
   task: AgentTaskViewModel;
+  tasks: readonly AgentTaskViewModel[];
   onSelect: (task: AgentTaskViewModel) => void;
 }>) => {
   return (
@@ -321,19 +380,23 @@ const AgentTaskDockRow = ({
       <button
         type="button"
         onClick={() => onSelect(task)}
-        className="group flex w-full min-w-0 items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        className="group flex w-full min-w-0 items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         aria-label={`${task.title}, ${STATUS_LABELS[task.status]}. Open details.`}
       >
         <span
           className={cn(
-            'flex size-6 shrink-0 items-center justify-center rounded-full bg-surface [&>svg]:size-3',
+            'relative flex size-7 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-background [&>svg]:size-3.5',
             statusTone(task.status),
           )}
         >
-          <StatusIcon status={task.status} />
+          <RoleIcon role={task.role} />
+          <span className={cn('absolute -right-0.5 -bottom-0.5 grid size-3 place-items-center rounded-full border border-background bg-surface [&>svg]:size-2', statusTone(task.status))}>
+            <StatusIcon status={task.status} />
+          </span>
         </span>
-        <span className="min-w-0 flex-1 truncate text-sm font-medium leading-5 text-primary">
-          {task.title}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[13px] font-medium leading-5 text-primary">{task.title}</span>
+          <span className="mt-0.5 block truncate text-[10px] text-tertiary">{ROLE_LABELS[task.role]} · {taskMeta(task, tasks)}</span>
         </span>
         <span
           className={cn(
@@ -344,6 +407,7 @@ const AgentTaskDockRow = ({
         >
           {STATUS_LABELS[task.status]}
         </span>
+        <ChevronRight className="size-3.5 shrink-0 text-tertiary transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" aria-hidden="true" />
       </button>
     </li>
   );
@@ -410,19 +474,26 @@ export const AgentTaskDock = ({
         <PopoverTrigger asChild>
           <button
             type="button"
-            className="group relative flex w-full min-w-0 items-center gap-3 overflow-hidden rounded-xl border bg-background px-3 py-2 text-left transition-[border-color,background-color] hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            className={cn(
+              'group relative flex w-full min-w-0 items-center gap-3 overflow-hidden rounded-xl border bg-background px-3 py-2.5 text-left shadow-sm transition-[border-color,background-color,box-shadow] hover:bg-surface hover:shadow-[0_8px_24px_var(--shadow-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+              attentionCount > 0 && 'border-primary/35',
+              attentionCount === 0 && activeCount > 0 && 'border-process/30',
+            )}
             aria-label={`Agent tasks, ${triggerStatus}. Show current task details.`}
           >
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-surface">
+            <span className="relative flex size-8 shrink-0 items-center justify-center rounded-lg border bg-surface">
               <ListChecks
                 className="size-4 text-secondary"
                 aria-hidden="true"
               />
+              {activeCount > 0 ? (
+                <span className="agent-activity-beacon absolute -right-0.5 -top-0.5 ring-2 ring-background" data-active="true" aria-hidden="true" />
+              ) : null}
             </span>
             <span className="min-w-0 flex-1">
               <span className="flex min-w-0 items-center gap-2">
                 <span className="shrink-0 text-xs font-medium text-primary">
-                  Agent tasks
+                  Agent run
                 </span>
                 <span className="text-tertiary" aria-hidden="true">
                   ·
@@ -513,6 +584,7 @@ export const AgentTaskDock = ({
                 <AgentTaskDockRow
                   key={task.taskId}
                   task={task}
+                  tasks={activity.tasks}
                   onSelect={selectTask}
                 />
               ))}
@@ -558,27 +630,39 @@ export const OrchestrationActivity = ({
 
   return (
     <section
-      className="overflow-hidden rounded-xl border bg-background"
+      className="overflow-hidden rounded-2xl border border-border bg-background shadow-[0_12px_36px_var(--shadow-soft)]"
       aria-label="Agent task dependency waves"
     >
-      <header className="px-3.5 py-3">
+      <header className="relative overflow-hidden px-4 py-3.5">
+        <div className="pointer-events-none absolute -right-12 -top-16 size-40 rounded-full bg-process/5 blur-3xl" aria-hidden="true" />
         <div className="flex min-w-0 items-start justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border bg-surface">
-              <ListChecks className="size-4" aria-hidden="true" />
+            <span className="relative flex size-9 shrink-0 items-center justify-center rounded-xl border bg-surface shadow-sm">
+              <ListChecks className="size-4 text-secondary" aria-hidden="true" />
+              {activeTasks.length > 0 ? (
+                <span className="agent-activity-beacon absolute -right-0.5 -top-0.5 ring-2 ring-background" data-active="true" aria-hidden="true" />
+              ) : null}
             </span>
             <div className="min-w-0">
-              <p className="text-sm font-medium text-primary">Agent tasks</p>
-              <p className="mt-0.5 truncate text-xs text-secondary">
-                Independent read-only work runs together; dependencies advance
-                by wave.
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-primary">Agent run</p>
+                <span className="rounded-full bg-surface px-1.5 py-0.5 font-mono text-[9px] tabular-nums text-tertiary">
+                  {activity.tasks.length} tasks
+                </span>
+              </div>
+              <p className="mt-0.5 truncate text-[11px] text-secondary">
+                {settledTasks === activity.tasks.length
+                  ? 'All delegated work has settled.'
+                  : activeTasks.length > 0
+                    ? `${activeTasks.length} working now · ${queuedTasks.length} waiting`
+                    : `${queuedTasks.length} tasks ready for their execution wave`}
               </p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5 text-xs">
             {attentionTasks.length > 0 ? (
               <span
-                className="inline-flex items-center gap-1 rounded-md border bg-surface px-1.5 py-1 text-primary"
+                className="inline-flex items-center gap-1 rounded-full border border-primary/25 bg-primary/5 px-2 py-1 text-[10px] font-medium text-primary"
                 aria-label={`${attentionTasks.length} Agent tasks need attention`}
               >
                 <BellRing className="size-3.5" aria-hidden="true" />
@@ -587,7 +671,7 @@ export const OrchestrationActivity = ({
             ) : null}
             {activeTasks.length > 0 ? (
               <span
-                className="inline-flex items-center gap-1 rounded-md border bg-surface px-1.5 py-1 text-process"
+                className="inline-flex items-center gap-1 rounded-full border border-process/25 bg-process/5 px-2 py-1 text-[10px] font-medium text-process"
                 aria-label={`${activeTasks.length} Agent tasks active`}
               >
                 <LoaderCircle
@@ -601,17 +685,20 @@ export const OrchestrationActivity = ({
         </div>
       </header>
 
-      <div className="border-t bg-surface p-3">
-        <AgentTaskWaveGrid
-          activity={activity}
-          selectedTaskId={selectedTask?.taskId}
-          onSelect={selectTask}
-        />
+      <div className="relative overflow-hidden border-t bg-surface/70 p-3.5">
+        <div className="workbench-grid pointer-events-none absolute inset-0 opacity-60" aria-hidden="true" />
+        <div className="relative">
+          <AgentTaskWaveGrid
+            activity={activity}
+            selectedTaskId={selectedTask?.taskId}
+            onSelect={selectTask}
+          />
+        </div>
       </div>
 
-      <footer className="flex min-w-0 items-center gap-2.5 border-t px-3.5 py-2.5">
+      <footer className="flex min-w-0 items-center gap-3 border-t px-4 py-3">
         <div
-          className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-border"
+          className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-border"
           role="progressbar"
           aria-label="Agent task progress"
           aria-valuemin={0}
@@ -619,12 +706,12 @@ export const OrchestrationActivity = ({
           aria-valuenow={progress}
         >
           <div
-            className="h-full rounded-full bg-brand transition-[width] duration-300 motion-reduce:transition-none"
+            className="h-full rounded-full bg-brand shadow-sm transition-[width] duration-300 motion-reduce:transition-none"
             style={{ width: `${progress}%` }}
           />
         </div>
-        <span className="shrink-0 font-mono text-[11px] tabular-nums text-tertiary">
-          {settledTasks} / {activity.tasks.length} settled
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-tertiary">
+          {settledTasks}/{activity.tasks.length} settled
           {queuedTasks.length > 0 ? ` · ${queuedTasks.length} queued` : ''}
         </span>
       </footer>

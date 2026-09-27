@@ -270,7 +270,7 @@ export const ContextRail = ({
             <ContextTab
               active={activeTab === 'agent'}
               icon={<GitBranch className="size-3.5" />}
-              label="Agent"
+              label={selectedTask.title}
               onActivate={() => setActiveTab('agent')}
               onClose={closeAgentTab}
             />

@@ -342,6 +342,35 @@ const terminal = (status: RuntimeAgentTaskStatus): boolean =>
 
 const utf8Bytes = (value: string): number => Buffer.byteLength(value, 'utf8');
 
+const progressMilestoneSummary = (summaryMarkdown: string): string =>
+  (summaryMarkdown.split(/\n\s*\n/u, 1)[0] ?? summaryMarkdown)
+    .trim()
+    .slice(0, 1_024);
+
+const appendProgressMilestone = (
+  task: RuntimeAgentTask,
+  progress: NonNullable<RuntimeAgentTask['progress']>,
+): readonly NonNullable<RuntimeAgentTask['progress']>[] | undefined => {
+  if (progress.stage === 'streaming') {
+    return task.progressEvents;
+  }
+  const summaryMarkdown = progressMilestoneSummary(progress.summaryMarkdown);
+  if (!summaryMarkdown) {
+    return task.progressEvents;
+  }
+  const previous = task.progressEvents?.at(-1);
+  if (
+    previous?.stage === progress.stage &&
+    previous.summaryMarkdown === summaryMarkdown
+  ) {
+    return task.progressEvents;
+  }
+  return [
+    ...(task.progressEvents ?? []),
+    { ...progress, summaryMarkdown },
+  ].slice(-64);
+};
+
 export class CollaborationCoordinator {
   private readonly orchestrations = new Map<string, Orchestration>();
   private readonly slots: AsyncSemaphore;
@@ -697,13 +726,16 @@ export class CollaborationCoordinator {
           if (terminal(task.snapshot.status) || summaryMarkdown.length === 0) {
             return;
           }
+          const progress = {
+            stage,
+            summaryMarkdown: summaryMarkdown.slice(0, 16 * 1024),
+            updatedAt: Date.now(),
+          } as const;
+          const progressEvents = appendProgressMilestone(task.snapshot, progress);
           task.snapshot = {
             ...task.snapshot,
-            progress: {
-              stage,
-              summaryMarkdown: summaryMarkdown.slice(0, 16 * 1024),
-              updatedAt: Date.now(),
-            },
+            progress,
+            ...(progressEvents ? { progressEvents } : {}),
           };
           this.persistAndPublish(orchestration, task);
         },

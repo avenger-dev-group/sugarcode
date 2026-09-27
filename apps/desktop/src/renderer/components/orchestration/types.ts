@@ -42,6 +42,7 @@ export type AgentTaskViewModel = Readonly<{
   status: ConversationAgentTaskStatus;
   amendments: readonly AgentTaskAmendmentViewModel[];
   progress?: AgentTaskProgressViewModel;
+  progressEvents?: readonly AgentTaskProgressViewModel[];
   result?: AgentTaskResultViewModel;
 }>;
 

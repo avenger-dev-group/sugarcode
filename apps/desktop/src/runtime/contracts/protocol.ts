@@ -250,6 +250,7 @@ export type RuntimeAgentTask = Readonly<{
   status: RuntimeAgentTaskStatus;
   amendments: readonly Readonly<{ id: string; markdown: string }>[];
   progress?: RuntimeAgentTaskProgress;
+  progressEvents?: readonly RuntimeAgentTaskProgress[];
   result?: Readonly<{
     id: string;
     summaryMarkdown: string;
@@ -2302,6 +2303,20 @@ export const isRuntimeAgentTask = (value: unknown): value is RuntimeAgentTask =>
       value.progress.summaryMarkdown.length > 0 &&
       Number.isSafeInteger(value.progress.updatedAt) &&
       Number(value.progress.updatedAt) >= 0)) &&
+  (value.progressEvents === undefined ||
+    (Array.isArray(value.progressEvents) &&
+      value.progressEvents.length <= 64 &&
+      value.progressEvents.every(
+        (progress) =>
+          isRecord(progress) &&
+          ['waitingForModel', 'streaming', 'runningTool'].includes(
+            String(progress.stage),
+          ) &&
+          typeof progress.summaryMarkdown === 'string' &&
+          progress.summaryMarkdown.length > 0 &&
+          Number.isSafeInteger(progress.updatedAt) &&
+          Number(progress.updatedAt) >= 0,
+      ))) &&
   (value.result === undefined ||
     (isRecord(value.result) &&
       typeof value.result.id === 'string' &&

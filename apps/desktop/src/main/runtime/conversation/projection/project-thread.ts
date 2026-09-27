@@ -321,6 +321,9 @@ export const orchestrationActivity = (
         status: task.status,
         amendments: task.amendments.map((amendment) => ({ ...amendment })),
         ...(task.progress ? { progress: { ...task.progress } } : {}),
+        ...(task.progressEvents
+          ? { progressEvents: task.progressEvents.map((event) => ({ ...event })) }
+          : {}),
         ...(task.result ? { result: { ...task.result } } : {}),
       })),
     },

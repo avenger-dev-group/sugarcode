@@ -1028,6 +1028,13 @@ export const toThreadViewModel = (
                 ...(task.progress
                   ? { progress: { ...task.progress } }
                   : {}),
+                ...(task.progressEvents
+                  ? {
+                      progressEvents: task.progressEvents.map((event) => ({
+                        ...event,
+                      })),
+                    }
+                  : {}),
                 ...(task.result ? { result: { ...task.result } } : {}),
               })),
             },

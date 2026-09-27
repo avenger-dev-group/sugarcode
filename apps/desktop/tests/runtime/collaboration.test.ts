@@ -117,6 +117,12 @@ test('CollaborationCoordinator schedules a persisted DAG, delivers amendments, w
     published.find((task) => task.progress)?.progress?.summaryMarkdown,
     'Running `workspace_apply_patch`.',
   );
+  assert.deepEqual(
+    published.find((task) => task.progressEvents)?.progressEvents?.map(
+      (event) => [event.stage, event.summaryMarkdown],
+    ),
+    [['runningTool', 'Running `workspace_apply_patch`.']],
+  );
 
   await callTool(tools, 'collaboration_send', {
     clientTaskKey: 'write',

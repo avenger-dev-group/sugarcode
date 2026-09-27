@@ -397,6 +397,11 @@ export type ConversationAgentTask = Readonly<{
     summaryMarkdown: string;
     updatedAt: number;
   }>;
+  progressEvents?: readonly Readonly<{
+    stage: 'waitingForModel' | 'streaming' | 'runningTool';
+    summaryMarkdown: string;
+    updatedAt: number;
+  }>[];
   result?: Readonly<{
     id: string;
     summaryMarkdown: string;
