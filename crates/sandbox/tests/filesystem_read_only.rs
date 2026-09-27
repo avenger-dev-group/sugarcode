@@ -109,6 +109,17 @@ fn sandbox_payload_child() {
     );
     println!("sandbox read allowed");
 
+    #[cfg(target_os = "macos")]
+    {
+        let mut null = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .expect("read-only sandbox must allow standard /dev/null I/O");
+        std::io::Write::write_all(&mut null, b"sandbox probe")
+            .expect("write to /dev/null must succeed");
+    }
+
     assert_denied(
         "overwrite existing file",
         std::fs::write(root.join("target.txt"), "changed"),

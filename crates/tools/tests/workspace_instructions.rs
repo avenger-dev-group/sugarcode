@@ -1,4 +1,3 @@
-use sugarcode_tools::MAX_WORKSPACE_INSTRUCTIONS_BYTES;
 use sugarcode_tools::WORKSPACE_INSTRUCTIONS_FILE_NAME;
 use sugarcode_tools::WorkspaceInstructionsErrorKind;
 use sugarcode_tools::WorkspaceInstructionsSnapshot;
@@ -129,7 +128,7 @@ fn invalid_higher_priority_instruction_does_not_fall_back() {
 }
 
 #[test]
-fn invalid_oversized_and_hard_linked_instructions_fail_closed() {
+fn invalid_and_hard_linked_instructions_fail_closed_while_large_files_load() {
     let workspace = tempfile::tempdir().expect("workspace");
     let path = workspace.path().join(WORKSPACE_INSTRUCTIONS_FILE_NAME);
     let tool = WorkspaceTool::open(workspace.path()).expect("workspace capability");
@@ -140,12 +139,12 @@ fn invalid_oversized_and_hard_linked_instructions_fail_closed() {
         Err(WorkspaceInstructionsErrorKind::InvalidEncoding)
     );
 
-    std::fs::write(&path, vec![b'x'; MAX_WORKSPACE_INSTRUCTIONS_BYTES + 1])
-        .expect("oversized fixture");
-    assert_eq!(
+    let large = vec![b'x'; 128 * 1024];
+    std::fs::write(&path, &large).expect("large fixture");
+    assert!(matches!(
         tool.load_root_instructions(),
-        Err(WorkspaceInstructionsErrorKind::FileTooLarge)
-    );
+        Ok(WorkspaceInstructionsSnapshot::Present { bytes, .. }) if bytes == large.len()
+    ));
 
     std::fs::write(&path, "linked\n").expect("hard-link source");
     std::fs::hard_link(&path, workspace.path().join("instructions-alias")).expect("hard link");
@@ -156,7 +155,7 @@ fn invalid_oversized_and_hard_linked_instructions_fail_closed() {
 }
 
 #[test]
-fn nested_instructions_follow_root_to_scope_order_with_one_aggregate_budget() {
+fn nested_instructions_follow_root_to_scope_order_without_an_aggregate_limit() {
     let workspace = tempfile::tempdir().expect("workspace");
     std::fs::create_dir_all(workspace.path().join("projects/active")).expect("scope");
     std::fs::write(
@@ -211,10 +210,10 @@ fn nested_instructions_follow_root_to_scope_order_with_one_aggregate_budget() {
         vec![("AGENTS.md", "root\n"), ("projects/AGENTS.md", "project\n"),]
     );
 
-    let half = MAX_WORKSPACE_INSTRUCTIONS_BYTES / 2;
+    let large = 64 * 1024;
     std::fs::write(
         workspace.path().join(WORKSPACE_INSTRUCTIONS_FILE_NAME),
-        vec![b'r'; half],
+        vec![b'r'; large],
     )
     .expect("bounded root");
     std::fs::remove_file(
@@ -229,28 +228,14 @@ fn nested_instructions_follow_root_to_scope_order_with_one_aggregate_budget() {
             .path()
             .join("projects/active")
             .join(WORKSPACE_INSTRUCTIONS_FILE_NAME),
-        vec![b'a'; half],
+        vec![b'a'; large],
     )
     .expect("bounded leaf");
     assert!(
         root.derive_scope_with_instructions("projects/active")
             .is_ok(),
-        "exact aggregate limit is accepted"
+        "large instruction hierarchies are accepted"
     );
-    std::fs::write(
-        workspace
-            .path()
-            .join("projects/active")
-            .join(WORKSPACE_INSTRUCTIONS_FILE_NAME),
-        vec![b'a'; half + 1],
-    )
-    .expect("oversized aggregate leaf");
-    assert!(matches!(
-        root.derive_scope_with_instructions("projects/active"),
-        Err(WorkspaceScopeInstructionsErrorKind::Instructions(
-            WorkspaceInstructionsErrorKind::AggregateTooLarge
-        ))
-    ));
 }
 
 #[test]

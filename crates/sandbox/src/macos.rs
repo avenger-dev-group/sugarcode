@@ -10,11 +10,17 @@ use crate::SupervisedChild;
 use crate::WorkspaceWritePolicy;
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-const FILESYSTEM_READ_ONLY_V1_PROFILE: &str = "(version 1)\n(allow default)\n(deny file-write*)";
+const FILESYSTEM_READ_ONLY_V1_PROFILE: &str = concat!(
+    "(version 1)\n",
+    "(allow default)\n",
+    "(deny file-write*)\n",
+    "(allow file-write* (literal \"/dev/null\"))",
+);
 const FILESYSTEM_READ_ONLY_NETWORK_DENIED_V1_PROFILE: &str = concat!(
     "(version 1)\n",
     "(allow default)\n",
     "(deny file-write*)\n",
+    "(allow file-write* (literal \"/dev/null\"))\n",
     "(deny network*)\n",
     "(allow system-socket (socket-domain AF_UNIX))",
 );

@@ -89,7 +89,6 @@ pub use workspace_inspect::MAX_WORKSPACE_INSPECT_PROBE_BYTES;
 pub use workspace_inspect::WorkspaceInspectArguments;
 pub use workspace_inspect::WorkspaceInspectErrorKind;
 pub use workspace_inspect::WorkspaceInspectOutcome;
-pub use workspace_instructions::MAX_WORKSPACE_INSTRUCTIONS_BYTES;
 pub use workspace_instructions::WORKSPACE_INSTRUCTIONS_FILE_NAME;
 pub use workspace_instructions::WORKSPACE_INSTRUCTIONS_FILE_NAMES;
 pub use workspace_instructions::WorkspaceInstructionEntry;

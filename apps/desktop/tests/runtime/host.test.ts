@@ -24,7 +24,10 @@ import {
 import { INVALID_TOOL_ARGUMENTS_TOOL_NAME } from '../../src/runtime/models/types.ts';
 import { VideoAnalyzer } from '../../src/runtime/media/video/analysis.ts';
 import type { NativeRuntimeBinding } from '../../src/runtime/persistence/native.ts';
-import type { RuntimeEvent } from '../../src/runtime/contracts/protocol.ts';
+import type {
+  RuntimeAgentTask,
+  RuntimeEvent,
+} from '../../src/runtime/contracts/protocol.ts';
 
 const emptyThreadSnapshot = (threadId = 'thread-fixture'): string =>
   JSON.stringify({
@@ -1470,6 +1473,109 @@ class CollaborationRecoveryLlm extends BaseLlm {
           request,
           'Recovered collaboration complete.',
           'call-submit-recovered-collaboration',
+        ),
+      },
+      partial: false,
+      turnComplete: true,
+      finishReason: FinishReason.STOP,
+    };
+  }
+
+  connect(_request: LlmRequest): Promise<BaseLlmConnection> {
+    void _request;
+    return Promise.reject(new Error('Live mode is disabled in this fixture.'));
+  }
+}
+
+class CollaborationUnavailableInstructionsLlm extends BaseLlm {
+  static readonly supportedModels = [/^fixture/u];
+  readonly childRequests = { worker: 0, auditor: 0 };
+
+  async *generateContentAsync(request: LlmRequest): AsyncGenerator<LlmResponse, void> {
+    const parent = Object.hasOwn(request.toolsDict, 'collaboration_dispatch');
+    if (!parent) {
+      const worker = Object.hasOwn(request.toolsDict, 'workspace_apply_patch');
+      this.childRequests[worker ? 'worker' : 'auditor'] += 1;
+      if (worker) {
+        yield {
+          content: {
+            role: 'model',
+            parts: [{
+              functionCall: {
+                id: 'call-blocked-child-write',
+                name: 'workspace_apply_patch',
+                args: {
+                  patch:
+                    '*** Begin Patch\n*** Add File: blocked.txt\n+blocked\n*** End Patch',
+                },
+              },
+            }],
+          },
+          partial: false,
+        };
+        return;
+      }
+      yield {
+        content: { role: 'model', parts: [{ text: 'Audit recorded the blocker.' }] },
+        partial: false,
+        turnComplete: true,
+        finishReason: FinishReason.STOP,
+      };
+      return;
+    }
+
+    const responses = request.contents
+      .flatMap((content) => content.parts ?? [])
+      .flatMap((part) => part.functionResponse?.name
+        ? [part.functionResponse.name]
+        : []);
+    if (!responses.includes('collaboration_dispatch')) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-blocked-dispatch',
+              name: 'collaboration_dispatch',
+              args: {
+                tasks: [{
+                  clientTaskKey: 'blocked-worker',
+                  title: 'Blocked worker',
+                  role: 'worker',
+                  dependsOn: [],
+                  taskMarkdown: 'Create blocked.txt.',
+                }],
+              },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    if (!responses.includes('collaboration_wait')) {
+      yield {
+        content: {
+          role: 'model',
+          parts: [{
+            functionCall: {
+              id: 'call-blocked-wait',
+              name: 'collaboration_wait',
+              args: { clientTaskKeys: [] },
+            },
+          }],
+        },
+        partial: false,
+      };
+      return;
+    }
+    yield {
+      content: {
+        role: 'model',
+        parts: finalResponseParts(
+          request,
+          'Blocked collaboration reported.',
+          'call-submit-blocked-collaboration',
         ),
       },
       partial: false,
@@ -4730,6 +4836,7 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   const events: RuntimeEvent[] = [];
   const createdTasks: Array<Record<string, unknown>> = [];
   const updatedStatuses: string[] = [];
+  const persistedKinds: string[] = [];
   const childTools = new Map<string, readonly string[]>();
   let resolveCompleted: (() => void) | undefined;
   const completed = new Promise<void>((resolve) => {
@@ -4754,7 +4861,10 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
     listPendingApprovalsJson: () => '[]',
     ensureThread: (): void => undefined,
     startTurn: (): void => undefined,
-    appendItem: () => true,
+    appendItem: (_itemId: string, _turnId: string, _sequence: number, kind: string) => {
+      persistedKinds.push(kind);
+      return true;
+    },
     finishTurn: () => true,
     createAgentTasksJson: (_turnId: string, tasksJson: string) => {
       createdTasks.push(...JSON.parse(tasksJson) as Array<Record<string, unknown>>);
@@ -4840,6 +4950,103 @@ test('RuntimeHost runs persisted child LlmAgent invocations through the collabor
   assert.deepEqual(
     childTools.get('auditor')?.filter((name) => name.startsWith('workspace_')),
     ['workspace_read', 'workspace_list', 'workspace_search'],
+  );
+  assert.equal(events.at(-1)?.type, 'turn.completed');
+  assert.equal(
+    persistedKinds.includes('agent.task'),
+    false,
+    'agent_tasks is the durable task snapshot; progress events stay transient',
+  );
+});
+
+test('RuntimeHost stops a child Agent immediately when project instructions are unavailable', async () => {
+  const events: RuntimeEvent[] = [];
+  const updatedTasks: Array<{ status: string; payload: RuntimeAgentTask }> = [];
+  const model = new CollaborationUnavailableInstructionsLlm({ model: 'fixture-model' });
+  let resolveCompleted: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    resolveCompleted = resolve;
+  });
+  const native = {
+    inspectMcpConfigJson: () => JSON.stringify({
+      contractVersion: 1,
+      revision: '0'.repeat(64),
+      servers: [],
+    }),
+    skillsContextJson: () => '{"skills":[]}',
+    listPendingApprovalsJson: () => '[]',
+    ensureThread: (): void => undefined,
+    startTurn: (): void => undefined,
+    appendItem: () => true,
+    finishTurn: () => true,
+    createAgentTasksJson: (_turnId: string, tasksJson: string) =>
+      JSON.stringify({ inserted: (JSON.parse(tasksJson) as unknown[]).length }),
+    updateAgentTask: (_taskId: string, status: string, payloadJson: string) => {
+      updatedTasks.push({
+        status,
+        payload: JSON.parse(payloadJson) as RuntimeAgentTask,
+      });
+      return true;
+    },
+    loadThreadJson: () => emptyThreadSnapshot(),
+    workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {
+      const scopes = JSON.parse(scopesJson) as string[];
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: [],
+        chains: [],
+        errors: scopes.map((scope) => ({ scope, kind: 'invalidEncoding' })),
+      });
+    },
+    workspaceRead: async () => '{}',
+    workspaceList: async () => '{}',
+    workspaceInspectJson: () => '{}',
+    workspaceSearch: async () => '{}',
+    workspacePathSearchJson: async () => '{}',
+  } as unknown as NativeRuntimeBinding;
+  const host = new RuntimeHost({
+    createModel: () => model,
+    loadNative: () => native,
+    postEvent: (event) => {
+      events.push(event);
+      if (event.type === 'turn.completed') resolveCompleted?.();
+    },
+  });
+  host.handle({
+    type: 'initialize',
+    requestId: 'request-initialize-blocked-child',
+    protocolVersion: 8,
+    dataDirectory: '/tmp/sugarcode-v3-blocked-child',
+    nativeModulePath: '/fixture/native.node',
+  });
+  host.handle({
+    type: 'turn.start',
+    requestId: 'request-blocked-child',
+    workspaceId: 'workspace-fixture',
+    threadId: 'thread-fixture',
+    turnId: 'turn-blocked-child',
+    provider: {
+      wireApi: 'openaiResponses',
+      model: 'fixture-model',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      timeoutMs: 5_000,
+      parallelTools: true,
+    },
+    content: [{ type: 'text', text: 'Use a worker.' }],
+  });
+
+  await completed;
+
+  assert.equal(model.childRequests.worker, 1);
+  const failedWorker = updatedTasks.findLast(
+    (task) =>
+      task.payload.clientTaskKey === 'blocked-worker' &&
+      task.status === 'failed',
+  );
+  assert.equal(failedWorker?.payload.result?.error?.kind, 'protocol');
+  assert.match(
+    failedWorker?.payload.result?.summaryMarkdown ?? '',
+    /Project instructions for this write scope could not be loaded safely/u,
   );
   assert.equal(events.at(-1)?.type, 'turn.completed');
 });

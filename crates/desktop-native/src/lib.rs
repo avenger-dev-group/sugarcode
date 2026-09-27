@@ -37,7 +37,6 @@ use sugarcode_tools::GitDiffSource;
 use sugarcode_tools::GitErrorKind;
 use sugarcode_tools::GitMutationArguments;
 use sugarcode_tools::GitRepositoryState;
-use sugarcode_tools::MAX_WORKSPACE_INSTRUCTIONS_BYTES;
 use sugarcode_tools::PROJECT_ENVIRONMENT_CONFIG_PATH;
 use sugarcode_tools::ResolvedProjectEnvironmentConfig;
 use sugarcode_tools::ShellCommandArguments;
@@ -1665,22 +1664,6 @@ impl NativeRuntime {
                     "kind": instruction_error_code(kind),
                 })),
             }
-        }
-        let aggregate_bytes = documents
-            .values()
-            .filter_map(|document| document.get("bytes").and_then(serde_json::Value::as_u64))
-            .sum::<u64>();
-        if aggregate_bytes > MAX_WORKSPACE_INSTRUCTIONS_BYTES as u64 {
-            errors.extend(chains.iter().filter_map(|chain| {
-                chain.get("scope").cloned().map(|scope| {
-                    json!({
-                        "scope": scope,
-                        "kind": "aggregateTooLarge",
-                    })
-                })
-            }));
-            documents.clear();
-            chains.clear();
         }
         json_string(json!({
             "contractVersion": 1,

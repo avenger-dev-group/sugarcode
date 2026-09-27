@@ -57,6 +57,9 @@ fn run_supported_platform_matrix() {
         "original"
     );
 
+    #[cfg(target_os = "macos")]
+    assert_contains(run_through_adapter("dev-null", None), "allowed");
+
     assert_contains(run_through_adapter("socketpair", None), "allowed");
     assert_contains(run_through_adapter("tcp-bind", None), "denied");
     assert_contains(run_through_adapter("udp-bind", None), "denied");
@@ -226,6 +229,15 @@ fn run_target_role() {
             Err(error) => println!("denied:{error}"),
         },
         "write-file" => print_result(std::fs::write(argument_path(), "changed")),
+        #[cfg(target_os = "macos")]
+        "dev-null" => {
+            let result = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/null")
+                .and_then(|mut file| std::io::Write::write_all(&mut file, b"sandbox probe"));
+            print_result(result);
+        }
         "socketpair" => {
             #[cfg(unix)]
             {

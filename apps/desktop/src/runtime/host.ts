@@ -4285,7 +4285,10 @@ export class RuntimeHost {
                   );
                 },
                 publishTask: (task) => {
-                  this.emit({
+                  // The latest task snapshot is already durable in agent_tasks.
+                  // Publishing every progress tick as another turn_item grows
+                  // the conversation database without adding recovery value.
+                  this.emitTransient({
                     type: 'agent.task',
                     requestId: command.requestId,
                     workspaceId: command.workspaceId,
@@ -5590,6 +5593,7 @@ export class RuntimeHost {
         parts: [{ text: input }],
       };
       let transientRecoveryCount = 0;
+      let workspaceInstructionBlocker: RuntimeProviderError | undefined;
       for (;;) {
         attempts += 1;
         try {
@@ -5657,12 +5661,35 @@ export class RuntimeHost {
               }
             },
             completionGate: () => !context.signal.aborted,
+            terminalToolResult: (event) => {
+              for (const part of event.content?.parts ?? []) {
+                const response = part.functionResponse?.response;
+                if (
+                  isRecord(response) &&
+                  response.error === 'workspaceInstructionsUnavailable'
+                ) {
+                  workspaceInstructionBlocker = {
+                    kind: 'protocol',
+                    retryable: false,
+                    message:
+                      typeof response.message === 'string'
+                        ? response.message
+                        : 'Project instructions for this write scope are unavailable.',
+                  };
+                  return true;
+                }
+              }
+              return false;
+            },
             retryFinalAfterToolFailure: () =>
               this.consumeToolFailureFinalRecovery(invalidArgumentGuard),
             takeProviderError: providerErrorCapture.takeCapturedError,
             validateInvocation: () =>
               this.assertInvalidArgumentProgress(invalidArgumentGuard),
           });
+          if (workspaceInstructionBlocker) {
+            throw new ProviderAdapterError(workspaceInstructionBlocker);
+          }
           break;
         } catch (error) {
           const details = providerError(error);

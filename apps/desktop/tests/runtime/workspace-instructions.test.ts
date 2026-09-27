@@ -167,6 +167,37 @@ test('nested instructions block the first write until a model boundary delivers 
   assert.equal(context.checkWrite(['src']), undefined);
 });
 
+test('large nested instruction chains are loaded without an aggregate limit', () => {
+  const root = document('AGENTS.md', '.', 'r'.repeat(24 * 1_024));
+  const nested = document('packages/client/AGENTS.md', 'packages/client', 'n'.repeat(48 * 1_024));
+  const native = {
+    workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {
+      const scopes = JSON.parse(scopesJson) as string[];
+      const hasNested = scopes.includes('packages/client');
+      return JSON.stringify({
+        contractVersion: 1,
+        documents: hasNested ? [root, nested] : [root],
+        chains: scopes.map((scope) => ({
+          scope,
+          paths: scope === 'packages/client'
+            ? ['AGENTS.md', 'packages/client/AGENTS.md']
+            : ['AGENTS.md'],
+        })),
+        errors: [],
+      });
+    },
+  } as NativeRuntimeBinding;
+  const context = new WorkspaceInstructionContext(native, 'workspace');
+  context.preloadRoot();
+  context.injectIntoRequest(requestWith([{ role: 'user', parts: [{ text: 'Initial' }] }]));
+
+  assert.equal(context.checkWrite(['packages/client'])?.error, 'workspaceInstructionsRequired');
+  const next = requestWith([{ role: 'user', parts: [{ text: 'Continue' }] }]);
+  context.injectIntoRequest(next);
+  assert.equal(context.checkWrite(['packages/client']), undefined);
+  assert.match(next.contents[0]?.parts?.[0]?.text ?? '', /n{100}/u);
+});
+
 test('instruction failures warn on reads and fail closed on writes', () => {
   const native = {
     workspaceInstructionsJson: (_workspaceId: string, scopesJson: string) => {

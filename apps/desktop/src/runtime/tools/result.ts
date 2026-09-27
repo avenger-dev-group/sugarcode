@@ -105,6 +105,13 @@ const isInformativeWorkspaceReadMiss = (value: unknown): boolean => {
 export const toolResultRequiresFinalRecovery = (
   toolName: string,
   value: unknown,
-): boolean =>
-  toolResultFailed(value) &&
-  !(toolName === 'workspace_read' && isInformativeWorkspaceReadMiss(value));
+): boolean => {
+  if (
+    isRecord(value) &&
+    value.error === 'workspaceInstructionsUnavailable'
+  ) {
+    return false;
+  }
+  return toolResultFailed(value) &&
+    !(toolName === 'workspace_read' && isInformativeWorkspaceReadMiss(value));
+};

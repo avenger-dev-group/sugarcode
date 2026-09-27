@@ -6,7 +6,6 @@ import type { NativeRuntimeBinding } from '../persistence/native.ts';
 
 const PROJECT_CONTEXT_MARKER = '[SugarCode project instructions context]';
 const PROJECT_CONTEXT_METADATA_KEY = 'sugarcodeProjectInstructionsContext';
-const MAX_WORKSPACE_INSTRUCTION_CONTEXT_BYTES = 32 * 1_024;
 const INSTRUCTION_NAMES = new Set([
   'AGENTS.override.md',
   'AGENTS.md',
@@ -255,20 +254,6 @@ export class WorkspaceInstructionContext {
     } catch {
       for (const scope of pending) {
         this.errors.set(scope, [{ scope, kind: 'unavailable' }]);
-      }
-      return;
-    }
-    const merged = new Map(this.documents);
-    for (const document of contract.documents) {
-      merged.set(document.path, document);
-    }
-    const mergedBytes = [...merged.values()].reduce(
-      (total, document) => total + document.bytes,
-      0,
-    );
-    if (mergedBytes > MAX_WORKSPACE_INSTRUCTION_CONTEXT_BYTES) {
-      for (const scope of pending) {
-        this.errors.set(scope, [{ scope, kind: 'aggregateTooLarge' }]);
       }
       return;
     }

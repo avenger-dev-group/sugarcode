@@ -19,7 +19,6 @@ use std::path::PathBuf;
 pub const WORKSPACE_INSTRUCTIONS_FILE_NAME: &str = "AGENTS.md";
 pub const WORKSPACE_INSTRUCTIONS_FILE_NAMES: [&str; 3] =
     ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md"];
-pub const MAX_WORKSPACE_INSTRUCTIONS_BYTES: usize = 32 * 1024;
 const WORKSPACE_INSTRUCTIONS_MANIFEST_DOMAIN: &[u8] = b"boundedNestedWorkspaceInstructionsV1\0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,11 +190,6 @@ impl WorkspaceTool {
                         WorkspaceInstructionsErrorKind::AggregateTooLarge,
                     ),
                 )?;
-                if total_bytes > MAX_WORKSPACE_INSTRUCTIONS_BYTES {
-                    return Err(WorkspaceScopeInstructionsErrorKind::Instructions(
-                        WorkspaceInstructionsErrorKind::AggregateTooLarge,
-                    ));
-                }
             }
             candidates.push(candidate);
         }
@@ -284,11 +278,6 @@ impl WorkspaceTool {
                         WorkspaceInstructionsErrorKind::AggregateTooLarge,
                     ),
                 )?;
-                if total_bytes > MAX_WORKSPACE_INSTRUCTIONS_BYTES {
-                    return Err(WorkspaceScopeContextErrorKind::Instructions(
-                        WorkspaceInstructionsErrorKind::AggregateTooLarge,
-                    ));
-                }
             }
             candidates.push(candidate);
         }
@@ -412,13 +401,8 @@ fn read_instruction_file<F>(
 where
     F: FnOnce(),
 {
-    read_stable_utf8_file_before_reopen(
-        directory,
-        Path::new(file_name),
-        MAX_WORKSPACE_INSTRUCTIONS_BYTES,
-        before_reopen,
-    )
-    .map_err(map_stable_file_error)
+    read_stable_utf8_file_before_reopen(directory, Path::new(file_name), usize::MAX, before_reopen)
+        .map_err(map_stable_file_error)
 }
 
 fn candidate_into_root_snapshot(candidate: CandidateSnapshot) -> WorkspaceInstructionsSnapshot {
